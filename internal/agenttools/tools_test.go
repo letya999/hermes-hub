@@ -601,7 +601,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 65 {
+	if err != nil || len(list.Tools) != 64 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "file_archive", "file_remove"} {
@@ -732,10 +732,13 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 65 {
+	if err != nil || len(list.Tools) != 64 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
+		if tool.Name == "media_speak" {
+			t.Fatal("channel delivery bypasses ToolHub's live-run authority")
+		}
 		if tool.Name == "media_generate" || tool.Name == "media_edit" {
 			t.Fatal("image generation published without a grant")
 		}
@@ -828,7 +831,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 68 {
+	if err != nil || len(listed.Tools) != 67 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "media_generate", map[string]any{"name": "pic", "prompt": "a red square", "kind": "image"})

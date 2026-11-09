@@ -39,6 +39,9 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effect
 	if tool.Executor == "runtime:sessions" {
 		return g.execSession(ctx, auth, tool, arguments)
 	}
+	if tool.Executor == "runtime:channels" && tool.Name == "media_speak" {
+		return g.execSpeak(ctx, auth, arguments)
+	}
 	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: %s", tool.Name, remoteBackendHint(tool.Executor))}, nil
 }
 

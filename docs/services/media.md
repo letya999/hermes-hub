@@ -1,6 +1,6 @@
 ---
 description: hub-media, hub-stt, hub-tts — media sidecars carrying provider credentials; sync image gen plus durable async jobs.
-last_verified: 2026-10-27
+last_verified: 2026-11-09
 ---
 
 # media services (hub-media, hub-stt, hub-tts)
@@ -9,6 +9,21 @@ Three standalone sidecars, one code family (`internal/media`,
 `internal/mediasvc`). Each listens on its own container `:8090`, joins only
 the service network — never the docker socket — and shares the `media.auth`
 bearer. `hub-media` alone mounts its read-only `broker-secrets-media` key volume.
+
+Declare all three shared services in the infra owner's authored stack passport
+and references to them in participating user stacks. Selecting `media` alone
+does not start undeclared containers. Set the channel voice in/out contract in
+config.yaml. Managed `media_transcribe` receives `HUB_STT_URL` and the shared
+media bearer when hub-stt is declared; its multipart upload uses the admitted
+filesystem root and bounded bytes. `media_speak` runs in ToolHub against the
+verified live run and queues the communication worker's voice delivery. It never
+accepts a model-selected recipient or returns a queued record as proof of sending.
+
+The broker workload/binding is `credentialbroker.MediaBinding(infra-owner)`,
+stable per owner so a retired infra owner's grant cannot block its replacement.
+TTS uses the hash-pinned `torch==2.8.0+cpu` wheel; its image asserts CUDA is absent.
+The sidecar command engine requests canonical WAV from the worker through
+`HUB_TTS_OUTPUT_FORMAT=wav`; direct gateway workers retain their OGG/Opus output.
 
 | Service | Binary | Role |
 |---|---|---|

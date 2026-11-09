@@ -1,0 +1,14 @@
+schema: 1
+change: CHG-0292
+title: "Five-prompt live terminal, media and speech repair"
+status: in-progress
+updated: 2026-11-09
+phase: image-provider-blocked
+validation:
+  local: passed
+  live: partial
+  terminal: passed
+  browser_and_vision: passed
+  stt: passed
+  telegram_voice_delivery: passed
+  image_generation_and_edit: blocked-by-provider

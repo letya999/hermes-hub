@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.3.1",
+		Version:      "18.3.2",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -117,7 +117,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("media_edit", "media.edit", "workspace.write", "Edit an image inside the admitted scope with the granted provider.", api.WriteEffect, use("edit", "media", "path"), str("name"), path, str("prompt")),
 			tool("media_fetch", "media.fetch", "workspace.read", "Check one media job by id and stage the finished result under artifacts.", api.ReadEffect, use("fetch", "media"), str("id"), opt("name")),
 			tool("media_transcribe", "media.transcribe", "workspace.read", "Transcribe an audio file inside the admitted scope to text.", api.ReadEffect, use("read", "media", "path"), path, opt("language"), boolArg("timestamps", false)),
-			tool("media_speak", "media.speak", "channels.send_voice", "Synthesize text to audio delivered through the active channel.", api.WriteEffect, use("speak", "media"), str("text"), opt("language")),
+			remote("media_speak", "media.speak", "channels.send_voice", "Queue speech through the active run's channel. Returns a delivery id and queued status; queued is not a sent receipt.", api.WriteEffect, "runtime:channels", str("text"), opt("language")),
 
 			// ---- terminal (2): an isolated agent-image workload and ToolHub
 			// job control; no runtime home, network or control-plane mounts.

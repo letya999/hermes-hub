@@ -17,3 +17,10 @@ func TestModelRelayBindingIsolation(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestMediaBindingIsolation(t *testing.T) {
+	alice, bob := MediaBinding("alice"), MediaBinding("bob")
+	if alice == bob || alice != MediaBinding("alice") || !identity.ValidID(alice) || !identity.ValidID(bob) || len(MediaBinding(strings.Repeat("a", 128))) != len(alice) {
+		t.Fatal("media workloads must be stable, bounded and distinct per infra owner")
+	}
+}

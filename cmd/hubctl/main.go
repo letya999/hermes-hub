@@ -1004,8 +1004,8 @@ func supervisorComposeEnv(dir string) []string {
 	}
 	if os.Getenv("HUB_MEDIA_BROKER_GRANT") == "" {
 		// media.grant is not a secret: it is the grant ID provisioned for this
-		// space's hub-media service (docs/operations.md, media credentials).
-		if auth, err := stack.ReadSecrets(filepath.Join(dir, "media.grant")); err == nil {
+		// infra owner's shared hub-media service (docs/operations.md).
+		if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(dir), "media.grant")); err == nil {
 			if grant := strings.TrimSpace(auth["HUB_MEDIA_BROKER_GRANT"]); grant != "" {
 				env = append(env, "HUB_MEDIA_BROKER_GRANT="+grant)
 			}

@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0292](in-progress/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
 | [CHG-0289](in-progress/CHG-0289-fast-local-verification/plan.md) | Fast local checks, exact-source prebuilt Docker verification, CI cache repairs and Devin handoff; local check/tests/actionlint passed, remote acceptance and host diagnosis pending |
 | [CHG-0290](in-progress/CHG-0290-knowledge-view/plan.md) | One-hour ToolHub knowledge link and read-only owner memory view; implementation and dev acceptance in progress |
 | [CHG-0274](done/CHG-0274-verification-suite/plan.md) | M31.11 charter verification suite: lints, parity tests and intent evals (#448); done: vocabulary/requires/description lints, direct↔tool_call admission parity, annotation parity, 40-intent eval baseline 1.000, Appendix D rule→test table |

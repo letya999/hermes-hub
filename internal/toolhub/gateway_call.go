@@ -81,14 +81,18 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if err := api.RejectToolAuthorityArguments(projected.Tool, arguments); err != nil {
 			return err
 		}
-		if len(projected.Tool.InputSchema) > 0 {
+		inputSchema := projected.Tool.InputSchema
+		if len(inputSchema) == 0 && effective.Definition.Transport == api.AgentTools && len(projected.Tool.Arguments) > 0 {
+			inputSchema, _ = json.Marshal(api.CliInputSchema(projected.Tool))
+		}
+		if len(inputSchema) > 0 {
 			var schema jsonschema.Schema
-			if json.Unmarshal(projected.Tool.InputSchema, &schema) != nil {
+			if json.Unmarshal(inputSchema, &schema) != nil {
 				return api.ErrInvalid
 			}
 			resolved, err := schema.Resolve(nil)
 			if err != nil || resolved.Validate(arguments) != nil {
-				return fmt.Errorf("%w: MCP arguments do not match admitted schema", api.ErrInvalid)
+				return fmt.Errorf("%w: MCP arguments do not match admitted schema; use tool_search with the exact tool name", api.ErrInvalid)
 			}
 		}
 		fields := mergeAudit(auditFields(auth, projected, effective, "admit"), corr)

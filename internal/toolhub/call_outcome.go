@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -29,6 +30,9 @@ func (g *Gateway) mcpCall(ctx context.Context, auth identity.Envelope, name stri
 	result, err := g.call(ctx, auth, name, args)
 	if data := uncertainCallData(err); data != nil {
 		return &mcp.CallToolResult{IsError: true, StructuredContent: data, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
+	}
+	if errors.Is(err, api.ErrInvalid) {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
 	}
 	return result, err
 }

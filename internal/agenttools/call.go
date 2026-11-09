@@ -243,7 +243,9 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 			return nil, errors.New("media fetch is not granted on this runtime")
 		}
 		return session().MediaFetch(ctx, r.ID, r.Name)
-	case "media_transcribe", "media_speak":
+	case "media_transcribe":
+		return session().Transcribe(ctx, r.Path, r.Language, r.Timestamps)
+	case "media_speak":
 		return nil, fmt.Errorf("%s is unavailable on this runtime: no speech backend is configured", name)
 	case "terminal_exec", "terminal_job":
 		return nil, fmt.Errorf("%s is unavailable on this runtime: no terminal executor is configured", name)

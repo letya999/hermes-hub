@@ -135,6 +135,33 @@ func TestAgentExecErrorSurvivesGateway(t *testing.T) {
 	}
 }
 
+func TestAgentArgumentsRejectBeforeBackend(t *testing.T) {
+	s := NewStore()
+	definition := agentDefinition()
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if _, err := s.Enable(auth, definition.DefinitionID, definition.Version); err != nil {
+		t.Fatal(err)
+	}
+	calls, audits := 0, 0
+	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { audits++; return nil }, Backend: api.AgentExecBackend{Exec: func(context.Context, api.EffectiveBinding, api.AgentExecRequest) (api.AgentExecResult, error) {
+		calls++
+		return api.AgentExecResult{}, nil
+	}}}
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "file_read")
+	for _, args := range []map[string]any{{"command": "echo wrong"}, {"path": 3}, {"path": "ok", "operation_id": "not-a-tool-argument"}} {
+		out, err := g.mcpCall(t.Context(), auth, name, args)
+		if err != nil || out == nil || !out.IsError {
+			t.Fatalf("malformed call was not an application error: %+v %v", out, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("malformed calls executed: %d (audits=%d)", calls, audits)
+	}
+}
+
 func TestManagedAgentContainerName(t *testing.T) {
 	binding := api.EffectiveBinding{Binding: api.ToolBinding{PrincipalID: "alice", ContextID: "alice"}}
 	name, err := api.ManagedAgentContainer(binding)

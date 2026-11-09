@@ -7,6 +7,8 @@ last_verified: "2026-11-09"
 ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
 Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights.
 
+`media_speak` uses this outbox for the active run's recorded destination: `delivery_id` and `status=queued` acknowledge enqueue, not sending. The worker rechecks `channels.send_voice`; synthesis/sending can still fail and uncertain sends are never blindly repeated.
+
 The M32 cutover places the clock, assignments, watches and protected nightly
 dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
 schedule with a normal routine occurrence and due recovery, keyed once per

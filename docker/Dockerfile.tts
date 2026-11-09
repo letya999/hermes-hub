@@ -31,6 +31,7 @@ RUN for i in 1 2 3 4; do \
       if [ "$i" = 4 ]; then exit 1; fi; sleep 10; \
     done
 ENV TORCH_HOME=/opt/torch
+RUN python -c "import torch; assert torch.version.cuda is None, 'TTS requires the CPU-only torch wheel'"
 # The model download is a single large stream; a truncated archive raises a
 # PyTorch zip error, so retry with a cleared hub cache before giving up.
 RUN for i in 1 2 3 4; do \

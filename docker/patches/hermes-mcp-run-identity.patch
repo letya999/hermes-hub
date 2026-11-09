@@ -9,6 +9,14 @@
  from types import SimpleNamespace
  from typing import Any, Callable, Dict, List, Optional, Tuple
  from tools.registry import tool_error
+@@ -101,4 +101,5 @@
+ def _record_call_outcome(server_name: str, result) -> Any:
+-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
+-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
++    """A completed MCP round trip proves transport health, including tool errors."""
++    # Transport exceptions still strike in _dispatch's on_final_failure path.
++    _core._reset_server_error(server_name)
+     return result
 @@ -279,7 +279,8 @@
              inflight.discard(task)
  

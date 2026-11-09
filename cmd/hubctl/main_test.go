@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -660,6 +661,32 @@ func TestSupervisorWildcardListenRequiresOptInFlag(t *testing.T) {
 	}
 	if err := run(ctx, []string{"supervisor", "--spaces", root, "--supervisor-auth", "secret", "--supervisor-listen", "0.0.0.0:0", "--supervisor-allow-wildcard-listen"}); err != nil {
 		t.Fatalf("wildcard listen with opt-in rejected: %v", err)
+	}
+}
+
+func TestSupervisorComposeEnvLoadsSharedMediaGrant(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	for _, name := range []string{"infra", "member"} {
+		dir := filepath.Join(spaces, name)
+		if err := os.MkdirAll(filepath.Join(dir, "passports"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "kind: stack\nidentity: {user: " + name + ", infra: " + fmt.Sprint(name == "infra") + "}\n"
+		if err := os.WriteFile(filepath.Join(dir, "passports", "stack.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "media.grant"), []byte("HUB_MEDIA_BROKER_GRANT=grant-"+name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HUB_MEDIA_BROKER_GRANT", "")
+	env := supervisorComposeEnv(filepath.Join(spaces, "member"))
+	if !slices.Contains(env, "HUB_MEDIA_BROKER_GRANT=grant-infra") || slices.Contains(env, "HUB_MEDIA_BROKER_GRANT=grant-member") {
+		t.Fatal("shared media grant did not resolve through the infra owner")
+	}
+	t.Setenv("HUB_MEDIA_BROKER_GRANT", "explicit-grant")
+	if slices.Contains(supervisorComposeEnv(filepath.Join(spaces, "member")), "HUB_MEDIA_BROKER_GRANT=grant-infra") {
+		t.Fatal("file grant overrode explicit environment")
 	}
 }
 

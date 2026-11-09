@@ -164,6 +164,13 @@ func TestCommandEngines(t *testing.T) {
 	if !(commandTTS{command: tts}).Ready(ctx) {
 		t.Fatal("command tts not ready")
 	}
+	format := scriptFile(t, "ttsformat",
+		"#!/bin/sh\ncat >/dev/null\nprintf \"$HUB_TTS_OUTPUT_FORMAT\"\n",
+		"@echo off\r\nmore >nul\r\necho %HUB_TTS_OUTPUT_FORMAT%\r\n")
+	t.Setenv("HUB_TTS_OUTPUT_FORMAT", "ogg")
+	if out, err := (commandTTS{command: format}).Synthesize(ctx, "hi", ""); err != nil || strings.TrimSpace(string(out)) != "wav" {
+		t.Fatalf("sidecar worker must return canonical WAV: %q, %v", out, err)
+	}
 	if _, err := (commandTTS{command: bad}).Synthesize(ctx, "hi", ""); err == nil {
 		t.Fatal("failing command synthesized")
 	}

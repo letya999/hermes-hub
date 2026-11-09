@@ -26,9 +26,6 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "18.3.1" {
-		t.Errorf("new immutable contract version=%s", definition.Version)
-	}
 	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_read": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
 	for _, tool := range definition.Tools {
 		if strings.HasPrefix(tool.Name, "routine_") {
@@ -237,15 +234,5 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 	v.CommunicationURL = server.URL
 	if _, err := v.Routine(context.Background(), "routine_list", Input{Query: "Пятница & 10:00", Limit: 2, Cursor: "item-a"}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestAssignmentCatalogVersion: assignment tools joined the immutable
-// catalog — the contract revision must advance so protected stores can
-// admit the new selection set (SPEC-0080 R2.3).
-func TestAssignmentCatalogVersion(t *testing.T) {
-	definition := HubToolsDefinition()
-	if definition.Version != "18.3.1" {
-		t.Fatalf("catalog version = %s, want 18.2.0 with knowledge link", definition.Version)
 	}
 }

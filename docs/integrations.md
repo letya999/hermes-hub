@@ -14,7 +14,7 @@ reference — what we integrate with, at what revision, under what shape.
 
 | Component | Source / pin | Contract |
 |---|---|---|
-| Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; explicit, pin-checked `docker/patches/hermes-mcp-run-identity.patch` carries per-run MCP identity for managed ToolHub (ADR-0090). Pin predates upstream tool-`isError`/transport split (PRs 67340/17016 closed unmerged, 68455 open); hub tools mark expected failures as `isError`, residual risk CHG-0093 |
+| Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; explicit, pin-checked `docker/patches/hermes-mcp-run-identity.patch` carries per-run MCP identity for managed ToolHub (ADR-0090) and keeps completed MCP tool-error responses out of the transport circuit breaker (CHG-0292). Build-time `docker/check-mcp-tool-errors.py` verifies repeated tool errors preserve their payload and only transport failures strike. |
 | Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in the standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
 | CLIProxy | v8.0.59, image-pinned `c5251b57b3fa5dcbc689f514f4aa166daacb4481` | model/image relay upstream; Devin OAuth (`--devin-login`), models from the authenticated catalog |
 | ToolHive | `ghcr.io/stacklok/toolhive:v0.48.0` @ `sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d` | container executor for ToolHub workloads (ADR-0013); cellinit/cred-proxy are built from this repo, not upstream |

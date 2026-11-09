@@ -45,6 +45,8 @@ type Input struct {
 	Format             string         `json:"format,omitempty"`
 	Name               string         `json:"name,omitempty"`
 	Prompt             string         `json:"prompt,omitempty"`
+	Language           string         `json:"language,omitempty"`
+	Timestamps         bool           `json:"timestamps,omitempty"`
 	ID                 string         `json:"id,omitempty"`
 	ResumeID           string         `json:"resume_id,omitempty"`
 	Message            string         `json:"message,omitempty"`

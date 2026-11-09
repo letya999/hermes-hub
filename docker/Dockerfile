@@ -60,6 +60,7 @@ COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
 RUN ldconfig
 COPY docker/aiohttp-requirements.txt /opt/aiohttp-requirements.txt
 COPY docker/patches/hermes-mcp-run-identity.patch /opt/hermes-mcp-run-identity.patch
+COPY docker/check-mcp-tool-errors.py /opt/check-mcp-tool-errors.py
 # The pinned upstream fetch is one long HTTP stream; forcing HTTP/1.1 and
 # retrying insulates the build from middleboxes cancelling HTTP/2 streams.
 # mcp extra only: messaging/google/voice pull Discord, a second Google client
@@ -70,6 +71,7 @@ COPY docker/patches/hermes-mcp-run-identity.patch /opt/hermes-mcp-run-identity.p
 # the Go communication hub.
 RUN set -e; git init; git remote add origin https://github.com/nousresearch/hermes-agent.git; for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; git checkout --detach FETCH_HEAD; \
     git rev-parse HEAD > /opt/hermes/.hermes-rev; git apply --check /opt/hermes-mcp-run-identity.patch; git apply /opt/hermes-mcp-run-identity.patch; \
+    python /opt/check-mcp-tool-errors.py; \
     uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp; \
     uv pip install --python .venv/bin/python --require-hashes -r /opt/aiohttp-requirements.txt; \
     .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"; \

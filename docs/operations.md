@@ -1038,7 +1038,8 @@ outage fails closed). Provisioning: seed `media.private`/`server.crt` into
 `broker-secrets-media` (0600/uid 10001), register the public key with
 audiences `broker:control`+`broker:runtime`, install the
 `media-provider-key` contract, create credential + grant bound to workload
-`hub-media` (execution `dedicated`, policy_version `hub-media` — stable
+`credentialbroker.MediaBinding(<infra-owner>)` for both binding and workload
+(execution `dedicated`, policy_version `hub-media` — stable
 service-level identity), write the grant id to `spaces/<u>/media.grant`,
 re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 `OPENAI_API_KEY`/`FAL_KEY` env; a fal engine with neither refuses to boot.
@@ -1058,7 +1059,8 @@ Operational facts proven by live acceptance:
   (`core_tools`) fails its store load outright — rebuild via
   `dev-rebuild toolhub` before judging profile data.
 
-- `media.grant` reaches the container only through `hubctl up`/`down`,
+- `media.grant` resolves from the infra owner for shared hub-media, including
+  secondary-space apply/rebuild. It reaches the container through `hubctl`,
   which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).
   A raw `docker compose up` renders the variable empty: hub-media then runs
   the `remote` engine with no credential, sends no `Authorization`, and the

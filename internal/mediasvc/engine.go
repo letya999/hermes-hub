@@ -272,11 +272,12 @@ type commandTTS struct{ command string }
 
 func (e commandTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.command)
+	cmd.Env = append(os.Environ(), "HUB_TTS_OUTPUT_FORMAT=wav")
 	// The requested voice rides in env, not argv: keeps the worker argv
 	// contract untouched and lets multi-voice workers (tts-worker) map it
 	// onto backends (silero/piper) or speakers.
 	if strings.TrimSpace(voice) != "" {
-		cmd.Env = append(os.Environ(), "HUB_TTS_REQUEST_VOICE="+voice)
+		cmd.Env = append(cmd.Env, "HUB_TTS_REQUEST_VOICE="+voice)
 	}
 	cmd.Stdin = strings.NewReader(text)
 	out, err := cmd.Output()

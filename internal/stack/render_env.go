@@ -312,6 +312,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
 				managedEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
 				managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
+				if _, declared := s.PassportServices["hub-stt"]; declared {
+					managedEnv["HUB_STT_URL"] = "http://hub-stt:8090"
+				}
 			}
 		}
 		if slices.Contains(managedEgressHosts(s, dir), "communication-hub") {
@@ -489,6 +492,9 @@ func managedEgressHosts(s Settings, dir string) []string {
 		// Image generation always goes through the hub-media sidecar; the
 		// runtime never holds provider keys.
 		hosts["hub-media"] = true
+		if _, declared := s.PassportServices["hub-stt"]; declared {
+			hosts["hub-stt"] = true
+		}
 	}
 	if s.providerEnabled() {
 		// SPEC-0085 R11.2: the provider endpoint is the reviewed egress hop

@@ -114,6 +114,8 @@ type Delivery struct {
 	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
 	// synthesized audio is sent straight to the channel and never persisted.
 	Voice string `json:"voice,omitempty"`
+	// SpeechLang is the explicit language of a ToolHub-admitted speech request.
+	SpeechLang locale.Lang `json:"speech_lang,omitempty"`
 	// VoiceSent distinguishes accepted sendVoice from the intentional text fallback.
 	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
