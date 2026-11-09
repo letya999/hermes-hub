@@ -131,6 +131,10 @@ Tool selection grants no authority; a managed profile binds the exact
      version instead of the binary's compiled catalog; it remains the
      operator path for credential-bearing bindings and catalog-version
      moves. A pv-stale binding projects zero tools.
+     A new immutable definition digest also needs reviewed policy-ceiling and
+     profile-allow rules for the same permitted actions. `space apply` repins
+     selections but does not approve a new implementation digest; preview the
+     profile before confirming it. A digest mismatch hides those tools.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra

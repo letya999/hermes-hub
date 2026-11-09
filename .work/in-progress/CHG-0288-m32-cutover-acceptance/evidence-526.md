@@ -1468,8 +1468,42 @@ counts include diagnostic reruns, not one single acceptance run.
 
 Cleanup removed exactly four probe PNGs and 20 sidecar snapshots created
 during this test window. An older personal-profile PNG remained in place.
-The temporary test page and supervisor proxy will be stopped after catalog
+The temporary test page and supervisor proxy were stopped after catalog
 rollout; the existing browser sidecar is left to its normal idle lifecycle. No personal
 tab was navigated or closed: `browser_open` now creates a new tab and
 `browser_act close` closes that tab. No personal memory, full Compose stack or
 remote CI was used.
+
+### Clean-source catalog rollout and final repeat
+
+Source `f08d2ff8` contains the final `hub-agent-tools@18.3.1` definition.
+`just check` and all eight affected package suites passed before the first
+commit; the catalog patch then passed named Browser tests, `just check`, and
+the agenttools/stack package suites. Both owners' immutable definition bindings
+were registered. `space apply --confirm` published the new first-party
+selections without authored passport changes or service actions. The first
+two-space projection attempt exposed a separate approval pin: policy ceiling
+and profile allow rules still carried the `18.2.0` implementation digest,
+so ToolHub correctly hid the new selections. Reviewed policy/profile updates
+changed only that digest on 254 main and 258 two existing first-party rules;
+their right counts and selected tool counts stayed unchanged. The resulting
+policy/profile revisions are main 9/26 and two 9/52. Both owners have one
+active `18.3.1` binding. The transient `space apply` recovery journal was
+recovered by the next preview/apply; no journal remains. Scoped main ToolHub
+and both runtime images were rebuilt. Main respawn returned 200 (no idle
+container on the final call); two respawn returned 200 and `applied=true`.
+
+The final `artem_two` ToolHub run on profile revision 52 repeated the whole
+user-profile case. Open/read returned the test heading; numeric seven-second
+and text waits succeeded; click changed the label and the next read showed
+`M32 Browser Clicked`; capture returned a nonempty PNG at its exact path.
+The invented ID returned an error and the other-owner call was denied. In the
+same open session, right revocation refused read before backend admission;
+restoration resumed read, and close succeeded. Audit in the final window has
+one open, one capture, four acts and four reads admitted, each with a
+completion: 9 ok and one expected backend-error for the invented ID. It also
+has one decision denial for each owner (revoke and foreign selection). Every
+final-window browser event carries profile revision 52. Governance ends with
+one active `artem_two` `browser.read` grant at revision 5. Cleanup removed
+the final test PNG and four test-page snapshots; no final test artifact
+remains. The pre-existing personal PNG and snapshots were retained.

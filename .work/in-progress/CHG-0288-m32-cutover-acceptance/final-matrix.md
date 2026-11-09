@@ -16,8 +16,8 @@ call-by-call record and audit window are in [evidence-526.md](evidence-526.md#br
 | Close and cleanup | PASS | Created sessions returned successful close; only four test PNGs and 20 test-window snapshots were removed. The older personal PNG was retained. |
 
 The guest profile's earlier open/read/scroll/capture/close PASS is retained;
-this follow-up tested the personal profile. Exact-source catalog projection is
-recorded separately after the clean-source rollout.
+this follow-up tested the personal profile. The final repeat passed through
+ToolHub on committed-source catalog `18.3.1` and profile revision 52.
 
 ## 2026-11-08: memory boundary follow-up
 
