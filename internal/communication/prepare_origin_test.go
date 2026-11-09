@@ -106,3 +106,39 @@ func TestPrepareOriginInitiatorOverridesStalePersisted(t *testing.T) {
 		t.Fatalf("origin not rebound: %+v", origin)
 	}
 }
+
+func TestPrepareOriginIgnoresOldUncertainMockJob(t *testing.T) {
+	cfg := testConfig(t)
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := JobMapping{JobID: "mock-old", PrincipalID: "alice", Trigger: "message", Status: "uncertain",
+		ConversationID: "telegram-800000903209265300", DeliveryTargetID: "telegram-800000903209265300",
+		Channel: "mock", ChatID: 800000903209265300, CreatedAt: time.Now().Add(-20 * time.Minute)}
+	if err := atomicJSON(filepath.Join(gateway.spool.root, "mappings", "mock-old.json"), old); err != nil {
+		t.Fatal(err)
+	}
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	request := prepareOutcomeRequest{OnboardingID: "onboard-direct", Phase: "awaiting-credentials",
+		Repository: "https://github.com/github/github-mcp-server", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := gateway.deliverPrepareNotice(cfg.Users[0], caller, "prepare-onboard-direct-awaiting-credentials", "Synthetic notice", request, false); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := gateway.spool.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.ChatID != 11 || delivery.Channel != "telegram_bot" {
+		t.Fatalf("old mock job captured direct notice: delivery=%v err=%v", delivery != nil, err)
+	}
+	old.CreatedAt = time.Now().Add(-time.Minute)
+	if err := atomicJSON(filepath.Join(gateway.spool.root, "mappings", "mock-old.json"), old); err != nil {
+		t.Fatal(err)
+	}
+	request.OnboardingID, request.CreatedAt = "onboard-direct-2", ""
+	if err := gateway.deliverPrepareNotice(cfg.Users[0], caller, "prepare-onboard-direct-2-awaiting-credentials", "Synthetic notice", request, false); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err = gateway.spool.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.ChatID != 11 || delivery.Channel != "telegram_bot" {
+		t.Fatalf("uncertain mock job captured direct notice: delivery=%v err=%v", delivery != nil, err)
+	}
+}

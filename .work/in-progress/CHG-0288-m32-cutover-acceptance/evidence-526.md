@@ -1661,14 +1661,34 @@ communication with HTTP 400: this local HTTP install had no initiating
 Telegram job and the channel selected an earlier mock origin, where a human
 confirmation is forbidden. The earlier `link_sent` flag described a minted
 link, not successful Telegram delivery. The owner reported receiving no
-message; no confirmation, grant replacement, or `get_me` success is claimed.
-This connector is outside the accepted local M32 MVP denominator.
+message on that first attempt. The route fix now requires a recent initiator
+and considers only running jobs for the active fallback. A new install using
+the prepared catalog's exact GitHub SHA returned HTTP 200 and
+`awaiting_confirm`; communication logged successful Telegram sends for its
+prepare-started and confirmation notices. Owner confirmation, grant
+replacement and `get_me` are still pending. This connector is outside the
+accepted local M32 MVP denominator.
 
-Verification: `just check` passed; the named communication recovery and
-connector retry regressions passed; the isolated Docker context integration
-passed twice, including unchanged preview tokens and last event. One combined
-`just test` run passed ToolHub, devcheck and cmd/toolhub but failed in
-communication with an overlong, truncated test log; a scoped rerun of
-`just test ./internal/communication` passed. The first failure's test name
-was not recoverable, so this is a local flaky-gate risk, not a clean claim
-for that combined run. Staged diff secret scan and whitespace check passed.
+The owner's screenshot showed the protected `/connect/` status page without
+buttons. This is the intended page contract, but the Telegram button was
+also absent: the first confirmation delivery had `edit_message_id > 0` and
+one button in the spool, while the Telegram edit path sends text only. The
+channel now forces human confirmation into a fresh keyboard message. A named
+regression and vet passed, and the scoped communication image was rebuilt.
+After the previous nonce expired, the same prepared operation renewed it.
+A local resend of that live proof produced a fresh delivery; read-only spool
+inspection found `edit=false` and `buttons=1`, and communication logged two
+successful Telegram sends for the operation with no delivery error. The
+owner must press the button in the Telegram chat; `get_me` remains blocked
+until a current-policy grant is present.
+
+Verification: `just check` passed; the named communication recovery, origin,
+keyboard and connector retry regressions passed; the isolated Docker context
+integration passed twice, including unchanged preview tokens and last event.
+One combined `just test` run passed ToolHub, devcheck and cmd/toolhub but
+failed in communication with an overlong, truncated test log; a scoped rerun
+of `just test ./internal/communication` passed in 239 seconds. A subsequent
+scoped run timed out at the suite's 300-second limit; the named origin and
+keyboard regressions passed after it. The full package gate is therefore
+intermittent locally, not a clean final green claim. Staged diff secret scan
+and whitespace check passed.

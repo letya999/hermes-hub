@@ -386,6 +386,12 @@ issued. If a pending confirmation or OAuth link is lost, call ToolHub `status`
 with the onboarding ID and `resend: true`; the channel posts a fresh link.
 Repeating `connector_install` for the same target also renews an expired
 confirmation nonce on its existing operation and sends the replacement notice.
+The channel binds an outcome to a recent initiating message job; an old
+uncertain job cannot capture a later operator-initiated notice.
+The protected `/connect/` page displays confirmation status only. Human
+confirmation is a Telegram callback button. A confirmation notice must post
+a new keyboard message: editing an earlier status message sends text only
+and removes the button.
 
 ### google-workspace
 

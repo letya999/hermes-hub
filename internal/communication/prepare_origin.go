@@ -93,7 +93,7 @@ func (s *Spool) newestActiveMessageMapping(principal string) (JobMapping, bool) 
 	var best JobMapping
 	for _, id := range ids {
 		mapping, err := s.loadMappingLocked(id)
-		if err != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || terminalStatus(mapping.Status) || mapping.CancelRequested {
+		if err != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || mapping.Status != "running" || mapping.CancelRequested {
 			continue
 		}
 		if mapping.CreatedAt.After(best.CreatedAt) {
@@ -127,7 +127,7 @@ func (s *Spool) initiatingMessageMapping(principal string, onboardingCreated tim
 		if json.Unmarshal(body, &mapping) != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || mapping.CancelRequested {
 			continue
 		}
-		if mapping.CreatedAt.After(onboardingCreated.Add(2 * time.Second)) {
+		if mapping.CreatedAt.Before(onboardingCreated.Add(-5*time.Minute)) || mapping.CreatedAt.After(onboardingCreated.Add(2*time.Second)) {
 			continue
 		}
 		candidates = append(candidates, mapping)

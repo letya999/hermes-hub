@@ -447,9 +447,9 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	}
 	// Each new action link lands as a fresh message; the key dedupes repeats.
 	// Editing the old status can bury the only link the user needs to
-	// continue. The stable wizard link is exempt: it stays the same URL for
-	// the whole flow, so a phase notice refreshes the message in place.
-	if request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
+	// continue. The stable wizard link is exempt for status updates, but
+	// confirmation needs a fresh message because edits omit the keyboard.
+	if request.Confirmation == nil && request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
 		delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
 	}
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
