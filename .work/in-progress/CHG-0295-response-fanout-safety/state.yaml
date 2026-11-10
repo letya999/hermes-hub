@@ -15,4 +15,5 @@ gates:
   just_check: passed
   dev_rebuilds: passed  # communication-hub + supervisor on :local
   soul_regenerated: passed  # both spaces, new clauses present
-  live_telegram_rerun: pending  # needs owner message to bot
+  live_cap_delivery: passed  # injected 237,500-char delivery → 2 messages + answer.md, done/ settled
+  live_telegram_rerun: pending  # needs owner message → verifies contract clauses on a real agent run
