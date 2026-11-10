@@ -64,6 +64,7 @@ and before service effects complete.
   space/environment with memory enabled — only then is the vault opened,
   under a per-user lock so one user's blocked operation never serializes
   another's. A caller-supplied path is never consulted.
+- **Per-principal usage sources** (`platform_usage.go`): relay meter + models.yaml resolve under read-only `HUB_MODEL_USAGE_BY`/`HUB_MODEL_REGISTRY_BY` per-principal roots; an absent meter file is an honest zero.
 - **Exact-run memory admission** (`memory_run.go`, `api/run_status.go`):
   a `memory.*` call is admitted only when the published passport gate passes
   AND the claimed job/run pair verifies against the supervisor lifecycle

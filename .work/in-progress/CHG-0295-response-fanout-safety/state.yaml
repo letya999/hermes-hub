@@ -16,4 +16,5 @@ gates:
   dev_rebuilds: passed  # communication-hub + supervisor on :local
   soul_regenerated: passed  # both spaces, new clauses present
   live_cap_delivery: passed  # injected 237,500-char delivery → 2 messages + answer.md, done/ settled
-  live_telegram_rerun: pending  # rerun 021: clean output (1363 chars, 1 msg, no echo) but toolhub MCP dead-end on mcp__-qualified tool_call names → dispatcher prefix normalization shipped (executor_dispatch.go); next rerun must verify platform_*/tool_call path end-to-end
+  live_telegram_rerun: passed  # rerun 024 (job telegram-837846024): platform_*/tool_call all executed, 1 msg, 1723 chars, no echo
+  platform_usage_roots: passed  # shared toolhub resolves meter+models.yaml under /model-state-by|/model-config-by per-principal RO mounts; absent meter = honest zero; live probe returned available:true

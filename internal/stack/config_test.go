@@ -574,6 +574,56 @@ func TestComposeMountsPerPrincipalSkillViews(t *testing.T) {
 	}
 }
 
+// platform_usage runs inside the shared toolhub: it resolves each caller's
+// relay meter + models.yaml under /model-state-by/<space> and
+// /model-config-by/<space>, mounted read-only per sibling so a caller only
+// ever reads its own space's counters and limits.
+func TestComposeMountsPerPrincipalModelState(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, space := range []string{"alice", "bob"} {
+		if err := os.MkdirAll(filepath.Join(spacesRoot, space, "generated", "model-registry", "dev"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(spacesRoot, space, "managed", "dev", "model-relay"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(spacesRoot, "carol"), 0755); err != nil {
+		t.Fatal(err) // no model dirs — must not be mounted
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
+	env := toolhub["environment"].(M)
+	if env["HUB_MODEL_USAGE_BY"] != "/model-state-by" || env["HUB_MODEL_REGISTRY_BY"] != "/model-config-by" {
+		t.Fatalf("model by-principal env missing: %#v", env)
+	}
+	state, config := map[string]bool{}, map[string]bool{}
+	for _, raw := range toolhub["volumes"].([]any) {
+		volume := raw.(M)
+		target, _ := volume["target"].(string)
+		if name, ok := strings.CutPrefix(target, "/model-state-by/"); ok {
+			state[name] = true
+		}
+		if name, ok := strings.CutPrefix(target, "/model-config-by/"); ok {
+			config[name] = true
+		}
+		if strings.HasPrefix(target, "/model-state-by/") || strings.HasPrefix(target, "/model-config-by/") {
+			if volume["read_only"] != true {
+				t.Fatalf("model state/config must mount read-only: %#v", volume)
+			}
+		}
+	}
+	for _, want := range []string{"alice", "bob"} {
+		if !state[want] || !config[want] {
+			t.Fatalf("model state/config for %q not mounted: %#v", want, toolhub["volumes"])
+		}
+	}
+	if state["carol"] || config["carol"] {
+		t.Fatalf("space without model dirs must not be mounted: %#v", toolhub["volumes"])
+	}
+}
+
 // /v1/skill-git writes drafts + .sources mirrors into the CALLING principal's
 // store, so the shared gateway mounts each space's skills/ writable under
 // /skills-store-by/<space>; spaces without a store are skipped.

@@ -3,8 +3,11 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -74,6 +77,17 @@ func (g *Gateway) platformUsage(auth identity.Envelope, period string) (map[stri
 	usagePath := strings.TrimSpace(os.Getenv("HUB_MODEL_USAGE_FILE"))
 	registryPath := strings.TrimSpace(os.Getenv("HUB_MODEL_REGISTRY_FILE"))
 	if usagePath == "" || registryPath == "" {
+		// The shared gateway serves every space: resolve the meter and
+		// registry under per-principal roots so a caller only ever sees
+		// its own space's files.
+		usageRoot := strings.TrimSpace(os.Getenv("HUB_MODEL_USAGE_BY"))
+		registryRoot := strings.TrimSpace(os.Getenv("HUB_MODEL_REGISTRY_BY"))
+		if usageRoot != "" && registryRoot != "" && identity.ValidID(auth.PrincipalID) {
+			usagePath = filepath.Join(usageRoot, auth.PrincipalID, "model-select.json.usage.json")
+			registryPath = filepath.Join(registryRoot, auth.PrincipalID, "models.yaml")
+		}
+	}
+	if usagePath == "" || registryPath == "" {
 		return map[string]any{
 			"available": false,
 			"status":    "unavailable",
@@ -82,10 +96,15 @@ func (g *Gateway) platformUsage(auth identity.Envelope, period string) (map[stri
 	}
 	meter := map[string]usageMeterRecord{}
 	raw, err := os.ReadFile(usagePath) // #nosec G304 G703 -- operator-mounted usage path
-	if err != nil {
+	switch {
+	case err == nil:
+		_ = json.Unmarshal(raw, &meter)
+	case errors.Is(err, fs.ErrNotExist):
+		// The relay creates the meter lazily on the first reservation — an
+		// absent file is an honest zero, not an outage.
+	default:
 		return map[string]any{"available": false, "status": "unavailable", "reason": "usage meter unreadable"}, nil
 	}
-	_ = json.Unmarshal(raw, &meter)
 	registryRaw, err := os.ReadFile(registryPath) // #nosec G304 G703 -- operator-mounted registry path
 	if err != nil {
 		return map[string]any{"available": false, "status": "unavailable", "reason": "models.yaml registry unreadable"}, nil

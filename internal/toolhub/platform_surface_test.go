@@ -217,3 +217,87 @@ func TestPlatformUsageReport(t *testing.T) {
 		t.Fatalf("period filter leaked non-matching windows: %s", filtered)
 	}
 }
+
+// The shared ToolHub serves every space: usage and registry resolve under
+// per-principal roots, never one flat path — a sibling's meter is not yours.
+func TestPlatformUsagePerPrincipalRoots(t *testing.T) {
+	s, auth, _, profile := managedStore(t)
+	profile.Revision++
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	principalRoot := filepath.Join(root, "alice")
+	if err := os.MkdirAll(principalRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(principalRoot, "model-select.json.usage.json"), []byte(`{"m|shared|requests|5h|10":{"until":9999999999,"count":7}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(principalRoot, "models.yaml"), []byte("models:\n  m:\n    ladder:\n      - limits:\n          - {of: requests, amount: 10, per: 5h}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling's files must never leak into alice's report.
+	other := filepath.Join(root, "mallory")
+	if err := os.MkdirAll(other, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "models.yaml"), []byte("models:\n  sibling-only:\n    ladder:\n      - limits:\n          - {of: tokens, amount: 1, per: 1d}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_USAGE_FILE", "")
+	t.Setenv("HUB_MODEL_REGISTRY_FILE", "")
+	t.Setenv("HUB_MODEL_USAGE_BY", root)
+	t.Setenv("HUB_MODEL_REGISTRY_BY", root)
+	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
+		Control: &ControlPlane{Store: s, Now: time.Now},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		})}
+	attachGatewayAudit(t, g)
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := mcpConnect(t, server.URL, aliceToken)
+	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{Name: "platform_usage", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := ""
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			out += tc.Text
+		}
+	}
+	for _, field := range []string{"\"used\":7", "\"limit\":10", "\"available\":true"} {
+		if !strings.Contains(out, field) {
+			t.Fatalf("per-principal usage missing %q: %s", field, out)
+		}
+	}
+	if strings.Contains(out, "sibling-only") {
+		t.Fatalf("per-principal usage leaked a sibling registry: %s", out)
+	}
+	// A meter file that does not exist yet means no reservations — the
+	// registry limits still report with used:0, never "unavailable".
+	if err := os.Remove(filepath.Join(principalRoot, "model-select.json.usage.json")); err != nil {
+		t.Fatal(err)
+	}
+	res, err = client.CallTool(t.Context(), &mcp.CallToolParams{Name: "platform_usage", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = ""
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			out += tc.Text
+		}
+	}
+	for _, field := range []string{"\"available\":true", "\"used\":0", "\"limit\":10"} {
+		if !strings.Contains(out, field) {
+			t.Fatalf("absent meter must report zero usage, got %q missing: %s", field, out)
+		}
+	}
+}

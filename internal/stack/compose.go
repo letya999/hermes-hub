@@ -678,6 +678,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_INBOX_BY_PRINCIPAL"] = "/inboxes-by"
 			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
 			toolhubEnv["HUB_NIGHT_RELAY_CALLERS"] = "/model-relay-callers"
+			toolhubEnv["HUB_MODEL_USAGE_BY"] = "/model-state-by"
+			toolhubEnv["HUB_MODEL_REGISTRY_BY"] = "/model-config-by"
 			if siblings, err := os.ReadDir(parent); err == nil {
 				for _, sibling := range siblings {
 					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
@@ -719,6 +721,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					store := filepath.Join(parent, sibling.Name(), "skills")
 					if info, err := os.Stat(store); err == nil && info.IsDir() { // #nosec G703 -- fixed generated store beneath the sibling space
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name(), "read_only": true})
+					}
+					// platform_usage resolves the caller's relay meter and
+					// models.yaml under per-principal roots — read-only, so a
+					// caller can report consumption but never rewrite it.
+					modelState := filepath.Join(parent, sibling.Name(), "managed", s.Environment, "model-relay")
+					if info, err := os.Lstat(modelState); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(modelState), "target": "/model-state-by/" + sibling.Name(), "read_only": true})
+					}
+					modelConfig := filepath.Join(parent, sibling.Name(), "generated", "model-registry", s.Environment)
+					if info, err := os.Lstat(modelConfig); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(modelConfig), "target": "/model-config-by/" + sibling.Name(), "read_only": true})
 					}
 				}
 			}
