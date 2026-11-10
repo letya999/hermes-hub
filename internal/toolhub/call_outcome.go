@@ -7,6 +7,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"strings"
 )
 
 type uncertainCallError struct{ operationID string }
@@ -27,6 +28,11 @@ func uncertainCallData(err error) map[string]any {
 // An uncertain business result is an application error, not a JSON-RPC transport
 // failure that clients may retry. Private backend payloads never enter it.
 func (g *Gateway) mcpCall(ctx context.Context, auth identity.Envelope, name string, args map[string]any) (*mcp.CallToolResult, error) {
+	// Agents see MCP-qualified names (mcp__toolhub__*) while the registry
+	// admits bare projected names only — normalize at the single nested-call
+	// funnel so the pinned control tool_call and the executor dispatch
+	// resolve identically.
+	name = strings.TrimPrefix(strings.TrimSpace(name), toolhubNamePrefix)
 	result, err := g.call(ctx, auth, name, args)
 	if data := uncertainCallData(err); data != nil {
 		return &mcp.CallToolResult{IsError: true, StructuredContent: data, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil

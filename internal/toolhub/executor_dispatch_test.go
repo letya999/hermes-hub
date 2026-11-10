@@ -227,6 +227,87 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	}
 }
 
+// Live spaces bind a core set that excludes tool_call/tool_search, so the
+// pinned control handlers serve them — not the projected executor dispatch.
+// MCP-qualified names (mcp__toolhub__*) must resolve on that path too, or the
+// model dead-ends on record-not-found exactly as it does for unknown names.
+func TestPinnedToolCallNormalizesQualifiedName(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
+	t.Setenv("HUB_USER_ID", "alice")
+	s, auth, policy, profile := managedStore(t)
+	policy.Revision++
+	policy.RightCeiling = append(policy.RightCeiling, api.RightRule{Capability: "models", Operation: "list"})
+	if err := putPolicy(t, s, policy); err != nil {
+		t.Fatal(err)
+	}
+	profile.PolicyRevision = policy.Revision
+	definition := r5ExecutorDefinition()
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion,
+		WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	if err := s.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	digest := api.DefinitionDigest(definition)
+	profile.Revision++
+	// Live posture: core bound names a small direct set; tool_call and
+	// tool_search stay pinned control tools, everything else is extended.
+	profile.CoreBound, profile.CoreTools = true, []string{"connector_list"}
+	for _, tool := range definition.Tools {
+		profile.Selections = append(profile.Selections, api.CapabilitySelection{
+			CapabilityID: tool.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+			ImplementationDigest: digest, ToolName: tool.Name, Name: tool.Name})
+	}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	grantDefinitionRights(t, s, auth, definition)
+	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
+		Control: &ControlPlane{Store: s, Now: time.Now},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		})}
+	attachGatewayAudit(t, g)
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := mcpConnect(t, server.URL, aliceToken)
+	text := func(res *mcp.CallToolResult) string {
+		out := ""
+		for _, content := range res.Content {
+			if tc, ok := content.(*mcp.TextContent); ok {
+				out += tc.Text
+			}
+		}
+		return out
+	}
+	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": "mcp__toolhub__platform_status", "arguments": map[string]any{}}})
+	if err != nil {
+		t.Fatalf("qualified tool_call: %v", err)
+	}
+	if body := text(res); !strings.Contains(body, "tools_admitted") {
+		t.Fatalf("qualified tool_call dead-ended: %s", body)
+	}
+	res, err = client.CallTool(t.Context(), &mcp.CallToolParams{Name: "tool_search", Arguments: map[string]any{"name": "mcp__toolhub__connector_list"}})
+	if err != nil {
+		t.Fatalf("qualified tool_search: %v", err)
+	}
+	if body := text(res); !strings.Contains(body, "connector_list") {
+		t.Fatalf("qualified tool_search name lookup dead-ended: %s", body)
+	}
+	res, err = client.CallTool(t.Context(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": "no_such_tool", "arguments": map[string]any{}}})
+	if err == nil {
+		t.Fatalf("unknown name must be rejected, got: %v", res)
+	}
+}
+
 // TestPlatformStatusAllowlist (M31.8/#445): platform_status may only ever
 // emit its closed diagnostic field set — a red-team pin so a future field
 // addition is a deliberate, reviewed change, not a silent leak.

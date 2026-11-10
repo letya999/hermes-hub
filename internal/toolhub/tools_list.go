@@ -84,7 +84,7 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		return nil, err
 	}
 	query = strings.ToLower(strings.TrimSpace(query))
-	name = strings.TrimSpace(name)
+	name = strings.TrimPrefix(strings.TrimSpace(name), toolhubNamePrefix)
 	detailed := query != "" || name != ""
 	entries := make([]map[string]any, 0, len(projected))
 	matched := 0
