@@ -473,6 +473,16 @@ func (g *Gateway) sendParts(delivery *Delivery, parts []string, send func(string
 // and appends the raw source as a document when rendering degraded content.
 func (g *Gateway) sendTelegramMarkdown(ctx context.Context, delivery *Delivery) error {
 	parts, degraded := renderTelegram(delivery.Text)
+	if len(parts) > telegramMaxParts {
+		// A pathological response (stitched context echo, runaway output) must
+		// not fan out into dozens of messages: keep the final part — it carries
+		// the conclusion — and attach the full source as a document.
+		parts = []string{locale.T(delivery.Lang, "job.truncated"), parts[len(parts)-1]}
+		if delivery.SentParts > 0 {
+			delivery.SentParts = 1
+		}
+		degraded = true
+	}
 	err := g.sendParts(delivery, parts, func(part string) error {
 		return g.api.SendMessage(ctx, delivery.ChatID, delivery.TopicID, part, "HTML")
 	})

@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-08
+last_verified: 2026-11-10
 ---
 
 # communication-hub
@@ -21,6 +21,11 @@ everything entering or leaving the human conversation. Listens
   HTTP surface or supervisor.
   Telegram document/photo intake accepts up to 20 MiB per file; model vision
   uses bounded derivatives rather than forwarding full source bytes.
+- **Outbound delivery**: model replies render to Telegram HTML parts
+  (~4,000 UTF-16 units each). A response beyond five parts degrades to a
+  localized truncation notice plus the final part — where the conclusion
+  lands — with the full source attached as `answer.md`; a pathological
+  reply can never flood the chat.
 - **Credential forms**: mints the protected links (`?t=`) used by grant
   confirmations, connector onboarding (`channel_auth_url` outranks the
   broker form), writes-enable and remove nonces. `HUB_COMMUNICATION_FORM_ORIGIN`

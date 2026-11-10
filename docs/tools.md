@@ -150,7 +150,7 @@ Six tools are always projected, never operator-selectable or removable
 | `platform_bootstrap` | Pending first-run setup steps; idempotent completion |
 | `platform_usage` | Own consumption per model/period against models.yaml limits |
 | `tool_search` | Search the extended inventory by name, description, params, definition |
-| `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call |
+| `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call; core/visible names are rejected and must be invoked directly |
 
 Selection in `tools.yaml` and rights in `grants.yaml` are independent.
 On apply, first-party `toolhub` family members in the published revision

@@ -288,3 +288,17 @@ func TestChannelContractExplainsFiveSessionLimit(t *testing.T) {
 		t.Fatal("always-on contract must explain the five-session limit and queue")
 	}
 }
+
+func TestChannelContractBansContextEcho(t *testing.T) {
+	// Incident 2026-11-10: the model reproduced injected context blocks and the
+	// retained step log verbatim — 220K chars fanned out as 75 chat messages.
+	if !strings.Contains(contractMid, "never reply content") {
+		t.Fatal("contract lost the context-echo ban")
+	}
+	if !strings.Contains(contractMid, "list only this run's actual calls") {
+		t.Fatal("contract lost the this-run call-report rule")
+	}
+	if !strings.Contains(contractMid, "tool_call rejects them") {
+		t.Fatal("contract lost the visible-tools-are-direct rule")
+	}
+}

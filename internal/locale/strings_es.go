@@ -260,6 +260,7 @@ func init() {
 		"job.goal-paused":      "Objetivo en pausa — /goal resume lo continúa.",
 		"job.uncertain":        "El resultado de la tarea aún es desconocido. Un nuevo intento puede duplicar la acción.",
 		"job.recheck":          "Comprobando la tarea original tras perder la conexión.",
+		"job.truncated":        "La respuesta es demasiado larga para el chat — se muestra solo la parte final; el texto completo se adjunta como archivo.",
 
 		// /compact.
 		"compact.usage":               "Uso: /compact [here N] [focus <texto>] [prune] [preview] [queue] [hub|native] — comprime el contexto de la tarea actual.",

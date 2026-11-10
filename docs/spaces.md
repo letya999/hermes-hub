@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-09"
+last_verified: "2026-11-10"
 ---
 
 # Spaces

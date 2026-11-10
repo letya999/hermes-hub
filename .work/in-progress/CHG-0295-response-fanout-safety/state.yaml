@@ -1,0 +1,18 @@
+change: CHG-0295-response-fanout-safety
+status: in_progress
+created: 2026-11-10
+incident:
+  job: telegram-837846020
+  run: run_f64cf2b2ae2f4579b49cf4eefaf1f214
+  session: hub-96b0f455b6a8f7c6ae2e7d69
+  response_chars: 220157
+  telegram_parts_sent: 75
+  status_edits: 126
+gates:
+  communication_tests: passed
+  stack_tests: passed
+  locale_tests: passed
+  just_check: passed
+  dev_rebuilds: passed  # communication-hub + supervisor on :local
+  soul_regenerated: passed  # both spaces, new clauses present
+  live_telegram_rerun: pending  # needs owner message to bot

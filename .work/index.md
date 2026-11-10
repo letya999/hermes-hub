@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0295](in-progress/CHG-0295-response-fanout-safety/plan.md) | Telegram response fan-out cap (5 parts + answer.md) and context-echo/tool_call contract clauses after incident telegram-837846020; live rerun pending |
 | [CHG-0294](in-progress/CHG-0294-telegram-admission-sqlite/plan.md) | Telegram queued progress, SQLite startup and ToolHub projection latency; local verification in progress |
 | [CHG-0293](in-progress/CHG-0293-toolhub-primary-toolsets/plan.md) | Select and verify primary ToolHub toolsets in platform defaults and both Artem passports; live acceptance on artem_two in progress |
 | [CHG-0292](in-progress/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
