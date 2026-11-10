@@ -354,7 +354,7 @@ func (s *Service) ControlHandler(token string) http.Handler {
 			if !decode(&in) {
 				return
 			}
-			out = s.List()
+			out = map[string]any{"slots": s.cfg.Slots, "sites": s.List()}
 		case "/v1/status":
 			var in struct {
 				Name string `json:"name"`
@@ -374,6 +374,8 @@ func (s *Service) ControlHandler(token string) http.Handler {
 				status = 403
 			case ErrInvalid:
 				status = 400
+			case ErrSlot:
+				status = 422
 			case ErrConflict:
 				status = 409
 			case ErrNotFound:

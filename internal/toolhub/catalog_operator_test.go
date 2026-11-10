@@ -124,6 +124,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 func TestCatalogEnableSelectsCanonicalToolNames(t *testing.T) {
 	s, auth, _, _ := managedStore(t)
 	d := api.CLICatalogDefinitions()[1]
+	d.Tools = append(d.Tools, api.ToolSpec{Name: "session_list", CapabilityID: "sessions.list", Requires: []string{"sessions.list"}, Effect: api.ReadEffect, Audience: api.AudienceModel, Executor: "runtime:sessions"})
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}

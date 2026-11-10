@@ -189,6 +189,7 @@ func init() {
 		"chat.group-no-secrets":  "Группы не принимают секреты.",
 		"chat.unknown-command":   "Неизвестная команда /%s.\n\n%s",
 		"chat.working":           "Выполняю запрос.",
+		"chat.queued":            "Ожидаю запуска агента.",
 		"chat.approve-usage":     "Используйте /approve <job-id> <request-id> <choice>.",
 		"chat.approve-denied":    "Запрос отклонён: подтверждение недоступно.",
 		"chat.approve-saved":     "Ответ на подтверждение сохранён.",

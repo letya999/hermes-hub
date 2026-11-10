@@ -1,6 +1,6 @@
 ---
 description: User-scoped immutable static sites and isolated stateless go-http workloads, private publishing and sish serving.
-last_verified: 2026-11-08
+last_verified: 2026-11-10
 ---
 # Site hosting
 
@@ -70,6 +70,13 @@ owner/environment binding. No tool argument chooses owner, image, command,
 mount, environment variables or runtime. Repeated request IDs do not reissue
 share tokens. Failed preparation consumes a revision; callers use the current
 published revision for their next replacement, not an assumed counter.
+`site_list` returns `{slots, sites}`; use one of the allocated `slots` as the
+publish name. An unallocated name returns HTTP 422 (`hosting slot not
+allocated`) before publish rate tokens are consumed. The refusal is terminal
+until the operator changes the slot allocation; retrying the same name cannot
+make it publishable.
+Replaying a request ID whose publication failed returns an error again; the
+stored failed operation never reports success or a usable URL.
 
 The default access is `link`: a random fragment token is exchanged for a
 host-only `__Host-hub-site` Secure/HttpOnly/SameSite cookie. Only a token hash is

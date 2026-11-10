@@ -88,6 +88,8 @@ func (t *Tools) hostingCall(ctx context.Context, name string, r Input, workspace
 			return nil, hosting.ErrNotFound
 		case 409:
 			return nil, hosting.ErrConflict
+		case 422:
+			return nil, hosting.ErrSlot
 		case 429:
 			return nil, hosting.ErrQuota
 		}

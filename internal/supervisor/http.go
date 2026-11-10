@@ -9,9 +9,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -301,9 +304,6 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
 		return
 	}
-	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
-		return
-	}
 	m.mu.Lock()
 	var entry *runtimeEntry
 	for _, candidate := range m.items {
@@ -313,7 +313,20 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	running := entry != nil && entry.Container != "" && (entry.State == Ready || entry.State == Busy || entry.State == Idle)
+	m.mu.Unlock()
 	if !running {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	// The decide round-trip must run unlocked: a slow PDP cannot stall every
+	// runtime transition behind m.mu.
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
+	m.mu.Lock()
+	// The runtime may have stopped during the decide — re-check before
+	// trusting the snapshot.
+	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Busy && entry.State != Idle) {
 		m.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
 		return
@@ -464,6 +477,14 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 	if !valid {
 		lock.Unlock()
 		return false, nil
+	}
+	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		lock.Unlock()
+		return false, err
+	}
+	if err == nil && settings.CapabilityMode == "managed" {
+		binding.PolicyVersion = stack.PolicyVersion(settings)
 	}
 	// The respawn outlives the client's deadline like an accepted restart.
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)

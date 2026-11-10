@@ -49,13 +49,16 @@ for model caches. In-container healthcheck: `hub-media health` hits
 
 ## Fallback
 
-`HUB_STT_COMMAND`/`HUB_TTS_COMMAND` stay configured as the embedded fallback
-(`/usr/local/bin/hub-stt`, `hub-tts`); when the URL is set the sidecar wins at
-selection time — an in-process command worker, not a second transport.
+Voice configured in `config.channels.*.voice` renders the shared `hub-stt` and
+`hub-tts` services and their auth file, even without a selected native
+`transcription` flag. The gateway uses those service URLs; a missing service
+returns unavailable. The resident local STT worker returns the recognizer's
+segment start/end times and honors a supplied two-letter language. Local TTS
+requests allow 90 seconds for model startup and synthesis.
 
 The gateway picks the synthesis voice per reply language:
 `HUB_TTS_VOICE_<LANG>` (`EN`/`RU`/`KK`/`ES`) overrides `HUB_TTS_VOICE`, which
-stays the default for unmapped languages. With `transcription` on, compose
+stays the default for unmapped languages. With channel voice configured, compose
 passes all five variables to communication-hub unchanged.
 
 ## Model routing and independent accounts

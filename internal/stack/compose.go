@@ -40,6 +40,20 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
 
+func voiceServicesEnabled(s Settings) bool {
+	if s.Has("transcription") {
+		return true
+	}
+	if s.PassportConfig != nil {
+		for _, ch := range s.PassportConfig.Channels {
+			if ch.Voice.In != "" || ch.Voice.Out != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // regularFile reports a present, non-symlinked regular file; render only
 // ever keys substrate switches on real files the migration wrote.
 func regularFile(path string) bool {
@@ -899,14 +913,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// config.channels.*.voice is the imperative voice contract: any
 		// channel carrying an in/out block wires the same service endpoints
 		// the legacy transcription feature does (SPEC-0092 R4.2).
-		channelsVoice := s.Has("transcription")
-		if cfg := s.PassportConfig; cfg != nil {
-			for _, ch := range cfg.Channels {
-				if ch.Voice.In != "" || ch.Voice.Out != "" {
-					channelsVoice = true
-				}
-			}
-		}
+		channelsVoice := voiceServicesEnabled(s)
 		if channelsVoice {
 			// SPEC-0082 R2: voice is service-only — the gateway talks to the
 			// dedicated hub-stt/hub-tts services or reports voice unavailable.
@@ -1012,7 +1019,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// mounts or user spaces. HUB_MEDIA_ENGINE=remote with
 		// HUB_MEDIA_UPSTREAM points a service at any OpenAI-compatible
 		// upstream (Groq, Speaches, a self-hosted whisperx, NVIDIA NIM).
-		if s.Has("transcription") {
+		if channelsVoice {
 			mediaAuth := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"}}
 			for _, role := range []string{"stt", "tts"} {
 				name := "hub-" + role
@@ -1171,7 +1178,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
-		if s.Has("transcription") {
+		if voiceServicesEnabled(s) {
 			volumes["hub-stt-data"] = M{}
 			volumes["hub-tts-data"] = M{}
 		}

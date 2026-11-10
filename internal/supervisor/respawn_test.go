@@ -9,7 +9,47 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
+
+func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	oldPolicy := controlTestPolicy(t, root)
+	b := binding(root)
+	b.PolicyVersion = oldPolicy
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(b)].State, m.items[runtimeKey(b)].Leases = Idle, 0
+	m.mu.Unlock()
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
+	})
+	settings, err := stack.ReadEffective(root, m.environment())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := stack.PolicyVersion(settings)
+	if want == oldPolicy {
+		t.Fatal("fixture did not rotate policy")
+	}
+	if applied, err := m.respawnRuntime("alice", "alice", ""); err != nil || !applied {
+		t.Fatalf("respawn: applied=%t err=%v", applied, err)
+	}
+	m.mu.Lock()
+	got := m.items[runtimeKey(b)].PolicyVersion
+	m.mu.Unlock()
+	if got != want {
+		t.Fatalf("respawn kept stale policy %s, want %s", got, want)
+	}
+}
 
 // respawnHTTP is the operator's recreate path for supervised runtimes: an
 // idle container is destroyed and re-spawned so env-carried passport config —

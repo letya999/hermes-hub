@@ -2,6 +2,7 @@ package agenttools
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,32 @@ func TestContextStatusToolReportsBoundedView(t *testing.T) {
 	}
 	if out.(map[string]any)["session_id"] != "hub-abc" {
 		t.Fatalf("default session: %v", out)
+	}
+}
+
+func TestContextStatusDefaultsToActiveTurn(t *testing.T) {
+	dir := t.TempDir()
+	j, err := compaction.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Append(compaction.Event{At: time.Now(), SessionID: "hub-old", Trigger: compaction.TriggerAutoSweep, Engine: compaction.EngineHub, Method: compaction.MethodSummary}); err != nil {
+		t.Fatal(err)
+	}
+	old := compaction.Runner
+	compaction.Runner = func(_ context.Context, req []byte) ([]byte, error) {
+		if string(req) == "" {
+			t.Fatal("empty sidecar request")
+		}
+		if strings.Contains(string(req), `"op":"active_session"`) {
+			return []byte(`{"ok":true,"session_id":"hub-active"}`), nil
+		}
+		return []byte(`{"ok":true,"tokens":42,"message_count":1}`), nil
+	}
+	t.Cleanup(func() { compaction.Runner = old })
+	out, err := (&Tools{StateDir: dir}).ContextStatus(context.Background(), Input{})
+	if err != nil || out.(map[string]any)["session_id"] != "hub-active" {
+		t.Fatalf("active session: %v %v", out, err)
 	}
 }
 

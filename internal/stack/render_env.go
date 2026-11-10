@@ -223,7 +223,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			return err
 		}
 	}
-	if s.Has("transcription") || s.Has("image_gen") {
+	if voiceServicesEnabled(s) || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
 			return err
 		}

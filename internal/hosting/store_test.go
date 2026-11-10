@@ -3,8 +3,11 @@ package hosting
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +40,28 @@ func TestStoreCrossOwnerDeniedBeforeIO(t *testing.T) {
 	_, err := s.Publish(context.Background(), Binding{"bob", "dev"}, request("create"))
 	if !errors.Is(err, ErrDenied) || len(s.List()) != 0 {
 		t.Fatalf("foreign publish: %v", err)
+	}
+}
+
+func TestPublishUnallocatedSlotDoesNotConsumeRateLimit(t *testing.T) {
+	s, _ := fixture(t)
+	s.cfg.Slots = []string{"page"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/publish", strings.NewReader(`{"name":"other","source":"page","request_id":"http-wrong"}`))
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	w := httptest.NewRecorder()
+	s.ControlHandler(strings.Repeat("t", 32)).ServeHTTP(w, req)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), ErrSlot.Error()) {
+		t.Fatalf("slot HTTP refusal: %d %q", w.Code, w.Body.String())
+	}
+	for i := 0; i < 3; i++ {
+		r := request("wrong")
+		r.Name = "other"
+		if _, err := s.Publish(context.Background(), s.Binding(), r); !errors.Is(err, ErrSlot) {
+			t.Fatalf("unallocated slot attempt %d: %v", i, err)
+		}
+	}
+	if _, err := s.Publish(context.Background(), s.Binding(), request("allowed")); err != nil {
+		t.Fatalf("allocated slot after refusals: %v", err)
 	}
 }
 
@@ -73,6 +98,26 @@ func TestStoreSecondWriterAndReplay(t *testing.T) {
 	replay, err := restored.Publish(context.Background(), restored.Binding(), request("create"))
 	if err != nil || replay.Revision != first.Revision {
 		t.Fatalf("restart replay: %#v %v", replay, err)
+	}
+}
+
+type unavailableRoutes struct{}
+
+func (unavailableRoutes) Ensure(context.Context, string) error { return ErrUnavailable }
+func (unavailableRoutes) Remove(context.Context, string) error { return nil }
+
+func TestFailedPublishReplayRemainsError(t *testing.T) {
+	s, _ := fixture(t)
+	s.routes = unavailableRoutes{}
+	r := request("relay-failure")
+	r.Access = "link"
+	for i := 0; i < 2; i++ {
+		if site, err := s.Publish(context.Background(), s.Binding(), r); !errors.Is(err, ErrUnavailable) || site.State != "" {
+			t.Fatalf("attempt %d returned false success: %#v %v", i, site, err)
+		}
+	}
+	if len(s.List()) != 0 {
+		t.Fatal("failed publish became visible")
 	}
 }
 func TestSnapshotRejectsUnsafeFiles(t *testing.T) {

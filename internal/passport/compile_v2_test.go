@@ -263,8 +263,8 @@ func TestCompileRejectsBadConnector(t *testing.T) {
 // enforced.
 func TestCompileRejectsReservedConnectorNames(t *testing.T) {
 	for _, name := range []string{"hub", "browser", "browser_guest", "toolhub",
-		"google", "telegram_user", "slack", "github", "atlassian", "desktop", "drafts",
-		"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory",
+		"google", "telegram_user", "slack", "github", "atlassian",
+		"terminal", "file", "skills", "todo", "cronjob", "messaging", "memory",
 		"session_search", "google_meet", "vision", "image_gen"} {
 		t.Run(name, func(t *testing.T) {
 			in := v2FixtureInputs(t)

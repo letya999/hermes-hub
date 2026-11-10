@@ -1,0 +1,17 @@
+schema: 1
+change: CHG-0293
+title: Primary ToolHub toolsets
+status: in-progress
+branch: feat/m32-integration
+updated: 2026-11-10
+phase: validation
+validation:
+  local: just-check-and-affected-tests-passed
+  live_artem_two: catalog-26-projected-23-tools-web-sessions-stt-context-site-errors-pass
+  artem_main_compile: passed
+  image_generation_and_edit: provider-authorization-pending
+remaining:
+  - resolve unavailable m32-sish-local relay before claiming link publication
+  - repair or rebind the existing blocked watch with the owner's destination choice
+  - live memory acceptance in a verified owner run
+  - positive media generation/edit/fetch and Telegram voice delivery when authorized

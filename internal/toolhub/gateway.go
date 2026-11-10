@@ -84,13 +84,15 @@ type Gateway struct {
 }
 
 type gatewayProjection struct {
-	auth       identity.Envelope
-	server     *mcp.Server
-	handler    http.Handler
-	runHandler http.Handler
-	mu         sync.Mutex
-	tools      map[string]api.ToolSpec
-	controls   map[string]bool
+	auth        identity.Envelope
+	server      *mcp.Server
+	handler     http.Handler
+	runHandler  http.Handler
+	refreshMu   sync.Mutex
+	mu          sync.Mutex
+	tools       map[string]api.ToolSpec
+	controls    map[string]bool
+	fingerprint [32]byte
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -127,6 +129,9 @@ func (g *Gateway) Handler() (http.Handler, error) {
 				Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes,
 				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
 			}),
+		}
+		if fingerprint, cacheable, err := g.projectionFingerprint(auth); err == nil && cacheable {
+			g.projections[token].fingerprint = fingerprint
 		}
 	}
 	mux := http.NewServeMux()

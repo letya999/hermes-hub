@@ -218,6 +218,21 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 	return nil
 }
 
+// statusDeliveryJobID recovers the owning job from the durable status
+// convention "job-<id>-status" (and its coalesced "-edit-" sends) so a
+// JobID-less progress record still passes the delivery-time group re-check.
+func statusDeliveryJobID(id string) string {
+	rest, ok := strings.CutPrefix(id, "job-")
+	if !ok {
+		return ""
+	}
+	jobID, suffix, ok := strings.Cut(rest, "-status")
+	if !ok || jobID == "" || suffix != "" && !strings.HasPrefix(suffix, "-edit-") {
+		return ""
+	}
+	return jobID
+}
+
 // UpsertStatusDelivery maintains the single editable status delivery for a
 // job (SPEC-0053 R2.2): a pending record absorbs the newest text, and once
 // the status was sent its TelegramMessageID turns later updates into edit

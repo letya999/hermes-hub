@@ -20,6 +20,11 @@ import (
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
 var errScheduleExists = errors.New("schedule already exists or is unreadable")
 
+// ScheduleAuthorizationFailure carries only a safe, fixed reason code into durable schedule state.
+type ScheduleAuthorizationFailure struct{ Code string }
+
+func (e *ScheduleAuthorizationFailure) Error() string { return "schedule authorization failed" }
+
 // ErrRoutineRevision rejects a mutation whose expected revision is stale —
 // the caller re-reads current state before retrying.
 var ErrRoutineRevision = errors.New("routine revision changed; read current state before retrying")
@@ -756,11 +761,19 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue
 		}
-		if authorize != nil && authorize(item.ScheduleID, occ.Job) != nil {
-			if err := e.blockScheduleLocked(&item, "owner authorization failed", now); err != nil {
-				return err
+		if authorize != nil {
+			authErr := authorize(item.ScheduleID, occ.Job)
+			if authErr != nil {
+				reason := "owner authorization failed"
+				var failure *ScheduleAuthorizationFailure
+				if errors.As(authErr, &failure) && (failure.Code == "owner_rights_unavailable" || failure.Code == "channel_binding_unavailable") {
+					reason += ": " + failure.Code
+				}
+				if err := e.blockScheduleLocked(&item, reason, now); err != nil {
+					return err
+				}
+				continue
 			}
-			continue
 		}
 		occ.DueAt = due.UTC()
 		occ.State = "pending"

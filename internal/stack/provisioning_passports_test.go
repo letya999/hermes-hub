@@ -23,6 +23,17 @@ func TestInitCreatesSixAuthoredPassports(t *testing.T) {
 	if docs["stack"]["identity"].(map[string]any)["user"] != "alice" {
 		t.Fatal("init did not bind stack identity to user")
 	}
+	selected := docs["tools"]
+	for _, family := range []string{"memory", "media", "sessions", "web_search"} {
+		section := "extended"
+		if family == "memory" {
+			section = "core"
+		}
+		entry, ok := selected[section].(map[string]any)[family].(map[string]any)
+		if !ok || entry["via"] != "toolhub" {
+			t.Fatalf("default %s toolset must route through ToolHub: %v", family, entry)
+		}
+	}
 	catalogDocs, err := catalog.Generate()
 	if err != nil {
 		t.Fatal(err)

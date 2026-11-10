@@ -18,6 +18,7 @@ const metadataReserve = (4 << 20) + (64 << 10)
 var (
 	ErrDenied      = errors.New("hosting denied")
 	ErrInvalid     = errors.New("invalid hosting request")
+	ErrSlot        = errors.New("hosting slot not allocated")
 	ErrConflict    = errors.New("hosting conflict")
 	ErrQuota       = errors.New("hosting quota exceeded")
 	ErrUnavailable = errors.New("hosting unavailable")

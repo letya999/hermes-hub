@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-08"
+last_verified: "2026-11-09"
 ---
 
 # Spaces
@@ -221,6 +221,12 @@ docs/tools.md; they are not shared personal-memory stores.
   when `diagnostics: true`.
 
 ## Internal feature vocabulary
+
+The embedded new-space `tools.yaml` template selects `files` and `memory`
+in core and `web_search`, `sessions`, and `media` in extended, all with
+`via: toolhub`. Selection does not grant rights, enable memory storage,
+declare speech services, or configure web providers. Existing authored
+passports and explicit profile overrides keep their own selections.
 
 The published passports resolve to the internal feature vocabulary in
 `internal/stack/config.go`'s `Features` registry: `workspace`, `web`,

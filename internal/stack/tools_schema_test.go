@@ -205,8 +205,10 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	if s.Tools["files"].Via != "toolhub" {
 		t.Fatalf("seeded files wish wrong: %+v", s.Tools)
 	}
-	if _, ok := s.Tools["memory"]; ok {
-		t.Fatalf("native memory must not be seeded by default (R3.1): %+v", s.Tools)
+	for _, name := range []string{"memory", "media", "sessions", "web_search"} {
+		if s.Tools[name].Via != ToolViaToolHub {
+			t.Fatalf("default %s must use ToolHub: %+v", name, s.Tools[name])
+		}
 	}
 	// A second init never overwrites an existing space.
 	if err := Init(dir, "alice"); err == nil {

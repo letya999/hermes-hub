@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-09"
+last_verified: "2026-11-10"
 ---
 # Routines
 
@@ -441,12 +441,12 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The current agent-tool catalog is hub-agent-tools@18.3.1 (platform Release 22); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab.
+The current agent-tool catalog is hub-agent-tools@18.3.5 (platform Release 26); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The platform's new-space template selects `web_search`, `sessions`, `memory` and `media` through ToolHub; rights and service/provider configuration remain separate. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab.
+For recurring reminders, use `routine_create` with `kind=reminder` and an `every:` expression, then read the saved routine and its next due time. For a new watch, read its source through the projected ToolHub tool before creating it; `watch_sample` samples an existing watch. Stream delivery on a plain poll source requires `min_interval_seconds`. A blocked schedule records the safe authorization reason code for owner rights or channel binding; restore the actual right or binding before resuming.
 `memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent
 tool admission; selection does not grant the right. Current MCP discovery shows
 the five routine tools plus the watch and assignment families. A catalog
 upgrade creates no provider connection or external write grant.
-
 For ToolHub onboarding, `next_action=await_user_confirmation` requires the
 user's verified Telegram callback in the original chat; other channels cannot
 complete this step yet. The callback binds actor,

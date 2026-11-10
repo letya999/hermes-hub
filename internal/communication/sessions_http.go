@@ -57,7 +57,7 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session create failed", http.StatusConflict)
 			return
 		}
-		writeJSON(w, map[string]any{"session": g.sessionCard(user, task, true), "created": created})
+		writeJSON(w, map[string]any{"session": g.sessionCard(user, task, true), "created": created, "effective_from": "next_turn"})
 		return
 	}
 	if in.Action == "list" || in.Action == "search" {
@@ -183,7 +183,7 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session switch failed", http.StatusConflict)
 			return
 		}
-		writeJSON(w, map[string]string{"switched_to": task.TaskID, "resumed_from": previous.TaskID})
+		writeJSON(w, map[string]string{"switched_to": task.TaskID, "resumed_from": previous.TaskID, "effective_from": "next_turn"})
 	case "edit":
 		if task.TaskID == defaultTaskID {
 			http.Error(w, "invalid session edit", http.StatusBadRequest)

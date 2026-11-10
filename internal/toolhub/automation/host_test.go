@@ -659,7 +659,7 @@ func TestChannelRebindBlocksSupervisorDispatch(t *testing.T) {
 		t.Fatal("channel denial staged a dispatch intent for unauthorized work")
 	}
 	blocked, err := host.LoadSchedule(context.Background(), alice, item.ScheduleID)
-	if err != nil || blocked.BlockedReason == "" {
+	if err != nil || blocked.BlockedReason != "owner authorization failed: channel_binding_unavailable" {
 		t.Fatalf("channel denial did not durably block the schedule: %+v %v", blocked, err)
 	}
 	allowed = true

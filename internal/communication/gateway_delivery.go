@@ -331,6 +331,15 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 	}
+	if delivery.JobID == "" {
+		if jobID := statusDeliveryJobID(delivery.ID); jobID != "" {
+			mapping, found, err := g.spool.Mapping(jobID)
+			if err != nil || !found || g.authorizeGroupMapping(mapping) != nil {
+				g.uncertainDelivery(ctx, *delivery)
+				return
+			}
+		}
+	}
 	if delivery.JobID != "" && delivery.OwnerPrincipalID == "" {
 		mapping, found, err := g.spool.Mapping(delivery.JobID)
 		if err != nil {

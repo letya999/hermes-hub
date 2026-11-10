@@ -1012,7 +1012,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	for range 10 {
 		g.deliverOne(context.Background())
 	}
-	if len(runner.seen) != 1 || len(fake.deleted) != 2 || len(fake.sent) != 7 {
+	if len(runner.seen) != 1 || len(fake.deleted) != 2 || len(fake.sent) != 8 {
 		t.Fatalf("seen=%v deleted=%v sent=%v", runner.seen, fake.deleted, fake.sent)
 	}
 	if strings.Contains(strings.Join(runner.seen, "\n"), "GITHUB_TOKEN=") || strings.Contains(strings.Join(fake.sent, "\n"), "super-secret") || strings.Contains(strings.Join(fake.sent, "\n"), "secret-token") {

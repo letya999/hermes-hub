@@ -57,4 +57,10 @@ func TestWebCallsUseBoundedUpstreamSidecar(t *testing.T) {
 	if _, err := tools.webCall(t.Context(), "web_search", Input{Query: "x"}); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatal("runner error leaked")
 	}
+	webRunner = func(context.Context, []byte) ([]byte, error) {
+		return []byte(`{"ok":true,"result":{"success":false,"error":"private upstream detail"}}`), nil
+	}
+	if _, err := tools.webCall(t.Context(), "web_search", Input{Query: "x"}); err == nil || strings.Contains(err.Error(), "private") {
+		t.Fatal("provider failure must surface as a safe MCP error")
+	}
 }

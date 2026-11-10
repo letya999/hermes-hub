@@ -62,6 +62,12 @@ func openStoreDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+func dbDataVersion(db *sql.DB) (int64, error) {
+	var version int64
+	err := db.QueryRow("PRAGMA data_version").Scan(&version)
+	return version, err
+}
+
 // dbRow is one keyed record; seq preserves canonical order so the written
 // set is deterministic.
 type dbRow struct {
@@ -438,6 +444,11 @@ func loadDB(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	version, err := dbDataVersion(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	state, err := readDBSnapshot(db)
 	if err != nil {
 		_ = db.Close()
@@ -454,6 +465,12 @@ func loadDB(path string) (*Store, error) {
 		return nil, err
 	}
 	store.db = db
+	store.dbVersion = version
+	store.dbFile, err = os.Stat(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	store.path = path
 	store.savedPath, store.diskDigest = path, sha256.Sum256(body)
 	store.diskStamp = stamp
@@ -590,5 +607,6 @@ func (s *Store) saveDBLocked(path string) error {
 	}
 	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
 	s.diskStamp, _ = statStoreStamp(path)
+	s.dbFile, _ = os.Stat(path)
 	return nil
 }

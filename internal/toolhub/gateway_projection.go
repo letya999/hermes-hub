@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,65 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
+
+// projectionFingerprint covers every persisted input that can change a
+// projected tools/list. Calls still reauthorize against live state.
+func (g *Gateway) projectionFingerprint(auth identity.Envelope) ([32]byte, bool, error) {
+	var empty [32]byte
+	s := g.Store
+	s.mu.RLock()
+	if s.path == "" {
+		s.mu.RUnlock()
+		return empty, false, nil // in-memory tests and pending edits refresh every time
+	}
+	changed, version, err := s.changedOnDiskLocked()
+	digest, stamp, sqlite := s.diskDigest, s.diskStamp, s.db != nil
+	s.mu.RUnlock()
+	if err != nil || changed {
+		return empty, false, err
+	}
+	h := sha256.New()
+	h.Write(digest[:])
+	if sqlite {
+		fmt.Fprintf(h, ":db:%d", version)
+	} else {
+		fmt.Fprintf(h, ":file:%d:%d", stamp.mtime, stamp.size)
+	}
+	if g.Governance != nil {
+		body, err := os.ReadFile(g.Governance.path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return empty, false, err
+		}
+		h.Write(body)
+	}
+	if g.PassportRoot != "" {
+		space := filepath.Join(g.PassportRoot, auth.PrincipalID)
+		if _, err := os.Stat(filepath.Join(space, "passports", passportview.ApplyJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return empty, false, fmt.Errorf("%w: passport apply incomplete", api.ErrUnauthorized)
+		}
+		current, err := os.ReadFile(filepath.Join(space, "passports", "current"))
+		if err != nil {
+			return empty, false, err
+		}
+		rev := strings.TrimSpace(string(current))
+		if rev == "pending" || !filepath.IsLocal(rev) {
+			return empty, false, fmt.Errorf("%w: invalid passport pointer", api.ErrUnauthorized)
+		}
+		h.Write([]byte(rev))
+		for _, name := range passportview.Names {
+			body, err := os.ReadFile(filepath.Join(space, "passports", rev, name+".yaml"))
+			if err != nil {
+				return empty, false, err
+			}
+			h.Write(body)
+		}
+	}
+	copy(empty[:], h.Sum(nil))
+	return empty, true, nil
+}
 
 func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 	g.mu.Lock()
@@ -42,6 +101,9 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 			Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes,
 			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
 		}),
+	}
+	if fingerprint, cacheable, err := g.projectionFingerprint(auth); err == nil && cacheable {
+		projection.fingerprint = fingerprint
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -229,6 +291,18 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 }
 
 func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
+	projection.refreshMu.Lock()
+	defer projection.refreshMu.Unlock()
+	if fingerprint, cacheable, err := g.projectionFingerprint(projection.auth); err != nil {
+		return err
+	} else if cacheable {
+		projection.mu.Lock()
+		unchanged := projection.fingerprint == fingerprint
+		projection.mu.Unlock()
+		if unchanged {
+			return nil
+		}
+	}
 	activation, err := g.requireActivated(projection.auth)
 	if err != nil {
 		return err
@@ -285,6 +359,11 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 		}
 	}
 	projection.tools = next
+	if fingerprint, cacheable, err := g.projectionFingerprint(projection.auth); err == nil && cacheable {
+		projection.fingerprint = fingerprint
+	} else {
+		projection.fingerprint = [32]byte{}
+	}
 	return nil
 }
 

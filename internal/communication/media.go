@@ -28,6 +28,7 @@ const (
 	// HUB_MEDIA_MAX_DURATION (seconds) — limits are policy, not constants.
 	defaultMediaDurationLimit = 120
 	defaultSTTTimeout         = 180 * time.Second
+	defaultTTSTimeout         = 90 * time.Second
 )
 
 // MediaEnvelope is the bounded voice/file record. Canonical job text stays text.
@@ -65,7 +66,7 @@ func serviceTranscriber(base, auth string, timeout time.Duration) Transcriber {
 
 func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string) Synthesizer {
 	if strings.TrimSpace(base) != "" {
-		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: 30 * time.Second}
+		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: defaultTTSTimeout}
 	}
 	return nil
 }
@@ -109,7 +110,7 @@ func (c CommandSynthesizer) Synthesize(ctx context.Context, _ locale.Lang, text 
 		return nil, "", errors.New("tts is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
+		c.Timeout = defaultTTSTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
@@ -371,7 +372,7 @@ func (c HTTPSynthesizer) Synthesize(ctx context.Context, lang locale.Lang, text 
 		return nil, "", errors.New("tts is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
+		c.Timeout = defaultTTSTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()

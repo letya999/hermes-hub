@@ -1,0 +1,11 @@
+schema: 1
+change: CHG-0294
+title: "Telegram admission and ToolHub SQLite latency"
+status: in-progress
+updated: 2026-11-10
+phase: local-verification
+validation:
+  sqlite_linux_integrity: passed
+  toolhub_owner_call: passed
+  telegram_live_rerun: passed
+  local_checks: passed

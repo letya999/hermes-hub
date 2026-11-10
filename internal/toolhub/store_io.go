@@ -494,27 +494,44 @@ func (s *Store) persistAndNotify() error {
 	return err
 }
 
-// Reload replaces in-memory state from the file-backed snapshot. In-memory
+// Reload replaces in-memory state from the persisted snapshot. In-memory
 // stores (no path) are unchanged so tests can mutate without a round-trip.
+func (s *Store) changedOnDiskLocked() (bool, int64, error) {
+	if s.db != nil {
+		info, err := os.Stat(s.path)
+		if err != nil {
+			return false, 0, err
+		}
+		if s.dbFile != nil && !os.SameFile(info, s.dbFile) {
+			return false, 0, api.ErrConflict
+		}
+		// WAL checkpoints can change file timestamps without changing data.
+		// data_version advances only for commits from another connection.
+		version, err := dbDataVersion(s.db)
+		return version != s.dbVersion, version, err
+	}
+	stamp, ok := statStoreStamp(s.path)
+	return !ok || s.savedPath != s.path || stamp != s.diskStamp, 0, nil
+}
+
 func (s *Store) Reload() error {
 	if s == nil || s.path == "" {
 		return nil
 	}
-	// Fast path under the read lock: the stat stamp comparison only reads
-	// s.savedPath/s.diskStamp, and callers invoke Reload per request (plus
-	// once per projected tool from filterProjectedTools and per tick from the
-	// projection refresher). Taking the write lock here would queue a writer
-	// behind every in-flight admitted call, which starves nested rechecks.
+	// Keep unchanged reads off the write lock; projection checks call Reload
+	// repeatedly while other requests may already hold the read lock.
 	s.mu.RLock()
-	if stamp, ok := statStoreStamp(s.path); ok && s.savedPath == s.path && stamp == s.diskStamp {
+	changed, _, err := s.changedOnDiskLocked()
+	if err != nil || !changed {
 		s.mu.RUnlock()
-		return nil
+		return err
 	}
 	s.mu.RUnlock()
 	s.mu.Lock()
-	if stamp, ok := statStoreStamp(s.path); ok && s.savedPath == s.path && stamp == s.diskStamp {
+	changed, version, err := s.changedOnDiskLocked()
+	if err != nil || !changed {
 		s.mu.Unlock()
-		return nil
+		return err
 	}
 	fresh, err := Load(s.path)
 	if err != nil {
@@ -528,6 +545,7 @@ func (s *Store) Reload() error {
 	// Reads must not replace pending in-process mutations with the unchanged
 	// disk snapshot, nor race a Save and restore its older predecessor.
 	if fresh.diskDigest == s.diskDigest {
+		s.dbVersion = version
 		s.mu.Unlock()
 		return nil
 	}
@@ -563,6 +581,8 @@ func (s *Store) Reload() error {
 	s.bindingChanges = fresh.bindingChanges
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
+	s.dbVersion = version
+	s.dbFile = fresh.dbFile
 	s.mu.Unlock()
 	// Re-sync the lock-free status mirror wholesale: the freshly loaded set
 	// is authoritative, so connections removed on disk leave no stale entries.

@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-08
+last_verified: 2026-11-10
 ---
 
 # toolhub
@@ -47,15 +47,14 @@ and before service effects complete.
   Skill credential refs are leased from the calling principal's running
   runtime through the supervisor; ToolHub never reads its own self-env for
   another principal. An unavailable runtime yields no ref lease.
-- **Catalog** (`catalog.go`, `artifact_catalog.go`): prepared connector
-  registry, CI-built images (ADR-0057), content-addressed recipes
-  (`recipes/<sha256>`, ADR-0053).
+- **Catalog** (`catalog.go`, `artifact_catalog.go`): prepared connectors,
+  CI-built images (ADR-0057), recipes (`recipes/<sha256>`, ADR-0053).
 - **Endpoint**: one stateful MCP server per authenticated owner token;
   projection changes emit `notifications/tools/list_changed` and reload the
   persisted store — no Hermes restart needed for list changes (a parked
   server still needs its runtime restarted before retry). Backend hop pins
   `MCP-Protocol-Version: 2025-11-25` for legacy-wire servers (Serena 1.5.x);
-  standalone SSE off — calls are request/response.
+  standalone SSE off; persisted inputs are fingerprinted, changes revalidate, and calls reauthorize live.
 - **Per-user vault resolver** (`vault_resolver.go`): `HUB_VAULTS_BY_PRINCIPAL`
   names the stack-rendered bindings root — one mount per enrolled,
   memory-enabled, environment-matching principal. Startup scans it into a

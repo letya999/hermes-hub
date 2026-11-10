@@ -290,7 +290,7 @@ var argDocs = map[string]map[string]argDoc{
 		"id": {Desc: "Subscription schedule id to delete."},
 	},
 	"watch_sample": {
-		"id":     {Desc: "Subscription schedule id to sample."},
+		"id":     {Desc: "Existing subscription schedule id; before creation call the source read tool directly."},
 		"filter": {Desc: "Candidate Starlark filter to dry-run against live events."},
 	},
 
@@ -464,9 +464,7 @@ var argDocs = map[string]map[string]argDoc{
 	},
 
 	// ---- sites
-	"site_list": {
-		"id": {Desc: "Show one site by id; empty lists all."},
-	},
+	"site_list": {},
 	"site_publish": {
 		"name":              {Desc: "Site slot name."},
 		"path":              {Desc: "Workspace directory of prebuilt files to publish."},

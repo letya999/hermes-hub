@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime"
 
 	_ "modernc.org/sqlite"
 )
 
 // ErrSchema refuses stores whose recorded schema differs from this binary's.
 var ErrSchema = errors.New("sqlitedb: schema")
+
+var chmodStore = os.Chmod
 
 // Open creates or opens a service DB, running migrate once inside one
 // transaction when the store predates this schema version.
@@ -31,8 +34,21 @@ func Open(path string, schema int, migrate func(*sql.Tx) error) (*sql.DB, error)
 	if err := db.Ping(); err != nil {
 		return fail(err)
 	}
-	if err := os.Chmod(path, 0600); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return fail(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		if err := chmodStore(path, 0600); err != nil {
+			return fail(err)
+		}
+		info, err = os.Stat(path)
+		if err != nil {
+			return fail(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+			return fail(errors.New("sqlitedb: private file mode unavailable"))
+		}
 	}
 	var have int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&have); err != nil {

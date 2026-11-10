@@ -93,7 +93,7 @@ func (t *Tools) webCall(ctx context.Context, name string, input Input) (any, err
 		return nil, errors.New("web provider unavailable")
 	}
 	if response.Result["success"] == false {
-		return map[string]any{"success": false, "error": "provider_unavailable"}, nil
+		return nil, errors.New("web provider unavailable")
 	}
 	return response.Result, nil
 }

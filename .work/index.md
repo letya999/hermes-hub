@@ -16,6 +16,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0294](in-progress/CHG-0294-telegram-admission-sqlite/plan.md) | Telegram queued progress, SQLite startup and ToolHub projection latency; local verification in progress |
+| [CHG-0293](in-progress/CHG-0293-toolhub-primary-toolsets/plan.md) | Select and verify primary ToolHub toolsets in platform defaults and both Artem passports; live acceptance on artem_two in progress |
 | [CHG-0292](in-progress/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
 | [CHG-0289](in-progress/CHG-0289-fast-local-verification/plan.md) | Fast local checks, exact-source prebuilt Docker verification, CI cache repairs and Devin handoff; local check/tests/actionlint passed, remote acceptance and host diagnosis pending |
 | [CHG-0290](in-progress/CHG-0290-knowledge-view/plan.md) | One-hour ToolHub knowledge link and read-only owner memory view; implementation and dev acceptance in progress |

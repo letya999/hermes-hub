@@ -67,9 +67,7 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Unix(1_800_000_000, 0)
-	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	envelope.DeliveryTargetID = "telegram--100"
-	job := Job{Envelope: envelope, ID: "live-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "live-key", ChatID: -100, TopicID: 5, Text: "hello", CreatedAt: base}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "live-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "live-key", ChatID: 11, TopicID: 5, Text: "hello", CreatedAt: base}
 	if _, err := s.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +123,9 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	}
 }
 
-// A queued job that never reached admission — a dead supervisor, a wedged
-// runtime — must not farm typing actions and status edits forever.
-func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
+// A queued job reports elapsed wait without pretending that runtime work
+// has started or sending a typing action.
+func TestProgressTickShowsUnadmittedWait(t *testing.T) {
 	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
 	if err != nil {
 		t.Fatal(err)
@@ -144,8 +142,63 @@ func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
 	g.api, g.spool = fake, s
 	g.progressTick(context.Background())
 	g.deliverOne(context.Background())
-	if len(fake.chatActions) != 0 || len(fake.sent) != 0 {
-		t.Fatalf("unadmitted job got progress: actions=%v sent=%v", fake.chatActions, fake.sent)
+	if len(fake.chatActions) != 0 || len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "Ожидаю запуска агента") {
+		t.Fatalf("queued job must show truthful wait without typing: actions=%v sent=%v", fake.chatActions, fake.sent)
+	}
+}
+
+// A wedged uncertain mapping lost its admission outcome: its honest state is
+// the uncertain notice, not "queued". Re-arming the queued status would edit
+// the chat forever for a job that will never run again.
+func TestProgressTickSkipsUncertainUnadmittedJob(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "wedged-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "wedged-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	if err := s.writeMappingLocked(mappingFromJob(job, job.CreatedAt)); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain", LastEvent: "run.unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.spool = fake, s
+	g.progressTick(context.Background())
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 0 || len(fake.edits) != 0 {
+		t.Fatalf("wedged uncertain job must not farm queued edits: sent=%v edits=%v", fake.sent, fake.edits)
+	}
+}
+
+func TestTelegramJobQueuesStatusBeforeRuntimeAdmission(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	user := c.Users[0]
+	task, err := g.spool.ResolveTask(user, 11, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.enqueueChannelJob(t.Context(), user, task, "telegram_bot", "queued-job", "queued-key", 11, 0, "hello", 11, "", false); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := g.spool.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.ID != "job-queued-job-status" || !strings.Contains(delivery.Text, "Ожидаю запуска агента") {
+		t.Fatalf("acceptance did not queue an immediate status: delivery=%+v err=%v", delivery, err)
 	}
 }
 

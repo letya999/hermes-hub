@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-09"
+last_verified: "2026-11-10"
 ---
 
 # Tool surface
@@ -74,8 +74,18 @@ family to `web_search`, adds provider and cache operations, and removes the
 unused `desktop` and `drafts` companion connectors.
 Release 22 pairs with `hub-agent-tools@18.2.0` and wires `runtime:sessions`
 to communication's owner task registry and Hermes transcript.
-The current `hub-agent-tools@18.3.1` changes browser wait argument semantics;
-the platform vocabulary remains Release 22.
+Release 23 pairs with `hub-agent-tools@18.3.2` and adds the managed speech calls.
+Release 24 pairs with `hub-agent-tools@18.3.3`: the platform default selects
+`web_search`, `sessions`, `memory` and `media` through ToolHub, web provider
+failure is a failed MCP call, and the local STT worker preserves measured
+segments. Native toolsets remain available for explicit future selection.
+Release 25 pairs with `hub-agent-tools@18.3.4`: `site_list` returns allocated
+slot names and published sites; unallocated names fail before publish throttling.
+Context status defaults to the active turn, preview reports `would_method` and
+uses null for an unknown post-preview message count. Session create/switch
+report `effective_from=next_turn`; watch sampling requires an existing watch.
+Release 26 pairs with `hub-agent-tools@18.3.5`: a failed `site_publish` request
+remains an error on idempotent replay, so `state=failed` cannot look successful.
 Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and
 ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights.
 The new contract admits memory in a verified, active owner assignment under
@@ -176,7 +186,7 @@ word where one exists):
 | files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
 | terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded agent-image command over an admitted workspace snapshot (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); scratch writes are ephemeral and network is disabled; background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert`, `document_remove` | handler:documents | txt, md, csv, html, pdf, xlsx, pptx inside the admitted scope |
-| media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media; runtime:channels for speech | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; `media_transcribe` uploads an admitted audio file to hub-stt and optionally returns timestamp segments; `media_speak` requires a live run and queues speech to its recorded channel, returning `delivery_id` and `status=queued`; queued is not a sent receipt; missing services report unavailable |
+| media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media; runtime:channels for speech | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; `media_transcribe` uploads an admitted audio file to hub-stt and optionally returns measured timestamp segments; `media_speak` requires a live run and queues speech to its recorded channel, returning `delivery_id` and `status=queued`; queued is not a sent receipt; missing services report unavailable |
 | skills | `skill`, `skill_search`, `skill_edit` | handler:skills | `skill` activates by `name` plus optional inner `path` (Agent Skills convention); `skill_search` with empty query lists all (honest `eligible`/`missing`/`stats` inventory); `skill_edit` writes drafts only — publication is the owner's approval card |
 | routines | `routine_list`, `routine_read`, `routine_create`, `routine_edit`, `routine_remove` | handler:routines | five-tool surface; `routine_edit` action update\|apply\|pause\|resume\|snooze; `args`/`steps`/`needs`/`extract`/`patch` are typed object/array, never JSON strings; see docs/routines.md |
 | watches | `watch_list`, `watch_create`, `watch_edit`, `watch_remove`, `watch_sample` | handler:watches | event subscriptions; `watch_edit` action pause\|resume; `filter` Starlark `input()`→emit keep\|drop\|urgent; `sources`/`args` are typed array/object, never JSON strings; `sources` fans one watch over ≤32 inputs; `watch_sample` dry-runs a bounded probe; see docs/routines.md |
@@ -187,7 +197,7 @@ word where one exists):
 | ssh | `ssh_list`, `ssh_read`, `ssh_write`, `ssh_exec`, `ssh_shell`, `ssh_tunnel` | handler:ssh | declared hosts only; `ssh_shell` action open\|send\|read\|close, `ssh_tunnel` action open\|list\|close; write/shell/tunnel need their own grant |
 | exposure | `exposure_list`, `exposure_create`, `exposure_remove` | handler:exposure | live public tunnels on declared endpoints only |
 | sites | `site_list`, `site_publish`, `site_remove` | handler:sites | own hosted sites (was hosting); publish/remove are `request_id` + `expected_revision` fenced |
-| web_search | `web_search`, `web_fetch`, `web_providers`, `web_search_multi`, `web_cache` | handler:web_search | ToolHub admits each call, then the owning runtime invokes the pinned Hermes web provider or hub-web plugin through its private sidecar; configured provider allowlists, URL safety and cache policy stay upstream; `web_cache` requires its separate mutation right |
+| web_search | `web_search`, `web_fetch`, `web_providers`, `web_search_multi`, `web_cache` | handler:web_search | ToolHub admits each call, then the owning runtime invokes the pinned Hermes web provider or hub-web plugin through its private sidecar; configured provider allowlists, URL safety and cache policy stay upstream; a total provider failure returns an MCP error, while partial results retain their provider status; `web_cache` requires its separate mutation right |
 | connectors | `connector_search`, `connector_list`, `connector_status`, `connector_install`, `connector_edit` | runtime:connectors | control surface (see below); credentials never travel args/results |
 | research | `research_create`, `research_read`, `research_list` | flow:deep_research | backend remains unavailable pending a dedicated long-lived research implementation |
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | handler:browser | ToolHub admits each call; the private owning runtime connects to its Playwright sidecar, with owner-bound session IDs and user/guest grants checked on each operation. `browser_open` creates a tab and `close` closes that tab. `browser_act` with `action=wait` interprets numeric `value` as seconds (>0, ≤30), otherwise waits for visible text |
@@ -214,7 +224,9 @@ arguments cannot choose another space. A selected `memory_search`, `memory_read`
 `memory_card` remains inert while this switch is false, even if the tool is
 still visible in a session. The operation right is checked separately.
 
-The `memory_vault` feature (ADR-0086, SPEC-0085) replaces the native store
+The `memory_vault` feature (ADR-0086, SPEC-0085) is a compatibility name for
+the `config.memory.enabled` storage switch, not a separate agent toolset.
+The `memory` family is the sole ToolHub agent surface for the vault. The switch replaces the native store
 entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
 `memory_enabled`/`user_profile_enabled` render false on both render paths,
 and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The

@@ -7,13 +7,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // The SQLite store round-trips through one transaction; reloads reject
@@ -240,6 +244,150 @@ func TestStoreDBForeignWriteFence(t *testing.T) {
 	db.Close()
 	if err := store.Save(path); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("foreign write overwritten: %v", err)
+	}
+}
+
+func TestStoreDBReloadUsesDataVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+	loaded.diskStamp = storeStamp{} // A checkpoint may change the file stamp without a data commit.
+	if err := loaded.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.diskStamp != (storeStamp{}) {
+		t.Fatal("unchanged SQLite data triggered a full reload")
+	}
+	if _, err := seed.db.Exec("UPDATE meta SET v='foreign' WHERE k='digest'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Reload(); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("foreign SQLite commit was not detected: %v", err)
+	}
+}
+
+func TestProjectionFingerprintTracksPersistedInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+	passportRoot := filepath.Join(t.TempDir(), "passports-by")
+	revisionDir := filepath.Join(passportRoot, "alice", "passports", "r1")
+	if err := os.MkdirAll(revisionDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(passportRoot, "alice", "passports", "current"), []byte("r1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range passportview.Names {
+		if err := os.WriteFile(filepath.Join(revisionDir, name+".yaml"), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := &Gateway{Store: loaded, Governance: NewGovernanceStore(filepath.Join(filepath.Dir(path), "governance.json")), PassportRoot: passportRoot}
+	first, cacheable, err := g.projectionFingerprint(aliceAuth())
+	if err != nil || !cacheable {
+		t.Fatalf("initial fingerprint: cacheable=%t err=%v", cacheable, err)
+	}
+	loaded.diskStamp = storeStamp{} // SQLite checkpoints may change file metadata only.
+	if same, ok, err := g.projectionFingerprint(aliceAuth()); err != nil || !ok || same != first {
+		t.Fatalf("checkpoint-only stamp changed projection: cacheable=%t err=%v", ok, err)
+	}
+	if err := os.WriteFile(g.Governance.path, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second, cacheable, err := g.projectionFingerprint(aliceAuth())
+	if err != nil || !cacheable || second == first {
+		t.Fatalf("governance change missed: cacheable=%t err=%v", cacheable, err)
+	}
+	if err := os.WriteFile(filepath.Join(revisionDir, "tools.yaml"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	third, cacheable, err := g.projectionFingerprint(aliceAuth())
+	if err != nil || !cacheable || third == second {
+		t.Fatalf("passport change missed: cacheable=%t err=%v", cacheable, err)
+	}
+	if _, err := seed.db.Exec("UPDATE meta SET v='foreign' WHERE k='digest'"); err != nil {
+		t.Fatal(err)
+	}
+	_, cacheable, err = g.projectionFingerprint(aliceAuth())
+	if err != nil || cacheable {
+		t.Fatalf("external SQLite commit missed: cacheable=%t err=%v", cacheable, err)
+	}
+}
+
+func TestConcurrentSQLiteProjectionRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+	g := &Gateway{Store: loaded}
+	auth := aliceAuth()
+	fingerprint, cacheable, err := g.projectionFingerprint(auth)
+	if err != nil || !cacheable {
+		t.Fatalf("initial fingerprint: cacheable=%t err=%v", cacheable, err)
+	}
+	p := &gatewayProjection{auth: auth, server: mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil), tools: map[string]api.ToolSpec{}, fingerprint: fingerprint}
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs <- g.refreshProjection(p) }()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestStoreDBReloadRejectsRemovedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not rename an open SQLite file")
+	}
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+	if err := os.Rename(path, path+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Reload(); err == nil {
+		t.Fatal("removed live SQLite path was still accepted")
 	}
 }
 

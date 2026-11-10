@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-09
+last_verified: 2026-11-10
 ---
 
 # Operations
@@ -141,6 +141,13 @@ Tool selection grants no authority; a managed profile binds the exact
      profile-allow rules for the same permitted actions. `space apply` repins
      selections but does not approve a new implementation digest; preview the
      profile before confirming it. A digest mismatch hides those tools.
+     For a catalog-version move, run `hubctl connector catalog-enable
+     --toolhub-store <absolute-store> --definition hub-agent-tools
+     --version <v> --principal <id> --context <id> --runtime <id>
+     --policy-version <pv> --profile <profile-id> --env <env>
+     --extend-ceiling` after registering the definition. This operator step
+     adds the reviewed digest's rules and repins sibling profiles; repeat for
+     each principal that selects the new version.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra
@@ -628,7 +635,9 @@ cadence. Port and channel changes (`config.ports`, `config.channels`) are
 recreate-class: only the owning container restarts — `hermes-runtime` is
 supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
 re-spawn it (env-baked config needs a new container, unlike a deferred
-restart's remount); a shared gateway such as `communication-hub` recreates
+restart's remount); the respawn reads the current published policy version
+before spawning, so a rotated policy does not reuse the stale runtime binding.
+A shared gateway such as `communication-hub` recreates
 in the infra space's project; a port leaf whose owner the revision doesn't
 declare is dead config and plans no recreate. From the operator host the
 supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
@@ -866,6 +875,10 @@ calls, `HUB_RUN_STALL_TIMEOUT` (15 m) in-runtime stall → confirmed stop.
 
 Job phases: `queued → waking → running → waiting_for_approval →
 uncertain → completed|failed|cancelled|interrupted` + `unconfirmed` flag.
+Telegram sends one editable `queued` status with an elapsed timer as soon as
+the durable spool accepts the update, before supervisor admission. A missing
+runtime run ID must not suppress that status. Rights decisions use a bounded
+20-second ToolHub client timeout and still deny on timeout.
 The reconciler re-observes unconfirmed jobs ≥30 s (same run identity, or
 `/v1/readmit` with the atomic `/state/admissions/` receipt — exact input +
 session + idempotency key; receipts <23 h only). A job unsettled past its
@@ -908,7 +921,11 @@ topics supported; slash-command list enforced + registered as bot menu).
 `/usage [session]` reads the journal/quota; session mode reads the pinned
 Hermes session API and renders `unknown` where upstream cannot report.
 Long Telegram turns queue via `display.busy_input_mode: queue`; heartbeat
-`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit.
+`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit. The
+gateway queues one editable status immediately on acceptance and updates its
+elapsed time while the runtime is waiting to start; typing resumes only after
+run admission. Out-of-process ToolHub rights checks retain fail-closed behavior
+and allow up to 20 s for a decision under host load.
 Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
 Published stack identity/scope-kind bindings are immutable; Telegram links are provisioned only in
@@ -1185,6 +1202,14 @@ Known traps from live acceptance:
   readiness while every job stalls `uncertain`. Check
   `PRAGMA integrity_check` on each `managed/<env>/hermes/*.db` after a
   rename or host migration.
+- **ToolHub SQLite on Docker Desktop** — inspect the actual `/state` mount;
+  this dev stack binds it from `C:` even though the process runs in Linux.
+  Provision an activated `store.db` for the service uid/gid with mode `0600`.
+  Verify a live WAL and `PRAGMA integrity_check` from a Linux container using
+  the service mount. Windows SQLite can report a false malformed image while
+  the Linux writer holds WAL; stop ToolHub before host-side inspection or
+  mutation. ToolHub's unchanged-store check uses SQLite `data_version` so
+  checkpoint-only timestamp changes do not trigger a full registry reload.
 - **`/model` chat command is currently dead for managed principals** behind
   the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
   only into a gateway inside its own managed space, and managed spaces run

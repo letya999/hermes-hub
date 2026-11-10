@@ -191,6 +191,7 @@ func init() {
 		"chat.group-no-secrets":  "Топтар құпия мәліметтерді қабылдамайды.",
 		"chat.unknown-command":   "Белгісіз команда /%s.\n\n%s",
 		"chat.working":           "Жұмыс істеп жатырмын.",
+		"chat.queued":            "Агенттің іске қосылуын күтіп тұрмын.",
 		"chat.approve-usage":     "/approve <job-id> <request-id> <choice> пайдаланыңыз.",
 		"chat.approve-denied":    "Сұраныс қабылданбады: растау қолжетімсіз.",
 		"chat.approve-saved":     "Растау жауабы сақталды.",

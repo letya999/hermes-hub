@@ -733,6 +733,12 @@ func TestWatchSubscribeForwardsSources(t *testing.T) {
 	}
 }
 
+func TestWatchSampleRequiresExistingSubscription(t *testing.T) {
+	if _, err := (&Tools{}).Routine(context.Background(), "watch_sample", Input{}); err == nil || !strings.Contains(err.Error(), "existing watch ID") {
+		t.Fatalf("draft sample refusal: %v", err)
+	}
+}
+
 // watch_sample POSTs to the schedule's /sample route, forwarding a
 // candidate filter for dry-run verdicts — it is the agent's window into
 // the connector's real event shape before it commits a gate.
@@ -904,7 +910,11 @@ func TestWatchToolsDispatch(t *testing.T) {
 	v := fixture(t)
 	for _, name := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
 		_, err := v.call(context.Background(), name, Input{}, nil, nil, nil)
-		if err == nil || !strings.Contains(err.Error(), "routines require HUB_COMMUNICATION_CONTROL_URL") {
+		want := "routines require HUB_COMMUNICATION_CONTROL_URL"
+		if name == "watch_sample" {
+			want = "existing watch ID"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("%s not dispatched to Routine: %v", name, err)
 		}
 	}

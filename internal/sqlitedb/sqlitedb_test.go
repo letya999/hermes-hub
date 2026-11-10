@@ -68,6 +68,34 @@ func TestOpenEnablesWALAndFullSync(t *testing.T) {
 	_ = mode
 }
 
+func TestOpenPrivateStoreWhenChmodIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows host file modes do not model the container mount")
+	}
+	path := filepath.Join(t.TempDir(), "s.db")
+	db, err := Open(path, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := chmodStore
+	chmodStore = func(string, os.FileMode) error { return os.ErrPermission }
+	defer func() { chmodStore = original }()
+	db, err = Open(path, 1, nil)
+	if err != nil {
+		t.Fatalf("already private store was refused: %v", err)
+	}
+	_ = db.Close()
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path, 1, nil); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("permissive store must fail closed: %v", err)
+	}
+}
+
 // A failed migration rolls back: the store keeps no user_version and no
 // partial table, so the next Open re-runs the migration cleanly.
 func TestOpenRollsBackFailedMigration(t *testing.T) {

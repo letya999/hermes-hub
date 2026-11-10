@@ -135,6 +135,22 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 			t.Errorf("family %s section %s missing from governance inventory", name, section)
 		}
 	}
+	for family, members := range map[string][]string{
+		"web_search": {"web_search", "web_fetch", "web_providers", "web_search_multi", "web_cache"},
+		"sessions":   {"session_list", "session_search", "session_read", "session_create", "session_switch", "session_edit", "session_remove"},
+		"memory":     {"memory_search", "memory_read", "memory_card", "memory_open"},
+		"media":      {"media_inspect", "media_convert", "media_generate", "media_edit", "media_fetch", "media_transcribe", "media_speak"},
+	} {
+		ts, err := docs.Toolset(family)
+		if err != nil || ts.Kind != "family" || !slices.Equal(ts.Via, []string{"toolhub"}) || !slices.Equal(sorted(ts.Members), sorted(members)) {
+			t.Errorf("ToolHub %s membership drift: %+v err %v", family, ts, err)
+		}
+		for _, name := range members {
+			if !slices.ContainsFunc(def.Tools, func(spec api.ToolSpec) bool { return spec.Name == name && spec.Executor != "" }) {
+				t.Errorf("ToolHub %s member %s has no cataloged tool", family, name)
+			}
+		}
+	}
 
 	// --- parity: every pinned upstream toolset is cataloged; carve-outs match
 	inventory, err := stack.ManagedCapabilityInventory()

@@ -1,6 +1,6 @@
 ---
 description: Runtime images, supervisor lifecycle, per-context rollout and preparation runbook.
-last_verified: 2026-11-04
+last_verified: 2026-11-10
 ---
 
 # Runtime operations
@@ -89,6 +89,10 @@ calls, `HUB_RUN_STALL_TIMEOUT` (15 m) in-runtime stall → confirmed stop.
 
 Job phases: `queued → waking → running → waiting_for_approval →
 uncertain → completed|failed|cancelled|interrupted` + `unconfirmed` flag.
+Telegram shows the queued timer immediately after durable enqueue, including
+during cold supervisor admission; the status becomes a running timer once a
+run ID is assigned. ToolHub rights decisions allow up to 20 seconds before
+denying on timeout.
 The reconciler re-observes unconfirmed jobs ≥30 s (same run identity, or
 `/v1/readmit` with the atomic `/state/admissions/` receipt — exact input +
 session + idempotency key; receipts <23 h only). A job unsettled past its
@@ -119,7 +123,9 @@ topics supported; slash-command list enforced + registered as bot menu).
 `/usage [session]` reads the journal/quota; session mode reads the pinned
 Hermes session API and renders `unknown` where upstream cannot report.
 Long Telegram turns queue via `display.busy_input_mode: queue`; heartbeat
-`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit.
+`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit. An editable
+status appears at acceptance and ticks through cold start; typing starts after
+admission.
 Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
 `scope.yaml` IDs are immutable; Telegram links are provisioned only in

@@ -84,10 +84,18 @@ func ttsEngine(c Config) (TTSEngine, error) {
 
 type commandSTT struct{ command string }
 
-func (e commandSTT) Transcribe(ctx context.Context, wav string, _ TranscribeOpts) ([]Segment, error) {
-	out, err := exec.CommandContext(ctx, e.command, wav, "audio/wav").Output()
+func (e commandSTT) Transcribe(ctx context.Context, wav string, opts TranscribeOpts) ([]Segment, error) {
+	cmd := exec.CommandContext(ctx, e.command, wav, "audio/wav")
+	if opts.Language != "" {
+		cmd.Env = append(os.Environ(), "HUB_STT_REQUEST_LANGUAGE="+opts.Language)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, errors.New("stt engine failed")
+	}
+	var result serveLine
+	if json.Unmarshal(out, &result) == nil && len(result.Segments) > 0 {
+		return result.Segments, nil
 	}
 	text := strings.TrimSpace(string(out))
 	if text == "" {
@@ -107,13 +115,14 @@ func (e commandSTT) Ready(context.Context) bool { return true }
 
 type serveRequest struct {
 	path    string
+	opts    TranscribeOpts
 	ctx     context.Context
 	respond chan<- serveResponse
 }
 
 type serveResponse struct {
-	text string
-	err  error
+	segments []Segment
+	err      error
 }
 
 type serveWorker struct {
@@ -128,10 +137,10 @@ type serveSTT struct {
 	ready    atomic.Bool
 }
 
-func (e *serveSTT) Transcribe(ctx context.Context, wav string, _ TranscribeOpts) ([]Segment, error) {
+func (e *serveSTT) Transcribe(ctx context.Context, wav string, opts TranscribeOpts) ([]Segment, error) {
 	respond := make(chan serveResponse, 1)
 	select {
-	case e.requests <- serveRequest{path: wav, ctx: ctx, respond: respond}:
+	case e.requests <- serveRequest{path: wav, opts: opts, ctx: ctx, respond: respond}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -139,7 +148,7 @@ func (e *serveSTT) Transcribe(ctx context.Context, wav string, _ TranscribeOpts)
 	if res.err != nil {
 		return nil, res.err
 	}
-	return []Segment{{Text: res.text}}, nil
+	return res.segments, nil
 }
 
 func (e *serveSTT) Ready(context.Context) bool { return e.ready.Load() }
@@ -189,7 +198,14 @@ func (e *serveSTT) serve(req serveRequest, worker **serveWorker, kill func()) se
 			return serveResponse{err: req.ctx.Err()}
 		}
 	}
-	if _, err := io.WriteString((*worker).stdin, req.path+"\n"); err != nil {
+	request, err := json.Marshal(struct {
+		Path     string `json:"path"`
+		Language string `json:"language,omitempty"`
+	}{req.path, req.opts.Language})
+	if err != nil {
+		return serveResponse{err: errors.New("stt engine failed")}
+	}
+	if _, err := io.WriteString((*worker).stdin, string(request)+"\n"); err != nil {
 		kill()
 		return serveResponse{err: errors.New("stt engine failed")}
 	}
@@ -202,10 +218,13 @@ func (e *serveSTT) serve(req serveRequest, worker **serveWorker, kill func()) se
 			}
 			return serveResponse{err: errors.New(line.Error)}
 		}
-		if line.Text == "" {
+		if line.Text == "" && len(line.Segments) == 0 {
 			return serveResponse{err: errors.New("empty transcript")}
 		}
-		return serveResponse{text: line.Text}
+		if len(line.Segments) > 0 {
+			return serveResponse{segments: line.Segments}
+		}
+		return serveResponse{segments: []Segment{{Text: line.Text}}}
 	case <-req.ctx.Done():
 		kill()
 		return serveResponse{err: req.ctx.Err()}
@@ -213,9 +232,10 @@ func (e *serveSTT) serve(req serveRequest, worker **serveWorker, kill func()) se
 }
 
 type serveLine struct {
-	Ready bool   `json:"ready"`
-	Text  string `json:"text"`
-	Error string `json:"error"`
+	Ready    bool      `json:"ready"`
+	Text     string    `json:"text"`
+	Segments []Segment `json:"segments"`
+	Error    string    `json:"error"`
 }
 
 func (w *serveWorker) kill() {

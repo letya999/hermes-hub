@@ -245,6 +245,14 @@ func TestGatewayChannelsFromConfigPassport(t *testing.T) {
 	if got := gatewayEnv["HUB_TTS_URL"]; got != "http://hub-tts:8090" {
 		t.Fatalf("channels.telegram.voice.out must wire the TTS endpoint, got %v", got)
 	}
+	for _, name := range []string{"hub-stt", "hub-tts"} {
+		if _, ok := services[name]; !ok {
+			t.Fatalf("channels.telegram.voice must render %s without a native transcription toolset", name)
+		}
+		if _, ok := Compose(s, root, dir)["volumes"].(M)[name+"-data"]; !ok {
+			t.Fatalf("channels.telegram.voice must render %s data volume", name)
+		}
+	}
 }
 
 // config.supervision renders beside the runtime env as the policy file the

@@ -261,7 +261,7 @@ func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	// The selected tool and the independent config switch must both admit
 	// the section. A disabled switch leaves the tool selected but inert.
 	enabled, disabled := true, false
-	governed := Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
+	governed := Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaToolHub}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
 	if body := governed.channelContract(true); !strings.Contains(body, "memory_card") {
 		t.Fatal("enabled memory space lost the memory guidance")
 	}
@@ -269,8 +269,8 @@ func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	if body := governed.channelContract(true); strings.Contains(body, "memory_card") {
 		t.Fatal("disabled memory kept the memory guidance")
 	}
-	if body := (Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}}).channelContract(true); strings.Contains(body, "memory_card") {
-		t.Fatal("denied memory_vault kept the memory guidance")
+	if body := (Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaOff}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}).channelContract(true); strings.Contains(body, "memory_card") {
+		t.Fatal("disabled memory toolset kept the memory guidance")
 	}
 }
 

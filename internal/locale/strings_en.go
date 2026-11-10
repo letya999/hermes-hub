@@ -191,6 +191,7 @@ func init() {
 		"chat.group-no-secrets":  "Groups do not accept secrets.",
 		"chat.unknown-command":   "Unknown command /%s.\n\n%s",
 		"chat.working":           "Working on it.",
+		"chat.queued":            "Waiting for the agent to start.",
 		"chat.approve-usage":     "Use /approve <job-id> <request-id> <choice>.",
 		"chat.approve-denied":    "Request denied: confirmation unavailable.",
 		"chat.approve-saved":     "Confirmation response saved.",

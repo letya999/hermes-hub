@@ -174,10 +174,23 @@ func runWithContext(ctx context.Context) error {
 		restartNotify.State = store
 	}
 	runBackground(func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		pending := false
-		ticks := 0
+		notify := func() {
+			if restartNotify == nil {
+				return
+			}
+			if targets, err := store.ProjectionRevisions(); err == nil {
+				if err := restartNotify.Notify(targets); err != nil {
+					fmt.Fprintln(os.Stderr, "ToolHub restart notify:", err)
+				}
+			}
+		}
+		// A durable pending revision is reported at startup, not one cadence
+		// later: the revision snapshot reloads the store file, so it runs on
+		// a slower cadence than the projection ticker.
+		notify()
 		for {
 			select {
 			case <-ctx.Done():
@@ -192,17 +205,8 @@ func runWithContext(ctx context.Context) error {
 					pending = false
 				}
 				// list_changed only reaches clients holding an open stream;
-				// the restart marker guarantees the next session reload. The
-				// revision snapshot reloads the store file, so it runs on a
-				// slower cadence than the projection ticker.
-				if restartNotify != nil && ticks%8 == 0 {
-					if targets, err := store.ProjectionRevisions(); err == nil {
-						if err := restartNotify.Notify(targets); err != nil {
-							fmt.Fprintln(os.Stderr, "ToolHub restart notify:", err)
-						}
-					}
-				}
-				ticks++
+				// the restart marker guarantees the next session reload.
+				notify()
 			}
 		}
 	})

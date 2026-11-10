@@ -73,7 +73,7 @@ func (s *Store) EnableCatalog(auth identity.Envelope, definitionID, version, iss
 		digest := api.DefinitionDigest(d)
 		ceilingChanged := false
 		for _, tool := range d.Tools {
-			if tool.CapabilityID == "" || len(tool.Uses) == 0 {
+			if tool.CapabilityID == "" || (len(tool.Uses) == 0 && !api.RemoteExecutor(tool.Executor)) {
 				return api.ToolBinding{}, fmt.Errorf("%w: catalog tool has no capability contract", api.ErrInvalid)
 			}
 			selection := api.CapabilitySelection{CapabilityID: tool.CapabilityID, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version,

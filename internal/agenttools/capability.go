@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.3.2",
+		Version:      "18.3.5",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -185,8 +185,8 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("session_list", "sessions.list", "sessions.list", "List this owner's Telegram task sessions with task ids, titles, state and activity times.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),
 			remote("session_search", "sessions.search", "sessions.search", "Search this owner's task titles and retained model replies; it does not search the full Hermes transcript.", api.ReadEffect, "runtime:sessions", str("query"), intArg("limit", false)),
 			remote("session_read", "sessions.read", "sessions.read", "Read bounded user and assistant messages for an owned task's Hermes session.", api.ReadEffect, "runtime:sessions", str("id"), intArg("offset", false), intArg("limit", false)),
-			remote("session_create", "sessions.create", "sessions.manage", "Create and activate a named owner task session through communication.", api.WriteEffect, "runtime:sessions", str("title")),
-			remote("session_switch", "sessions.switch", "sessions.switch", "Move the active-session pointer; returns switched_to and resumed_from.", api.WriteEffect, "runtime:sessions", str("id")),
+			remote("session_create", "sessions.create", "sessions.manage", "Create and activate a named owner task session for the next turn; the current reply remains in the old session.", api.WriteEffect, "runtime:sessions", str("title")),
+			remote("session_switch", "sessions.switch", "sessions.switch", "Move the active-session pointer for the next turn; returns switched_to, resumed_from and effective_from.", api.WriteEffect, "runtime:sessions", str("id")),
 			remote("session_edit", "sessions.edit", "sessions.manage", "Archive or restore one session of this space; archive keeps the transcript.", api.WriteEffect, "runtime:sessions", str("id"), str("action")),
 			remote("session_remove", "sessions.remove", "sessions.manage", "Remove an owned task's routing record; the upstream transcript remains for audit.", api.WriteEffect, "runtime:sessions", str("id")),
 
@@ -217,8 +217,8 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("web_cache", "web_search.cache", "web.cache", "Inspect, prune or clear this space's web extraction cache.", api.WriteEffect, use("write", "web"), str("action")),
 
 			// ---- sites (3): publishing lifecycle; was hosting
-			tool("site_list", "sites.list", "stack.inspect", "List own hosted sites or show one by id, without share tokens.", api.ReadEffect, use("list", "sites"), opt("id")),
-			tool("site_publish", "sites.publish", "stack.change", "Publish prebuilt workspace files to an own site slot.", api.WriteEffect, append(use("publish", "sites"), use("read", "files", "path")...), str("name"), path, str("request_id"), intArg("expected_revision", true), opt("mode"), opt("access"), opt("profile"), intArg("lifetime_seconds", false), boolArg("authorized", false)),
+			tool("site_list", "sites.list", "stack.inspect", "List allocated site slot names and own hosted sites without share tokens; choose a slot before publishing.", api.ReadEffect, use("list", "sites")),
+			tool("site_publish", "sites.publish", "stack.change", "Publish prebuilt workspace-relative files to a slot returned by site_list; an unallocated slot is a terminal refusal, and replaying a failed publication remains an error.", api.WriteEffect, append(use("publish", "sites"), use("read", "files", "path")...), str("name"), path, str("request_id"), intArg("expected_revision", true), opt("mode"), opt("access"), opt("profile"), intArg("lifetime_seconds", false), boolArg("authorized", false)),
 			tool("site_remove", "sites.remove", "stack.change", "Revoke and remove an own site revision terminally.", api.WriteEffect, use("remove", "sites"), str("name"), str("request_id"), intArg("expected_revision", true)),
 
 			// ---- research (3): async deep-research flow

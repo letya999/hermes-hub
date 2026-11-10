@@ -819,6 +819,12 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
+	if channel == "telegram_bot" {
+		lang := locale.LangOf(user.WorkspaceDir)
+		if err := g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + job.ID + "-status", Channel: channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: chatID, TaskID: task.TaskID, TopicID: task.TopicID, Text: locale.T(lang, "chat.queued") + " · " + formatElapsed(lang, 0), CreatedAt: g.now().UTC()}); err != nil {
+			log.Printf("gateway job_id=%q status=queued_notice_failed", job.ID)
+		}
+	}
 	if job.Trigger == "message" {
 		// Owner work preempts queued goal turns: bump the epoch so pending
 		// continuations no-op at claim (SPEC-0074).
@@ -865,8 +871,8 @@ func (g *Gateway) wakeRuntime(job Job) {
 }
 
 // progressTick refreshes live progress for every non-terminal telegram job:
-// typing is re-armed (it expires after ~5s) and the job's single status
-// message gets a fresh elapsed-time suffix through the durable upsert path,
+// admitted runs re-arm typing (it expires after ~5s), while queued jobs
+// show the wait; both refresh the single status message's elapsed time,
 // so a real stream event or a restarted gateway never duplicates it.
 func (g *Gateway) progressTick(ctx context.Context) {
 	ids, err := g.spool.activeMappingIDs()
@@ -882,17 +888,21 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if ch == nil || !ch.Caps().Typing {
 			continue
 		}
-		// Only an admitted run earns live progress: a queued or wedged job
-		// would farm typing and edits forever with nothing behind them.
 		if m.AssignmentID != "" {
 			continue
 		}
-		if m.RunID == "" {
-			continue
-		}
 		lang := locale.LangOf(g.user(m.PrincipalID).WorkspaceDir)
-		_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
 		base := strings.TrimSpace(m.StatusText)
+		if m.RunID == "" {
+			// A wedged uncertain mapping lost its admission outcome; its
+			// honest state is the uncertain notice — "queued" would lie.
+			if m.Status == "uncertain" {
+				continue
+			}
+			base = locale.T(lang, "chat.queued")
+		} else {
+			_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
+		}
 		if base == "" {
 			base = locale.T(lang, "chat.working")
 		}

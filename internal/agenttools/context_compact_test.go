@@ -151,6 +151,31 @@ func TestContextCompactCrossContextDeny(t *testing.T) {
 	}
 }
 
+func TestContextCompactPreviewReportsUnknownAfterCount(t *testing.T) {
+	t.Setenv("HUB_MANAGED_CONTEXT", `{"compact_engines":["hub"],"compact_engine":"hub"}`)
+	old := compaction.Runner
+	compaction.Runner = func(_ context.Context, req []byte) ([]byte, error) {
+		var call map[string]any
+		_ = json.Unmarshal(req, &call)
+		switch call["op"] {
+		case "estimate_tokens":
+			return []byte(`{"ok":true,"tokens":200000,"message_count":2}`), nil
+		case "read_transcript":
+			return []byte(`{"ok":true,"session_id":"hub-preview","watermark":2,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":"two"}]}`), nil
+		}
+		return []byte(`{"ok":false,"error":"unexpected"}`), nil
+	}
+	t.Cleanup(func() { compaction.Runner = old })
+	out, err := (&Tools{StateDir: t.TempDir()}).ContextCompact(context.Background(), Input{ID: "hub-preview", Preview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := out.(map[string]any)
+	if view["applied"] != false || view["would_method"] != compaction.MethodPruneOnly || view["messages_after"] != nil {
+		t.Fatalf("preview projection: %v", view)
+	}
+}
+
 // Without an explicit id the tool resolves the session holding the turn
 // lease — in-run that is verifiably the caller's own conversation.
 func TestContextCompactResolvesActiveSession(t *testing.T) {

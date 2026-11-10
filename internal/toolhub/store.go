@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"time"
@@ -25,6 +26,8 @@ type Store struct {
 	path                string
 	savedPath           string
 	db                  *sql.DB
+	dbVersion           int64
+	dbFile              os.FileInfo
 	diskDigest          [32]byte
 	diskStamp           storeStamp
 	installationID      string

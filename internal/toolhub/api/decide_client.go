@@ -53,7 +53,7 @@ func (c DecideClient) GrantsRight(ctx context.Context, capability, operation, sc
 	}
 	client := c.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
+		client = &http.Client{Timeout: 20 * time.Second}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/v1/rights/decide", bytes.NewReader(body))
 	if err != nil {

@@ -421,9 +421,12 @@ func (h *Host) authorizeScheduleJob(ctx context.Context, scheduleID string, job 
 		return h.authorizeDreaming(job)
 	}
 	if err := h.authorizeJob(job, scheduleID); err != nil {
-		return err
+		return &routines.ScheduleAuthorizationFailure{Code: "owner_rights_unavailable"}
 	}
-	return h.cfg.AuthorizeChannel(ctx, scheduleID, job)
+	if err := h.cfg.AuthorizeChannel(ctx, scheduleID, job); err != nil {
+		return &routines.ScheduleAuthorizationFailure{Code: "channel_binding_unavailable"}
+	}
+	return nil
 }
 
 // AuthorizeOccurrence re-authorizes a routine-produced delivery at send time:
