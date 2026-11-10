@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,13 @@ import (
 	"github.com/letya999/hermes-hub/internal/systemguide"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+// toolhubNamePrefix is the MCP client-side qualifier agents see on this
+// server's tools. Projected names on the wire are bare, but a name passed
+// back through tool_call/tool_search arguments may carry the qualifier —
+// strip it so the qualified form resolves instead of dead-ending on
+// record-not-found.
+const toolhubNamePrefix = "mcp__toolhub__"
 
 // execRemote runs a remote-executor member behind the PEP (ADR-0094 D2/D6).
 // Remote tools never reach the in-runtime exec channel: runtime:connectors
@@ -76,7 +84,7 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 	case "platform_usage":
 		return body(g.platformUsage(auth, api.ArgString(arguments, "period")))
 	case "tool_search":
-		return body(g.toolsList(auth, api.ArgString(arguments, "query"), api.ArgString(arguments, "name"), 0))
+		return body(g.toolsList(auth, api.ArgString(arguments, "query"), strings.TrimPrefix(api.ArgString(arguments, "name"), toolhubNamePrefix), 0))
 	case "memory_search":
 		return body(g.memorySearch(ctx, auth, arguments))
 	case "memory_read":
@@ -86,9 +94,9 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 	case "memory_open":
 		return body(g.knowledgeOpen(ctx, auth))
 	case "tool_call":
-		name := api.ArgString(arguments, "tool")
+		name := strings.TrimPrefix(strings.TrimSpace(api.ArgString(arguments, "tool")), toolhubNamePrefix)
 		nested, _ := arguments["arguments"].(map[string]any)
-		if strings.TrimSpace(name) == "" {
+		if name == "" {
 			return api.BackendResult{}, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
 		}
 		// A nested call is its own admitted operation: a fresh ToolCallID
@@ -100,7 +108,11 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 		corr.ToolCallID = api.NewToolCallID()
 		out, err := g.mcpCall(api.WithCallCorrelation(ctx, corr), auth, name, nested)
 		if err != nil {
-			return api.BackendResult{IsError: true, Text: err.Error()}, nil
+			text := err.Error()
+			if errors.Is(err, api.ErrNotFound) {
+				text = fmt.Sprintf("%q is not an admitted tool name — run tool_search for admitted extended names; tools already in your list are invoked directly, not via tool_call", name)
+			}
+			return api.BackendResult{IsError: true, Text: text}, nil
 		}
 		return api.BackendResult{IsError: out.IsError, Structured: out.StructuredContent, Content: out.Content}, nil
 	}

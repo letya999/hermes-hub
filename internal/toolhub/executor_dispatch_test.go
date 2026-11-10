@@ -169,6 +169,14 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 		{"platform_usage", map[string]any{}, "unavailable"},
 		{"tool_search", map[string]any{"query": "connector"}, "connector_list"},
 		{"tool_call", map[string]any{"tool": "connector_list", "arguments": map[string]any{}}, "connector"},
+		// Agents see MCP-qualified names (mcp__toolhub__*); passing that form
+		// through the dispatcher must not dead-end on record-not-found.
+		{"tool_call", map[string]any{"tool": "mcp__toolhub__platform_status", "arguments": map[string]any{}}, "tools_admitted"},
+		{"tool_call", map[string]any{"tool": "mcp__toolhub__connector_list", "arguments": map[string]any{}}, "connector"},
+		{"tool_search", map[string]any{"name": "mcp__toolhub__connector_list"}, "connector_list"},
+		// An unknown name must name itself and point at tool_search — a bare
+		// "record not found" gives the model nothing to self-correct from.
+		{"tool_call", map[string]any{"tool": "no_such_tool", "arguments": map[string]any{}}, "not an admitted tool name"},
 	} {
 		res, err = call(tc.name, tc.args)
 		if err != nil {
