@@ -252,16 +252,7 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		if onboarding.Phase == api.PhaseAwaitingConfirm && (onboarding.ConfirmationUsed || !time.Now().Before(onboarding.ConfirmationExpires)) {
-			if _, err := (&toolhub.ControlPlane{Store: registry}).Invoke(ctx, auth, "status", map[string]any{"onboarding_id": *onboardingID}); err != nil {
-				return err
-			}
-			if err := registry.Save(*registryPath); err != nil {
-				return err
-			}
-			onboarding, err = registry.OnboardingFor(auth, *onboardingID)
-			if err != nil {
-				return err
-			}
+			return api.ErrLinkGone
 		}
 		// The link is the whole payload — scripts read it raw. No pending
 		// action prints the phase instead of a dead URL.
@@ -281,7 +272,7 @@ func runConnector(ctx context.Context, args []string) error {
 	facadeTool := map[string]string{
 		"list": "connector_list", "disable": "connector_disable", "enable": "connector_enable",
 		"search": "connector_search", "reauth": "connector_reauth", "remove": "connector_remove",
-		"install": "connector_install", "allow-writes": "connector_allow_writes",
+		"install": "connector_install", "allow-writes": "connector_allow_writes", "resend": "connector_edit",
 	}[args[0]]
 	if args[0] == "status" && *target != "" {
 		facadeTool = "connector_status"
@@ -293,6 +284,9 @@ func runConnector(ctx context.Context, args []string) error {
 		}
 		if *query != "" {
 			facadeArgs["query"] = *query
+		}
+		if args[0] == "resend" {
+			facadeArgs["action"] = "resend"
 		}
 		if args[0] == "allow-writes" {
 			facadeArgs["on"] = *writesOn

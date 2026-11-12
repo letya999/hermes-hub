@@ -1,6 +1,6 @@
 ---
 description: "Версия v1, audiences, errors и отделение секретного runtime-канала."
-last_verified: "2026-11-01"
+last_verified: "2026-11-11"
 ---
 
 # HTTP API и identity contract
@@ -35,6 +35,10 @@ SDK вычисляет hash и подпись: не собирать assertions 
 `POST /v1/credentials/{id}/grants`; `POST /v1/leases` → descriptor.
 `GET /v1/grants/{id}` возвращает владельцу текущий статус grant без секрета и без lease;
 для другого владельца ответ 404. ToolHub проверяет его перед повторным использованием привязки.
+`GET /v1/connections/{id}/credentials` возвращает только метаданные credentials
+этого connection, которыми текущий principal вправе управлять. В список входят
+`revoked` и `deleted` для проверки полного удаления. Чужие записи не возвращаются;
+смена policy version сама по себе не лишает владельца права на очистку.
 
 `POST /v1/contracts` (только `broker:control`) регистрирует collect-and-deliver контракт: без
 routes/OAuth; личный state допускает один JSON-файл до 65536 байт (ADR-0071).

@@ -74,6 +74,20 @@ func TestConnectorStatusReadsOwnedConnectionWithoutOnboarding(t *testing.T) {
 	}
 }
 
+func TestConnectorStatusFindsCatalogNameWithoutOnboarding(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	connection := store.connections["google-work"]
+	connection.DefinitionID = "github-mcp-server"
+	store.connections[connection.ConnectionID] = connection
+	c := &ControlPlane{Store: store}
+	for _, name := range []string{"github", "GitHub", "github-mcp-server"} {
+		status, err := c.connectorStatus(t.Context(), auth, name, "")
+		if err != nil || len(status.Candidates) != 1 || status.Candidates[0].ConnectionID != connection.ConnectionID {
+			t.Fatalf("name %q missed existing connection: %+v %v", name, status, err)
+		}
+	}
+}
+
 func TestConnectorListIncludesOwnedConnectionWithoutOnboarding(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	connection, ok := store.connectionFor("google-work")
@@ -161,6 +175,7 @@ func TestConnectorListDeduplicatesCurrentConnectionWithinCallerScope(t *testing.
 	current := m13P3EnabledOnboarding(t, store, auth)
 	connection, _ := store.connectionFor(current.ConnectionID)
 	current.CredentialRefID = connection.CredentialRefID
+	current.Revision++
 	legacy := current
 	legacy.OnboardingID = "legacy-onboarding"
 	legacy.CredentialRefID = ""

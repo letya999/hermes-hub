@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.3.5",
+		Version:      "18.3.18",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -116,7 +116,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("media_generate", "media.generate", "workspace.write", "Generate an image or submit a video job with the granted provider.", api.WriteEffect, use("generate", "media"), str("name"), str("prompt"), str("kind")),
 			tool("media_edit", "media.edit", "workspace.write", "Edit an image inside the admitted scope with the granted provider.", api.WriteEffect, use("edit", "media", "path"), str("name"), path, str("prompt")),
 			tool("media_fetch", "media.fetch", "workspace.read", "Check one media job by id and stage the finished result under artifacts.", api.ReadEffect, use("fetch", "media"), str("id"), opt("name")),
-			tool("media_transcribe", "media.transcribe", "workspace.read", "Transcribe an audio file inside the admitted scope to text.", api.ReadEffect, use("read", "media", "path"), path, opt("language"), boolArg("timestamps", false)),
+			tool("media_transcribe", "media.transcribe", "workspace.read", "Transcribe audio in this workspace. Use a relative path such as work/voice.wav; /workspace/work/voice.wav resolves to the same admitted file.", api.ReadEffect, use("read", "media", "path"), path, opt("language"), boolArg("timestamps", false)),
 			remote("media_speak", "media.speak", "channels.send_voice", "Queue speech through the active run's channel. Returns a delivery id and queued status; queued is not a sent receipt.", api.WriteEffect, "runtime:channels", str("text"), opt("language")),
 
 			// ---- terminal (2): an isolated agent-image workload and ToolHub
@@ -142,7 +142,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("ssh_tunnel", "ssh.tunnel", "ssh.tunnel", "Open, list or close tunnels through a declared SSH host.", api.WriteEffect, use("tunnel", "ssh"), str("action"), opt("host"), opt("name"), opt("session")),
 
 			// ---- exposure (3): consolidated from 4
-			tool("exposure_list", "exposure.list", "exposure.list", "List live public exposures or show one by id, including uncertain effects requiring reconciliation.", api.ReadEffect, use("list", "exposure"), opt("id")),
+			tool("exposure_list", "exposure.list", "exposure.list", "List declared endpoint names and target classes plus live exposures; optional id filters live exposures. Uncertain effects require reconciliation.", api.ReadEffect, use("list", "exposure"), opt("id")),
 			tool("exposure_create", "exposure.create", "exposure.create", "Open one declared endpoint's public tunnel.", api.WriteEffect, use("create", "exposure"), str("name")),
 			tool("exposure_remove", "exposure.remove", "exposure.remove", "Close one live public exposure; a close still attempts to stop access on audit failure.", api.WriteEffect, use("remove", "exposure"), str("name")),
 
@@ -163,9 +163,9 @@ func HubToolsDefinition() api.ToolDefinition {
 			// ---- assignments (6): plan stays separate, lifecycle via edit
 			tool("assignment_list", "assignments.list", "tasks.delegate", "List the owner's standing assignments: id, title, state, blocked reason, durable counters.", api.ReadEffect, use("list", "assignments"), intArg("limit", false), opt("cursor")),
 			tool("assignment_read", "assignments.read", "tasks.delegate", "Read one assignment card: state, applied schedule receipts, plan revision, grants, checkpoint counters, blocked reason.", api.ReadEffect, use("read", "assignments"), str("id")),
-			tool("assignment_plan", "assignments.plan", "tasks.delegate", "Dry-run a saved draft assignment plan before apply: returns per-source structural verdicts; persists nothing.", api.ReadEffect, use("plan", "assignments"), objArg("plan", true)),
-			tool("assignment_create", "assignments.create", "tasks.delegate", "Save the owner's verbatim intent as a durable draft before checking any sources; grants bound LLM spend.", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), objArg("plan", false), boolArg("queue", false)),
-			tool("assignment_edit", "assignments.edit", "tasks.delegate", "Steer one assignment: update plan, apply, pause, resume, record progress, cancel or complete. Cancel terminates work; removal is assignment_remove.", api.WriteEffect, use("update", "assignments"), str("id"), str("action"), intArg("expected_revision", true), objArg("plan", false), opt("job_id"), opt("summary"), opt("finding"), opt("next_step"), boolArg("complete", false)),
+			tool("assignment_plan", "assignments.plan", "tasks.delegate", "Dry-run a candidate plan object with nonempty sources[].schedule; do not pass assignment_id. Returns structural verdicts, does not fetch sources or save the plan. For a one-time first HTTP read, use watcher with deliver_mode=content; check unchanged needs a prior baseline.", api.ReadEffect, use("plan", "assignments"), objArg("plan", true)),
+			tool("assignment_create", "assignments.create", "tasks.delegate", "Save the owner's verbatim intent as a durable draft. If the owner explicitly requests planning first, call assignment_plan first; do not queue an unverified plan.", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), objArg("plan", false), boolArg("queue", false)),
+			tool("assignment_edit", "assignments.edit", "tasks.delegate", "Update a plan, apply only verified sources, pause/resume an applied assignment, or record progress from its real trigger job with job_id. Do not create standalone watches as assignment substitutes; removal is assignment_remove.", api.WriteEffect, use("update", "assignments"), str("id"), str("action"), intArg("expected_revision", true), objArg("plan", false), opt("job_id"), opt("summary"), opt("finding"), opt("next_step"), boolArg("complete", false)),
 			tool("assignment_remove", "assignments.remove", "tasks.delegate", "Delete one assignment record; does not recall messages already sent.", api.WriteEffect, use("remove", "assignments"), str("id"), intArg("expected_revision", true)),
 
 			// ---- goals (3)
@@ -179,7 +179,7 @@ func HubToolsDefinition() api.ToolDefinition {
 
 			// ---- settings (2)
 			tool("settings_read", "settings.read", "config.read", "Read the active config passport revision, reviewed key allowlist and published setting values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
-			tool("settings_edit", "settings.edit", "config.edit_own", "Publish one reviewed config passport setting against the required base_revision. Empty value removes that authored leaf. Publication reconciles the runtime before success.", api.WriteEffect, use("update", "settings"), str("key"), opt("value"), str("base_revision")),
+			tool("settings_edit", "settings.edit", "config.edit_own", "Publish one reviewed config passport setting against the required base_revision. Empty value removes that authored leaf. Publication may respawn the current runtime and interrupt this turn; do not call when the user requires a same-turn restore or uninterrupted chat.", api.WriteEffect, use("update", "settings"), str("key"), opt("value"), str("base_revision")),
 
 			// ---- sessions (6): hub-runtime SessionStore; unavailable without it
 			remote("session_list", "sessions.list", "sessions.list", "List this owner's Telegram task sessions with task ids, titles, state and activity times.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),
@@ -197,16 +197,16 @@ func HubToolsDefinition() api.ToolDefinition {
 			// ---- skills (3): Agent Skills invocation convention
 			tool("skill", "skills.invoke", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("path")),
 			tool("skill_search", "skills.search", "skills.list", "Search or list the skill catalog: name, source, description, eligibility and usage counters; an empty query lists all.", api.ReadEffect, use("read", "skills"), opt("query"), intArg("limit", false), opt("source"), intArg("offset", false)),
-			tool("skill_edit", "skills.edit", "skills.draft", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org/install/update/install_local/check_updates/configure. Every mutating action returns a draft with diff, lint and scan.", api.WriteEffect, use("manage", "skills"),
+			tool("skill_edit", "skills.edit", "skills.draft", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org/install/update/install_local/check_updates/configure. Stage local SKILL.md with file_write, then pass its /workspace-relative path to install_local. Every mutating action returns a draft with diff, lint and scan.", api.WriteEffect, use("manage", "skills"),
 				str("action"), str("name"), opt("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
 
 			// ---- connectors (5): ToolHub connector control; credentials never
 			// travel through tool args or results.
 			remote("connector_search", "connectors.search", "connectors.discover", "Search the connector catalog by name and kind; returns connector ids and availability.", api.ReadEffect, "runtime:connectors", opt("query"), opt("kind"), intArg("limit", false)),
-			remote("connector_list", "connectors.list", "connectors.discover", "List connectors visible to this space with their status.", api.ReadEffect, "runtime:connectors"),
-			remote("connector_status", "connectors.status", "connectors.discover", "Show one connector's status; verbose adds diagnostics.", api.ReadEffect, "runtime:connectors", str("name"), boolArg("verbose", false)),
+			remote("connector_list", "connectors.list", "connectors.discover", "List owned connections and onboarding records, including stale owner cleanup targets, with their recorded status.", api.ReadEffect, "runtime:connectors"),
+			remote("connector_status", "connectors.status", "connectors.discover", "Read connector state by exact onboarding or operation ID, including the channel's durable delivery_status for the current notice. link_sent means queued, not delivered; uncertain or unknown must not be called a delivered message. Status does not contact providers, renew links or send messages.", api.ReadEffect, "runtime:connectors", str("name"), boolArg("verbose", false)),
 			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector candidate from connector_search; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("version")),
-			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable, disable, allow_writes, reauth (returns a protected URL only) or remove.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
+			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable; disable use without deleting credentials; revoke authorization; allow_writes; reauth to open protected credential entry even while setup awaits confirmation; resend the current setup notice or enabled browser viewer link by exact onboarding or operation ID; remove an owned connection or stale onboarding after protected owner confirmation. Never request credentials in chat.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
 
 			// ---- web: hub-side web provider relay; cataloged names over
 			// the space's configured search/fetch backends
@@ -222,9 +222,9 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("site_remove", "sites.remove", "stack.change", "Revoke and remove an own site revision terminally.", api.WriteEffect, use("remove", "sites"), str("name"), str("request_id"), intArg("expected_revision", true)),
 
 			// ---- research (3): async deep-research flow
-			remote("research_create", "research.create", "research.create", "Start an async deep-research job on a topic; returns a job id.", api.WriteEffect, "flow:deep_research", str("topic"), opt("depth"), arrArg("sources", false)),
-			remote("research_read", "research.read", "research.read", "Read a research job's status and report reference.", api.ReadEffect, "flow:deep_research", str("id")),
-			remote("research_list", "research.list", "research.read", "List research jobs of this space.", api.ReadEffect, "flow:deep_research", intArg("limit", false)),
+			remote("research_create", "research.create", "research.create", "Queue an owner-scoped, bounded deep-research model job; returns job_id and queued status, not a completed report.", api.WriteEffect, "flow:deep_research", str("topic"), opt("depth"), arrArg("sources", false)),
+			remote("research_read", "research.read", "research.read", "Read an owned research job's actual status and final cited report after completion.", api.ReadEffect, "flow:deep_research", str("id")),
+			remote("research_list", "research.list", "research.read", "List owned research jobs and statuses, without report bodies.", api.ReadEffect, "flow:deep_research", intArg("limit", false)),
 
 			// ---- browser (4): curated names over the browser connector
 			tool("browser_open", "browser.open", "browser.open", "Open a browser session on a URL under the user or guest profile; returns a session id.", api.WriteEffect, use("open", "browser"), str("url"), opt("profile")),

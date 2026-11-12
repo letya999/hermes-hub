@@ -4,11 +4,81 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+func TestRuntimeEnrollmentFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	if err := writeFileInPlace(path, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileInPlace(path, []byte("{}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("enrollment update replaced the bind-mounted inode")
+	}
+	if runtime.GOOS != "windows" && after.Mode().Perm() != 0640 {
+		t.Fatalf("shared service enrollment mode=%o, want 640", after.Mode().Perm())
+	}
+}
+
+func TestAutomationRoutingUsesEnrolledPolicy(t *testing.T) {
+	dir := t.TempDir()
+	config := "organization_id: personal\nusers:\n  - id: bob\n    enabled: true\n    runtime_id: bob\n    policy_version: policy-stale\n    telegram_ids: [22]\n"
+	if err := os.WriteFile(filepath.Join(dir, "communication.users.yaml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := identity.TelegramEnvelope("bob", 22, "bob", "policy-current")
+	body, err := json.Marshal(map[string]identity.Envelope{strings.Repeat("b", 64): env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "toolhub-tokens.json")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderAutomationRouting(dir, Settings{Environment: "dev", User: "alice"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	routed, err := os.ReadFile(filepath.Join(dir, "automation-routing", "dev.json"))
+	if err != nil || !strings.Contains(string(routed), `"policy_version":"policy-current"`) || strings.Contains(string(routed), "policy-stale") {
+		t.Fatal("routing did not use enrolled policy")
+	}
+	duplicate := identity.TelegramEnvelope("bob", 22, "bob", "policy-other")
+	body, _ = json.Marshal(map[string]identity.Envelope{strings.Repeat("b", 64): env, strings.Repeat("c", 64): duplicate})
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderAutomationRouting(dir, Settings{Environment: "dev", User: "alice"}, nil); err == nil {
+		t.Fatal("ambiguous enrollment published routing")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderAutomationRouting(dir, Settings{Environment: "dev", User: "alice"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	routed, err = os.ReadFile(filepath.Join(dir, "automation-routing", "dev.json"))
+	if err != nil || !strings.Contains(string(routed), `"enabled":false`) {
+		t.Fatal("missing enrollment left sibling route enabled")
+	}
+}
 
 func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	root := t.TempDir()

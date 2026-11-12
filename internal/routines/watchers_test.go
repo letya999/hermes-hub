@@ -195,6 +195,27 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	}
 }
 
+func TestOneShotWatcherFinishesProbeAfterScheduleRetires(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	item := commodel.Schedule{ScheduleID: "w-once", Revision: 1, Envelope: env, Channel: "telegram_bot", Expression: "once:2026-10-18T12:00:00Z", Timezone: "UTC", Paused: true, NotifyMode: "agent", DeliverMode: "content", JobKind: "watcher", Probe: &commodel.WatchProbe{Kind: "http", URL: "https://example.com"}}
+	if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID}); err != nil {
+		t.Fatal(err)
+	}
+	o := watchOccurrence(item.ScheduleID, "watcher", item.Revision, env, now)
+	putOccurrenceState(t, e, root, o, "probing")
+	if err := e.SettleProbe(o, item, "verified page", WatchHash("verified page"), now, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readOccurrence(t, root, o).State; got != "dispatched" || len(d.jobs) != 1 {
+		t.Fatalf("retired one-shot lost its in-flight probe: state=%s jobs=%d", got, len(d.jobs))
+	}
+}
+
 func TestAssignmentWatcherWakeUsesCurrentToolNames(t *testing.T) {
 	e, d, root := newWatcherTest(t)
 	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")

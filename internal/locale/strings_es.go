@@ -119,11 +119,12 @@ func init() {
 		"mcp.step4-started":   "MCP: paso 4/4 — arranco el workload y conecto las herramientas sin reinicio.",
 		"mcp.invoke-check":    "MCP conectado — compruebo la llamada real del proveedor.",
 
-		"routines.watch-no-success":  "sin comprobaciones exitosas",
-		"routines.watch-unavailable": "• %s: fuente no disponible; últimos datos %s",
-		"routines.no-changes":        "No hay cambios nuevos.",
-		"routines.unavailable-count": " Fuentes no disponibles: %d.",
-		"routines.blocked":           "La rutina «%s» se detuvo: %s. Ábrela con routine_get, corrígela y haz resume — o elimínala.",
+		"routines.watch-no-success":   "sin comprobaciones exitosas",
+		"routines.watch-unavailable":  "• %s: fuente no disponible; últimos datos %s",
+		"routines.no-changes":         "No hay cambios nuevos.",
+		"routines.origin-unavailable": "El origen de la rutina no está disponible.",
+		"routines.unavailable-count":  " Fuentes no disponibles: %d.",
+		"routines.blocked":            "La rutina «%s» se detuvo: %s. Ábrela con routine_get, corrígela y haz resume — o elimínala.",
 
 		"form.title":             "Credenciales de Hermes",
 		"form.heading":           "Configuración protegida del conector",

@@ -217,6 +217,8 @@ func TestSettingsEditCrashRestoresAuthoredAndPublished(t *testing.T) {
 	root, dir, previous := settingsSpace(t, true)
 	oldBody, _ := os.ReadFile(filepath.Join(dir, "passports", "config.yaml"))
 	value := "true"
+	respawns := 0
+	respawn := func() error { respawns++; return nil }
 	prior := applyStep
 	stopped := false
 	applyStep = func(step string) {
@@ -227,14 +229,17 @@ func TestSettingsEditCrashRestoresAuthoredAndPublished(t *testing.T) {
 	t.Cleanup(func() { applyStep = prior })
 	func() {
 		defer func() { stopped = recover() != nil }()
-		_, _ = runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, nil)
+		_, _ = runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, respawn)
 	}()
 	applyStep = prior
 	if !stopped {
 		t.Fatal("settings edit did not stop after authored write")
 	}
-	if err := recoverApply(context.Background(), dir, root, "dev", applyHandlers(context.Background(), dir, root, "dev")); err != nil {
-		t.Fatal(err)
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, respawn); err == nil || !strings.Contains(err.Error(), "interrupted apply recovered") {
+		t.Fatalf("settings edit did not recover interrupted publication: %v", err)
+	}
+	if respawns != 2 {
+		t.Fatalf("recovery did not replay publisher respawn: %d", respawns)
 	}
 	current, err := passport.Current(dir)
 	if err != nil || current != previous {

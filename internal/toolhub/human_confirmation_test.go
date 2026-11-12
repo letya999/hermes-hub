@@ -18,10 +18,17 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
+func humanConsentContext(t *testing.T, control *ControlPlane, id string) context.Context {
+	t.Helper()
+	o := mustOnboarding(t, control.Store, id)
+	proof := api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.ConfirmationNonce, Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.ConfirmationExpires}
+	return context.WithValue(t.Context(), humanConfirmationKey{}, proof)
+}
+
 func finishAsHuman(t *testing.T, control *ControlPlane, id string) {
 	t.Helper()
 	o := mustOnboarding(t, control.Store, id)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.ConfirmationNonce, Revision: o.Revision, ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.ConfirmationNonce, Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,9 +70,13 @@ func TestEnableResumesConsumedHumanConfirmationAfterAdmissionFailure(t *testing.
 	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err == nil {
 		t.Fatal("unconfirmed onboarding enabled")
 	}
-	proof := api.HumanConfirmation{OnboardingID: on.OnboardingID, Actor: auth, Nonce: on.ConfirmationNonce, Revision: on.Revision, ActionDigest: api.ConfirmationActionDigest(on), ExpiresAt: on.ConfirmationExpires}
+	proof := api.HumanConfirmation{OnboardingID: on.OnboardingID, Actor: auth, Nonce: on.ConfirmationNonce, Revision: api.ConfirmationRevision(on), ActionDigest: api.ConfirmationActionDigest(on), ExpiresAt: on.ConfirmationExpires}
 	if _, err := store.ConsumeHumanConfirmation(proof, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+	status, err := control.connectorStatus(t.Context(), auth, on.OnboardingID, "")
+	if err != nil || status.NextAction != "enable" {
+		t.Fatalf("consumed consent has no resumable action: %+v %v", status, err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err != nil {
 		t.Fatalf("verified consent could not resume: %v", err)
@@ -100,7 +111,7 @@ func TestManagedRevocationWinsHumanConfirmation(t *testing.T) {
 			}
 			store.capabilityProfiles[profile.ProfileID], store.capabilityPolicies[policy.PolicyID] = profile, policy
 			g := &Gateway{Store: store, Control: &ControlPlane{Store: store}, ControlToken: testHumanControlToken, Tokens: map[string]identity.Envelope{aliceToken: auth}}
-			body, _ := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: onboardingEnvelope(record), Nonce: record.ConfirmationNonce, Revision: record.Revision, ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+			body, _ := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: onboardingEnvelope(record), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
 			req := httptest.NewRequest(http.MethodPost, "/v1/confirmations", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+testHumanControlToken)
 			rec := httptest.NewRecorder()
@@ -194,7 +205,7 @@ func TestHumanActorConsentIsDurableBeforeMaterialization(t *testing.T) {
 		t.Error("onboarding disappeared before effect")
 		return nil
 	}
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: record.Revision, ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +256,7 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 				token = aliceToken
 			case "phase":
 				record.Phase = api.PhaseDisabled
+				record.Revision++
 				if err := fix.store.PutOnboarding(record); err != nil {
 					t.Fatal(err)
 				}
@@ -393,7 +405,7 @@ func TestHumanConfirmationStorageFailureIsNotAuthorizationDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	record = mustOnboarding(t, fix.store, record.OnboardingID)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: record.Revision, ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +450,7 @@ func TestHumanConfirmationWritesControlAudit(t *testing.T) {
 		fields = f
 		return nil
 	}
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: record.Revision, ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +482,7 @@ func TestHumanConfirmationRejectsOversizedAndTrailingJSON(t *testing.T) {
 			t.Fatal(err)
 		}
 		record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-		body, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: record.Revision, ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+		body, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
 		if err != nil {
 			t.Fatal(err)
 		}

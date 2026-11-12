@@ -55,6 +55,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	root := f.String("root", ".", "source root")
 	env := f.String("env", "prod", "dev or prod")
 	confirm := f.Bool("confirm", false, "publish the compiled revision and reconcile; default prints the classified diff receipt")
+	recoverRebuiltImage := f.Bool("recover-rebuilt-image", false, "")
 	_ = f.Bool("json", false, "accepted for symmetry; output is always the JSON receipt")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -88,7 +89,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := recoverApply(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, rootAbs, *env)); err != nil {
+	if err := recoverApplyWithRebuiltImage(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, rootAbs, *env), *recoverRebuiltImage); err != nil {
 		return fmt.Errorf("%s: %w", locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"), err)
 	}
 	docs, err := catalog.Generate()
@@ -235,7 +236,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		return writeApplyJournal(abs, record)
 	}
 	rollback := func() error {
-		return restoreApplyState(abs, rootAbs, record)
+		return retryApplyRestore(func() error { return restoreApplyState(abs, rootAbs, record) })
 	}
 	fail := func(stage string, cause error) (reconcile.Report, error) {
 		restored := rollback()

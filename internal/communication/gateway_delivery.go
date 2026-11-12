@@ -275,6 +275,9 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	if err != nil || delivery == nil {
 		return
 	}
+	if suppressed, err := g.spool.suppressOldPrepareSending(*delivery); err != nil || suppressed {
+		return
+	}
 	delivery.Lang = g.deliveryLang(delivery)
 	_ = g.spool.UpdateSending(*delivery)
 	if delivery.OccurrenceID != "" {

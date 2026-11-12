@@ -2,8 +2,10 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -73,6 +75,9 @@ func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	if !strings.HasPrefix(controller["user"].(string), "10001:") || len(controller["ports"].([]string)) != 0 {
 		t.Fatal("controller contract")
 	}
+	if groups, ok := controller["group_add"].([]string); !ok || len(groups) != 1 || groups[0] != fmt.Sprint(dockerSocketGID("/var/run/docker.sock")) {
+		t.Fatal("hosting controller lacks Docker socket group")
+	}
 	runtime := services["hermes-runtime"].(M)
 	for _, mount := range runtime["volumes"].([]any) {
 		m, ok := mount.(M)
@@ -109,6 +114,20 @@ func TestHostingReviewedConfigAndPrivateController(t *testing.T) {
 	}
 	if err := writeHostingFiles(dir, s); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{"hosting.prod.json", "hosting-controller.prod.json"} {
+			info, err := os.Stat(filepath.Join(dir, "generated", name))
+			if err != nil || info.Mode().Perm() != 0644 {
+				t.Fatalf("%s is unreadable by hosting uid: %v", name, err)
+			}
+		}
+		for _, name := range []string{"hosting.prod.key", "hosting-controller.prod.key"} {
+			info, err := os.Stat(filepath.Join(dir, "runtime", name))
+			if err != nil || info.Mode().Perm() != 0640 {
+				t.Fatalf("%s is not limited to the service group: %v", name, err)
+			}
+		}
 	}
 	cfg, err := hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
 	if err != nil || cfg.Owner != "alice" || cfg.Domain != "hub.example.com" {

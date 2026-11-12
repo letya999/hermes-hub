@@ -16,19 +16,22 @@ import (
 )
 
 type ControlPlane struct {
-	Store          *Store
-	Secrets        credstore.Backend
-	Reviewer       api.SourceReviewer
-	SourceResolver api.SourceResolver
-	RecipeCatalogs []api.RecipeCatalog
-	OAuth          *oauth.Broker
-	Injector       api.CredentialInjector
-	admissionMu    sync.Mutex
-	oauthFlows     oauthFlowStore
-	Now            func() time.Time
-	Listen         string
-	FormOrigin     string
-	WorkloadRoot   string
+	Store             *Store
+	Secrets           credstore.Backend
+	Reviewer          api.SourceReviewer
+	SourceResolver    api.SourceResolver
+	RecipeCatalogs    []api.RecipeCatalog
+	OAuth             *oauth.Broker
+	Injector          api.CredentialInjector
+	admissionMu       sync.Mutex
+	admissionInFlight map[string]chan struct{}
+	lifecycleMu       sync.Mutex
+	lifecycleTasks    map[string]bool
+	oauthFlows        oauthFlowStore
+	Now               func() time.Time
+	Listen            string
+	FormOrigin        string
+	WorkloadRoot      string
 	// CredentialStagingRoot is the tmpfs root where per-call credential
 	// material stages (HUB_CRED_STAGING). When set and different from
 	// WorkloadRoot, binding cleanup removes the staging workspace too.
@@ -184,27 +187,7 @@ func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args 
 	if err != nil {
 		return nil, err
 	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth {
-		definition, err := c.definitionOf(onboarding)
-		if err != nil {
-			return nil, err
-		}
-		resend, _ := args["resend"].(bool)
-		return c.ensurePreparedOAuth(context.Background(), auth, onboarding, definition, resend)
-	}
-	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
-		return nil, err
-	}
-	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
-		return nil, err
-	}
-	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
-		return nil, err
-	}
-	if resend, _ := args["resend"].(bool); resend && onboarding.Phase == api.PhaseAwaitingConfirm {
-		// A resend asks for a fresh message carrying the live confirm link.
-		api.DeliverPrepareEvent(ctx, auth, onboarding, "link-resent")
-	}
+
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -423,7 +406,7 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 				return nil, err
 			}
 			// The user confirms through the channel link, not a tool argument.
-			api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+			c.deliverOutcomeNotice(ctx, auth, &onboarding)
 			body := c.statusBody(onboarding, false)
 			body["requires_confirmation"] = true
 			body["next_action"] = "confirm_remove"
@@ -435,14 +418,30 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	}
 	// Keep the spent nonce as a tombstone: a replayed link matches it and gets
 	// a 410 "fresh link" page instead of an opaque 401.
-	if len(onboarding.Finalizers) == 0 {
-		// Immediate cut before the destructive ladder: the binding leaves the
-		// projection and the connection drops to deleting (non-active ⇒
-		// Authorize denies) while finalizers purge the footprint.
-		if err := c.revokeAccess(onboarding, api.DeletingStatus); err != nil {
+	if len(onboarding.Finalizers) > 0 && onboarding.Phase != api.PhaseCleanupIncomplete {
+		// Earlier versions marked the connection deleting before recording the
+		// cleanup phase. Resume those durable ladders through the same fence.
+		onboarding.Phase = api.PhaseCleanupIncomplete
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
+	}
+	if len(onboarding.Finalizers) == 0 {
+		// Fence late callbacks durably before external cleanup starts.
+		onboarding.Phase = api.PhaseCleanupIncomplete
 		onboarding.Finalizers = newRemoveLadder()
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
+			return nil, err
+		}
+	}
+	// Repeat the local authorization cut after a crash or storage failure;
+	// the canonical cleanup phase already denies dispatch in resolveLocked.
+	if err := c.revokeAccess(onboarding, api.DeletingStatus); err != nil {
+		return nil, err
+	}
+	if onboarding.RemoveFootprint == nil && c.LabelQuery != nil {
 		onboarding.RemoveFootprint = c.labelFootprint(ctx, onboarding)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -563,7 +562,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		body["credentials"] = hints
 	}
 	switch onboarding.Phase {
-	case api.PhasePreparing:
+	case api.PhasePreparing, api.PhaseVerifying, api.PhaseRetryScheduled:
 		body["next_action"] = "poll_status"
 	case api.PhaseFailed:
 		body["next_action"] = "retry"
@@ -592,6 +591,9 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "await_user_confirmation"
+		if onboarding.ConfirmationUsed && onboarding.HumanConsent != nil && onboarding.HumanConsent.ActionDigest == api.ConfirmationActionDigest(onboarding) {
+			body["next_action"] = "enable"
+		}
 	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
 	case api.PhaseConfirmed:
@@ -605,7 +607,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	if onboarding.ErrorCode != "" {
 		body["error_code"] = onboarding.ErrorCode
 	}
-	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
+	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion && !onboarding.ConfirmationUsed {
 		body["confirmation_sent"] = true
 	}
 	if onboarding.Phase == api.PhaseEnabled {

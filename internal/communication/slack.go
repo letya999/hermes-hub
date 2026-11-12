@@ -197,6 +197,10 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if !ok {
 		return errors.New("unmapped slack sender")
 	}
+	user = g.user(user.ID)
+	if !user.Enabled {
+		return errors.New("unavailable slack route")
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil

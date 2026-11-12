@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,12 +53,20 @@ func prepareRoute() (string, string) {
 }
 
 func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
+	url, _ := PostPrepareNoticeWithDelivery(ctx, auth, onboarding, event, tools)
+	return url
+}
+
+// PostPrepareNoticeWithDelivery distinguishes a queued notice from a channel
+// sign-in link: ordinary confirmation notices have no login_url.
+func PostPrepareNoticeWithDelivery(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) (string, bool) {
 	base, token := prepareRoute()
 	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
-		return ""
+		return "", false
 	}
 	payload := map[string]any{
 		"onboarding_id":     onboarding.OnboardingID,
+		"notice_version":    onboarding.NoticeVersion,
 		"phase":             onboarding.Phase,
 		"definition_id":     onboarding.DefinitionID,
 		"contract_id":       onboarding.BrokerContractID,
@@ -66,8 +75,8 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
-	if onboarding.Phase == PhaseAwaitingConfirm {
-		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.ConfirmationNonce, Revision: onboarding.Revision, ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires}
+	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.RemoveNonce == "" {
+		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.ConfirmationNonce, Revision: ConfirmationRevision(onboarding), ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires}
 	}
 	// The reviewed contract declares how credentials may be collected; the
 	// channel offers that intake (e.g. QR login) instead of sniffing ids.
@@ -81,11 +90,56 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	}
 	if event != "" {
 		payload["event"] = event
+		if event == "link-resent" {
+			id := onboarding.NoticeEventID
+			if id == "" {
+				id = RandomNonce()
+			}
+			payload["event_id"] = id
+		}
 	}
 	if tools > 0 {
 		payload["tools"] = tools
 	}
-	return preparePost(ctx, auth, base, token, payload)
+	return preparePostResult(ctx, auth, base, token, payload)
+}
+
+// ReadPrepareDeliveryStatus checks the channel's persisted outcome, never the
+// mere acknowledgement that a notice entered its queue.
+func ReadPrepareDeliveryStatus(ctx context.Context, auth identity.Envelope, onboardingID string, version uint64) string {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || onboardingID == "" || version == 0 {
+		return PrepareDeliveryUnknown
+	}
+	query := url.Values{"onboarding_id": {onboardingID}, "notice_version": {strconv.FormatUint(version, 10)}}
+	callCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, base+"/v1/prepare-delivery-status?"+query.Encode(), nil) // #nosec G704 -- internal control endpoint
+	if err != nil {
+		return PrepareDeliveryUnknown
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
+	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
+	if err != nil {
+		return PrepareDeliveryUnknown
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return PrepareDeliveryUnknown
+	}
+	var result struct {
+		DeliveryStatus string `json:"delivery_status"`
+	}
+	if json.NewDecoder(response.Body).Decode(&result) != nil {
+		return PrepareDeliveryUnknown
+	}
+	switch result.DeliveryStatus {
+	case PrepareDeliveryUnknown, PrepareDeliveryQueued, PrepareDeliveryDelivered, PrepareDeliveryUncertain:
+		return result.DeliveryStatus
+	default:
+		return PrepareDeliveryUnknown
+	}
 }
 
 // preparePost ships one prepared payload to the channel's prepare-outcome
@@ -93,15 +147,20 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 // one. A missing route or a failed post is silent — callers stay honest in
 // their own result instead.
 func preparePost(ctx context.Context, auth identity.Envelope, base, token string, payload map[string]any) string {
+	url, _ := preparePostResult(ctx, auth, base, token, payload)
+	return url
+}
+
+func preparePostResult(ctx context.Context, auth identity.Envelope, base, token string, payload map[string]any) (string, bool) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		return ""
+		return "", false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -109,12 +168,12 @@ func preparePost(ctx context.Context, auth identity.Envelope, base, token string
 	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
 		log.Printf("toolhub prepare outcome delivery failed onboarding=%v: %v", payload["onboarding_id"], err)
-		return ""
+		return "", false
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		log.Printf("toolhub prepare outcome delivery onboarding=%v status=%d", payload["onboarding_id"], response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
-		return ""
+		return "", false
 	}
 	// The channel returns the sign-in link it minted for this request (QR
 	// invite and friends); callers may surface it in the tool result.
@@ -122,49 +181,22 @@ func preparePost(ctx context.Context, auth identity.Envelope, base, token string
 		LoginURL string `json:"login_url"`
 	}
 	_ = json.NewDecoder(response.Body).Decode(&outcome)
-	return outcome.LoginURL
+	return outcome.LoginURL, true
 }
 
 // DeliverViewerLink posts the one-time browser viewer link to the owner's
 // channel. The URL never enters a tool result — only the notice carries it.
 func DeliverViewerLink(ctx context.Context, auth identity.Envelope, connectionID, viewerURL string) {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
+	_ = DeliverViewerLinkWithDelivery(ctx, auth, connectionID, viewerURL)
+}
+
+func DeliverViewerLinkWithDelivery(ctx context.Context, auth identity.Envelope, connectionID, viewerURL string) bool {
+	base, token := prepareRoute()
 	if base == "" || auth.PrincipalID == "" || connectionID == "" || viewerURL == "" {
-		return
+		return false
 	}
-	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
-	if token == "" {
-		if strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "" {
-			token = os.Getenv("HUB_SUPERVISOR_AUTH")
-		} else {
-			token = os.Getenv("HUB_RUNTIME_AUTH")
-		}
-	}
-	if token == "" {
-		return
-	}
-	body, err := json.Marshal(map[string]any{"connection_id": connectionID, "viewer_url": viewerURL})
-	if err != nil {
-		return
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
-	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
-	if err != nil {
-		log.Printf("toolhub viewer link delivery failed connection=%s: %v", connectionID, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub viewer link delivery connection=%s status=%d", connectionID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
-	}
+	_, queued := preparePostResult(ctx, auth, base, token, map[string]any{"connection_id": connectionID, "viewer_url": viewerURL})
+	return queued
 }
 
 // ViewerLinkURL renders the owner-only viewer address on the public form
@@ -192,6 +224,9 @@ func credentialNoticeURL(onboarding Onboarding) string {
 // so elicitation and notices never disagree about which link is live.
 func ActionURL(origin string, onboarding Onboarding) string {
 	if onboarding.OnboardingID == "" {
+		return ""
+	}
+	if onboarding.Phase == PhaseCleanupIncomplete {
 		return ""
 	}
 	// A live remove link outranks other pending actions: the preview mints it

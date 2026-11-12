@@ -119,6 +119,16 @@ func TestExposureOpenViaToolCall(t *testing.T) {
 func TestExposureListStatusCloseViaToolCall(t *testing.T) {
 	v, provider := exposureFixture(t)
 	ctx := context.Background()
+	initial, err := v.Call(ctx, "exposure_list", Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(initial.(map[string]any)["declared_endpoints"].([]map[string]string)); got != 2 {
+		t.Fatalf("declared endpoints before any open = %d", got)
+	}
+	if got := len(initial.(map[string]any)["tunnels"].([]map[string]any)); got != 0 {
+		t.Fatalf("live tunnels before any open = %d", got)
+	}
 	if _, err := v.Call(ctx, "exposure_open", Input{Name: "demo"}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +136,17 @@ func TestExposureListStatusCloseViaToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	endpoints, ok := list.(map[string]any)["declared_endpoints"].([]map[string]string)
+	if !ok || len(endpoints) != 2 || endpoints[0]["name"] != "demo" || endpoints[0]["target_kind"] != "service" || endpoints[1]["name"] != "onboarding" || endpoints[1]["target_kind"] != "hub_public_listener" {
+		t.Fatalf("declared endpoints: %+v", list)
+	}
 	tunnels, ok := list.(map[string]any)["tunnels"].([]map[string]any)
 	if !ok || len(tunnels) != 1 || tunnels[0]["public_name"] != "demo.alice.hub.example.com" {
 		t.Fatalf("list: %+v", list)
+	}
+	filtered, err := v.Call(ctx, "exposure_list", Input{ID: "onboarding"})
+	if err != nil || len(filtered.(map[string]any)["tunnels"].([]map[string]any)) != 0 {
+		t.Fatal("exposure_list id filter included another live endpoint")
 	}
 	status, err := v.Call(ctx, "exposure_status", Input{Name: "demo"})
 	if err != nil {

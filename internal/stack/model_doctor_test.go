@@ -24,7 +24,7 @@ func TestDoctorUsesPublishedModelGuidance(t *testing.T) {
 	}
 }
 
-func TestModelRegistryReadableByRelayGroup(t *testing.T) {
+func TestModelRegistryReadableByRelayUID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix bind permission contract")
 	}
@@ -36,12 +36,51 @@ func TestModelRegistryReadableByRelayGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := filepath.Join(dir, "generated", "model-registry", "prod")
-		for path, want := range map[string]os.FileMode{root: 0770, filepath.Join(root, "models.yaml"): 0640} {
+		for path, want := range map[string]os.FileMode{root: 0755, filepath.Join(root, "models.yaml"): 0644} {
 			info, err := os.Stat(path)
 			if err != nil || info.Mode().Perm() != want {
 				t.Fatalf("relay bind permissions: %s want=%o err=%v", filepath.Base(path), want, err)
 			}
 		}
+	}
+}
+
+func TestControllerConfigReadableByServiceUID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix bind permission contract")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "runtime"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeToolHubFiles(dir, Settings{User: "alice", Environment: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]os.FileMode{"generic-controller.json": 0644, "generic-controller.key": 0640} {
+		info, err := os.Stat(filepath.Join(dir, "runtime", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s: mode=%v want=%o", name, info.Mode().Perm(), want)
+		}
+	}
+}
+
+func TestSupervisorEnvFileReadableByServiceGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix bind permission contract")
+	}
+	path := filepath.Join(t.TempDir(), "managed-runtime.dev.env")
+	if err := os.WriteFile(path, []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := allowServiceGroupRead(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0640 {
+		t.Fatalf("supervisor cannot read env file: %v", err)
 	}
 }
 

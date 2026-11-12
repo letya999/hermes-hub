@@ -62,6 +62,12 @@ func TestToolCallReturnsText(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Text != "price: 42" || out.IsError {
 		t.Fatalf("tool call body: %s", w.Body)
 	}
+	g.Backend = api.RoutingBackend{MCP: stubBackend{structured: map[string]any{"slots": []string{"m32test"}, "sites": []any{}}}}
+	w = call("alice-principal-token-0000000000000", "", `{"tool":"`+tool+`","arguments":{"q":"price"}}`)
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Text != `{"sites":[],"slots":["m32test"]}` || out.IsError {
+		t.Fatalf("structured-only tool call: %d %s", w.Code, w.Body)
+	}
+	g.Backend = api.RoutingBackend{MCP: backend}
 	// The control-plane bearer reaches the same tool through X-Hub-Principal.
 	w = call("control-plane-token-which-is-32-chars!", "alice", `{"tool":"`+tool+`"}`)
 	if w.Code != http.StatusOK {
@@ -179,14 +185,15 @@ func TestToolCallRejectsForeignHeaderAndUnknown(t *testing.T) {
 }
 
 type stubBackend struct {
-	text    string
-	isError bool
-	err     error
+	text       string
+	structured map[string]any
+	isError    bool
+	err        error
 }
 
 func (b stubBackend) Call(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
 	if b.err != nil {
 		return api.BackendResult{}, b.err
 	}
-	return api.BackendResult{Text: b.text, IsError: b.isError}, nil
+	return api.BackendResult{Text: b.text, Structured: b.structured, IsError: b.isError}, nil
 }

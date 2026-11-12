@@ -139,10 +139,10 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 	c.oauthFlows.mu.Lock()
 	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
 	c.oauthFlows.mu.Unlock()
-	resumed, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID})
+	resumed, err := c.ensurePreparedOAuth(t.Context(), auth, on, d, false)
 	newRaw := providerAuthURLOf(t, store, on.OnboardingID)
 	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || newRaw == "" || newRaw == authURL.String() {
-		t.Fatal("status did not reissue lost OAuth link", err)
+		t.Fatal("explicit handoff did not reissue lost OAuth link", err)
 	}
 	authURL, _ = url.Parse(newRaw)
 	state := authURL.Query().Get("state")

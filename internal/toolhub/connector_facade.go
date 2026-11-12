@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -30,17 +31,28 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 			tool = "connector_enable"
 		case "disable":
 			tool = "connector_disable"
+		case "revoke":
+			tool = "connector_revoke"
 		case "allow_writes":
 			tool = "connector_allow_writes"
 		case "reauth":
 			tool = "connector_reauth"
+		case "resend":
+			tool = "connector_resend"
 		case "remove":
 			tool = "connector_remove"
 		default:
-			return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "connector_edit action must be enable|disable|allow_writes|reauth|remove"}, nil
+			return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "connector_edit action must be enable|disable|revoke|allow_writes|reauth|resend|remove"}, nil
 		}
 	}
-	if err := c.Store.RequireConnectorTool(auth, selectedTool, tool, args); err != nil {
+	authorityTool := tool
+	if tool == "connector_resend" {
+		authorityTool = "connector_reauth" // same protected-link authority; no new grant shape
+	}
+	if tool == "connector_revoke" {
+		authorityTool = "connector_remove"
+	}
+	if err := c.Store.RequireConnectorTool(auth, selectedTool, authorityTool, args); err != nil {
 		return api.OperationResult{}, err
 	}
 	var result api.OperationResult
@@ -51,17 +63,25 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	case "connector_search":
 		result, err = c.connectorSearch(ctx, auth, api.ArgString(args, "query"), api.ArgString(args, "kind"))
 	case "connector_status":
-		result, err = c.connectorStatus(ctx, auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
+		target, operationID := api.ArgString(args, "target"), api.ArgString(args, "operation_id")
+		if operationID == "" && strings.HasPrefix(target, "op-") {
+			operationID, target = target, ""
+		}
+		result, err = c.connectorStatus(ctx, auth, target, operationID)
 	case "connector_install":
 		result, err = c.connectorInstall(ctx, auth, args)
 	case "connector_enable":
 		result, err = c.connectorPhase(ctx, auth, args, api.OpIntentEnable)
 	case "connector_disable":
 		result, err = c.connectorPhase(ctx, auth, args, api.OpIntentDisable)
+	case "connector_revoke":
+		result, err = c.connectorPhase(ctx, auth, args, api.OpIntentRevoke)
 	case "connector_remove":
 		result, err = c.connectorRemove(ctx, auth, args)
 	case "connector_reauth":
 		result, err = c.connectorReauth(ctx, auth, args)
+	case "connector_resend":
+		result, err = c.connectorResend(ctx, auth, args)
 	case "connector_allow_writes":
 		result, err = c.connectorAllowWrites(ctx, auth, args)
 	default:
@@ -71,6 +91,10 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	// typed team denial — report it as the stable not_permitted code.
 	if errors.Is(err, ErrTeamConnectionTarget) {
 		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: tool}, nil
+	}
+	var ambiguous *ErrAmbiguousTarget
+	if errors.As(err, &ambiguous) {
+		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Candidates: ambiguous.Candidates, Summary: "choose an exact connector id"}, nil
 	}
 	return result, err
 }
@@ -84,11 +108,16 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 	represented := map[string]bool{}
 	selected := map[string]api.Onboarding{}
 	for _, o := range c.Store.onboardings {
-		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion {
+		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID {
 			continue
 		}
 		if o.Phase == api.PhaseRemoved || o.Phase == api.PhaseRevoked || o.SupersededBy != "" {
 			continue
+		}
+		if o.PolicyVersion != auth.PolicyVersion {
+			if _, live := c.Store.connections[o.ConnectionID]; live {
+				continue
+			}
 		}
 		key := "onboarding:" + o.OnboardingID
 		if connection, ok := c.Store.connections[o.ConnectionID]; ok && connection.Owner.Matches(auth) {
@@ -108,6 +137,7 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 		candidate := api.OperationCandidate{
 			ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode,
 			DefinitionID: o.DefinitionID, OnboardingPhase: o.Phase,
+			ObservedAt: o.ObservedAt, ObservationCode: o.ObservationCode,
 		}
 		if definition, ok := c.Store.definitions[definitionKey(o.DefinitionID, o.DefinitionVersion)]; ok {
 			candidate.Transport = string(definition.Transport)
@@ -165,13 +195,19 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 	}, nil
 }
 
-// connectorSearch runs the same discovery pipeline as discover: prepared
-// entries plus configured registries, with selectable candidate ids minted
-// so connector_install can take the choice directly.
+// connectorSearch resolves exact prepared names locally; broader queries use
+// the discovery pipeline with selectable registry candidates.
 func (c *ControlPlane) connectorSearch(ctx context.Context, auth identity.Envelope, query, kind string) (api.OperationResult, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return api.OperationResult{}, fmt.Errorf("%w: search query required", api.ErrInvalid)
+	}
+	if entries, err := api.PreparedCatalog(); err == nil {
+		for _, entry := range entries {
+			if query == strings.ToLower(entry.ID) || query == strings.ToLower(entry.Name) {
+				return api.OperationResult{State: api.OpStateDone, Candidates: []api.OperationCandidate{{ID: entry.ID, Source: entry.Source.Repository, Kind: "prepared"}}, Summary: "1 match(es)"}, nil
+			}
+		}
 	}
 	body, err := c.discover(ctx, auth, query)
 	if err != nil {
@@ -199,9 +235,15 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 		}
 		result := api.OperationResult{OperationID: op.OperationID, State: op.State, Code: op.ErrorCode, Summary: op.Intent + " " + op.Target}
 		if op.OnboardingID != "" {
-			if onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID); err == nil {
-				if op.Intent == api.OpIntentInstall {
-					result.State = connectorOnboardingState(onboarding.Phase)
+			onboarding, err := c.reconcileConnectorOnboarding(ctx, auth, op.OnboardingID)
+			if err != nil && !errors.Is(err, api.ErrNotFound) {
+				return api.OperationResult{}, err
+			}
+			if err == nil {
+				result.NextAction = api.ArgString(c.statusBody(onboarding, false), "next_action")
+				result.ObservedAt, result.ObservationCode = onboarding.ObservedAt, onboarding.ObservationCode
+				if op.Intent == api.OpIntentInstall || op.Intent == api.OpIntentReauth {
+					result.State = connectorOnboardingOperationState(onboarding)
 					if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus {
 						result.State = api.OpStateAwaitingUser
 						result.Summary += " degraded"
@@ -213,6 +255,7 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 				}
 				result.Finalizers = onboarding.Finalizers
 				result.Receipt = onboarding.RemoveReceipt
+				c.observeNoticeDelivery(ctx, auth, onboarding, &result)
 				// A sibling's completed ladder sweeps this record to removed
 				// without running its own finalizers — the connector is gone,
 				// so the journaled operation is done regardless of its arm
@@ -231,41 +274,60 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 			if listErr != nil {
 				return api.OperationResult{}, listErr
 			}
+			matches := make([]api.OperationCandidate, 0, 1)
 			for _, candidate := range inventory.Candidates {
-				if candidate.ConnectionID != "" && candidate.ConnectionID == target {
-					return api.OperationResult{
-						State: api.OpStateDone, Candidates: []api.OperationCandidate{candidate},
-						Summary: candidate.DefinitionID + " " + string(candidate.ConnectionStatus),
-					}, nil
+				if candidate.ConnectionID != "" && (candidate.ConnectionID == target || strings.EqualFold(candidate.DefinitionID, target)) {
+					matches = append(matches, candidate)
 				}
 			}
+			if len(matches) == 0 {
+				entries, catalogErr := api.PreparedCatalog()
+				if catalogErr == nil {
+					for _, entry := range entries {
+						if !strings.EqualFold(entry.ID, target) && !strings.EqualFold(entry.Name, target) {
+							continue
+						}
+						for _, candidate := range inventory.Candidates {
+							if candidate.ConnectionID != "" && strings.EqualFold(candidate.DefinitionID, sourceBasename(entry.Source.Repository)) {
+								matches = append(matches, candidate)
+							}
+						}
+					}
+				}
+			}
+			if len(matches) == 1 {
+				candidate := matches[0]
+				return api.OperationResult{
+					State: api.OpStateDone, Candidates: matches,
+					Summary: candidate.DefinitionID + " " + string(candidate.ConnectionStatus),
+				}, nil
+			}
+			if len(matches) > 1 {
+				return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Candidates: matches, Summary: "ambiguous connector"}, nil
+			}
 			if onboarding, lookupErr := c.resolveOnboarding(auth, map[string]any{"selector": target}); lookupErr == nil {
-				return api.OperationResult{State: connectorOnboardingState(onboarding.Phase), Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
+				return api.OperationResult{State: connectorOnboardingOperationState(onboarding), Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
+			}
+			for _, candidate := range inventory.Candidates {
+				if candidate.ID == target && candidate.ConnectionID == "" {
+					return api.OperationResult{State: connectorOnboardingState(candidate.OnboardingPhase), Candidates: []api.OperationCandidate{candidate}, Summary: candidate.DefinitionID + " " + candidate.OnboardingPhase}, nil
+				}
 			}
 		}
 		return api.OperationResult{}, err
 	}
-	onboarding, err := c.Store.OnboardingFor(auth, resolved.OnboardingID)
+	onboarding, err := c.reconcileConnectorOnboarding(ctx, auth, resolved.OnboardingID)
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	state := connectorOnboardingState(onboarding.Phase)
+	state := connectorOnboardingOperationState(onboarding)
 	phase := onboarding.Phase
 	if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus {
 		state, phase = api.OpStateAwaitingUser, string(connection.Status)
 	}
-	// Browser connectors mint the owner viewer link on status: the nonce
-	// travels only on the channel notice, never inside the tool result.
-	if resolved.ConnectionID != "" {
-		if connection, ok := c.Store.connectionFor(resolved.ConnectionID); ok && connection.Status == api.ActiveStatus {
-			if definition, derr := c.Store.definitionForConnection(connection); derr == nil && definition.Execution.EgressClass == api.EgressWeb {
-				if nonce, _, merr := c.Store.MintViewerLink(auth, connection.ConnectionID, resolved.OnboardingID, c.now(), c.ttl()); merr == nil {
-					api.DeliverViewerLink(ctx, auth, connection.ConnectionID, api.ViewerLinkURL(connection.ConnectionID, nonce))
-				}
-			}
-		}
-	}
-	result := api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + phase}
+
+	result := api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + phase, NextAction: api.ArgString(c.statusBody(onboarding, false), "next_action"), ObservedAt: onboarding.ObservedAt, ObservationCode: onboarding.ObservationCode}
+	c.observeNoticeDelivery(ctx, auth, onboarding, &result)
 	inventory, err := c.connectorList(auth)
 	if err != nil {
 		return api.OperationResult{}, err
@@ -279,9 +341,132 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 	return result, nil
 }
 
+func (c *ControlPlane) observeNoticeDelivery(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, result *api.OperationResult) {
+	if onboarding.NoticeVersion == 0 {
+		return
+	}
+	if onboarding.NoticeQueuedVersion < onboarding.NoticeVersion {
+		result.DeliveryStatus = api.PrepareDeliveryNotQueued
+		return
+	}
+	result.LinkSent = true // Accepted by the gateway; delivery is reported separately.
+	result.DeliveryStatus = api.ReadPrepareDeliveryStatus(ctx, auth, onboarding.OnboardingID, onboarding.NoticeVersion)
+	switch result.DeliveryStatus {
+	case api.PrepareDeliveryUncertain:
+		result.Code = api.OpCodeDeliveryUnavailable
+		result.NextAction = "resend"
+	case api.PrepareDeliveryUnknown:
+		result.Code = api.OpCodeDeliveryUnavailable
+		result.NextAction = "retry_status"
+	}
+}
+
+func (c *ControlPlane) reconcileConnectorOnboarding(ctx context.Context, auth identity.Envelope, id string) (api.Onboarding, error) {
+	return c.Store.OnboardingFor(auth, id)
+}
+
+// connectorResend posts the existing protected setup link as a fresh channel
+// notice. It never creates a second onboarding or asks for credential values.
+func (c *ControlPlane) connectorResend(ctx context.Context, auth identity.Envelope, args map[string]any) (api.OperationResult, error) {
+	target := strings.TrimSpace(api.ArgString(args, "target"))
+
+	onboardingID := ""
+	if strings.HasPrefix(target, "op-") {
+		op, err := c.Store.OperationFor(auth, target)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		onboardingID = op.OnboardingID
+	} else {
+		exact, err := c.Store.OnboardingFor(auth, target)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		onboardingID = exact.OnboardingID
+	}
+	onboarding, err := c.reconcileConnectorOnboarding(ctx, auth, onboardingID)
+	if err != nil {
+		return api.OperationResult{}, err
+	}
+	previousNoticeVersion := onboarding.NoticeVersion
+	if onboarding.Phase == api.PhaseEnabled && onboarding.ConnectionID != "" {
+		connection, ok := c.Store.connectionFor(onboarding.ConnectionID)
+		if ok && connection.Status == api.ActiveStatus {
+			definition, err := c.Store.definitionForConnection(connection)
+			if err == nil && definition.Execution.EgressClass == api.EgressWeb {
+				nonce, _, err := c.Store.MintViewerLink(auth, connection.ConnectionID, onboarding.OnboardingID, c.now(), c.ttl())
+				if err != nil {
+					return api.OperationResult{}, err
+				}
+				queued := api.DeliverViewerLinkWithDelivery(ctx, auth, connection.ConnectionID, api.ViewerLinkURL(connection.ConnectionID, nonce))
+				result := api.OperationResult{State: api.OpStateDone, LinkSent: queued, Summary: onboarding.DefinitionID}
+				if !queued {
+					result.State, result.Code = api.OpStateFailed, api.OpCodeDeliveryUnavailable
+				}
+				return result, nil
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if onboarding.ConfirmationUsed {
+		return api.OperationResult{}, api.ErrConflict
+	}
+	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
+		if err := c.reconcileBrokerReady(ctx, auth, &onboarding); err != nil {
+			return api.OperationResult{}, err
+		}
+		onboarding, err = c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		if onboarding.Phase == api.PhaseVerifying || onboarding.Phase == api.PhaseRetryScheduled {
+			return api.OperationResult{State: api.OpStateRunning, Code: onboarding.ErrorCode, Summary: onboarding.DefinitionID, ObservedAt: onboarding.ObservedAt}, nil
+		}
+	}
+	if onboarding.Phase == api.PhaseAwaitingCreds {
+		if err := c.regenerateBrokerRequest(ctx, auth, &onboarding); err != nil {
+			return api.OperationResult{}, err
+		}
+		if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
+			return api.OperationResult{}, err
+		}
+	}
+	if onboarding.Phase == api.PhaseAwaitingOAuth {
+		definition, err := c.definitionOf(onboarding)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		if _, err := c.ensurePreparedOAuth(ctx, auth, onboarding, definition, false); err != nil {
+			return api.OperationResult{}, err
+		}
+		onboarding, err = c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+	}
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
+		return api.OperationResult{}, err
+	}
+	state := connectorOnboardingOperationState(onboarding)
+	if state != api.OpStateAwaitingUser && state != api.OpStateAwaitingConfirm {
+		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "no pending setup link"}, nil
+	}
+	if onboarding.NoticeVersion > previousNoticeVersion && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion {
+		return api.OperationResult{State: state, LinkSent: true, Summary: onboarding.DefinitionID}, nil
+	}
+	if err := c.Store.RequestOnboardingNotice(auth, onboarding.OnboardingID); err != nil {
+		return api.OperationResult{}, err
+	}
+	if queued := c.deliverOnboardingNotice(ctx, auth, onboarding.OnboardingID); !queued {
+		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeDeliveryUnavailable, Summary: "setup link could not be queued"}, nil
+	}
+	return api.OperationResult{State: state, Summary: "setup link queued for " + onboarding.OnboardingID, LinkSent: true}, nil
+}
+
 func connectorOnboardingState(phase string) string {
 	switch phase {
-	case api.PhasePreparing:
+	case api.PhasePreparing, api.PhaseReview, api.PhaseVerifying, api.PhaseRetryScheduled, api.PhaseConfirmed:
 		return api.OpStateRunning
 	case api.PhaseAwaitingCreds, api.PhaseAwaitingOAuth:
 		return api.OpStateAwaitingUser
@@ -296,4 +481,11 @@ func connectorOnboardingState(phase string) string {
 
 func connectorToolContract(name string) (string, map[string]any) {
 	return "connector tool " + name, map[string]any{"type": "object", "additionalProperties": true}
+}
+
+func connectorOnboardingOperationState(o api.Onboarding) string {
+	if o.Phase == api.PhaseAwaitingConfirm && o.ConfirmationUsed {
+		return api.OpStateRunning
+	}
+	return connectorOnboardingState(o.Phase)
 }

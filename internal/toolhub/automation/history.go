@@ -47,6 +47,18 @@ func historyKey(job commodel.Job) routineHistoryKey {
 	return routineHistoryKey{OccurrenceID: job.ID, Channel: job.Channel, Target: job.DeliveryTargetID, TaskID: job.TaskID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, ChatID: job.ChatID, TopicID: job.TopicID}
 }
 
+func historyMappingMatchesOccurrence(mapping commodel.JobMapping, o commodel.RoutineOccurrence) bool {
+	job := o.Job
+	admitted := job
+	admitted.ConversationID = routines.RoutineConversation(o.ScheduleID)
+	if mapping.MatchesJob(admitted) {
+		return true
+	}
+	// A probe wake adds evidence to the admitted prompt, so the original
+	// occurrence cannot reproduce its text fingerprint for read-only history.
+	return (o.JobKind == "watcher" || o.JobKind == "check") && mapping.JobID == job.ID && mapping.IdempotencyKey == job.IdempotencyKey && mapping.PrincipalID == job.PrincipalID && mapping.ContextID == job.ContextID && mapping.RuntimeID == job.RuntimeID && mapping.PolicyVersion == job.PolicyVersion && mapping.ConversationID == routines.RoutineConversation(o.ScheduleID) && mapping.DeliveryTargetID == job.DeliveryTargetID && mapping.Channel == job.Channel && mapping.ChatID == job.ChatID && mapping.TaskID == job.TaskID && mapping.TopicID == job.TopicID && mapping.AssignmentID == job.AssignmentID
+}
+
 func (h *Host) RoutineHistory(ctx context.Context, auth identity.Envelope, id string) ([]routineHistoryEntry, error) {
 	card, err := h.RoutineCard(ctx, auth, id)
 	if err != nil {
@@ -124,10 +136,8 @@ func (h *Host) RoutineHistory(ctx context.Context, auth identity.Envelope, id st
 				}
 				item.Run = routineRun{ID: o.Job.ID, Revision: o.Revision, DueAt: o.DueAt, Kind: o.JobKind, State: o.State}
 				if mapping, ok := mappings[o.Job.ID]; ok {
-					admitted := o.Job
-					admitted.ConversationID = routines.RoutineConversation(o.ScheduleID)
 					item.Run.ExecutionState = "unavailable"
-					if mapping.MatchesJob(admitted) && mapping.TaskID == o.Job.TaskID && mapping.TopicID == o.Job.TopicID {
+					if historyMappingMatchesOccurrence(mapping, o) && mapping.TaskID == o.Job.TaskID && mapping.TopicID == o.Job.TopicID {
 						item.Run.ExecutionState = mapping.Status
 					}
 				}

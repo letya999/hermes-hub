@@ -59,7 +59,7 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		}
 		seed = "remote-mcp:" + draft.DefinitionID + "@" + draft.Version + ":" + draft.Source.URL + ":" + strings.Join(credKey, ",") + ":" + strings.Join(allowlist, ",")
 	}
-	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, seed)
+	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, seed)
 	if existing, err := c.Store.onboarding(onboardingID); err == nil && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
 		if err := c.refreshCredentialForm(ctx, auth, &existing); err != nil {
 			return nil, err
@@ -73,7 +73,7 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		draft.Tools = api.RemotePlaceholders(allowlist)
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: onboardingID,
-			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
 			Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingCreds, SourceURL: draft.Source.URL,
 			DefinitionID: draft.DefinitionID, DefinitionVersion: draft.Version,
 			Required: api.RemoteCredentialHints(credentials), AdmissionPending: true,
@@ -125,6 +125,7 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	}
 	copyDef := definition
 	onboarding.Definition = &copyDef
+	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
 	}

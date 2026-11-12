@@ -56,7 +56,16 @@ func runSettingsEdit(ctx context.Context, dir, root, environment, key string, va
 	if !locked {
 		return nil, errors.New("settings edit: another apply is in progress")
 	}
-	if _, err := os.Stat(applyJournalPath(dir)); err == nil || !errors.Is(err, os.ErrNotExist) {
+	recoveryHandlers := applyHandlers(context.Background(), dir, root, environment)
+	if respawn != nil {
+		recoveryHandlers.Respawn = respawn
+	}
+	if _, err := os.Stat(applyJournalPath(dir)); err == nil {
+		if err := recoverApply(context.Background(), dir, root, environment, recoveryHandlers); err != nil {
+			return nil, fmt.Errorf("settings edit: %w", err)
+		}
+		return nil, errors.New("settings edit: interrupted apply recovered; retry with current revision")
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, errors.New("settings edit: interrupted apply needs recovery")
 	}
 	current, err := passport.Current(dir)
@@ -131,6 +140,9 @@ func runSettingsEdit(ctx context.Context, dir, root, environment, key string, va
 		handlers.Respawn = respawn
 	}
 	if _, err := applyConfirm(ctx, dir, root, environment, candidate, current, actions, handlers, authoredConfigUpdate{Before: before, After: after}); err != nil {
+		if _, statErr := os.Stat(applyJournalPath(dir)); statErr == nil {
+			err = errors.Join(err, recoverApply(context.Background(), dir, root, environment, recoveryHandlers))
+		}
 		return nil, fmt.Errorf("settings edit: %w", err)
 	}
 	return map[string]any{"published_revision": candidate.ID, "previous_revision": current, "changed": true}, nil

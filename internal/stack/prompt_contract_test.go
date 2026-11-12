@@ -88,6 +88,12 @@ func TestChannelContractUsesR5ToolNames(t *testing.T) {
 	}
 }
 
+func TestChannelContractWarnsSettingsCanInterruptTurn(t *testing.T) {
+	if !strings.Contains(ChannelContract, "settings edit may respawn") || !strings.Contains(ChannelContract, "same-turn restore") {
+		t.Fatal("settings guidance must protect same-turn restoration")
+	}
+}
+
 // The contract steers project creation to project_create: file_write never
 // mints a new top-level project directory (SPEC-0092 R5.3).
 func TestChannelContractGuidesProjectCreate(t *testing.T) {

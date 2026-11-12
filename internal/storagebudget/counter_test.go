@@ -13,6 +13,17 @@ import (
 func testLimits() Limits {
 	return Limits{Bytes: 8192, Files: 64, NextWrite: 4096, LifecycleBytes: 1024, LifecycleFiles: 4}
 }
+
+func TestVanishedChildOnlySkipsRemovedEntries(t *testing.T) {
+	root := t.TempDir()
+	if !vanishedChild(root, filepath.Join(root, "rolled-audit.jsonl"), &os.PathError{Op: "stat", Err: os.ErrNotExist}) {
+		t.Fatal("removed child must not abort a live directory scan")
+	}
+	if vanishedChild(root, root, os.ErrNotExist) || vanishedChild(root, filepath.Join(root, "child"), os.ErrPermission) {
+		t.Fatal("missing root and permission errors must still fail closed")
+	}
+}
+
 func newCounter(t *testing.T) *Counter {
 	t.Helper()
 	c, err := New(t.TempDir(), testLimits())

@@ -79,7 +79,7 @@ func TestConnectorSurfaceR5Names(t *testing.T) {
 		}
 		return text
 	}
-	for _, action := range []string{"enable", "disable", "allow_writes", "reauth", "remove"} {
+	for _, action := range []string{"enable", "disable", "revoke", "allow_writes", "reauth", "resend", "remove"} {
 		if text := callText(t, "connector_edit", map[string]any{"name": "nonexistent", "action": action}); strings.Contains(text, "unknown connector tool") {
 			t.Fatalf("connector_edit action %q not multiplexed: %s", action, text)
 		}

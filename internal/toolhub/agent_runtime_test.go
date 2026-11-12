@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -81,6 +82,55 @@ func TestAgentRuntimePreflightReleasesFenceAndReauthorizes(t *testing.T) {
 				t.Fatal("missing binding")
 			}
 		})
+	}
+}
+
+func TestAgentRuntimeDispatchDoesNotPinRegistry(t *testing.T) {
+	store := NewStore()
+	definition := agentDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if _, err := store.Enable(auth, definition.DefinitionID, definition.Version); err != nil {
+		t.Fatal(err)
+	}
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	gateway := &Gateway{Store: store, AuditWrite: func(string, map[string]string) error { return nil }, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		close(entered)
+		<-release
+		return api.BackendResult{Text: "ok"}, nil
+	})}
+	gateway.acquireRuntime = func(context.Context, api.EffectiveBinding) (func(), error) { return func() {}, nil }
+	go func() {
+		_, err := gateway.CallAuthorized(t.Context(), auth, api.ProjectedToolName(definition.DefinitionID, definition.Version, "file_read"), map[string]any{"path": "probe.txt"})
+		finished <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("tool backend did not start")
+	}
+	if !store.mu.TryLock() {
+		close(release)
+		t.Fatal("long agent tool call pinned the registry")
+	}
+	store.mu.Unlock()
+	decided := make(chan struct{})
+	go func() {
+		_, _ = store.Decide(auth, "models", "use", "", time.Now())
+		close(decided)
+	}()
+	select {
+	case <-decided:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("rights decision blocked behind agent tool")
+	}
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
 	}
 }
 

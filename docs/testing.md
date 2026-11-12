@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-11-07
+last_verified: 2026-11-11
 ---
 
 # Testing
@@ -69,6 +69,13 @@ supervisor canary namespaces its runtime and control bridges; fixture
 ToolHub/model DNS aliases must never enter a deployment network. Cold-start
 budgets include the four-minute supervisor readiness allowance plus
 execution; warm-path checks keep tighter bounds.
+The managed supervisor canary also declares a synthetic exposure endpoint,
+then calls `exposure_list` through real ToolHub admission and the private
+executor in the spawned container. It requires one declared endpoint and zero
+open tunnels; it never dials the external relay. `just docker-check` and CI's
+managed container gate run this check against their exact image. After a dev
+rollout, repeat a read-only `exposure_list` against the selected owner's live
+ToolHub binding; the canary does not prove any real relay accepts a tunnel.
 
 ## E2E runner
 

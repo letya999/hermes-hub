@@ -83,7 +83,7 @@ func runCapability(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := toolhub.Load(absolute)
+	store, err := loadOperatorStore(absolute)
 	create := errors.Is(err, os.ErrNotExist)
 	if err != nil && !create {
 		return err
@@ -91,6 +91,7 @@ func runCapability(args []string) error {
 	if create {
 		store = toolhub.NewStore()
 	}
+	defer func() { _ = store.CloseDB() }()
 	var id string
 	var revision uint64
 	var status api.Status
@@ -147,36 +148,40 @@ func runCapability(args []string) error {
 		if *principal == "" || *contextID == "" || *runtimeID == "" || *policyVersion == "" {
 			return errors.New("agent-tools requires --principal, --context, --runtime and --policy-version (or HUB_* equivalents)")
 		}
-		// The built-in catalog is compiled into this binary and reviewed with
-		// the release; installing it is still an explicit operator act on the
-		// protected store, and the binding carries only operator-supplied
-		// identity (never model arguments).
-		definition := agenttools.HubToolsDefinition()
-		if *definitionVersion != "" {
-			// Repin onto an already-registered immutable definition —
-			// a managed profile pins the exact reviewed version, so a
-			// policy-rotation repair must bind that version, not the
-			// binary's compiled catalog.
-			stored, err := store.Definition(definition.DefinitionID, *definitionVersion)
-			if err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				_ = store.CloseDB()
+				store, err = loadOperatorStore(absolute)
+				if err != nil {
+					return err
+				}
+			}
+			// The built-in catalog is compiled into this binary and reviewed with
+			// the release; binding carries only operator-supplied identity.
+			definition := agenttools.HubToolsDefinition()
+			if *definitionVersion != "" {
+				stored, err := store.Definition(definition.DefinitionID, *definitionVersion)
+				if err != nil {
+					return err
+				}
+				definition = stored
+			} else if err := store.RegisterDefinition(definition); err != nil {
 				return err
 			}
-			definition = stored
-		} else if err := store.RegisterDefinition(definition); err != nil {
-			return err
-		}
-		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
-			ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "operator", DeliveryTargetID: "operator", PolicyVersion: *policyVersion}
-		binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
-		if err != nil {
-			return err
-		}
-		if create {
-			if err := store.Save(absolute); err != nil {
+			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
+				ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "operator", DeliveryTargetID: "operator", PolicyVersion: *policyVersion}
+			binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+			if create && err == nil {
+				err = store.Save(absolute)
+			}
+			if err == nil {
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
+			}
+			if create || !retryableStoreConflict(err) || attempt == 2 {
 				return err
 			}
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
+		return api.ErrConflict
 	}
 	if *kind == "policy" {
 		var record api.CapabilityPolicy
@@ -240,6 +245,10 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 }
 
 func writeAtomic(path string, body []byte) error {
+	return writeAtomicMode(path, body, 0600)
+}
+
+func writeAtomicMode(path string, body []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".workspace-*")
 	if err != nil {
 		return err
@@ -247,6 +256,10 @@ func writeAtomic(path string, body []byte) error {
 	name := tmp.Name()
 	defer os.Remove(name)
 	if _, err = tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}

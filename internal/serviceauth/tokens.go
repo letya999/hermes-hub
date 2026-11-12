@@ -59,3 +59,19 @@ func ReadTokenEnvelopes(path string) (map[string]identity.Envelope, error) {
 	}
 	return ParseTokenEnvelopes(body)
 }
+
+// EnrolledPolicy returns the one current policy for a sibling principal.
+// Ambiguous or mismatched enrollments are never used for routing.
+func EnrolledPolicy(entries map[string]identity.Envelope, principal, runtime string) (string, bool) {
+	policy := ""
+	for _, env := range entries {
+		if env.PrincipalID != principal {
+			continue
+		}
+		if env.RuntimeID != runtime || env.PolicyVersion == "" || policy != "" {
+			return "", false
+		}
+		policy = env.PolicyVersion
+	}
+	return policy, policy != ""
+}

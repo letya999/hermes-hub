@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +15,45 @@ import (
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
+	"github.com/letya999/hermes-hub/internal/storagebudget"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+func TestApplyJournalReadableBySupervisorGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file modes")
+	}
+	dir := t.TempDir()
+	if err := writeApplyJournal(dir, applyJournal{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(applyJournalPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0640 {
+		t.Fatalf("journal mode=%#o, want 0640", got)
+	}
+}
+
+func TestRetryApplyRestoreOnlySnapshotConflict(t *testing.T) {
+	conflict := errors.Join(storagebudget.ErrUnavailable, api.ErrConflict)
+	attempts := 0
+	if err := retryApplyRestore(func() error {
+		attempts++
+		if attempts < 3 {
+			return conflict
+		}
+		return nil
+	}); err != nil || attempts != 3 {
+		t.Fatalf("snapshot restore retry: attempts=%d err=%v", attempts, err)
+	}
+	attempts = 0
+	if err := retryApplyRestore(func() error { attempts++; return errors.New("not a snapshot conflict") }); err == nil || attempts != 1 {
+		t.Fatalf("non-retryable restore: attempts=%d err=%v", attempts, err)
+	}
+}
 
 func recoveryRevisions(t *testing.T, overrides map[string]string) (string, string, passport.Revision, string) {
 	t.Helper()
@@ -343,5 +380,29 @@ func TestApplyRecoveryRefusesUncertainImageBuild(t *testing.T) {
 	}
 	if _, err := os.Stat(applyJournalPath(dir)); err != nil {
 		t.Fatal("uncertain image build discarded its journal")
+	}
+}
+
+func TestApplyRecoveryVerifiedImageBuildReplaysEffects(t *testing.T) {
+	root, dir, next, oldID := recoveryRevisions(t, nil)
+	record := applyJournal{Environment: "dev", Previous: oldID, Revision: next.ID, PreviousProfile: "alice-default",
+		NextProfile: "alice-default", Phase: "effects", Actions: []reconcile.Action{
+			{Kind: reconcile.Rebuild, Target: "model-relay"},
+			{Kind: reconcile.Recreate, Target: "model-relay"},
+		}}
+	if err := writeApplyJournal(dir, record); err != nil {
+		t.Fatal(err)
+	}
+	recreated := 0
+	if err := recoverApplyWithRebuiltImage(context.Background(), dir, root, "dev", reconcile.Handlers{
+		Recreate: func(string) error { recreated++; return nil },
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := passport.Current(dir); err != nil || current != oldID || recreated != 1 {
+		t.Fatalf("verified recovery current=%q recreate=%d err=%v", current, recreated, err)
+	}
+	if _, err := os.Stat(applyJournalPath(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified recovery retained journal: %v", err)
 	}
 }

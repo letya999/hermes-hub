@@ -18,7 +18,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-// A resend request on status rotates the armed OAuth flow and posts a
+// An explicit handoff resend rotates the armed OAuth flow and posts a
 // link-resent event so the gateway drops a FRESH message at the bottom of
 // chat — the standing status message still edits to the new state, so every
 // link on screen stays valid. The rotated state must never reach the result.
@@ -78,7 +78,7 @@ func TestPreparedOAuthResendPostsFreshLink(t *testing.T) {
 		return api.CredentialInjection{Environment: map[string]string{entry.OAuth.ClientInput: "/run/mcp-secrets/google/client.json"}, Mounts: []api.Mount{{Source: clientFile, Target: "/run/mcp-secrets/google/client.json", ReadOnly: true}, {Source: stateDir, Target: entry.StateTarget}}}, nil
 	}}
 	c.oauthFlows.flows = map[string]*preparedOAuthFlow{"st-old": {onboardingID: on.OnboardingID, url: oldURL, expires: time.Now().Add(time.Hour)}}
-	body, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID, "resend": true})
+	body, err := c.ensurePreparedOAuth(t.Context(), auth, on, d, true)
 	if err != nil {
 		t.Fatal(err)
 	}

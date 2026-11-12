@@ -11,7 +11,7 @@ import (
 func writeExposureConfig(t *testing.T, dir string) {
 	t.Helper()
 	cfgDir := filepath.Join(dir, "connections", "exposure")
-	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+	if err := os.MkdirAll(cfgDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 	body := `schema: 1
@@ -28,7 +28,10 @@ endpoints:
   onboarding:
     target: hub_public_listener
 `
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "sish-key.pem"), []byte("synthetic test key"), 0640); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -79,11 +82,16 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
+	s.CapabilityMode = "managed"
 	s.Tools, s.Ingress = testTools("exposure"), testIngress("exposure")
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	s, err = ReadEffective(d, "prod")
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Managed runtimes are supervisor-spawned: the exposure state dir is a
@@ -102,8 +110,26 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if !found {
 		t.Fatal("exposure config mount missing from RuntimeService")
 	}
-	// The HUB_EXPOSURE_CONFIG env lives on the unmanaged `hub` stdio server —
-	// managed execution reaches the exposure config through ToolHub.
+	if got := RuntimeService(s, root, d)["environment"].(M)["HUB_EXPOSURE_CONFIG"]; got != "/state/exposure/config.yaml" {
+		t.Fatalf("managed runtime exposure config env = %v", got)
+	}
+	services := Compose(s, root, d)["services"].(M)
+	egress, ok := services["egress-relay"].(M)
+	if !ok {
+		t.Fatalf("managed exposure did not create its private egress relay: mode=%q has=%t relay=%q", s.CapabilityMode, s.Has("exposure"), managedExposureRelay(s, d))
+	}
+	egressEnv := egress["environment"].(M)
+	if got := egressEnv["HUB_EGRESS_RELAY_CONNECT_TARGET"]; got != "tunnel.example.com:22" {
+		t.Fatalf("sish CONNECT target = %v", got)
+	}
+	if strings.Contains(egressEnv["HUB_EGRESS_RELAY_HOSTS"].(string), "tunnel.example.com") {
+		t.Fatal("sish relay gained generic HTTP egress")
+	}
+	managedEnv, err := os.ReadFile(filepath.Join(d, "managed-runtime.prod.env"))
+	if err != nil || !strings.Contains(string(managedEnv), "HUB_EGRESS_PROXY=http://egress-relay:8319") {
+		t.Fatal("managed exposure runtime lacks its egress proxy")
+	}
+	// The unmanaged `hub` stdio server carries the same reviewed config path.
 	unmanaged := s
 	unmanaged.CapabilityMode = ""
 	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)

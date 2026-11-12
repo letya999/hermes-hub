@@ -5,13 +5,54 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+func TestShareGeneratedRuntimeViewsGroupWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions")
+	}
+	dir := t.TempDir()
+	generated := filepath.Join(dir, "generated")
+	roots := []string{GeneratedSkillsDir(dir), GeneratedEffectiveSkillsDir(dir), GeneratedSkillsMetaDir(dir), GeneratedPluginsDir(dir)}
+	for _, root := range roots {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plugin := filepath.Join(GeneratedPluginsDir(dir), "hub-web", "__init__.py")
+	if err := os.MkdirAll(filepath.Dir(plugin), 0700); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(GeneratedSkillsMetaDir(dir), "viewmeta.json")
+	for _, file := range []string{plugin, meta} {
+		if err := os.WriteFile(file, []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := shareGeneratedRuntimeViews(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range append([]string{generated}, roots...) {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm()&0020 == 0 {
+			t.Fatalf("supervisor group cannot write %s: %v", path, err)
+		}
+	}
+	for _, file := range []string{plugin, meta} {
+		info, err := os.Stat(file)
+		if err != nil || info.Mode().Perm()&0060 != 0060 {
+			t.Fatalf("supervisor group cannot update %s: %v", file, err)
+		}
+	}
+}
 
 // writeStoreSkill drops a minimal valid skill into a store root.
 func writeStoreSkill(t *testing.T, root, name, desc string) {
@@ -381,6 +422,35 @@ func TestSoulEffectiveTier0CapsDescription(t *testing.T) {
 	}
 	if strings.Contains(string(body), "ENDMARKER") {
 		t.Fatal("over-long description must be truncated in the tier-0 block")
+	}
+}
+
+func TestSoulEffectiveUTF8(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	description := strings.Repeat("a", 199) + "я" + strings.Repeat("🚋", 100)
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "multilingual", description)
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
+	body, err := os.ReadFile(path)
+	if err != nil || !utf8.Valid(body) || !strings.Contains(string(body), strings.Repeat("a", 199)+"я\n") || !strings.Contains(string(body), contractOnboarding) {
+		t.Fatalf("multilingual catalog lost its UTF-8 or channel contract: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte{0xff}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err == nil {
+		t.Fatal("invalid persona must stop materialization")
+	}
+	preserved, err := os.ReadFile(path)
+	if err != nil || string(preserved) != string(body) {
+		t.Fatal("failed materialization replaced the last readable contract")
 	}
 }
 
@@ -797,8 +867,24 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 	repo := t.TempDir()
 	_ = os.Mkdir(filepath.Join(repo, "config"), 0700)
 	_ = os.WriteFile(filepath.Join(repo, "config", "SOUL.md"), []byte("original"), 0600)
+	plugin := filepath.Join(repo, "config", "plugins", "other-plugin", "__init__.py")
+	if err := os.MkdirAll(filepath.Dir(plugin), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plugin, []byte("# test plugin"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := RenderEnvironment(d, repo, "prod"); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{"plugins", filepath.Join("plugins", "other-plugin"), filepath.Join("plugins", "other-plugin", "__init__.py")} {
+			path := filepath.Join(d, "generated", name)
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm()&0020 == 0 {
+				t.Fatalf("rendered plugin not writable by supervisor group: %s: %v", path, err)
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(orgDir, "skills", "org-legacy", "SKILL.md")); err != nil {
 		t.Fatalf("legacy org skill not migrated into the org store: %v", err)

@@ -274,6 +274,126 @@ func TestStoreDBReloadUsesDataVersion(t *testing.T) {
 	}
 }
 
+// A concurrent reader must not wait for the disk snapshot Reload is
+// fetching: on a slow backing store (Windows bind mounts) holding the write
+// lock across Load serialized every Decide behind one virtiofs read.
+func TestStoreDBReloadDoesNotBlockReadersDuringLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	prev := storeLoad
+	storeLoad = func(p string) (*Store, error) {
+		entered <- struct{}{}
+		<-release
+		return prev(p)
+	}
+	t.Cleanup(func() { storeLoad = prev })
+
+	// A foreign commit marks the store changed so Reload reaches Load.
+	seed.projectionRevisions["alice"]++
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- loaded.Reload() }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reload never reached the disk load")
+	}
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		loaded.HasActiveProfile("alice")
+	}()
+	select {
+	case <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader blocked behind Reload's disk snapshot load")
+	}
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- loaded.Reload() }()
+	close(release)
+	if err := <-reloadDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+		t.Fatal("concurrent Reload repeated the disk load")
+	default:
+	}
+}
+
+// Reload must report a stale snapshot instead of succeeding with old rights.
+func TestStoreReloadRejectsStaleSnapshot(t *testing.T) {
+	for _, name := range []string{"store.db", "store.json"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state", name)
+			seed := NewStore()
+			if err := seed.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = seed.CloseDB() })
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = loaded.CloseDB() })
+			saveTeam := func(id string) error {
+				team := api.Team{Schema: api.SchemaVersion, TeamID: id, Members: []string{"carol"}, Revision: 1, IssuedBy: "operator", IssuedAt: time.Now(), Status: api.ActiveStatus}
+				if err := api.Confirm(&team, "", team.IssuedAt); err != nil {
+					return err
+				}
+				seed.teams[id] = team
+				return seed.Save(path)
+			}
+			if err := saveTeam("team-v2"); err != nil {
+				t.Fatal(err)
+			}
+			prev := storeLoad
+			var commitOnce sync.Once
+			var commitErr error
+			storeLoad = func(p string) (*Store, error) {
+				fresh, err := prev(p)
+				if err != nil {
+					return nil, err
+				}
+				commitOnce.Do(func() { commitErr = saveTeam("team-v3") })
+				if commitErr != nil {
+					return nil, commitErr
+				}
+				return fresh, nil
+			}
+			t.Cleanup(func() { storeLoad = prev })
+
+			if err := loaded.Reload(); !errors.Is(err, api.ErrConflict) {
+				t.Fatalf("stale snapshot: got %v, want conflict", err)
+			}
+			if err := loaded.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := loaded.teams["team-v3"]; !ok {
+				t.Fatal("foreign commit landing during snapshot load was lost")
+			}
+		})
+	}
+}
+
 func TestProjectionFingerprintTracksPersistedInputs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "store.db")
 	seed := NewStore()

@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // The mock channel is the local acceptance bench: real pipeline, zero
@@ -122,6 +125,8 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 	type snapshot struct {
 		Delivery
 		ArtifactData map[string][]byte `json:"artifact_data,omitempty"`
+		VoiceData    []byte            `json:"voice_data,omitempty"`
+		VoiceMIME    string            `json:"voice_mime,omitempty"`
 	}
 	out := []snapshot{}
 	if err == nil {
@@ -137,12 +142,14 @@ func (g *Gateway) handleMockOutbox(w http.ResponseWriter, r *http.Request) {
 				Principal    string            `json:"principal"`
 				Delivery     *Delivery         `json:"delivery"`
 				ArtifactData map[string][]byte `json:"artifact_data"`
+				VoiceData    []byte            `json:"voice_data"`
+				VoiceMIME    string            `json:"voice_mime"`
 			}
 			if err := json.Unmarshal(b, &rec); err != nil {
 				continue
 			}
 			if rec.Principal == caller.PrincipalID && rec.Delivery != nil {
-				out = append(out, snapshot{Delivery: *rec.Delivery, ArtifactData: rec.ArtifactData})
+				out = append(out, snapshot{Delivery: *rec.Delivery, ArtifactData: rec.ArtifactData, VoiceData: rec.VoiceData, VoiceMIME: rec.VoiceMIME})
 			}
 		}
 	}
@@ -187,12 +194,12 @@ func (g *Gateway) mockLinkClaim(chatID int64, principal string) error {
 // captureMock persists a completed delivery as the channel's durable record.
 // Claim/complete still go through the real outbox, so retries and dedupe are
 // exercised exactly like an external channel.
-func (g *Gateway) captureMock(d *Delivery) error {
+func (g *Gateway) captureMock(ctx context.Context, d *Delivery) error {
 	owner, err := g.mockLinkOwner(d.ChatID)
 	if err != nil {
 		return err
 	}
-	if owner == "" {
+	if owner == "" || (d.OwnerPrincipalID != "" && owner != d.OwnerPrincipalID) {
 		return errors.New("mock chat not owned")
 	}
 	artifacts := map[string][]byte{}
@@ -203,5 +210,24 @@ func (g *Gateway) captureMock(d *Delivery) error {
 		}
 		artifacts[artifact.Name] = data
 	}
-	return g.spool.writeJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
+	var voice []byte
+	var mime string
+	if strings.TrimSpace(d.Voice) != "" {
+		if g.synthesizer == nil {
+			return errors.New("tts is not configured")
+		}
+		lang := d.Lang
+		if requested, ok := locale.Parse(string(d.SpeechLang)); ok {
+			lang = requested
+		}
+		voice, mime, err = g.synthesizer.Synthesize(ctx, lang, d.Voice)
+		if err != nil || len(voice) == 0 || len(voice) > mediaSizeLimit {
+			return errors.New("tts failed")
+		}
+		if mime != "audio/ogg" && mime != "audio/wav" && mime != "audio/mpeg" {
+			return errors.New("unsupported speech format")
+		}
+		d.VoiceSent = true
+	}
+	return g.spool.writeJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts, "voice_data": voice, "voice_mime": mime})
 }

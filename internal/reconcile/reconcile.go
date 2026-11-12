@@ -70,10 +70,17 @@ func Plan(changes []passport.Change, services map[string]passportview.ServiceSpe
 		return a
 	}
 	for _, c := range changes {
-		if c.Path == "config.web.backend" || c.Path == "config.web.search_backend" || c.Path == "config.web.extract_backend" || c.Path == "config.web.search_providers" {
+		if c.Path == "config.web.backend" || c.Path == "config.web.search_backend" || c.Path == "config.web.extract_backend" || c.Path == "config.web.search_providers" || c.Path == "stack.services.hub-media.mode" {
 			if _, rendered := services["egress-relay"]; rendered {
 				a := get(Recreate, "egress-relay")
 				a.Consumers = appendUnique(a.Consumers, "egress-relay")
+				a.Paths = appendUnique(a.Paths, c.Path)
+			}
+		}
+		if c.Path == "stack.services.hub-media.mode" {
+			if _, rendered := services["hermes-runtime"]; rendered {
+				a := get(Respawn, "hermes-runtime")
+				a.Consumers = appendUnique(a.Consumers, "hermes-runtime")
 				a.Paths = appendUnique(a.Paths, c.Path)
 			}
 		}

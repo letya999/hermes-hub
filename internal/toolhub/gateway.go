@@ -42,6 +42,7 @@ type Gateway struct {
 	// uncertain business operation. Nil disables this setup recovery.
 	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
 	Control      *ControlPlane
+	Research     *researchHost
 	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.
@@ -413,6 +414,10 @@ func flattenToolText(result *mcp.CallToolResult) []byte {
 			}
 			value.WriteString(text.Text)
 		}
+	}
+	if value.Len() == 0 && result.StructuredContent != nil {
+		encoded, _ := json.Marshal(result.StructuredContent)
+		return encoded
 	}
 	return []byte(value.String())
 }

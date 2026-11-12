@@ -161,7 +161,7 @@ func runDevRebuild(ctx context.Context, args []string) error {
 		return err
 	}
 	if service == "hermes-runtime" && settings.ExecutionMode == "supervisor" {
-		if err := writeAtomic(filepath.Join(dirAbs, "generated", "dev-runtime-image"), []byte(image+"\n")); err != nil {
+		if err := writeAtomicMode(filepath.Join(dirAbs, "generated", "dev-runtime-image"), []byte(image+"\n"), 0644); err != nil {
 			return err
 		}
 		return nil
@@ -170,7 +170,7 @@ func runDevRebuild(ctx context.Context, args []string) error {
 		// Disposable script containers spawn --entrypoint communication-hub
 		// from the supervisor's runtime image; pin the overlay so dev script
 		// probes run the same code the rebuilt gateway does.
-		if err := writeAtomic(filepath.Join(dirAbs, "generated", "dev-script-image"), []byte(image+"\n")); err != nil {
+		if err := writeAtomicMode(filepath.Join(dirAbs, "generated", "dev-script-image"), []byte(image+"\n"), 0644); err != nil {
 			return err
 		}
 	}

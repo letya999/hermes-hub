@@ -253,10 +253,13 @@ func TestConnectorTargetRegistryAndFailed(t *testing.T) {
 	if err != nil || got.OnboardingID != conn.OnboardingID {
 		t.Fatalf("registry name did not resolve: %v %+v", err, got)
 	}
-	for _, target := range []string{"dead-mcp", "failed-def", failed.OnboardingID} {
+	for _, target := range []string{"dead-mcp", "failed-def"} {
 		if _, err := store.ResolveConnectorTarget(auth, target); err == nil {
 			t.Fatalf("failed target %q resolved", target)
 		}
+	}
+	if got, err := store.ResolveConnectorTarget(auth, failed.OnboardingID); err != nil || got.OnboardingID != failed.OnboardingID {
+		t.Fatal("exact owned failed onboarding must remain recoverable")
 	}
 }
 
@@ -430,13 +433,15 @@ func TestConnectorSearch(t *testing.T) {
 	if err := putProfile(t, store, profile); err != nil {
 		t.Fatal(err)
 	}
-	c := &ControlPlane{Store: store, Now: time.Now}
+	c := &ControlPlane{Store: store, Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		stubSourceCatalog{found: []api.DiscoveryCandidate{{Name: "unrelated", Source: api.ArtifactSource{Repository: "https://github.com/other/unrelated"}, Status: "registry-source"}}},
+	}}
 	result, err := c.InvokeConnector(context.Background(), auth, "connector_search", map[string]any{"query": "github"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone || len(result.Candidates) == 0 {
-		t.Fatalf("search found nothing: %+v", result)
+	if result.State != api.OpStateDone || len(result.Candidates) != 1 {
+		t.Fatalf("github search should match only its catalog entry: %+v", result)
 	}
 	found := false
 	for _, candidate := range result.Candidates {
@@ -557,7 +562,7 @@ func TestConnectorInstallJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || result.LinkSent {
 		t.Fatalf("install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -571,7 +576,7 @@ func TestConnectorInstallJournal(t *testing.T) {
 	for _, step := range op.Steps {
 		stepStates[step.Name] = step.State
 	}
-	if stepStates[api.OpStepResolve] != api.OpStepDone || stepStates[api.OpStepFetchArtifact] != api.OpStepDone || stepStates[api.OpStepCollectCredentials] != api.OpStepDone {
+	if stepStates[api.OpStepResolve] != api.OpStepDone || stepStates[api.OpStepFetchArtifact] != api.OpStepDone || stepStates[api.OpStepCollectCredentials] != api.OpStepPending {
 		t.Fatalf("install journal steps: %+v", op.Steps)
 	}
 	// The onboarding really waits on the protected form.
@@ -614,7 +619,13 @@ func TestConnectorInstallResumeCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
 	onboarding.Phase = api.PhaseEnabled
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +690,7 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || result.LinkSent {
 		t.Fatalf("cli catalog install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -795,7 +806,7 @@ func TestConnectorRemoveJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || result.LinkSent {
 		t.Fatalf("remove result: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
@@ -844,19 +855,25 @@ func TestConnectorReauthJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || result.LinkSent {
 		t.Fatalf("reauth result: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
 	if err != nil || onboarding.FormNonce == "" || onboarding.Phase != api.PhaseAwaitingCreds {
 		t.Fatalf("onboarding after reauth: %v %+v", err, onboarding)
 	}
-	// The form is submitted out of band; the connector comes back enabled.
-	onboarding.Phase = api.PhaseEnabled
+	// The form and owner confirmation advance through the trusted phases.
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_reauth", map[string]any{"target": "google-work"})
+	onboarding.Phase = api.PhaseEnabled
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := c.connectorStatus(context.Background(), auth, "", result.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,6 +888,7 @@ func TestConnectorReauthReopensInactiveCredential(t *testing.T) {
 	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.BrokerCredentialID = "broker-stale"
 	onboarding.Locator = "broker-stale"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -941,7 +959,7 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || result.LinkSent {
 		t.Fatalf("allow_writes result: %+v", result)
 	}
 	armed, err := store.OnboardingFor(auth, onboarding.OnboardingID)
@@ -953,7 +971,7 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	}
 	// Only the channel's verified actor can attest the exact write upgrade.
 	gateway := &Gateway{Store: store, Control: c, ControlToken: "synthetic-service-confirmation-bearer", Tokens: map[string]identity.Envelope{aliceToken: auth}}
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: armed.OnboardingID, Actor: auth, Nonce: armed.ConfirmationNonce, Revision: armed.Revision, ActionDigest: api.ConfirmationActionDigest(armed), ExpiresAt: armed.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: armed.OnboardingID, Actor: auth, Nonce: armed.ConfirmationNonce, Revision: api.ConfirmationRevision(armed), ActionDigest: api.ConfirmationActionDigest(armed), ExpiresAt: armed.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}

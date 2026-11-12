@@ -23,11 +23,14 @@ import (
 
 type Store struct {
 	mu                  sync.RWMutex
+	reloadMu            sync.Mutex
 	path                string
 	savedPath           string
 	db                  *sql.DB
 	dbVersion           int64
 	dbFile              os.FileInfo
+	dbRows              map[dbKey][32]byte
+	dbListCounts        map[string]int
 	diskDigest          [32]byte
 	diskStamp           storeStamp
 	installationID      string
@@ -40,6 +43,7 @@ type Store struct {
 	bindings            map[string]api.ToolBinding
 	workloads           map[string]api.WorkloadInstance
 	projectionRevisions map[string]uint64
+	brokerCursors       map[string]uint64
 	restartApplied      map[string]uint64
 	restartDigests      map[string]string
 	grants              map[string]api.Grant
@@ -1183,6 +1187,39 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
+// RemoveOwnedConnectionRecords finishes a confirmed delete whose binding row
+// was already lost. A personal owner and deleting state are both required.
+func (s *Store) RemoveOwnedConnectionRecords(auth identity.Envelope, connectionID string) error {
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return fmt.Errorf("%w: invalid owner", api.ErrUnauthorized)
+	}
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	if connection.Owner.Type != api.PrincipalOwner || !connection.Owner.Matches(auth) || connection.Status != api.DeletingStatus {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection cleanup", api.ErrUnauthorized)
+	}
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == connectionID {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: connection bindings remain", api.ErrStale)
+		}
+	}
+	delete(s.connections, connectionID)
+	s.forgetConnectionStatusLocked(connectionID)
+	for id, ref := range s.credentials {
+		if ref.ConnectionID == connectionID {
+			delete(s.credentials, id)
+		}
+	}
+	s.mu.Unlock()
+	return s.persistAndNotify()
+}
+
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 	if auth.CapabilityProfile != "" {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", api.ErrUnauthorized)
@@ -1279,6 +1316,11 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	}
 	if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: exact runtime owner", api.ErrUnauthorized)
+	}
+	for _, o := range s.onboardings {
+		if o.Phase == api.PhaseCleanupIncomplete && o.PrincipalID == binding.PrincipalID && o.ContextID == binding.ContextID && o.RuntimeID == binding.RuntimeID && (o.BindingID == bindingID || o.ConnectionID != "" && o.ConnectionID == binding.ConnectionID) {
+			return api.EffectiveBinding{}, fmt.Errorf("%w: cleanup in progress", api.ErrRevoked)
+		}
 	}
 	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
 	if !ok {
@@ -1429,6 +1471,7 @@ type snapshot struct {
 	Bindings            []api.ToolBinding               `json:"bindings"`
 	Workloads           []api.WorkloadInstance          `json:"workloads"`
 	ProjectionRevisions map[string]uint64               `json:"projection_revisions,omitempty"`
+	BrokerCursors       map[string]uint64               `json:"broker_cursors,omitempty"`
 	RestartApplied      map[string]uint64               `json:"restart_applied,omitempty"`
 	RestartDigests      map[string]string               `json:"restart_digests,omitempty"`
 	Grants              []api.Grant                     `json:"grants,omitempty"`

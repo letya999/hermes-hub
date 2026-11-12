@@ -19,7 +19,7 @@ import (
 )
 
 // SQLite substrate for the ToolHub registry (ADR-0091/SPEC-0090): one
-// transaction rewrites the store under the same stale-writer contract as
+// transaction updates changed rows under the same stale-writer contract as
 // the JSON file, so a torn write can never reach readers.
 const toolhubDBSchema = 1
 
@@ -172,6 +172,7 @@ func snapshotRows(state snapshot) (ents, kvs, lists []dbRow, err error) {
 	}
 	kvs = append(kvs, uintRows("projection_revision", state.ProjectionRevisions)...)
 	kvs = append(kvs, uintRows("restart_applied", state.RestartApplied)...)
+	kvs = append(kvs, uintRows("broker_cursor", state.BrokerCursors)...)
 	restartDigests, err := mapRows("restart_digest", state.RestartDigests)
 	if err != nil {
 		return nil, nil, nil, err
@@ -228,6 +229,7 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	state.Schema = schema
 	state.InstallationID = meta["installation_id"]
 	state.ProjectionRevisions = map[string]uint64{}
+	state.BrokerCursors = map[string]uint64{}
 	state.RestartApplied = map[string]uint64{}
 	state.RestartDigests = map[string]string{}
 	state.Recipes = map[string]api.RecipeResolution{}
@@ -351,13 +353,15 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 			return state, err
 		}
 		switch collection {
-		case "projection_revision", "restart_applied":
+		case "projection_revision", "restart_applied", "broker_cursor":
 			n, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
 				_ = maps2.Close()
 				return state, fmt.Errorf("%w: store revision", api.ErrInvalid)
 			}
-			if collection == "projection_revision" {
+			if collection == "broker_cursor" {
+				state.BrokerCursors[k] = n
+			} else if collection == "projection_revision" {
 				state.ProjectionRevisions[k] = n
 			} else {
 				state.RestartApplied[k] = n
@@ -429,7 +433,17 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	if err != nil {
 		return state, err
 	}
-	if digest := sha256.Sum256(body); !bytes.Equal(digest[:], storedDigest) {
+	digest := sha256.Sum256(body)
+	if meta["digest_format"] == "rows-v1" {
+		index, _, _, err := dbRowsFor(state, nil, nil)
+		if err != nil {
+			return state, err
+		}
+		digest = rowsDigest(index, state.InstallationID)
+	} else if meta["digest_format"] != "" {
+		return state, api.ErrInvalid
+	}
+	if !bytes.Equal(digest[:], storedDigest) {
 		return state, api.ErrConflict
 	}
 	return state, nil
@@ -473,6 +487,15 @@ func loadDB(path string) (*Store, error) {
 	}
 	store.path = path
 	store.savedPath, store.diskDigest = path, sha256.Sum256(body)
+	store.dbRows, _, store.dbListCounts, err = dbRowsFor(state, nil, nil)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	var format string
+	if err := db.QueryRow(`SELECT v FROM meta WHERE k = 'digest_format'`).Scan(&format); err == nil && format == "rows-v1" {
+		store.diskDigest = rowsDigest(store.dbRows, state.InstallationID)
+	}
 	store.diskStamp = stamp
 	return store, nil
 }
@@ -515,11 +538,7 @@ func (s *Store) saveDBLocked(path string) error {
 	if err != nil {
 		return err
 	}
-	ents, kvs, lists, err := snapshotRows(state)
-	if err != nil {
-		return err
-	}
-	body, err := json.MarshalIndent(state, "", "  ")
+	index, writes, counts, err := dbRowsFor(state, s.dbRows, s.dbListCounts)
 	if err != nil {
 		return err
 	}
@@ -527,8 +546,24 @@ func (s *Store) saveDBLocked(path string) error {
 	if err != nil {
 		return err
 	}
-	digest := sha256.Sum256(body)
-	err = counter.Write(path, int64(len(body)), true, func() error {
+	digest := rowsDigest(index, state.InstallationID)
+	// Reserve only changed pages and their WAL/index overhead, never the
+	// logical JSON size of the historical registry.
+	writeBytes := int64(16384)
+	for _, row := range writes {
+		writeBytes += int64(len(row.body))*2 + 16384
+	}
+	for key := range s.dbRows {
+		if _, ok := index[key]; !ok {
+			writeBytes += 16384
+		}
+	}
+	release, err := counter.Reserve(writeBytes, 3, true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	err = func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
 			return err
@@ -557,23 +592,34 @@ func (s *Store) saveDBLocked(path string) error {
 				return api.ErrConflict
 			}
 		}
-		for _, table := range []string{"ent", "kvmap", "listrec"} {
-			if _, err := tx.Exec(`DELETE FROM ` + table); err != nil { // #nosec G202 -- fixed table name list
+		for key := range s.dbRows {
+			if _, ok := index[key]; ok {
+				continue
+			}
+			var err error
+			switch key.table {
+			case "ent":
+				_, err = tx.Exec(`DELETE FROM ent WHERE collection = ? AND id = ?`, key.collection, key.id)
+			case "kvmap":
+				_, err = tx.Exec(`DELETE FROM kvmap WHERE collection = ? AND k = ?`, key.collection, key.id)
+			case "listrec":
+				_, err = tx.Exec(`DELETE FROM listrec WHERE collection = ? AND seq = ?`, key.collection, key.id)
+			}
+			if err != nil {
 				return err
 			}
 		}
-		for _, r := range ents {
-			if _, err := tx.Exec(`INSERT INTO ent (collection, id, seq, body) VALUES (?, ?, ?, ?)`, r.collection, r.id, r.seq, r.body); err != nil {
-				return err
+		for key, row := range writes {
+			var err error
+			switch key.table {
+			case "ent":
+				_, err = tx.Exec(`INSERT INTO ent (collection, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (collection, id) DO UPDATE SET seq=excluded.seq, body=excluded.body`, row.collection, row.id, row.seq, row.body)
+			case "kvmap":
+				_, err = tx.Exec(`INSERT INTO kvmap (collection, k, v) VALUES (?, ?, ?) ON CONFLICT (collection, k) DO UPDATE SET v=excluded.v`, row.collection, row.id, string(row.body))
+			case "listrec":
+				_, err = tx.Exec(`INSERT INTO listrec (collection, seq, body) VALUES (?, ?, ?)`, row.collection, row.seq, row.body)
 			}
-		}
-		for _, r := range kvs {
-			if _, err := tx.Exec(`INSERT INTO kvmap (collection, k, v) VALUES (?, ?, ?)`, r.collection, r.id, string(r.body)); err != nil {
-				return err
-			}
-		}
-		for _, r := range lists {
-			if _, err := tx.Exec(`INSERT INTO listrec (collection, seq, body) VALUES (?, ?, ?)`, r.collection, r.seq, r.body); err != nil {
+			if err != nil {
 				return err
 			}
 		}
@@ -582,16 +628,21 @@ func (s *Store) saveDBLocked(path string) error {
 			"schema":          strconv.Itoa(api.SchemaVersion),
 			"installation_id": state.InstallationID,
 			"digest":          hex.EncodeToString(digest[:]),
+			"digest_format":   "rows-v1",
 		} {
 			if _, err := tx.Exec(`INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`, k, v); err != nil {
 				return err
 			}
 		}
 		return tx.Commit()
-	})
+	}()
 	if err != nil {
 		return err
 	}
+	// Commit is already durable. Publish its fence before ancillary marker I/O
+	// so an uncertain marker failure cannot roll committed memory backwards.
+	s.savedPath, s.diskDigest = path, digest
+	s.dbRows, s.dbListCounts = index, counts
 	if markerErr != nil {
 		f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- marker path was symlink-checked under the store lock
 		if err != nil {
@@ -605,7 +656,8 @@ func (s *Store) saveDBLocked(path string) error {
 			return err
 		}
 	}
-	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
+	s.savedPath, s.diskDigest = path, digest
+	s.dbRows, s.dbListCounts = index, counts
 	s.diskStamp, _ = statStoreStamp(path)
 	s.dbFile, _ = os.Stat(path)
 	return nil

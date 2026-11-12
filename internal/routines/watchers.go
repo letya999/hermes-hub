@@ -385,7 +385,8 @@ func (e *Engine) applyProbeResultAtLocked(result ProbeResult, now time.Time) err
 		if err != nil {
 			return err
 		}
-		if !schedule.Enabled || schedule.Paused || schedule.SnoozedUntil.After(now) {
+		retiredOnce := !schedule.Enabled && schedule.Paused && schedule.NextDue.IsZero() && strings.HasPrefix(strings.TrimSpace(schedule.Expression), "once:")
+		if (!retiredOnce && (!schedule.Enabled || schedule.Paused)) || schedule.SnoozedUntil.After(now) {
 			return errors.New("watcher admission paused")
 		}
 		expected := o.Job

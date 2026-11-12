@@ -3,6 +3,7 @@ package toolhub
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -19,9 +20,26 @@ func (s *Store) PutOperation(op api.Operation) error {
 	// markStep, so the stored record must own its Steps.
 	op.Steps = slices.Clone(op.Steps)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, exists := s.operations[op.OperationID]
+	if o, ok := s.onboardings[op.OnboardingID]; ok {
+		op = installProgress(op, o)
+	}
 	s.operations[op.OperationID] = op
-	s.mu.Unlock()
-	return s.persist()
+	if s.path != "" {
+		before := s.diskDigest
+		if err := s.saveLocked(s.path); err != nil {
+			if before == s.diskDigest {
+				if exists {
+					s.operations[op.OperationID] = previous
+				} else {
+					delete(s.operations, op.OperationID)
+				}
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // OperationFor returns one operation for its exact owner only.
@@ -38,18 +56,23 @@ func (s *Store) OperationFor(auth identity.Envelope, id string) (api.Operation, 
 	if op.PrincipalID != auth.PrincipalID || op.ContextID != auth.ContextID || op.RuntimeID != auth.RuntimeID || op.PolicyVersion != auth.PolicyVersion {
 		return api.Operation{}, fmt.Errorf("%w: operation owner", api.ErrUnauthorized)
 	}
+	if o, ok := s.onboardings[op.OnboardingID]; ok {
+		op = installProgress(op, o)
+	}
+	op.Steps = slices.Clone(op.Steps)
 	return op, nil
 }
 
 // OperationForRequestKey resolves the live operation for one
-// (principal, intent, normalized target) tuple. Superseded records are
+// (principal, context, runtime, policy, environment, generation, intent, target) tuple. Superseded records are
 // never candidates — a retry opens a fresh operation.
 func (s *Store) OperationForRequestKey(auth identity.Envelope, intent, target string) (api.Operation, bool) {
 	key := api.OperationRequestKey(auth, intent, target)
+	legacyKey := api.DeterministicID("opkey", auth.PrincipalID, intent, strings.ToLower(strings.TrimSpace(target)))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, op := range s.operations {
-		if op.RequestKey != key || op.PrincipalID != auth.PrincipalID || op.ContextID != auth.ContextID || op.RuntimeID != auth.RuntimeID || op.PolicyVersion != auth.PolicyVersion || op.SupersededBy != "" {
+		if (op.RequestKey != key && op.RequestKey != legacyKey) || op.PrincipalID != auth.PrincipalID || op.ContextID != auth.ContextID || op.RuntimeID != auth.RuntimeID || op.PolicyVersion != auth.PolicyVersion || op.SupersededBy != "" {
 			continue
 		}
 		op.Steps = slices.Clone(op.Steps)
@@ -93,7 +116,7 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion {
 			continue
 		}
-		if o.Phase == api.PhaseRemoved || o.Phase == api.PhaseFailed || o.SupersededBy != "" {
+		if o.Phase == api.PhaseRemoved || o.SupersededBy != "" || o.Phase == api.PhaseFailed && target != o.OnboardingID && target != o.ConnectionID {
 			continue
 		}
 		ids := map[string]bool{o.OnboardingID: true}
@@ -133,7 +156,7 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 			if len(matches) > 1 {
 				candidates := make([]api.OperationCandidate, 0, len(matches))
 				for _, o := range matches {
-					candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode})
+					candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode, OnboardingPhase: o.Phase})
 				}
 				return ConnectorTarget{}, &ErrAmbiguousTarget{Candidates: candidates}
 			}
@@ -207,6 +230,8 @@ func (s *Store) SweepConnectionOnboardings(connectionID, exceptOnboardingID stri
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldOnboardings, oldOperations := s.onboardings, s.operations
+	s.onboardings, s.operations = maps.Clone(oldOnboardings), maps.Clone(oldOperations)
 	for id, o := range s.onboardings {
 		if o.ConnectionID != connectionID || o.OnboardingID == exceptOnboardingID {
 			continue
@@ -216,10 +241,21 @@ func (s *Store) SweepConnectionOnboardings(connectionID, exceptOnboardingID stri
 		}
 		o.Phase = api.PhaseRemoved
 		o.Revision++
-		s.onboardings[id] = o
+		s.onboardings[id] = prepareOnboardingWrite(oldOnboardings[id], o)
+		for opID, op := range s.operations {
+			if op.OnboardingID == id {
+				s.operations[opID] = installProgress(op, o)
+			}
+		}
 	}
 	if s.path != "" {
-		return s.saveLocked(s.path)
+		before := s.diskDigest
+		if err := s.saveLocked(s.path); err != nil {
+			if before == s.diskDigest {
+				s.onboardings, s.operations = oldOnboardings, oldOperations
+			}
+			return err
+		}
 	}
 	return nil
 }

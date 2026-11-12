@@ -143,7 +143,7 @@ func TestServeViewerLinkContract(t *testing.T) {
 // S8.3: connector_status on a browser connection mints the one-time viewer
 // link and posts it to the owner's channel — the tool result itself carries
 // no link material.
-func TestConnectorStatusMintsViewerLink(t *testing.T) {
+func TestConnectorResendMintsViewerWhileStatusIsReadOnly(t *testing.T) {
 	store := NewStore()
 	if err := store.RegisterDefinition(browserDefinition()); err != nil {
 		t.Fatal(err)
@@ -175,6 +175,12 @@ func TestConnectorStatusMintsViewerLink(t *testing.T) {
 	}
 	if strings.Contains(result.Summary, "t=") || strings.Contains(result.Summary, "/viewer/") {
 		t.Fatalf("link material leaked into tool result: %q", result.Summary)
+	}
+	if len(posted) != 0 {
+		t.Fatal("status minted a viewer link")
+	}
+	if _, err := control.connectorResend(t.Context(), aliceAuth(), map[string]any{"target": "onb-browser"}); err != nil {
+		t.Fatal(err)
 	}
 	viewerURL, _ := posted["viewer_url"].(string)
 	if !strings.Contains(viewerURL, "/viewer/conn-browser?t=") {

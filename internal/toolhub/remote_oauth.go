@@ -45,7 +45,7 @@ func (c *ControlPlane) prepareRemoteOAuth(auth identity.Envelope, draft api.Tool
 	draft.Tools = api.RemotePlaceholders(allowlist)
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: onboardingID,
-		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
 		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingOAuth, SourceURL: draft.Source.URL,
 		DefinitionID: draft.DefinitionID, DefinitionVersion: draft.Version,
 		// ACCESS_TOKEN is the name the credential reference keys on; the flow
@@ -59,7 +59,8 @@ func (c *ControlPlane) prepareRemoteOAuth(auth identity.Envelope, draft api.Tool
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, true, err
 	}
-	return c.statusBody(onboarding, false), true, nil
+	body, err := c.ensureRemoteOAuth(auth, onboarding, draft)
+	return body, true, err
 }
 
 // ensureRemoteOAuth is the generic sibling of ensurePreparedOAuth: discovery
@@ -71,6 +72,14 @@ func (c *ControlPlane) ensureRemoteOAuth(auth identity.Envelope, onboarding api.
 	}
 	c.oauthFlows.mu.Lock()
 	defer c.oauthFlows.mu.Unlock()
+	if current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID); err == nil {
+		onboarding = current
+	} else {
+		return nil, err
+	}
+	if onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseCleanupIncomplete {
+		return nil, api.ErrRevoked
+	}
 	for state, flow := range c.oauthFlows.flows {
 		if !c.now().Before(flow.expires) {
 			delete(c.oauthFlows.flows, state)
@@ -115,7 +124,7 @@ func (c *ControlPlane) ensureRemoteOAuth(auth identity.Envelope, onboarding api.
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
-	api.PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	c.deliverOutcomeNotice(context.Background(), auth, &onboarding)
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -191,6 +200,7 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 	onboarding.Error = ""
 	onboarding.ErrorCode = ""
 	onboarding.ConfirmationNonce = ""
+	onboarding.ConfirmationUsed = false
 	onboarding.ConfirmationExpires = time.Time{}
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {

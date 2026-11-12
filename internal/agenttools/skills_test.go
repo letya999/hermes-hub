@@ -83,6 +83,9 @@ func TestSkillManageInstallLocal(t *testing.T) {
 	if out["state"] != "draft" || out["draft_id"] == "" || out["name"] != "foreign-one" {
 		t.Fatalf("install_local result: %v", out)
 	}
+	if !strings.Contains(out["diff"].(string), "SKILL.md") || out["lint"].(map[string]any)["ok"] != true || out["scan"].(map[string]any)["verdict"] != "pass" {
+		t.Fatalf("install_local must return the draft checks and diff: %v", out)
+	}
 	st, err := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
 	if err != nil {
 		t.Fatal(err)

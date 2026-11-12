@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,7 +137,7 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 		Store: store, Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now,
 		Reviewer: func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 			reviews++
-			return api.SourceReview{Definition: built}, errors.New("server rejected the submitted token")
+			return api.SourceReview{Definition: built}, fmt.Errorf("%w: server rejected the submitted token", api.ErrAuthBeforeEffect)
 		},
 		AdmitWithCredentials: func(_ context.Context, d api.ToolDefinition, env map[string]string) (api.ToolDefinition, error) {
 			if d.Source.Digest == "" || d.Source.ArchiveDigest == "" {
@@ -283,7 +284,7 @@ func TestAuthFirstDeferredReviewCannotMutateStoredRecipe(t *testing.T) {
 	}
 }
 
-// Two owners racing the serialized admission path must converge on their own
+// Two owners racing independent admission paths must converge on their own
 // durable records: no cross-owner reads, no lost updates, distinct results.
 func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -356,9 +357,14 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 		}
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: key, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	control := &ControlPlane{
 		Store: store, Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now,
 		AdmitWithCredentials: func(_ context.Context, d api.ToolDefinition, env map[string]string) (api.ToolDefinition, error) {
+			entered <- struct{}{}
+			<-release
 			admitted := d
 			admitted.Tools = []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}}
 			return admitted, nil
@@ -377,6 +383,24 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 			results <- control.completeBrokerAdmission(context.Background(), auth, &onboarding, "credential_"+owner.name)
 		}()
 	}
+	for range owners {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("one owner's probe blocked another behind a global mutex")
+		}
+	}
+	duplicate, err := store.OnboardingFor(auths["alice"], "onboard-alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auths["alice"], &duplicate, "credential_alice"); err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.Phase != api.PhaseVerifying {
+		t.Fatal("duplicate did not observe existing admission lease")
+	}
+	unblock()
 	for range owners {
 		if err := <-results; err != nil {
 			t.Fatalf("concurrent admission failed: %v", err)

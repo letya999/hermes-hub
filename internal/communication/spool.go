@@ -224,7 +224,7 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			return nil, err
 		}
 	}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "mock-sent", "mock-links", "tmp", "goals", "capture", "capture-acks"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "outbox/superseded", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "mock-sent", "mock-links", "tmp", "goals", "capture", "capture-acks"} {
 		if !create {
 			continue
 		}
@@ -411,7 +411,7 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 		info, err := s.fsys.Lstat(path)
 		return err == nil && info.ModTime().Before(cutoff)
 	}
-	for _, dir := range []string{"done", filepath.Join("outbox", "done"), filepath.Join("outbox", "failed")} {
+	for _, dir := range []string{"done", filepath.Join("outbox", "done"), filepath.Join("outbox", "failed"), filepath.Join("outbox", "superseded")} {
 		if err := s.compactDirLocked(dir, aged, nil, limits.MaxTerminalFiles, now); err != nil {
 			return err
 		}

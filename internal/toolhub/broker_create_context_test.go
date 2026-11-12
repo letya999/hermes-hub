@@ -242,6 +242,7 @@ func TestBrokerRefreshSharedCredentialCheckCarriesContextManager(t *testing.T) {
 	onboarding.BrokerRequestID = "r1"
 	onboarding.BrokerCredentialID = "credential_1"
 	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -369,6 +370,7 @@ func TestBrokerRevokeSharedCarriesContextManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding.BrokerCredentialID = "credential_1"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

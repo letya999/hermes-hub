@@ -85,6 +85,71 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	}
 }
 
+func TestPerSpaceMediaUsesOwnAuthAndModelRelay(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spaces")
+	owner, secondary := filepath.Join(root, "infra"), filepath.Join(root, "alice")
+	for _, path := range []string{owner, secondary} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=other-owner\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondary, "media.auth"), []byte("HUB_MEDIA_AUTH=private-media\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := profileSettings("workspace", "image_gen")
+	no := false
+	s.User, s.Infra, s.CapabilityMode = "alice", &no, "managed"
+	s.PassportServices = map[string]string{"hub-media": "per-space", "model-relay": "per-space", "hermes-runtime": "supervised"}
+	s.ImageGen = media.ImageGen{Provider: media.ProviderCLIProxy, Model: "gemini-3.1-flash-image"}
+	auth, err := runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "private-media" {
+		t.Fatalf("per-space media used another owner: %v", err)
+	}
+	services := Compose(s, t.TempDir(), secondary)["services"].(M)
+	if _, ok := services["hub-media"]; ok {
+		t.Fatal("per-space media acquired shared service name")
+	}
+	svc := services["hub-media-alice"].(M)
+	if got := svc["healthcheck"].(M)["test"].([]string); !slices.Equal(got, []string{"CMD", "hub-media", "health-local"}) {
+		t.Fatalf("per-space media healthcheck = %v", got)
+	}
+	env := svc["environment"].(M)
+	if env["HUB_MEDIA_UPSTREAM"] != "http://model-relay-alice:8318" || env["HUB_MEDIA_IMAGE_MODEL"] != "gemini-3.1-flash-image" || env["HUB_MEDIA_MODEL_ROUTES"] != "gemini-3.1-flash-image=remote:image" || env["HUB_MEDIA_CHAT_MODELS"] != "image" || env["HUB_MEDIA_BROKER_GRANT"] != "" {
+		t.Fatal("per-space media route or grant is wrong")
+	}
+	if _, ok := env["HUB_MEDIA_UPSTREAM_KEY"]; ok {
+		t.Fatal("model relay bearer entered Compose environment")
+	}
+	files := svc["env_file"].([]any)
+	if len(files) != 2 || !strings.HasSuffix(files[1].(M)["path"].(string), "media-relay.auth") {
+		t.Fatal("per-space media lacks its private relay bearer file")
+	}
+	for _, raw := range svc["volumes"].([]any) {
+		if raw.(M)["source"] == "broker-secrets-media" {
+			t.Fatal("per-space media mounted the shared Broker identity")
+		}
+	}
+	if !strings.Contains(strings.Join(managedEgressHosts(s, secondary), ","), "hub-media-alice") {
+		t.Fatal("per-space media is unreachable from managed runtime")
+	}
+	if got := RuntimeService(s, root, secondary)["environment"].(M)["HUB_MEDIA_URL"]; got != "http://hub-media-alice:8090" {
+		t.Fatalf("runtime media URL = %v", got)
+	}
+	unsupported := s
+	unsupported.ImageGen.Model = "gpt-image-2"
+	if err := unsupported.Validate(); err == nil {
+		t.Fatal("per-space relay accepted a non-chat image endpoint")
+	}
+	unsupported = s
+	unsupported.CapabilityMode = ""
+	if err := unsupported.Validate(); err == nil {
+		t.Fatal("per-space media accepted a runtime without a managed relay")
+	}
+}
+
 // A managed infra owner carried only by its published revision still owns the
 // shared media auth: the consumer's scan resolves siblings through the
 // managed-aware reader (SPEC-0092 R8.1).

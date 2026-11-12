@@ -146,13 +146,31 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	}
 	var calls atomic.Int32
 	var allow atomic.Bool
+	var deleted atomic.Bool
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if !allow.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/events":
+			_, _ = w.Write([]byte(`{"events":[],"next_cursor":0}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/credentials/credential_1":
+			deleted.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
+			_, _ = w.Write([]byte(`{"id":"credential_1","connection_id":"connection_1","status":"active"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/connections/connection_1/credentials":
+			if deleted.Load() {
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				_, _ = w.Write([]byte(`[{"id":"credential_1","connection_id":"connection_1","status":"active"}]`))
+			}
+		default:
+			t.Errorf("unexpected Broker call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer broker.Close()
 	_, private, err := ed25519.GenerateKey(rand.Reader)

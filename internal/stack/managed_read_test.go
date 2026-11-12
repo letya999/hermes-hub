@@ -204,6 +204,9 @@ func settingsToDocs(s Settings) map[string]string {
 	if s.Has("hosting") {
 		stack.WriteString("  hosting: {mode: per-space}\n  workload-controller: {mode: shared}\n")
 	}
+	if s.Has("exposure") {
+		stack.WriteString("  egress-relay: {mode: per-space}\n")
+	}
 	// hub-media is an infra-plane service: it renders only on the infra
 	// space and only while declared.
 	if s.Has("image_gen") {

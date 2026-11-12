@@ -40,6 +40,7 @@ func (t *Tools) openExposure() {
 			Broker: broker,
 			Auth:   runtimeEnvelope(),
 			Public: os.Getenv("HUB_PUBLIC_TARGET"),
+			Proxy:  os.Getenv("HUB_EGRESS_PROXY"),
 		})
 	}
 	ledger, err := audit.Open(filepath.Join(t.StateDir, "audit", "exposure.jsonl"))
@@ -90,9 +91,12 @@ func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any
 		live := svc.List()
 		tunnels := make([]map[string]any, 0, len(live))
 		for i := range live {
+			if r.ID != "" && live[i].Endpoint != r.ID {
+				continue
+			}
 			tunnels = append(tunnels, tunnelView(&live[i]))
 		}
-		return map[string]any{"tunnels": tunnels}, nil
+		return map[string]any{"declared_endpoints": svc.DeclaredEndpoints(), "tunnels": tunnels}, nil
 	}
 	if name == "exposure_status" {
 		tunnel, err := svc.Status(r.Name)

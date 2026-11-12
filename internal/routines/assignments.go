@@ -179,6 +179,12 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		draft.ActorID = item.Envelope.PrincipalID
 		draft.ScopeID = "user:" + item.Envelope.PrincipalID
 		draft.OrganizationID = item.OrganizationID
+		scheduleCaller := item.Envelope
+		if draft.Channel == "mock" {
+			// Mock occurrences bind to the claimed destination chat, not the control caller.
+			draft.Envelope = identity.MockEnvelope(item.Envelope.PrincipalID, draft.ChatID, item.Envelope.RuntimeID, item.Envelope.PolicyVersion)
+			scheduleCaller = draft.Envelope
+		}
 		if item.Plan.Specialist != nil {
 			draft.WakePrompt = item.Plan.Specialist.Instructions
 		}
@@ -230,7 +236,7 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		if !free {
 			return commodel.Assignment{}, errors.New("assignment source generations exhausted")
 		}
-		created, cerr := e.createScheduleAtLocked(draft, caller, "", nil, now)
+		created, cerr := e.createScheduleAtLocked(draft, scheduleCaller, "", nil, now)
 		if cerr != nil {
 			// Persist the partial reconciliation before reporting the error:
 			// artifacts already created must stay reachable through receipts
@@ -276,6 +282,9 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 	}
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return commodel.Assignment{}, err
+	}
+	if plan.Revision == 0 {
+		plan.Revision = 1
 	}
 	if item.Plan != nil && plan.Revision <= item.Plan.Revision {
 		plan.Revision = item.Plan.Revision + 1
@@ -514,6 +523,18 @@ func (e *Engine) ResumeAssignment(id string, caller identity.Envelope, expected 
 	}
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return err
+	}
+	if item.State != "paused" {
+		return errors.New("assignment is not paused")
+	}
+	if len(item.Applied) == 0 && item.AppliedRev == 0 {
+		item.State = "draft"
+		item.Revision++
+		item.UpdatedAt = time.Now().UTC()
+		return e.atomicJSON(e.AssignmentPath(id), item)
+	}
+	if item.Plan == nil || item.AppliedRev != item.Plan.Revision {
+		return errors.New("assignment has no applied plan to resume")
 	}
 	now := time.Now().UTC()
 	for _, rc := range item.Applied {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -266,6 +267,24 @@ func (m *Manager) List() []Tunnel {
 		out = append(out, *t)
 	}
 	m.mu.Unlock()
+	return out
+}
+
+// DeclaredEndpoints reports only the reviewed names and target classes.
+func (m *Manager) DeclaredEndpoints() []map[string]string {
+	names := make([]string, 0, len(m.cfg.Endpoints))
+	for name := range m.cfg.Endpoints {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	out := make([]map[string]string, 0, len(names))
+	for _, name := range names {
+		kind := "service"
+		if m.cfg.Endpoints[name].Target == TargetHubListener {
+			kind = TargetHubListener
+		}
+		out = append(out, map[string]string{"name": name, "target_kind": kind})
+	}
 	return out
 }
 

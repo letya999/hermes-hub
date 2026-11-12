@@ -43,7 +43,14 @@ func (m *Manager) applyRespawnAuthorized(r *http.Request, principal, contextID, 
 	if !respawn {
 		return false
 	}
-	effective, err := passportview.LoadEffective(space)
-	return err == nil && effective.Header.Metadata.Space == principal && effective.Header.Metadata.Environment == journal.Environment &&
-		(effective.Header.Metadata.Revision == journal.Revision || effective.Header.Metadata.Revision == journal.Previous)
+	for _, revision := range []string{journal.Previous, journal.Revision} {
+		if revision == "" {
+			continue
+		}
+		effective, err := passportview.LoadRevision(space, revision)
+		if err == nil && effective.Header.Metadata.Space == principal && effective.Header.Metadata.Environment == journal.Environment {
+			return true
+		}
+	}
+	return false
 }

@@ -1,11 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-11-05
+last_verified: 2026-11-12
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0098](ADR-0098-durable-connector-state.md) | Canonical onboarding, Broker event reconciliation, versioned durable notices and incremental SQLite registry commits |
 | [ADR-0097](ADR-0097-m32-bounded-delivery.md) | M32 bounded delivery; 2026-11-05 amendment replaces foundation stage with verified direct merge to dev; one automation ownership switch |
 | [ADR-0096](ADR-0096-authored-passport-authority.md) | Accepted direction: six authored passports as sole space configuration; independent tool selection and grants; no legacy config readers |
 | [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md) | Accepted direction: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains channel transport and delivery |

@@ -73,6 +73,47 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	}
 }
 
+func TestAgentToolsRegistrationRetriesStaleStoreSnapshot(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "store.db")
+	seed := toolhub.NewStore()
+	if err := seed.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	_ = seed.CloseDB()
+	previous := loadOperatorStore
+	calls := 0
+	loadOperatorStore = func(path string) (*toolhub.Store, error) {
+		store, err := toolhub.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		calls++
+		if calls == 1 {
+			other, err := toolhub.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := agenttools.HubToolsDefinition()
+			old.Version = "1.3.0"
+			if err := other.RegisterDefinition(old); err != nil {
+				t.Fatal(err)
+			}
+			if err := other.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			_ = other.CloseDB()
+		}
+		return store, nil
+	}
+	t.Cleanup(func() { loadOperatorStore = previous })
+	if err := runCapability([]string{"--kind", "agent-tools", "--toolhub-store", p, "--principal", "alice", "--context", "alice", "--runtime", "alice", "--policy-version", "policy-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatal("stale registration did not reload the store")
+	}
+}
+
 func TestAgentToolsExplicitVersionPinsStoredDefinition(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()

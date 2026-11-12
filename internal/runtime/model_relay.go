@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -52,6 +53,8 @@ type modelHealth struct {
 	cool        time.Time
 	recoverable bool
 	retrying    bool
+	lastClass   string // quota | provider_block | transport | other
+	lastDetail  string
 }
 
 // down reports whether the provider is still inside its cooldown window.
@@ -112,11 +115,14 @@ func (h *modelHop) availableFor(now time.Time, reserved bool) bool {
 // timeout again. ponytail: fixed 60 s; backoff is the upgrade if needed.
 const hopCooldown = time.Minute
 
-func (h *modelHop) fail() {
+func (h *modelHop) fail() { h.failWith("other", "") }
+
+func (h *modelHop) failWith(class, detail string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cool = time.Now().Add(hopCooldown)
 	h.recoverable = false
+	h.lastClass, h.lastDetail = class, detail
 }
 
 func (h *modelHop) failTransport() {
@@ -124,6 +130,15 @@ func (h *modelHop) failTransport() {
 	defer h.mu.Unlock()
 	h.cool = time.Now().Add(hopCooldown)
 	h.recoverable = true
+	h.lastClass, h.lastDetail = "transport", ""
+}
+
+// failure reports the classified reason the hop last failed, for operator
+// surfaces and the ladder's typed error.
+func (h *modelHealth) failure() (class, detail string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastClass, h.lastDetail
 }
 
 // waitForModelRecovery reserves one bounded probe after a transport timeout.
@@ -164,6 +179,9 @@ func (h *modelHop) state() map[string]any {
 	out := map[string]any{"name": h.name, "base": h.base}
 	if !h.cool.IsZero() {
 		out["cooldown_until"] = h.cool.UTC().Format(time.RFC3339)
+	}
+	if h.lastClass != "" {
+		out["failure"] = h.lastClass
 	}
 	return out
 }
@@ -252,7 +270,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		}
 		hop, resp, err := call(r.Context(), r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), body)
 		if err != nil {
-			writeModelUnavailable(w)
+			writeModelFailure(w, err)
 			return
 		}
 		if catalog && resp.StatusCode == http.StatusOK {
@@ -290,10 +308,24 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}), nil
 }
 
-func writeModelUnavailable(w http.ResponseWriter) {
+func writeModelFailure(w http.ResponseWriter, err error) {
+	code, status, message := "model_route_unavailable", http.StatusBadGateway, "model route unavailable"
+	var typed *modelRouteError
+	if errors.As(err, &typed) {
+		switch typed.class {
+		case "quota":
+			code, status, message = "model_quota_exhausted", http.StatusTooManyRequests, "model quota exhausted; no configured fallback remains"
+		case "provider_block":
+			code, message = "model_provider_blocked", "model blocked by provider"
+		}
+		if typed.detail != "" {
+			message += ": " + typed.detail
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadGateway)
-	_, _ = io.WriteString(w, `{"error":{"code":"model_route_unavailable","message":"model route unavailable"}}`)
+	w.WriteHeader(status)
+	out, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": message}})
+	_, _ = w.Write(out)
 }
 
 func requestsSelectedModel(body []byte, selected string) bool {
@@ -344,7 +376,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 	bounded := *client
 	recovering, releaseRecovery := waitForModelRecovery(ctx, hops)
 	defer releaseRecovery()
-	for _, hop := range hops {
+	for i, hop := range hops {
 		started := time.Now()
 		if !hop.availableFor(time.Now(), hop == recovering) {
 			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
@@ -355,7 +387,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			continue
 		}
 		if hop.meter != nil && hop.meter.exhausted(hop.name, hop.limits, hop.owner) {
-			hop.fail()
+			hop.failWith("quota", "local model limit spent")
 			log.Printf("model-relay hop=%s path=%s skipped (quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
@@ -367,7 +399,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				continue
 			}
 			if exhausted {
-				hop.fail()
+				hop.failWith("quota", "provider quota window spent")
 				log.Printf("model-relay hop=%s path=%s skipped (provider_quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				continue
 			}
@@ -451,10 +483,11 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			// Redirects are denied and quota/account exhaustion falls through;
 			// both park the hop for the cooldown window.
 			if (resp.StatusCode >= 300 && resp.StatusCode < 400) || retryableModelStatus(resp.StatusCode) {
-				hop.fail()
-				log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+				raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 				_ = resp.Body.Close()
+				class, detail := classifyUpstreamError(resp.StatusCode, raw)
+				hop.failWith(class, detail)
+				log.Printf("model-relay hop=%s path=%s status=%d class=%s", hop.name, path, resp.StatusCode, class) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				break
 			}
 			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
@@ -476,12 +509,102 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			}
 			hop.mu.Lock()
 			hop.cool, hop.recoverable = time.Time{}, false
+			hop.lastClass, hop.lastDetail = "", ""
 			hop.mu.Unlock()
 			log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+			if i > 0 {
+				primary := hops[0]
+				class, detail := primary.failure()
+				if class == "" {
+					class = "unavailable"
+				}
+				log.Printf("model-relay fallback from=%s class=%s detail=%q served=%s", primary.name, class, detail, hop.name) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				resp.Header.Set("X-Model-Fallback", primary.name)
+				resp.Header.Set("X-Model-Fallback-Reason", class)
+			}
 			return hop, resp, nil
 		}
 	}
-	return nil, nil, fmt.Errorf("all model upstreams failed")
+	return nil, nil, classifyLadderFailure(hops)
+}
+
+// modelRouteError carries the classified reason the whole ladder refused so
+// the response can name it: a quota wall with no remaining fallback or a
+// generic outage.
+type modelRouteError struct {
+	class  string
+	detail string
+}
+
+func (e *modelRouteError) Error() string {
+	if e.detail != "" {
+		return e.class + ": " + e.detail
+	}
+	return e.class
+}
+
+// classifyLadderFailure reduces the per-hop failure set to the dominant
+// class. A provider block outranks: it needs an operator decision, not a
+// retry. An all-quota ladder is "exhausted with nothing to switch to";
+// anything else stays the generic route failure.
+func classifyLadderFailure(hops []*modelHop) *modelRouteError {
+	saw, blocked, allQuota := false, false, true
+	blockDetail, quotaDetail := "", ""
+	for _, hop := range hops {
+		class, d := hop.failure()
+		if class == "" {
+			continue
+		}
+		saw = true
+		switch class {
+		case "provider_block":
+			blocked = true
+			if blockDetail == "" {
+				blockDetail = d
+			}
+		case "quota":
+			if quotaDetail == "" {
+				quotaDetail = d
+			}
+		default:
+			allQuota = false
+		}
+	}
+	switch {
+	case blocked:
+		return &modelRouteError{class: "provider_block", detail: blockDetail}
+	case saw && allQuota:
+		return &modelRouteError{class: "quota", detail: quotaDetail}
+	default:
+		return &modelRouteError{class: "route_unavailable"}
+	}
+}
+
+// classifyUpstreamError buckets an upstream refusal into the failure class
+// the ladder reports: rate limits and account-level provider blocks (ToS,
+// suspension, disabled service) get named classes; detail carries the
+// provider's own message for logs and error results.
+func classifyUpstreamError(status int, raw []byte) (class, detail string) {
+	var doc struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &doc)
+	detail = doc.Error.Message
+	if status == http.StatusTooManyRequests {
+		return "quota", detail
+	}
+	if status == http.StatusForbidden {
+		hay := strings.ToLower(doc.Error.Status + " " + doc.Error.Message)
+		for _, mark := range []string{"permission_denied", "terms of service", "violation", "disabled", "suspended", "deactivated", "blocked", "banned"} {
+			if strings.Contains(hay, mark) {
+				return "provider_block", detail
+			}
+		}
+	}
+	return "other", detail
 }
 
 // modelTokenCeiling refuses requests no provider window could serve. It sits
@@ -718,7 +841,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
 		if err != nil {
-			writeModelUnavailable(w)
+			writeModelFailure(w, err)
 			return
 		}
 		for key, values := range resp.Header {

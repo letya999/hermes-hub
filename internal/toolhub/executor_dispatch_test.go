@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -27,6 +28,8 @@ func r5ExecutorDefinition() api.ToolDefinition {
 		Tools: []api.ToolSpec{
 			{Name: "connector_list", Effect: api.ReadEffect, CapabilityID: "connectors.list", Executor: "runtime:connectors", Requires: []string{"connectors.discover"}, Audience: api.AudienceModel,
 				Description: "List connectors visible to this space with their status."},
+			{Name: "connector_status", Effect: api.ReadEffect, CapabilityID: "connectors.status", Executor: "runtime:connectors", Requires: []string{"connectors.discover"}, Audience: api.AudienceModel,
+				Description: "Show one connector's status.", Arguments: []api.CLIArgument{{Name: "name", Type: "string", Required: true}}},
 			{Name: "platform_status", Effect: api.ReadEffect, CapabilityID: "platform.status", Executor: "runtime:toolhub", Requires: []string{"platform.status"}, Audience: api.AudienceModel,
 				Description: "Show own health and diagnostics with allowlisted fields only."},
 			{Name: "platform_guide", Effect: api.ReadEffect, CapabilityID: "platform.guide", Executor: "runtime:toolhub", Requires: []string{"platform.guide"}, Audience: api.AudienceModel,
@@ -149,6 +152,14 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	}
 	if body := text(res); !strings.Contains(body, "connector") {
 		t.Fatalf("connector_list did not reach the facade: %s", body)
+	}
+	var inventory api.OperationResult
+	if err := json.Unmarshal([]byte(text(res)), &inventory); err != nil || inventory.State != api.OpStateDone {
+		t.Fatalf("connector_list hid its structured inventory: %s: %v", text(res), err)
+	}
+	res, err = call("connector_status", map[string]any{"name": "missing-connector"})
+	if err != nil || !res.IsError || !strings.Contains(text(res), "connector not found") {
+		t.Fatalf("missing connector status must be a definitive result: %v %v", res, err)
 	}
 	res, err = call("model_list", map[string]any{})
 	if err != nil || !strings.Contains(text(res), `"fast"`) {

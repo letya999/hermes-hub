@@ -225,6 +225,79 @@ func TestGatedPluginExcludedFromMaterializedMount(t *testing.T) {
 	}
 }
 
+func TestMaterializeHubPluginsKeepsMountedDirectory(t *testing.T) {
+	root := t.TempDir()
+	plugin := filepath.Join(root, "config", "plugins", "hub-web")
+	if err := os.MkdirAll(plugin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(plugin, "tools.py")
+	if err := os.WriteFile(source, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	space := t.TempDir()
+	s := validSettings()
+	s.Tools = testTools("web")
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	mount := filepath.Join(GeneratedPluginsDir(space), "hub-web")
+	before, err := os.Stat(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "stale.py"), []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("materialization replaced a live plugin bind mount")
+	}
+	if body, err := os.ReadFile(filepath.Join(mount, "tools.py")); err != nil || string(body) != "new" {
+		t.Fatalf("mounted plugin did not receive update: %q, %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "stale.py")); !os.IsNotExist(err) {
+		t.Fatalf("stale plugin file was not removed: %v", err)
+	}
+}
+
+func TestMaterializeHubPluginsRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	plugin := filepath.Join(root, "config", "plugins", "hub-web")
+	if err := os.MkdirAll(plugin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "tools.py"), []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	space := t.TempDir()
+	dest := GeneratedPluginsDir(space)
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dest, "hub-web")); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	s := validSettings()
+	s.Tools = testTools("web")
+	if err := MaterializeHubPlugins(space, root, s); err == nil {
+		t.Fatal("plugin materialization followed an external symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "tools.py")); !os.IsNotExist(err) {
+		t.Fatalf("plugin escaped generated directory: %v", err)
+	}
+}
+
 func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
 	space := t.TempDir()
 	s := validSettings()

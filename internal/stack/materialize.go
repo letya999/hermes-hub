@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/systemguide"
@@ -38,6 +40,9 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 		body += "\n\n" + profile
 	}
 	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir)
+	if !utf8.ValidString(body) {
+		return fmt.Errorf("system contract is not valid UTF-8")
+	}
 	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
@@ -132,18 +137,15 @@ func writeModelRegistryRevision(dir string, s Settings, revisionID string) error
 		return err
 	}
 	directory := filepath.Join(dir, "generated", "model-registry", s.Environment)
-	if err := os.MkdirAll(directory, 0770); err != nil {
+	if err := os.MkdirAll(directory, 0755); err != nil {
 		return err
 	}
-	if err := os.Chmod(directory, 0770); err != nil {
+	if err := os.Chmod(directory, 0755); err != nil {
 		return err
 	}
 	path := filepath.Join(directory, "models.yaml")
-	if err := atomic(path, body); err != nil {
-		return err
-	}
-	// The relay runs as uid10001 with the host group; credentials stay in separate auth/env files.
-	return os.Chmod(path, 0640)
+	// The relay runs as uid10001; registry values never carry credentials.
+	return atomicMode(path, body, 0644)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the
@@ -377,8 +379,9 @@ func tier0Block(dir string) string {
 // markup is escaped so catalog text cannot inject prompt markup and the
 // text is capped at 200 chars (R6.6).
 func catalogDescription(desc string) string {
-	if len(desc) > 200 {
-		desc = desc[:200]
+	chars := []rune(desc)
+	if len(chars) > 200 {
+		desc = string(chars[:200])
 	}
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(desc)
@@ -406,55 +409,138 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 	if src != "" && filepath.Clean(src) == filepath.Clean(dest) {
 		return nil
 	}
-	if err := os.RemoveAll(dest); err != nil {
+	if info, err := os.Lstat(dest); err != nil && !os.IsNotExist(err) {
+		return err
+	} else if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("unsafe generated plugins directory")
+	}
+	if err := os.MkdirAll(dest, 0755); err != nil {
 		return err
 	}
+	ensureDir := func(path string) error {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("unsafe generated plugin directory")
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return os.MkdirAll(path, 0755)
+	}
+	wanted := map[string]bool{}
 	// Every enabled gated plugin gets a dir even when the repo copy is absent:
 	// the compose/supervisor mount expects the source path to exist; an empty
 	// dir holds no plugin.yaml, so nothing loads.
 	for name, feature := range hubGatedPlugins {
 		if s.Has(feature) {
-			if err := os.MkdirAll(filepath.Join(dest, name), 0755); err != nil {
+			wanted[name] = true
+			if err := ensureDir(filepath.Join(dest, name)); err != nil {
 				return err
 			}
 		}
 	}
-	if src == "" {
-		return nil
-	}
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "__pycache__" {
-				return fs.SkipDir
+	if src != "" {
+		if err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
-			if rel != "." {
-				if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "__pycache__" {
 					return fs.SkipDir
 				}
+				// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
+				if rel != "." {
+					if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+						return fs.SkipDir
+					}
+					wanted[rel] = true
+				}
+				return ensureDir(filepath.Join(dest, rel))
 			}
-			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+			if strings.HasSuffix(d.Name(), ".pyc") {
+				return nil
+			}
+			wanted[rel] = true
+			body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned plugins dir
+			if err != nil {
+				return err
+			}
+			mode := fs.FileMode(0644)
+			if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+				mode = info.Mode().Perm()
+			}
+			output := filepath.Join(dest, rel)
+			if info, err := os.Lstat(output); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+				return fmt.Errorf("unsafe generated plugin file")
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if current, err := os.ReadFile(output); err == nil && bytes.Equal(current, body) {
+				return nil
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			tmp, err := os.CreateTemp(filepath.Dir(output), ".hub-plugin-*")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(tmp.Name())
+			if err := tmp.Chmod(mode); err != nil {
+				_ = tmp.Close()
+				return err
+			}
+			if _, err := tmp.Write(body); err != nil {
+				_ = tmp.Close()
+				return err
+			}
+			if err := tmp.Close(); err != nil {
+				return err
+			}
+			return replaceRenderedFile(tmp.Name(), output) // #nosec G703 -- output is under the generated plugins directory
+		}); err != nil {
+			return err
 		}
-		if strings.HasSuffix(d.Name(), ".pyc") {
-			return nil
-		}
-		body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned plugins dir
+	}
+	// Keep top-level plugin directory inodes: running containers bind them.
+	var prune func(string, string) error
+	prune = func(path, rel string) error {
+		entries, err := os.ReadDir(path)
 		if err != nil {
 			return err
 		}
-		mode := fs.FileMode(0644)
-		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
-			mode = info.Mode().Perm()
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".hub-plugin-") {
+				continue // another materialization may still be replacing this file
+			}
+			childRel := filepath.Join(rel, entry.Name())
+			child := filepath.Join(path, entry.Name())
+			if entry.IsDir() && wanted[childRel] {
+				if err := prune(child, childRel); err != nil {
+					return err
+				}
+				continue
+			}
+			if entry.IsDir() {
+				if err := prune(child, childRel); err != nil {
+					return err
+				}
+			}
+			if !wanted[childRel] {
+				if err := os.RemoveAll(child); err != nil {
+					return err
+				}
+			}
 		}
-		return os.WriteFile(filepath.Join(dest, rel), body, mode) // #nosec G703 -- dest join of a walked rel path
-	})
+		return nil
+	}
+	return prune(dest, "")
 }
 
 // MaterializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
@@ -464,11 +550,27 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 func MaterializeGlobalSkills(dir string, s Settings) error {
 	src := strings.TrimSpace(s.GlobalSkillsDir)
 	dest := GeneratedSkillsDir(dir)
+	info, err := os.Lstat(dest)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("unsafe generated skills directory")
+	}
 	if filepath.Clean(src) == filepath.Clean(dest) {
 		return materializeSystemGuide(dir)
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return err
+	// Keep the mount inode: a running container may already bind this directory.
+	if err == nil {
+		entries, err := os.ReadDir(dest)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := os.RemoveAll(filepath.Join(dest, entry.Name())); err != nil {
+				return err
+			}
+		}
 	}
 	if err := materializeSystemGuide(dir); err != nil {
 		return err
@@ -476,7 +578,7 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 	if src == "" {
 		return nil
 	}
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

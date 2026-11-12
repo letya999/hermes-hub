@@ -560,6 +560,9 @@ func TestAssignmentWatchTransitionsOwnedByToolHub(t *testing.T) {
 	if err := host.ResumeAssignment(ctx, alice, asg.AssignmentID); err != nil {
 		t.Fatalf("ResumeAssignment: %v", err)
 	}
+	if got, err := host.LoadAssignment(ctx, alice, asg.AssignmentID); err != nil || got.State != "draft" {
+		t.Fatalf("resumed draft became active: %+v %v", got, err)
+	}
 	if _, err := host.CompleteAssignment(ctx, alice, asg.AssignmentID); err != nil {
 		t.Fatalf("CompleteAssignment: %v", err)
 	}
@@ -2338,6 +2341,65 @@ func TestAuthorizeOccurrenceReauthorizesAtSendTime(t *testing.T) {
 	// Unknown ids fail closed rather than letting stray refs send.
 	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": "occ-missing"}, nil); err == nil {
 		t.Fatal("missing occurrence authorized")
+	}
+}
+
+func TestCompletedAssignmentCanDeliverItsOwnConfirmedResult(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	bob := h.envelope(t, "bob")
+	for _, op := range []string{"read", "write"} {
+		h.grant(t, "alice", op)
+	}
+	host := h.host(t)
+	host.cfg.Fetch = func(context.Context, string) ([]byte, error) { return []byte("verified page"), nil }
+	due := h.now.Add(time.Minute)
+	plan := &commodel.AssignmentPlan{Revision: 1, Sources: []commodel.AssignmentSource{{Name: "page", Schedule: commodel.RoutineDraft{Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "verify page", JobKind: "watcher", NotifyMode: "agent", DeliverMode: "content", Probe: &commodel.WatchProbe{Kind: "http", URL: "https://example.com"}}}}}
+	created, _, err := host.CreateAssignment(context.Background(), alice, commodel.Assignment{AssignmentID: "asg-complete-send", Envelope: alice, Intent: "verify page", Title: "verify", Plan: plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := host.ApplyAssignment(context.Background(), alice, created.AssignmentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Tick(context.Background(), due); err != nil {
+		t.Fatal(err)
+	}
+	job := h.sup.onlyJob()
+	if job.ID == "" {
+		t.Fatal("assignment watcher did not wake")
+	}
+	history, err := host.RoutineHistory(context.Background(), alice, applied.Applied["page"].ScheduleID)
+	if err != nil || len(history) != 1 || history[0].Run.ExecutionState == "unavailable" {
+		t.Fatalf("probe wake history lost admitted execution: %+v %v", history, err)
+	}
+	eng, err := host.engineFor("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := eng.RecordAssignmentProgress(created.AssignmentID, alice, applied.Revision, job.ID, "confirmed", "example found", "", true)
+	if err != nil || completed.State != "completed" {
+		t.Fatalf("completion failed: %+v %v", completed, err)
+	}
+	archive := filepath.Join(host.ownerRoot("alice"), "occurrences", "archive")
+	if err := os.MkdirAll(archive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(host.ownerRoot("alice"), "occurrences", job.ID+".json"), filepath.Join(archive, job.ID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.AuthorizeOccurrence(context.Background(), alice, job.ID, ""); err != nil {
+		t.Fatalf("completed result was blocked at send time: %v", err)
+	}
+	if err := host.AuthorizeOccurrence(context.Background(), bob, job.ID, ""); err == nil {
+		t.Fatal("foreign owner authorized completed result")
+	}
+	if err := host.DeleteAssignment(context.Background(), alice, created.AssignmentID, completed.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.AuthorizeOccurrence(context.Background(), alice, job.ID, ""); err == nil {
+		t.Fatal("removed assignment authorized stale result")
 	}
 }
 

@@ -488,12 +488,30 @@ func onboardRemoteOAuth(t *testing.T, fixture *remoteOAuthFixture, fix *remoteCo
 // S6.2: the durable (connection, provider) refresh lease serializes
 // concurrent expiry — N callers observe one AS exchange, the rest join on
 // the rotated token instead of double-spending it.
+type refreshReadBarrier struct {
+	credstore.Backend
+	reads   sync.WaitGroup
+	seen    atomic.Int32
+	release chan struct{}
+}
+
+func (b *refreshReadBarrier) Get(locator, owner string) (map[string]string, error) {
+	values, err := b.Backend.Get(locator, owner)
+	if b.seen.Add(1) <= 16 {
+		b.reads.Done()
+		<-b.release
+	}
+	return values, err
+}
+
 func TestRefreshLeaseSingleExchangeUnderConcurrency(t *testing.T) {
 	fixture := newRemoteOAuthFixture(t)
 	fix := newRemoteControlFixture(t)
 	connection, reference := onboardRemoteOAuth(t, fixture, fix)
 	broker := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	refresh := remoteOAuthRefresh(fix.secrets, broker, fix.store)
+	backend := &refreshReadBarrier{Backend: fix.secrets, release: make(chan struct{})}
+	backend.reads.Add(16)
+	refresh := remoteOAuthRefresh(backend, broker, fix.store)
 	binding := api.EffectiveBinding{
 		Binding:    api.ToolBinding{PrincipalID: "alice"},
 		Connection: &connection,
@@ -514,6 +532,8 @@ func TestRefreshLeaseSingleExchangeUnderConcurrency(t *testing.T) {
 			results <- refreshed
 		}()
 	}
+	backend.reads.Wait()
+	close(backend.release)
 	wg.Wait()
 	close(results)
 	for refreshed := range results {

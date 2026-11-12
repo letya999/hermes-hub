@@ -35,6 +35,10 @@ func TestRefreshBrokerRequestPreservesInvisibleCredential(t *testing.T) {
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
+	o, err = s.onboarding(o.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := o
 	if err := c.refreshBrokerRequest(t.Context(), aliceAuth(), &o); !brokerclient.IsNotFound(err) {
 		t.Fatalf("ambiguous visibility error not preserved: %v", err)

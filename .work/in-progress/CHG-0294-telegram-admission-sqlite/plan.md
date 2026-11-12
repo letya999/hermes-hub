@@ -43,11 +43,54 @@ registry uses SQLite. Preserve fail-closed authorization and the SQLite store.
    container images and no restart loop.
 6. Run focused regression tests, vet, `just check` and affected-package tests.
    Do not claim the original Telegram jobs completed without a fresh user run.
+7. Keep `Store.Reload` snapshot I/O outside the state lock while coalescing
+   concurrent reloads. Reject a snapshot superseded during the read so callers
+   cannot authorize against stale rights.
+
+## Reload follow-up evidence (2026-11-10)
+
+- Source HEAD: `d56a0e24a6a6a2fef4bd632125c7dd362aaa03aa`; this local fix is
+  uncommitted, so it has no remote CI or image acceptance.
+- `TestStoreDBReloadDoesNotBlockReadersDuringLoad` and
+  `TestStoreReloadRejectsStaleSnapshot` passed on SQLite and JSON paths.
+  `go vet -p=2 ./internal/toolhub`, `just check`, and
+  `just test ./internal/toolhub` passed (package: 197.540 s).
+- `hubctl dev-rebuild --dir spaces/artem_main --env dev toolhub` recreated the
+  running dev ToolHub with `hermes-hub-dev-artem_main-toolhub:local`. The MCP
+  endpoint returned 401 in 0.010 s and the service-only automation endpoint
+  returned 401 in 0.020 s without credentials, confirming live reachability.
+- The authenticated `assignments.list` path from a spawned runtime has not
+  been rerun after this rebuild. Its latency and result remain unverified.
+
+## WSL ToolHub recovery evidence (2026-11-11)
+
+- Moved the stopped owner and managed-space dev stacks from a Docker Desktop
+  Windows bind to Ubuntu ext4 under `/home/artem/hermes-hub-deploy`; copied
+  SQLite WAL/SHM with numeric owners preserved and checked destination
+  `PRAGMA integrity_check=ok`. Source spaces were left intact.
+- Re-rendered both spaces, then rebuilt only the ToolHub and supervisor dev
+  images through `hubctl dev-rebuild`. The Docker socket is GID 1001; the
+  supervisor now runs with that supplemental group. The rendered runtime env
+  files and generated skill/config views now admit the supervisor UID/group.
+- Authenticated MCP `tool_search` found `terminal_exec`, `terminal_job` and
+  every requested `document_*` tool in 10–60 ms per exact lookup. A real
+  `terminal_exec` in the managed space returned SHA-256
+  `51eb9ee0566b3eae2ca5204ddcb76893970f49dc93e2f6b00c4ec94088c07ed5`,
+  three lines, exit code 0. A two-second background command appeared in
+  `terminal_job list` as running, then `poll` returned `done`, exit code 0,
+  and `terminal job complete`.
+- The first runtime spawn took about 21 s. Subsequent isolated terminal
+  commands took 3–5 s including scratch-container startup; exact ToolHub
+  lookup remained under 60 ms. No publication or remote CI was run.
+- `assignments.list` still timed out at about 31 s after the filesystem move:
+  the admitted ToolHub call held its sole SQLite connection while
+  communication-hub called back into ToolHub for `tasks.delegate`. Releasing
+  admission before assignment/routine/watch dispatch and rechecking rights
+  removed that self-wait. Live `assignment_list` completed in 859 ms and then
+  483 ms; a concurrent terminal and background job check also completed.
 
 ## Open operational concern
 
-The dev `/state` bind is backed by Windows even though its writer runs in a
-Linux container. The running database must be checked from Linux; host-side
-SQLite access while ToolHub holds WAL is not valid evidence. A Docker-owned
-volume and a container-side operator CLI are the longer-term storage boundary
-if concurrent host administration of the live registry is required.
+The live dev `/state` bind is now on Ubuntu ext4; the old Windows copy remains
+as a stopped fallback. Do not inspect a live ToolHub WAL from Windows. These
+uncommitted changes have no remote CI acceptance.

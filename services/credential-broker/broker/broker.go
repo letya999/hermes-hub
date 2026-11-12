@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -389,6 +390,27 @@ func (b *Broker) GetCredential(a identity.Actor, id string) (v1.Credential, erro
 		return v1.Credential{}, ErrNotFound
 	}
 	return c.View, nil
+}
+
+// ConnectionCredentials returns only metadata the actor can manage for one
+// connection. It includes revoked and deleted records for cleanup verification.
+func (b *Broker) ConnectionCredentials(a identity.Actor, connectionID string) ([]v1.Credential, error) {
+	if !a.Valid() || !identity.ValidID(connectionID) {
+		return nil, ErrInvalid
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.live() {
+		return nil, ErrUnavailable
+	}
+	out := make([]v1.Credential, 0)
+	for _, c := range b.credentials {
+		if c.View.ConnectionID == connectionID && managedBy(a, c) {
+			out = append(out, c.View)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 func (b *Broker) Events(a identity.Actor, after uint64, limit int) v1.Events {
 	b.mu.Lock()

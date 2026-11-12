@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -305,7 +306,7 @@ func sameTokenMap(path string, entries map[string]identity.Envelope) bool {
 }
 
 func writeFileInPlace(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0640)
 	if err != nil {
 		return err
 	}
@@ -320,5 +321,11 @@ func writeFileInPlace(path string, body []byte) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Chmod(path, 0600)
+	// Readers run as the agent UID with the operator's group, including root renders.
+	if runtime.GOOS != "windows" {
+		if err := os.Chown(path, -1, os.Getgid()); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(path, 0640)
 }

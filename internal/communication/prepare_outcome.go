@@ -27,6 +27,8 @@ type prepareOutcomeRequest struct {
 	Detail           string                 `json:"detail"`
 	FormURL          string                 `json:"form_url"`
 	Event            string                 `json:"event"`
+	EventID          string                 `json:"event_id,omitempty"`
+	NoticeVersion    uint64                 `json:"notice_version,omitempty"`
 	Tools            int                    `json:"tools"`
 	// CreatedAt pins the onboarding creation instant so the gateway can find
 	// the message job that was running when the install was requested.
@@ -58,7 +60,13 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	if proof := request.Confirmation; proof != nil {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if r.Header.Get("Origin") != "" || !g.serviceControlTokenAccepted(token) || !g.config.Supervised && g.serviceControlToken() == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, caller.PolicyVersion) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
+		expectedPolicy := caller.PolicyVersion
+		// Only a separate supervised service bearer can carry a sibling's
+		// newer policy while the gateway's routing snapshot still lags.
+		if g.config.Supervised && g.serviceControlToken() != g.config.ControlAuth {
+			expectedPolicy = proof.Actor.PolicyVersion
+		}
+		if r.Header.Get("Origin") != "" || !g.serviceControlTokenAccepted(token) || !g.config.Supervised && g.serviceControlToken() == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, expectedPolicy) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
 			http.Error(w, "confirmation denied", http.StatusForbidden)
 			return
 		}
@@ -79,6 +87,12 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	} else if !knownPreparePhase(request.Phase) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
+	}
+	if request.EventID != "" {
+		if request.Event != "link-resent" || !api.ValidPrepareEventID(request.EventID) {
+			http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+			return
+		}
 	}
 	if request.Tools < 0 || request.Tools > 500 {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
@@ -272,7 +286,7 @@ func prepareContinuation(request prepareOutcomeRequest, lang locale.Lang) string
 		text = "Service continuation of an MCP install. The user was already sent the form link for " + repo + ", onboarding_id " + request.OnboardingID + ". Do not send another link and do not invent a network error. If the user says the form rejected the token, call mcp__toolhub__status and relay the error. Do not ask for a token in chat. Do not use the terminal and do not edit config.yaml."
 	}
 	if wizardLink(request.FormURL) && (request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth") {
-		text = "Service continuation of an MCP install " + repo + ", phase " + request.Phase + ". The whole setup happens on one page: the link was already sent to the user — tell them to return to that same link; the page itself shows the current step (form, confirmation or Google sign-in). There are no other messages, buttons or confirmation links — do not mention any. If the link does not open or expired, call mcp__toolhub__status with onboarding_id " + request.OnboardingID + " and resend=true. Reply with one short message. Do not construct links and do not ask for data in chat."
+		text = "Service continuation of an MCP install " + repo + ", phase " + request.Phase + ". The setup page link was already sent. After a credential form is accepted, check the exact onboarding_id " + request.OnboardingID + " before saying credentials are missing; the Broker form is one-time and its later expiry does not prove the submission failed. If phase is awaiting-confirm, ask the user to press the protected confirmation button in the original chat. If the link or button is missing, use connector_edit action=resend with that exact onboarding ID. Reply once, briefly, without constructing links or asking for credentials in chat."
 	}
 	return text + modelLangHint(lang)
 }
@@ -316,8 +330,15 @@ func wizardLink(raw string) bool {
 // and the channel never received the fresh URL.
 func prepareOutcomeKey(request prepareOutcomeRequest, loginURL string) string {
 	key := "prepare-" + request.OnboardingID + "-" + request.Phase
+	if request.NoticeVersion > 0 {
+		key += "-v" + strconv.FormatUint(request.NoticeVersion, 10)
+	}
 	if request.Event != "" {
 		key += "-" + request.Event
+		if request.Event == "link-resent" && request.EventID != "" {
+			sum := sha256.Sum256([]byte(request.EventID))
+			key += "-" + hex.EncodeToString(sum[:4])
+		}
 		// Two identical rejections carry the same key and dedupe away; a
 		// different rejection reason must still reach the channel.
 		if request.Event == "credentials-rejected" {
@@ -436,6 +457,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		chatID, topicID = origin.ChatID, origin.TopicID
 	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
+	delivery.PrepareKey, delivery.PrepareVersion = prepareDeliveryIdentity(caller, request.OnboardingID), request.NoticeVersion
 	if request.Confirmation != nil {
 		button, err := g.spool.humanConfirmationButton(*request.Confirmation, channelName, chatID)
 		if err != nil {
@@ -452,10 +474,14 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if request.Confirmation == nil && request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
 		delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
 	}
-	if err := g.spool.EnqueueDelivery(delivery); err != nil {
+	accepted, err := g.spool.enqueuePrepareDelivery(delivery, "prepare-"+request.OnboardingID+"-")
+	if err != nil {
 		return err
 	}
-	if request.Event != "" || waitingForLogin || request.Confirmation != nil || actionLink(request.FormURL, "/remove/") != "" {
+	if !accepted {
+		return nil
+	}
+	if request.Event != "" || waitingForLogin || request.Confirmation != nil || request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth" || actionLink(request.FormURL, "/remove/") != "" {
 		// Wait for user action before resuming the agent — an armed remove
 		// link is itself the continuation.
 		return nil
@@ -478,7 +504,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	// the spent job's fingerprint.
 	jobKey := key + "-" + jobFingerprint(job)[:8]
 	job.ID, job.IdempotencyKey = jobKey, jobKey
-	_, err := g.spool.Enqueue(job)
+	_, err = g.spool.Enqueue(job)
 	return err
 }
 

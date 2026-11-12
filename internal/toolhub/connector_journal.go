@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -107,21 +108,17 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 	}
 	// Progress is re-observed from the onboarding phase on every call, so a
 	// repeat never remints links or creates a second onboarding.
-	onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID)
+	onboarding, err := c.reconcileConnectorOnboarding(ctx, auth, op.OnboardingID)
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
-		return api.OperationResult{}, err
-	}
-	markStep(&op, api.OpStepCollectCredentials, api.OpStepDone)
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "install " + op.Target}
 	if onboarding.Phase == api.PhaseAwaitingCreds {
 		op.State = api.OpStateAwaitingUser
-		result.LinkSent = onboarding.FormNonce != ""
+		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
 	} else if onboarding.Phase == api.PhaseAwaitingConfirm {
 		op.State = api.OpStateAwaitingConfirm
-		result.LinkSent = onboarding.ConfirmationNonce != ""
+		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
 	} else if onboarding.Phase == api.PhaseEnabled {
 		// The human gates are past: bind and projection already happened on
 		// the primitive path; the journal records the remaining steps done.
@@ -140,6 +137,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 	} else {
 		op.State = api.OpStateRunning
 	}
+	op = installProgress(op, onboarding)
 	result.State = op.State
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err
@@ -166,6 +164,8 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	var phaseErr error
 	if intent == api.OpIntentEnable {
 		_, phaseErr = c.enable(ctx, auth, map[string]any{"onboarding_id": resolved.OnboardingID})
+	} else if intent == api.OpIntentRevoke {
+		_, phaseErr = c.revoke(auth, map[string]any{"onboarding_id": resolved.OnboardingID})
 	} else {
 		_, phaseErr = c.setPhase(auth, map[string]any{"onboarding_id": resolved.OnboardingID}, api.DisabledStatus, api.PhaseDisabled)
 	}
@@ -249,14 +249,29 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 	}
 	if op.OnboardingID == "" {
 		resolved, err := c.Store.ResolveConnectorTarget(auth, target)
+		if errors.Is(err, api.ErrNotFound) {
+			resolved, err = c.Store.claimRemovalTarget(auth, target)
+		}
 		if err != nil {
-			return api.OperationResult{}, err
+			if errors.Is(err, api.ErrNotFound) {
+				return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "remove requires an owned connector or onboarding"}, nil
+			}
+			var ambiguous *ErrAmbiguousTarget
+			if errors.As(err, &ambiguous) {
+				return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Candidates: ambiguous.Candidates, Summary: "choose an exact connector id"}, nil
+			}
+			return api.OperationResult{}, fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
 		}
 		op.OnboardingID = resolved.OnboardingID
 	}
 	onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID)
 	if err != nil {
 		return api.OperationResult{}, err
+	}
+	if onboarding.ConnectionID != "" {
+		if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && (connection.Owner.Type != api.PrincipalOwner || !connection.Owner.Matches(auth)) {
+			return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "remove requires a personally owned connection"}, nil
+		}
 	}
 	if onboarding.Phase == api.PhaseRemoved {
 		for _, step := range connectorRemoveSteps {
@@ -268,7 +283,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		}
 		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateDone, Summary: "remove " + op.Target + " — " + onboarding.RemoveReceipt}, nil
 	}
-	if onboarding.RemoveNonce == "" {
+	if onboarding.RemoveNonce == "" || onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
 		// Bare remove mints the one-time link and halts for the human.
 		if _, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 			op.State = api.OpStateFailed
@@ -279,12 +294,16 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 			return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: "remove " + target}, nil
 		}
 	}
-	markStep(&op, api.OpStepConfirm, api.OpStepDone)
+	markStep(&op, api.OpStepConfirm, api.OpStepPending)
 	op.State = api.OpStateAwaitingConfirm
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
-	return api.OperationResult{OperationID: op.OperationID, State: op.State, LinkSent: true, Summary: "remove " + op.Target}, nil
+	current, err := c.Store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil {
+		return api.OperationResult{}, err
+	}
+	return api.OperationResult{OperationID: op.OperationID, State: op.State, LinkSent: current.NoticeVersion > 0 && current.NoticeQueuedVersion == current.NoticeVersion, Summary: "remove " + op.Target}, nil
 }
 
 // connectorReauth reopens credential collection on a live connector: a
@@ -295,9 +314,15 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 	if target == "" {
 		return api.OperationResult{}, fmt.Errorf("%w: connector target", api.ErrInvalid)
 	}
-	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentReauth, target)
+	requestTarget := target
+	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentReauth, requestTarget)
+	for exists && op.State == api.OpStateDone {
+		requestTarget = target + "#after=" + op.OperationID
+		op, exists = c.Store.OperationForRequestKey(auth, api.OpIntentReauth, requestTarget)
+	}
 	if !exists {
-		op = c.newConnectorOperation(auth, api.OpIntentReauth, target, []string{api.OpStepCollectCredentials, api.OpStepNotify})
+		op = c.newConnectorOperation(auth, api.OpIntentReauth, requestTarget, []string{api.OpStepCollectCredentials, api.OpStepNotify})
+		op.Target = target
 	}
 	if op.OnboardingID == "" {
 		resolved, err := c.Store.ResolveConnectorTarget(auth, target)
@@ -310,45 +335,45 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	result := api.OperationResult{OperationID: op.OperationID, Summary: "reauth " + op.Target}
-	if (onboarding.Phase == api.PhaseEnabled || onboarding.Phase == api.PhaseAwaitingConfirm) && onboarding.BrokerCredentialID != "" && (op.State == api.OpStateQueued || op.State == api.OpStateRunning) {
-		if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus && connection.HealthCause == "credential_inactive" {
-			// A confirmed but inactive Broker credential cannot be fixed by
-			// repeating confirmation; reopen the existing protected intake.
-			onboarding.Phase = api.PhaseAwaitingConfirm
-			c.resetSubmittedCredential(&onboarding)
-			if err := c.Store.PutOnboarding(onboarding); err != nil {
-				return api.OperationResult{}, err
-			}
-			if err := c.regenerateBrokerRequest(ctx, auth, &onboarding); err != nil {
-				return api.OperationResult{}, err
-			}
-		}
+	if onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseCleanupIncomplete || len(onboarding.Finalizers) > 0 {
+		return api.OperationResult{}, api.ErrRevoked
 	}
-	if onboarding.Phase == api.PhaseEnabled && (op.State == api.OpStateQueued || op.State == api.OpStateRunning) {
-		// Reopen credential collection: the protected form rotates in the
-		// new values; the binding stays until re-confirmation.
+	result := api.OperationResult{OperationID: op.OperationID, Summary: "reauth " + op.Target}
+	if onboarding.Phase != api.PhaseAwaitingCreds {
+		// An explicit reauth replaces the pending action even before enablement.
+		expected := onboarding.Revision
+		if onboarding.BrokerCredentialID != "" {
+			onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
+			onboarding.BrokerCredentialID, onboarding.Locator = "", ""
+		}
+		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
+		onboarding.BrokerAttempts++
 		onboarding.Phase = api.PhaseAwaitingCreds
-		onboarding.FormNonce = ""
+		onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
+		onboarding.WizardNonce, onboarding.WizardExpires = "", time.Time{}
+		onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "", time.Time{}
+		onboarding.ConfirmationUsed, onboarding.HumanConsent = false, nil
+		onboarding.Error, onboarding.ErrorCode = "", ""
+		onboarding.AdmissionLeaseUntil, onboarding.AdmissionNextAttempt = time.Time{}, time.Time{}
 		onboarding.Revision++
-		if err := c.Store.PutOnboarding(onboarding); err != nil {
+		if err := c.Store.PutOnboardingIfRevision(onboarding, expected); err != nil {
 			return api.OperationResult{}, err
 		}
 	}
 	if onboarding.Phase == api.PhaseAwaitingCreds {
-		if onboarding.FormNonce == "" || !c.now().Before(onboarding.FormExpires) {
-			onboarding.FormNonce = api.RandomNonce()
-			onboarding.FormExpires = c.now().Add(c.ttl())
-			c.armWizard(&onboarding)
-			onboarding.Revision++
-			if err := c.Store.PutOnboarding(onboarding); err != nil {
-				return api.OperationResult{}, err
-			}
-			api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+		definition, err := c.definitionOf(onboarding)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		if err := c.ensureBrokerIntake(ctx, auth, &onboarding, definition, true); err != nil {
+			return api.OperationResult{}, err
+		}
+		if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
+			return api.OperationResult{}, err
 		}
 		op.State = api.OpStateAwaitingUser
 		result.State = op.State
-		result.LinkSent = true
+		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
 	} else if onboarding.Phase == api.PhaseEnabled {
 		markStep(&op, api.OpStepCollectCredentials, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
@@ -419,11 +444,11 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return api.OperationResult{}, err
 		}
-		api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
-		markStep(&op, api.OpStepConfirm, api.OpStepDone)
+		c.deliverOutcomeNotice(ctx, auth, &onboarding)
+		markStep(&op, api.OpStepConfirm, api.OpStepPending)
 		op.State = api.OpStateAwaitingConfirm
 		result.State = api.OpStateAwaitingConfirm
-		result.LinkSent = true
+		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
 	}
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err

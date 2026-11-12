@@ -481,6 +481,7 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 	if onboarding.OnboardingID != preparing.OnboardingID {
 		preparing.Phase = api.PhaseRemoved
 		preparing.SupersededBy = onboarding.OnboardingID
+		preparing.Revision++
 		if err := c.Store.PutOnboarding(preparing); err != nil {
 			log.Printf("toolhub: superseded onboarding stub %s not recorded: %v", preparing.OnboardingID, err)
 		}
@@ -491,6 +492,7 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 	onboarding.Subfolder = source.Subfolder
 	copyDef := definition
 	onboarding.Definition = &copyDef
+	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return failPrepare(err)
 	}

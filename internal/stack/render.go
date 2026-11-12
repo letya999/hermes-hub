@@ -33,8 +33,10 @@ func Config(s Settings) M {
 			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
 			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
 		}
+		for _, connection := range RuntimeConnections(s, s.SpaceDir) {
+			e[connection.EnvKey] = connection.ConfigPath
+		}
 		if s.Has("ssh") {
-			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
 			e["HUB_SSH_SHELL"] = fmt.Sprint(s.Has("ssh_shell"))
 			e["HUB_SSH_TUNNEL"] = fmt.Sprint(s.Has("ssh_tunnel"))
@@ -42,9 +44,6 @@ func Config(s Settings) M {
 		if s.Has("hosting") {
 			e["HUB_HOSTING_URL"] = "http://" + hostingName(s) + ":8182"
 			e["HUB_HOSTING_TOKEN_FILE"] = "/run/hosting.key"
-		}
-		if s.Has("exposure") {
-			e["HUB_EXPOSURE_CONFIG"] = "/state/exposure/config.yaml"
 		}
 		if s.Has("ssh") || s.Has("exposure") {
 			// The runtime is already a provisioned broker adapter; the tools

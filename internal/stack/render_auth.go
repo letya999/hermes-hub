@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -107,14 +108,18 @@ func writeModelRelayCallerAuth(dir string) error {
 	if err != nil || values["HUB_MODEL_RELAY_AUTH"] == "" {
 		return fmt.Errorf("model-relay caller auth unavailable")
 	}
-	return writeEnvFile(filepath.Join(dir, "model-relay-caller.auth"), map[string]string{"HUB_MODEL_RELAY_AUTH": values["HUB_MODEL_RELAY_AUTH"]})
+	path := filepath.Join(dir, "model-relay-caller.auth")
+	if err := writeEnvFile(path, map[string]string{"HUB_MODEL_RELAY_AUTH": values["HUB_MODEL_RELAY_AUTH"]}); err != nil {
+		return err
+	}
+	return allowServiceGroupRead(path)
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
 func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 	source := filepath.Join(dir, "media.auth")
 	parent := filepath.Dir(filepath.Clean(dir))
-	if !s.RendersInfra() && filepath.Base(parent) == "spaces" {
+	if !s.RendersInfra() && s.PassportServices["hub-media"] != "per-space" && filepath.Base(parent) == "spaces" {
 		entries, err := os.ReadDir(parent)
 		if err != nil {
 			return nil, err
@@ -188,4 +193,21 @@ func ensureTokenFile(path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+func ensureContainerTokenFile(path string) error {
+	if err := ensureTokenFile(path); err != nil {
+		return err
+	}
+	return allowServiceGroupRead(path)
+}
+
+func allowServiceGroupRead(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if err := os.Chown(path, -1, os.Getgid()); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0640)
 }

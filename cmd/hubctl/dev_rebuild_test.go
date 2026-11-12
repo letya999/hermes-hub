@@ -244,6 +244,15 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 			if serr != nil || strings.TrimSpace(string(stamped)) != "hermes-hub-dev-owner-hermes-runtime:local" {
 				t.Fatalf("supervised runtime image not pinned: %q %v", stamped, serr)
 			}
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(filepath.Join(dir, "generated", "dev-runtime-image"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0644 {
+					t.Fatalf("supervisor cannot read runtime image pin: mode=%v", info.Mode().Perm())
+				}
+			}
 			if strings.Contains(string(all[len(before):]), "--no-deps hermes-runtime") {
 				t.Fatalf("supervised runtime must not compose-up: %s", all)
 			}
@@ -275,6 +284,15 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	scriptSelected, err := os.ReadFile(filepath.Join(dir, "generated", "dev-script-image"))
 	if err != nil || strings.TrimSpace(string(scriptSelected)) != "hermes-hub-dev-owner-communication-hub:local" {
 		t.Fatalf("script image selection: %q %v", scriptSelected, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Join(dir, "generated", "dev-script-image"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0644 {
+			t.Fatalf("supervisor cannot read script image pin: mode=%v", info.Mode().Perm())
+		}
 	}
 	if err := run(context.Background(), []string{"build", "--dir", dir, "--root", "../..", "--env", "dev", "cliproxy"}); err != nil {
 		t.Fatal(err)

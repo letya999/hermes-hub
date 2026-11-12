@@ -271,7 +271,7 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	if err != nil {
 		return
 	}
-	api.DeliverPrepareOutcome(ctx, auth, onboarding)
+	g.Control.deliverOutcomeNotice(ctx, auth, &onboarding)
 	g.mu.Lock()
 	list := make([]*gatewayProjection, 0, len(g.projections))
 	for _, projection := range g.projections {

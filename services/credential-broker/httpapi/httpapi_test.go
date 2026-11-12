@@ -39,6 +39,27 @@ import (
 
 var actor = identity.Actor{PrincipalID: "alice", ContextID: "team", RuntimeID: "hermes-alice", PolicyVersion: "policy_v1"}
 
+func TestHTTPConnectionCredentialInventoryIsOwnerScoped(t *testing.T) {
+	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+	r, _, _, _ := f.enroll(provider.Bundle{"token": []byte("SENTINEL_PRIVATE_VALUE")})
+	path := "/v1/connections/" + r.ConnectionID + "/credentials"
+	newPolicy := actor
+	newPolicy.PolicyVersion = "policy_v2"
+	w := f.api("GET", path, "broker:control", newPolicy, nil)
+	listed := parseResponse[[]v1.Credential](t, w, 200)
+	if len(listed) != 1 || listed[0].ID != r.CredentialID || strings.Contains(w.Body.String(), "SENTINEL_PRIVATE_VALUE") {
+		t.Fatal("owner inventory omitted credential metadata or exposed a value")
+	}
+	bob := actor
+	bob.PrincipalID = "bob"
+	if got := parseResponse[[]v1.Credential](t, f.api("GET", path, "broker:control", bob, nil), 200); len(got) != 0 {
+		t.Fatal("foreign credential inventory leaked")
+	}
+	if w := f.api("GET", path, "broker:runtime", actor, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong audience: %d", w.Code)
+	}
+}
+
 func TestHTTPDiagnosticRouteOmitsCredentialLink(t *testing.T) {
 	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
 	var output bytes.Buffer

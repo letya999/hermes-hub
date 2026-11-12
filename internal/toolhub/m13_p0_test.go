@@ -257,6 +257,7 @@ func TestRemoveToleratesMissingLocalCiphertext(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding.Locator = "broker-held-locator"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -303,6 +304,7 @@ func TestRemoveReportsCleanupIncompleteOnCredentialDeleteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding.Locator = "loc-fail"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +359,7 @@ func TestRevokeSurfacesCredentialTombstoneFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding.Locator = "loc-revoke"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +579,7 @@ func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": "onb-expired-conf"}); err != nil {
+	if _, err := control.connectorResend(t.Context(), auth, map[string]any{"target": "onb-expired-conf"}); err != nil {
 		t.Fatal(err)
 	}
 	latest, err := store.onboarding("onb-expired-conf")

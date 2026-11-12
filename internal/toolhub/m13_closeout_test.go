@@ -230,6 +230,7 @@ func TestLifecycleResolvesFriendlySelector(t *testing.T) {
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, onboardingID)
 	onboarding.SourceURL = "https://github.com/acme/search-mcp"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -288,6 +289,7 @@ func TestSelectorMatchesBasenameAndAliases(t *testing.T) {
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, onboardingID)
 	onboarding.SourceURL = "https://github.com/acme/search-mcp.git"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +317,7 @@ func TestSelectorMatchesBasenameAndAliases(t *testing.T) {
 	}
 	onboarding2 := mustOnboarding(t, store, prepared2["onboarding_id"].(string))
 	onboarding2.SourceURL = "https://github.com/other/search-mcp"
+	onboarding2.Revision++
 	if err := store.PutOnboarding(onboarding2); err != nil {
 		t.Fatal(err)
 	}

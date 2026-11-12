@@ -150,6 +150,30 @@ func (f *fixture) enroll(a identity.Actor, cid, conn string) v1.Credential {
 	}
 	return c
 }
+
+func TestConnectionCredentialsOwnerScopeAcrossPolicy(t *testing.T) {
+	f := newFixture(t)
+	credential := f.enroll(alice, "pat", "owner-connection")
+	newPolicy := alice
+	newPolicy.PolicyVersion = "policy_v2"
+	listed, err := f.b.ConnectionCredentials(newPolicy, "owner-connection")
+	if err != nil || len(listed) != 1 || listed[0].ID != credential.ID {
+		t.Fatalf("owner inventory: %v, count=%d", err, len(listed))
+	}
+	for _, other := range []identity.Actor{bob, {PrincipalID: alice.PrincipalID, ContextID: "other", RuntimeID: alice.RuntimeID, PolicyVersion: "policy_v2"}} {
+		listed, err = f.b.ConnectionCredentials(other, "owner-connection")
+		if err != nil || len(listed) != 0 {
+			t.Fatalf("foreign inventory leaked: %v, count=%d", err, len(listed))
+		}
+	}
+	if err := f.b.DeleteCredential(testCtx, newPolicy, credential.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = f.b.ConnectionCredentials(newPolicy, "owner-connection")
+	if err != nil || len(listed) != 1 || listed[0].Status != "deleted" {
+		t.Fatalf("deletion not verifiable: %v, count=%d", err, len(listed))
+	}
+}
 func grantInput(a identity.Actor, cid, binding, workload string) v1.GrantRequest {
 	return v1.GrantRequest{ContractID: cid, ContractRevision: 1, PrincipalID: a.PrincipalID, ContextID: a.ContextID, RuntimeID: a.RuntimeID, BindingID: binding, WorkloadID: workload, Execution: "dedicated", IdempotencyKey: "grant__" + binding}
 }

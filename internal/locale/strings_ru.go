@@ -99,11 +99,12 @@ func init() {
 		"tools.next-step.jira":    "После перезапуска проверить доступ к Jira или показать задачи, созданные за последние 2 дня?",
 		"tools.next-step.generic": "После перезапуска проверить статус подключений или продолжить настройку?",
 
-		"routines.watch-no-success":  "нет успешных проверок",
-		"routines.watch-unavailable": "• %s: источник недоступен; последние данные %s",
-		"routines.no-changes":        "Новых изменений нет.",
-		"routines.unavailable-count": " Источников недоступно: %d.",
-		"routines.blocked":           "Рутина «%s» остановлена: %s. Откройте её через routine_get, исправьте и сделайте resume — или удалите.",
+		"routines.watch-no-success":   "нет успешных проверок",
+		"routines.watch-unavailable":  "• %s: источник недоступен; последние данные %s",
+		"routines.no-changes":         "Новых изменений нет.",
+		"routines.origin-unavailable": "Источник рутины недоступен.",
+		"routines.unavailable-count":  " Источников недоступно: %d.",
+		"routines.blocked":            "Рутина «%s» остановлена: %s. Откройте её через routine_get, исправьте и сделайте resume — или удалите.",
 
 		"form.title":             "Hermes credentials",
 		"form.heading":           "Защищённая настройка коннектора",

@@ -737,7 +737,7 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 	// A preparing stub for the same request key reports in-flight without a
 	// second build.
 	stub := api.Onboarding{
-		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "dup2"),
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, "dup2"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, DefinitionID: "owner-tool", DefinitionVersion: "1.0.0",
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",

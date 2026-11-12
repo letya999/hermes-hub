@@ -83,7 +83,7 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 		// onboarding state and channel responses. The built definition rides
 		// back with the error so a rejected credential does not discard the
 		// unchanged artifact's evidence.
-		return admitted, fmt.Errorf("%w: authenticated tools/list failed", api.ErrIsolation)
+		return admitted, sanitizedAdmissionError(err)
 	}
 	return admitted, nil
 }
@@ -307,4 +307,14 @@ func mergeCredentialInjectors(local, broker api.CredentialInjector, brokerOnly b
 		}
 		return local(ctx, effective)
 	}
+}
+
+// Preserve safe error categories without retaining upstream text (it may echo a secret).
+func sanitizedAdmissionError(err error) error {
+	for _, safe := range []error{context.Canceled, context.DeadlineExceeded, api.ErrAuthBeforeEffect, api.ErrUnauthorized, api.ErrCredentialVisibilityUnknown, api.ErrCredentialDelivery} {
+		if errors.Is(err, safe) {
+			return safe
+		}
+	}
+	return api.ErrIsolation
 }

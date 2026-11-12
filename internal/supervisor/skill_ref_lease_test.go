@@ -106,7 +106,12 @@ func TestRuntimeFailureClassesAreAllowlisted(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "private") || !strings.Contains(rec.Body.String(), `"class":"spawn"`) {
 		t.Fatalf("unsafe failure response: %s", rec.Body.String())
 	}
-	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "stage=start_runtime") {
+	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "stage=start_runtime reason=other") {
 		t.Fatal("runtime failure log did not allowlist its stage")
+	}
+	output.Reset()
+	writeRuntimeFailure(rec, http.StatusServiceUnavailable, errors.New("runtime is not registered: secret=private"))
+	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "reason=runtime_is_not_registered") {
+		t.Fatal("runtime failure log did not allowlist its reason")
 	}
 }

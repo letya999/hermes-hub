@@ -129,6 +129,8 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatal(err)
 	}
 	original.BrokerCredentialID, original.Locator = "owner-session", "owner-session"
+	original.Phase = api.PhaseAwaitingConfirm
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +139,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatal(err)
 	}
 	original.BindingID, original.ConnectionID, original.Phase = bind.ToolBindingID, bind.ConnectionID, api.PhaseEnabled
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +196,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	// Write tools stay unprojected until writes are explicitly enabled on the
 	// onboarding; the send upgrade stands in for an already-approved one.
 	upgrade.WritesEnabled = true
+	upgrade.Revision++
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +238,7 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 		t.Fatalf("unconfirmed session accepted: %v", err)
 	}
 	original.Phase, original.BrokerCredentialID = api.PhaseEnabled, "credential"
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}

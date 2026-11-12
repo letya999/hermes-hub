@@ -57,6 +57,13 @@ func TestApplyRespawnUsesExactJournalWhilePDPIsFenced(t *testing.T) {
 			}
 		})
 	}
+	current := filepath.Join(space, "generated", "passports", "current")
+	if err := os.WriteFile(current, []byte("pending\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {
+		t.Fatal("journaled respawn denied while current revision is pending")
+	}
 	journal["phase"] = "binding"
 	writeJournal()
 	if m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {

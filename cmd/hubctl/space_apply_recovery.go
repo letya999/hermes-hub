@@ -61,6 +61,12 @@ func writeApplyJournal(dir string, record applyJournal) error {
 		return err
 	}
 	defer os.Remove(file.Name())
+	// The supervisor runs under the publisher's shared group and must read
+	// this journal while the current passport pointer is fenced as pending.
+	if err := file.Chmod(0640); err != nil {
+		_ = file.Close()
+		return err
+	}
 	if _, err := file.Write(body); err != nil {
 		_ = file.Close()
 		return err
@@ -231,7 +237,13 @@ func writeAuthoredConfig(dir string, expected, next []byte) error {
 
 // recoverApply runs under the same per-space lock as apply. Readers refuse a
 // pending pointer; a failed replay keeps the journal and restores that refusal.
-func recoverApply(_ context.Context, dir, root, environment string, handlers reconcile.Handlers) error {
+func recoverApply(ctx context.Context, dir, root, environment string, handlers reconcile.Handlers) error {
+	return recoverApplyWithRebuiltImage(ctx, dir, root, environment, handlers, false)
+}
+
+// recoverApplyWithRebuiltImage requires an explicit operator assertion that
+// the selected image tag was verified after an interrupted rebuild.
+func recoverApplyWithRebuiltImage(_ context.Context, dir, root, environment string, handlers reconcile.Handlers, rebuiltImageVerified bool) error {
 	record, err := readApplyJournal(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -250,7 +262,7 @@ func recoverApply(_ context.Context, dir, root, environment string, handlers rec
 	if current != "pending" && current != record.Previous && current != record.Revision {
 		return errors.New("apply recovery: current pointer diverged")
 	}
-	if err := restoreApplyState(dir, root, record); err != nil {
+	if err := retryApplyRestore(func() error { return restoreApplyState(dir, root, record) }); err != nil {
 		_ = passport.PointCurrent(dir, "pending")
 		return fmt.Errorf("apply recovery: restore: %w", err)
 	}
@@ -260,7 +272,7 @@ func recoverApply(_ context.Context, dir, root, environment string, handlers rec
 			return errors.New("apply recovery: first apply service effects need intervention")
 		}
 		for _, action := range record.Actions {
-			if action.Kind == reconcile.Rebuild {
+			if action.Kind == reconcile.Rebuild && !rebuiltImageVerified {
 				_ = passport.PointCurrent(dir, "pending")
 				return errors.New("apply recovery: interrupted image build needs intervention")
 			}
@@ -273,6 +285,16 @@ func recoverApply(_ context.Context, dir, root, environment string, handlers rec
 	if err := removeApplyJournal(dir); err != nil {
 		_ = passport.PointCurrent(dir, "pending")
 		return fmt.Errorf("apply recovery: journal removal: %w", err)
+	}
+	return nil
+}
+
+func retryApplyRestore(restore func() error) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		err := restore()
+		if err == nil || !retryableStoreConflict(err) || attempt == 2 {
+			return err
+		}
 	}
 	return nil
 }

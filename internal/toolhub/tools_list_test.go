@@ -105,6 +105,10 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	if entry["definition"] != definition.DefinitionID || entry["effect"] != "read" {
 		t.Fatalf("compact entry=%v", entry)
 	}
+	exact, err := callControl(t, alice, "tool_search", map[string]any{"name": search})
+	if err != nil || exact["found"] != true {
+		t.Fatalf("exact admitted tool: %v %v", exact, err)
+	}
 	bobList, err := callControl(t, bob, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +131,10 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	}
 	if names := toolsListNames(t, disabled); names[search] {
 		t.Fatal("disabled binding still listed")
+	}
+	exact, err = callControl(t, alice, "tool_search", map[string]any{"name": search})
+	if err != nil || exact["found"] != false {
+		t.Fatalf("disabled exact tool remained admitted: %v %v", exact, err)
 	}
 	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": search, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("invoke called a tool that tools_list no longer reports")

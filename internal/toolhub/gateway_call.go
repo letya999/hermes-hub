@@ -59,6 +59,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	if err := g.chargeRunCall(corr); err != nil {
 		return nil, err
 	}
+	arguments = normalizeTranscriptionPath(projectedName, arguments)
 	var out *mcp.CallToolResult
 	admitted := false
 	authorized := false
@@ -304,6 +305,61 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			afterAdmission = func() error { return execute(projected, effective) }
 			return nil
 		}
+		if effective.Definition.DefinitionID == "hub-agent-tools" && effective.Definition.Transport == api.AgentTools &&
+			(projected.Tool.Executor == "handler:assignments" || projected.Tool.Executor == "handler:routines" || projected.Tool.Executor == "handler:watches" || projected.Tool.Executor == "handler:goals" || projected.Tool.Executor == "handler:context") {
+			// These handlers can call back through communication, supervisor or
+			// model relay for rights; admission cannot span that callback.
+			afterAdmission = func() error {
+				authorized = true
+				if g.acquireRuntime != nil {
+					release, err := g.acquireRuntime(ctx, effective)
+					if err != nil {
+						return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+					}
+					if release == nil {
+						return fmt.Errorf("%w: %w", api.ErrBeforeEffect, api.ErrIsolation)
+					}
+					defer release()
+				}
+				if err := g.Store.Reload(); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
+			}
+			return nil
+		}
+		if effective.Definition.DefinitionID == "hub-agent-tools" && projected.Tool.Executor == "runtime:channels" {
+			// Speech delivery asks this ToolHub for send_voice; do not hold the
+			// admission lock across that nested rights decision.
+			afterAdmission = func() error {
+				authorized = true
+				if err := g.Store.Reload(); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
+			}
+			return nil
+		}
+		if effective.Definition.DefinitionID == "hub-agent-tools" && api.RemoteExecutor(projected.Tool.Executor) {
+			// Hub and service reads may re-enter this registry while checking rights.
+			afterAdmission = func() error {
+				authorized = true
+				if err := g.Store.Reload(); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
+			}
+			return nil
+		}
 		if effective.Definition.DefinitionID == "hub-agent-tools" && projected.Tool.Executor == "handler:terminal" {
 			// A long command must not pin the registry read lock against a revoke.
 			afterAdmission = func() error {
@@ -324,7 +380,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}
 		if g.acquireRuntime != nil && effective.Definition.Transport == api.AgentTools && !api.RemoteExecutor(projected.Tool.Executor) && projected.Tool.Executor != "handler:settings" {
 			// Cold startup may call back into ToolHub or update registry state.
-			// Re-authorize after it completes, before dispatching any business tool.
+			// Recheck after startup without pinning the registry through a long tool call.
 			afterAdmission = func() error {
 				authorized = true
 				release, err := g.acquireRuntime(ctx, effective)
@@ -335,7 +391,13 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, api.ErrIsolation)
 				}
 				defer release()
-				return g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, execute)
+				if err := g.Store.Reload(); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
 			}
 			return nil
 		}
@@ -363,6 +425,24 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return nil, &uncertainCallError{operationID: toolOperationID(auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.ToolCallID)}
 	}
 	return out, err
+}
+
+// The agent sees /workspace while ToolHub scopes every path to that root.
+func normalizeTranscriptionPath(name string, arguments map[string]any) map[string]any {
+	if name != "media_transcribe" {
+		return arguments
+	}
+	value, ok := arguments["path"].(string)
+	if !ok || !strings.HasPrefix(value, "/workspace/") {
+		return arguments
+	}
+	relative := strings.TrimPrefix(value, "/workspace/")
+	if !api.ValidCapabilityPath(relative) || relative == "" {
+		return arguments
+	}
+	copy := maps.Clone(arguments)
+	copy["path"] = relative
+	return copy
 }
 
 // requireActivated binds a managed profile to the one immutable passport

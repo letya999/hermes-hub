@@ -296,7 +296,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		}
 		return nil
 	}}
-	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm")
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm", "enable")
 	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "retry-readiness"})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirm := map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err == nil {
+	if _, err := control.Invoke(humanConsentContext(t, control, id), auth, "confirm", confirm); err == nil {
 		t.Fatal("failed admission was accepted")
 	}
 	if len(store.bindings) != 0 || len(store.connections) != 1 {
@@ -327,8 +327,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	confirm["nonce"] = confirmNonceOf(t, store, id)
-	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err != nil {
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.bindings) != 1 || len(store.connections) != 1 {
@@ -467,7 +466,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err == nil {
+	if _, err := control.Invoke(humanConsentContext(t, control, id), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err == nil {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
@@ -478,7 +477,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "await_user_confirmation" {
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "enable" {
 		t.Fatalf("status hides the recorded failure: %v", status)
 	}
 	admit = true
@@ -486,11 +485,11 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != api.PhaseConfirmed {
+	if stored.Error != "" || stored.Phase != api.PhaseEnabled {
 		t.Fatalf("successful confirm kept stale error: %+v", stored)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "disable", map[string]any{"onboarding_id": id}); err != nil {

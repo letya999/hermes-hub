@@ -116,6 +116,13 @@ func (c telegram) Deliver(ctx context.Context, delivery *commodel.Delivery) erro
 		} else if len(delivery.Buttons) > 0 {
 			if receiptAPI, ok := deps.API().(telegramKeyboardReceipt); ok {
 				delivery.TelegramMessageID, sendErr = receiptAPI.SendKeyboardReceipt(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText(delivery.Text), delivery.Buttons)
+				if sendErr == nil {
+					if delivery.TelegramMessageID <= 0 {
+						sendErr = errors.New("Telegram keyboard receipt missing")
+					} else {
+						sendErr = deps.UpdateSending(*delivery)
+					}
+				}
 				if sendErr == nil && delivery.ApprovalJobID != "" {
 					sendErr = deps.TrackApproval(*delivery)
 				}

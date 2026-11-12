@@ -287,6 +287,56 @@ func TestAssignmentLifecyclePropagates(t *testing.T) {
 	}
 }
 
+func TestAssignmentDraftCannotBecomeActiveWithoutApply(t *testing.T) {
+	e := testEngine(t)
+	draft := newTestAssignment("asg-draft-guard")
+	draft.Plan = nil
+	created, _, err := e.CreateAssignment(draft, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PauseAssignment(created.AssignmentID, assignmentCaller(), created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := e.LoadAssignment(created.AssignmentID, assignmentCaller())
+	if err != nil || paused.State != "paused" {
+		t.Fatalf("draft pause failed: %+v %v", paused, err)
+	}
+	if err := e.ResumeAssignment(created.AssignmentID, assignmentCaller(), paused.Revision); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := e.LoadAssignment(created.AssignmentID, assignmentCaller())
+	if err != nil || resumed.State != "draft" || resumed.AppliedRev != 0 {
+		t.Fatalf("draft resume must stay a draft: %+v %v", resumed, err)
+	}
+	plan := commodel.AssignmentPlan{Sources: []commodel.AssignmentSource{{Name: "page", Schedule: watcherDraft("https://example.com/")}}}
+	updated, err := e.UpdateAssignmentPlan(created.AssignmentID, plan, created.Grants, assignmentCaller(), resumed.Revision)
+	if err != nil || updated.Plan == nil || updated.Plan.Revision != 1 || updated.State != "waiting" {
+		t.Fatalf("zero-revision dry-run plan must save at revision 1: %+v %v", updated, err)
+	}
+}
+
+func TestAssignmentMockSourceBindsDestinationChat(t *testing.T) {
+	e := testEngine(t)
+	draft := newTestAssignment("asg-mock-binding")
+	draft.Plan.Sources[0].Schedule.Channel = "mock"
+	draft.Plan.Sources[0].Schedule.ChatID = 42
+	if _, _, err := e.CreateAssignment(draft, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment(draft.AssignmentID, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := e.LoadSchedule(commodel.AssignmentScheduleID(draft.AssignmentID, "page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := identity.MockEnvelope(draft.Envelope.PrincipalID, 42, draft.Envelope.RuntimeID, draft.Envelope.PolicyVersion)
+	if !schedule.Envelope.Equal(want) {
+		t.Fatal("mock assignment source must use its target chat envelope")
+	}
+}
+
 // TestAssignmentDeleteTerminal (ADR-0094 assignment_remove): removal retires
 // the applied artifacts like cancel, then deletes the record itself — a later
 // read reports not-found, a stale revision conflicts, and a foreign caller

@@ -99,11 +99,12 @@ func init() {
 		"tools.next-step.jira":    "Қайта іске қосылғаннан кейін Jira-ға қатынасты тексерейін бе, әлде соңғы 2 күнде жасалған тапсырмаларды көрсетейін бе?",
 		"tools.next-step.generic": "Қайта іске қосылғаннан кейін қосылым күйін тексерейін бе, әлде баптауды жалғастырайын ба?",
 
-		"routines.watch-no-success":  "сәтті тексеріс жоқ",
-		"routines.watch-unavailable": "• %s: дереккөз қолжетімсіз; соңғы дерек %s",
-		"routines.no-changes":        "Жаңа өзгеріс жоқ.",
-		"routines.unavailable-count": " Қолжетімсіз дереккөздер: %d.",
-		"routines.blocked":           "«%s» рутинасы тоқтатылды: %s. Оны routine_get арқылы ашып, түзетіп, resume жасаңыз — немесе жойыңыз.",
+		"routines.watch-no-success":   "сәтті тексеріс жоқ",
+		"routines.watch-unavailable":  "• %s: дереккөз қолжетімсіз; соңғы дерек %s",
+		"routines.no-changes":         "Жаңа өзгеріс жоқ.",
+		"routines.origin-unavailable": "Рутина көзі қолжетімсіз.",
+		"routines.unavailable-count":  " Қолжетімсіз дереккөздер: %d.",
+		"routines.blocked":            "«%s» рутинасы тоқтатылды: %s. Оны routine_get арқылы ашып, түзетіп, resume жасаңыз — немесе жойыңыз.",
 
 		"form.title":       "Hermes деректері",
 		"form.heading":     "Қорғалған коннектор баптауы",

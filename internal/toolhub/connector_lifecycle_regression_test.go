@@ -31,6 +31,7 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 	}
 	// Finalizers retain this tombstone after the resources are gone.
 	old.Phase, old.RemoveReceipt = api.PhaseRemoved, "verified 0 remaining"
+	old.Revision++
 	if err := store.PutOnboarding(old); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 	}
 }
 
-func TestConnectorInstallRetryRefreshesExpiredConfirmation(t *testing.T) {
+func TestConnectorInstallRetryPreservesActionUntilExplicitResend(t *testing.T) {
 	store, auth, _, profile := managedStore(t)
 	profile.Revision++
 	profile.Connectors = api.ConnectorsPersonal
@@ -100,6 +101,7 @@ func TestConnectorInstallRetryRefreshesExpiredConfirmation(t *testing.T) {
 	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.ConfirmationNonce = "expired"
 	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +110,13 @@ func TestConnectorInstallRetryRefreshesExpiredConfirmation(t *testing.T) {
 		t.Fatalf("retry result=%+v err=%v", second, err)
 	}
 	updated, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || updated.ConfirmationNonce != "expired" {
+		t.Fatal("install retry unexpectedly changed the action link")
+	}
+	if _, err := c.connectorResend(t.Context(), auth, map[string]any{"target": onboarding.OnboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = store.OnboardingFor(auth, onboarding.OnboardingID)
 	if err != nil || updated.ConfirmationNonce == "expired" || !updated.ConfirmationExpires.After(time.Now()) {
 		t.Fatal("retry did not refresh expired confirmation")
 	}

@@ -92,7 +92,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == api.PhaseAwaitingOAuth {
+			if name == "required_credentials" {
 				if pending := pendingCredentialElicit(ctx, request, body, g.Control); pending != nil {
 					return pending, nil
 				}
@@ -152,7 +152,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["credentials"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Credential names to collect through the protected form (for example GITHUB_TOKEN). Each becomes an Authorization: Bearer header unless it names its own header."}
 		properties["upgrade_mode"] = map[string]any{"type": "string", "description": "Reviewed capability upgrade mode for an enabled onboarding_id. Reuses the owner's Broker credential; a changed tool contract requires confirmation and enable. Available modes are declared by the prepared connector catalog."}
 		properties["cli"] = map[string]any{"type": "object", "description": "Only on the user's explicit request for an owner-scoped bounded CLI: a declarative spec with name, command (an executable from the operator allowlist — shell names are admitted only when the operator put them there), optional args (long-option tokens only), tools (name/effect plus typed arguments; a --flag name renders a flag, omitting flag renders a positional operand that then requires a pattern regexp), optional credentials and egress. With source plus binary instead of command, onboards an immutable artifact: default to github-release:owner/repo@latest — popular tools (bat, fd, jq, eza, sd, yq, fzf, age) all ship prebuilt linux-amd64 assets (asset is a glob on the release assets, e.g. *x86_64-unknown-linux-musl.tar.gz or jq-linux-amd64 for a bare binary — on a miss the error lists available asset names; member names the binary inside an archive and defaults to the tool name; digest optional). Use a commit-pinned GitHub URL only after the release path fails, since source builds cover just a single-package Go or Rust layout. Never a command string, path or script."}
-		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. If the user only asks to resend the protected link or asks how an earlier install is doing — not for a fresh install — call status or required_credentials with the connector's definition_id instead: it resumes the latest onboarding and reissues a live link when the old one expired, without rebuilding. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
+		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. If the user only asks to resend the protected link or asks how an earlier install is doing — not for a fresh install — read status with the exact connector ID; for an explicit link resend use connector_edit action=resend with that ID. Status never renews links or starts provider work. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
 		cli := properties["cli"].(map[string]any)
 		cli["properties"], cli["required"], cli["additionalProperties"] = cliInstallProperties(), []string{"name", "tools"}, false
 		cli["oneOf"] = []any{
@@ -185,8 +185,7 @@ func controlToolContract(name string) (string, map[string]any) {
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, definition_id, a selector/name/source naming the connector, or the operation_id (request_key) of the original call."
 		if name == "status" {
-			properties["resend"] = map[string]any{"type": "boolean", "description": "Only when the user explicitly asks for the pending action link again (send/resend/re-issue the link): posts it as a fresh channel message. For an OAuth onboarding the armed link is rotated — the previous link stops working, so do not resend as a routine poll."}
-			description += " With no selector, status returns the latest onboarding for the authenticated user."
+			description += " With no selector, status returns the latest onboarding for the authenticated user. This is a saved read: it does not contact providers, renew links or send messages. Use connector_edit action=resend with an exact pending ID when the owner asks for a link."
 		}
 	case "confirm":
 		description += " Read the current onboarding status only. Confirmation requires a verified channel callback bound to the human actor, exact action, revision and expiry; calling this tool, even with a nonce, never grants consent. Protected pages display status only."
@@ -682,8 +681,14 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 	// a second link or a chat round-trip. The gateway dedupes the notices
 	// refreshBrokerRequest posts while the invite is alive.
 	if r.Method == http.MethodGet && onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
-		if err := g.Control.refreshBrokerRequest(r.Context(), onboardingEnvelope(onboarding), &onboarding); err != nil {
-			log.Printf("toolhub wizard %s: broker refresh: %v", onboardingID, err) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := g.Control.reconcileBrokerReady(ctx, onboardingEnvelope(onboarding), &onboarding)
+		cancel()
+		if err != nil {
+			log.Printf("toolhub wizard %s: broker observation unavailable", onboardingID)
+		} // #nosec G706 -- validated onboarding id; no provider text
+		if current, err := g.Control.Store.onboarding(onboardingID); err == nil {
+			onboarding = current
 		}
 	}
 	if onboarding.Phase == api.PhaseAwaitingConfirm {
@@ -759,7 +764,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 		switch onboarding.Phase {
-		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed:
+		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed, api.PhaseVerifying, api.PhaseRetryScheduled:
 			_, _ = io.WriteString(w, wizardWaitPage(lang))
 			return
 		case api.PhaseEnabled:

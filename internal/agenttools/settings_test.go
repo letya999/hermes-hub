@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,7 +37,7 @@ func TestSettingsCatalogPublishesRevisionGuardedControlTools(t *testing.T) {
 		if tool.Name != "settings_edit" {
 			continue
 		}
-		if tool.Executor != "handler:settings" || len(tool.Requires) != 1 || tool.Requires[0] != "config.edit_own" {
+		if tool.Executor != "handler:settings" || len(tool.Requires) != 1 || tool.Requires[0] != "config.edit_own" || !strings.Contains(tool.Description, "may respawn") {
 			t.Fatalf("settings edit authority: %+v", tool)
 		}
 		for _, arg := range tool.Arguments {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -100,18 +101,31 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if err := registry.Save(storePath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := captureStdout(t, func() error { return runConnector(ctx, append([]string{"link"}, base...)) }); err != nil {
-		t.Fatal(err)
+	if _, err := captureStdout(t, func() error { return runConnector(ctx, append([]string{"link"}, base...)) }); !errors.Is(err, api.ErrLinkGone) {
+		t.Fatalf("spent link: %v", err)
 	}
 	registry, err = toolhub.Load(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = registry.OnboardingFor(aliceAuth(), "onb-1")
-	if err != nil || onboarding.ConfirmationUsed || onboarding.ConfirmationNonce == "nonce-1" {
-		t.Fatalf("spent confirmation was not renewed: used=%t err=%v", onboarding.ConfirmationUsed, err)
+	if err != nil || !onboarding.ConfirmationUsed || onboarding.ConfirmationNonce != "nonce-1" {
+		t.Fatal("link command reset consumed consent")
 	}
+	// A separate pending action tests expiry without reusing consumed consent.
+	onboarding.OnboardingID, onboarding.Revision, onboarding.ConfirmationUsed = "onb-2", 1, false
 	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	if err := registry.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	base[len(base)-1] = "onb-2"
+	if _, err := captureStdout(t, func() error { return runConnector(ctx, append([]string{"link"}, append(base, "--confirm")...)) }); !errors.Is(err, api.ErrLinkGone) {
+		t.Fatalf("expired link was silently renewed: %v", err)
+	}
+	onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "nonce-fresh", time.Now().Add(time.Hour)
 	onboarding.Revision++
 	if err := registry.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -119,29 +133,24 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if err := registry.Save(storePath); err != nil {
 		t.Fatal(err)
 	}
-	// --confirm finishes the flow for scripts: the onboarding is confirmed,
-	// and an expired link is renewed before confirmation.
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"link"}, append(base, "--origin", "http://127.0.0.1:8090", "--confirm")...))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out, "http://127.0.0.1:8090/connect/onb-1?k=") || strings.Contains(out, "?t=nonce-1") || !strings.Contains(out, api.PhaseConfirmed) || strings.Contains(out, "recipe") {
-		t.Fatalf("link --confirm output=%q", out)
+	if !strings.HasPrefix(out, "http://127.0.0.1:8090/confirm/onb-2?t=nonce-fresh") || !strings.Contains(out, api.PhaseConfirmed) {
+		t.Fatalf("live link --confirm output=%q", out)
 	}
 	reloaded, err := toolhub.Load(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := aliceAuth()
-	onboarding, err = reloaded.OnboardingFor(auth, "onb-1")
-	if err != nil {
-		t.Fatal(err)
+	onboarding, err = reloaded.OnboardingFor(aliceAuth(), "onb-2")
+	if err != nil || onboarding.Phase != api.PhaseConfirmed {
+		t.Fatalf("live confirmation phase=%s err=%v", onboarding.Phase, err)
 	}
-	if onboarding.Phase != api.PhaseConfirmed {
-		t.Fatalf("phase after --confirm: %q", onboarding.Phase)
-	}
+
 }
 
 // CHG-0132 S5.3: hubctl connector import parses a deterministic T1 ref into
@@ -349,13 +358,13 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"reauth"}, append(base, "--target", "wri")...))
 	})
-	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"awaiting_user"`) || strings.Contains(out, `"link_sent":true`) {
 		t.Fatalf("reauth output=%q err=%v", out, err)
 	}
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"remove"}, append(base, "--target", "wri")...))
 	})
-	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"awaiting_confirm"`) || strings.Contains(out, `"link_sent":true`) {
 		t.Fatalf("remove output=%q err=%v", out, err)
 	}
 	out, err = captureStdout(t, func() error {
@@ -373,7 +382,7 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"allow-writes"}, append(base, "--target", "wri", "--on")...))
 	})
-	if err != nil || !strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"awaiting_confirm"`) || strings.Contains(out, `"link_sent":true`) {
 		t.Fatalf("allow-writes on output=%q err=%v", out, err)
 	}
 }

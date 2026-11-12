@@ -84,6 +84,13 @@ func runWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if root := os.Getenv("HUB_AUTOMATION_ROOT"); root != "" {
+		if err := handler.(interface {
+			ConfigureResearch(string, string, string, string) error
+		}).ConfigureResearch(filepath.Join(root, "research"), os.Getenv("HUB_AUTOMATION_JOB_URL"), automationServiceToken(), os.Getenv("HUB_AUTOMATION_JOB_PATH")); err != nil {
+			return err
+		}
+	}
 	controlHandler := http.Handler(handler)
 	var automationTick func(context.Context, time.Time) error
 	var automationCompact func(time.Time, time.Duration) error
@@ -122,6 +129,9 @@ func runWithContext(ctx context.Context) error {
 				if err := automationTick(ctx, now); err != nil && ctx.Err() == nil {
 					log.Print("ToolHub automation tick pending")
 				}
+				if err := handler.(interface{ ResearchTick(context.Context) error }).ResearchTick(ctx); err != nil && ctx.Err() == nil {
+					log.Print("ToolHub research tick pending")
+				}
 				if now.Sub(lastCompact) >= compactInterval {
 					lastCompact = now
 					if err := automationCompact(now, 72*time.Hour); err == nil {
@@ -158,6 +168,19 @@ func runWithContext(ctx context.Context) error {
 	runBackground(func() { removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals) })
 	reconciler := handler.(interface{ Reconcile(context.Context) error })
 	runBackground(func() { removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile) })
+	lifecycle := handler.(interface{ ReconcileOnboardings(context.Context) })
+	runBackground(func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			lifecycle.ReconcileOnboardings(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
 		scope := diagnostics.Scope{
 			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),

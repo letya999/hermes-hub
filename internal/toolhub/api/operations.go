@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ const (
 	OpIntentInstall     = "install"
 	OpIntentEnable      = "enable"
 	OpIntentDisable     = "disable"
+	OpIntentRevoke      = "revoke"
 	OpIntentReauth      = "reauth"
 	OpIntentAllowWrites = "allow_writes"
 	OpIntentRemove      = "remove"
@@ -59,8 +61,18 @@ const (
 	OpCodeUnsupportedAuth             = "unsupported_auth"
 	OpCodeProbeFailed                 = "probe_failed"
 	OpCodeCleanupIncomplete           = "cleanup_incomplete"
+	OpCodeDeliveryUnavailable         = "delivery_unavailable"
+	OpCodeAdmissionUnavailable        = "admission_unavailable"
 	OpCodeNotPermitted                = "not_permitted"
 	OpCodeQuota                       = "quota"
+)
+
+const (
+	PrepareDeliveryUnknown   = "unknown"
+	PrepareDeliveryQueued    = "queued"
+	PrepareDeliveryDelivered = "delivered"
+	PrepareDeliveryUncertain = "uncertain"
+	PrepareDeliveryNotQueued = "not_queued"
 )
 
 type OperationStep struct {
@@ -71,14 +83,18 @@ type OperationStep struct {
 // OperationResult is the uniform connector_* tool result — the only shape
 // the agent ever sees. No nonces, URLs, tokens or prose instructions.
 type OperationResult struct {
-	OperationID string               `json:"operation_id,omitempty"`
-	State       string               `json:"state"`
-	Code        string               `json:"code,omitempty"`
-	Summary     string               `json:"summary"`
-	LinkSent    bool                 `json:"link_sent,omitempty"`
-	Candidates  []OperationCandidate `json:"candidates,omitempty"`
-	Finalizers  []Finalizer          `json:"finalizers,omitempty"`
-	Receipt     string               `json:"receipt,omitempty"`
+	OperationID     string               `json:"operation_id,omitempty"`
+	State           string               `json:"state"`
+	Code            string               `json:"code,omitempty"`
+	Summary         string               `json:"summary"`
+	NextAction      string               `json:"next_action,omitempty"`
+	LinkSent        bool                 `json:"link_sent,omitempty"`
+	DeliveryStatus  string               `json:"delivery_status,omitempty"`
+	Candidates      []OperationCandidate `json:"candidates,omitempty"`
+	Finalizers      []Finalizer          `json:"finalizers,omitempty"`
+	Receipt         string               `json:"receipt,omitempty"`
+	ObservedAt      time.Time            `json:"observed_at,omitzero"`
+	ObservationCode string               `json:"observation_code,omitempty"`
 }
 
 // OperationCandidate is one selector match shown on ambiguity.
@@ -95,6 +111,8 @@ type OperationCandidate struct {
 	CredentialCheckedAt  time.Time `json:"credential_checked_at,omitempty"`
 	HealthCause          string    `json:"health_cause,omitempty"`
 	OnboardingPhase      string    `json:"onboarding_phase,omitempty"`
+	ObservedAt           time.Time `json:"observed_at,omitzero"`
+	ObservationCode      string    `json:"observation_code,omitempty"`
 	// Badge marks candidates the caller can use but does not own — today the
 	// only value is "team" for a member's team-owned connection.
 	Badge string `json:"badge,omitempty"`
@@ -140,7 +158,7 @@ func (o Operation) Validate() error {
 	if !identity.ValidID(o.PrincipalID) {
 		return fmt.Errorf("%w: operation principal", ErrInvalid)
 	}
-	if o.Target == "" || !slices.Contains([]string{OpIntentInstall, OpIntentEnable, OpIntentDisable, OpIntentReauth, OpIntentAllowWrites, OpIntentRemove}, o.Intent) {
+	if o.Target == "" || !slices.Contains([]string{OpIntentInstall, OpIntentEnable, OpIntentDisable, OpIntentRevoke, OpIntentReauth, OpIntentAllowWrites, OpIntentRemove}, o.Intent) {
 		return fmt.Errorf("%w: operation intent or target", ErrInvalid)
 	}
 	switch o.State {
@@ -156,7 +174,7 @@ func (o Operation) Validate() error {
 		seen[step.Name] = true
 	}
 	switch o.ErrorCode {
-	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeNotPermitted, OpCodeQuota:
+	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeDeliveryUnavailable, OpCodeAdmissionUnavailable, OpCodeNotPermitted, OpCodeQuota:
 	default:
 		return fmt.Errorf("%w: operation error code", ErrInvalid)
 	}
@@ -168,5 +186,5 @@ func (o Operation) Validate() error {
 // same operation.
 func OperationRequestKey(auth identity.Envelope, intent, target string) string {
 	normalized := strings.ToLower(strings.TrimSpace(target))
-	return DeterministicID("opkey", auth.PrincipalID, intent, normalized)
+	return DeterministicID("opkey", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, auth.Environment, strconv.FormatUint(auth.Generation, 10), intent, normalized)
 }

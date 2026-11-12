@@ -206,7 +206,8 @@ mirror and drops update tracking.
 ## Status and evidence
 
 - Operation `done`: that requested action completed.
-- Onboarding `awaiting-credentials` / `awaiting-confirm`: human action pending.
+- Onboarding `awaiting-credentials` / `awaiting-confirm`: human action pending. Never ask for secrets in chat. An explicit request to replace credentials uses `connector_edit action=reauth`, even before enablement. `resend` repeats the current pending action; `disable` retains credentials, `revoke` cuts authorization and `remove` starts protected owner cleanup. Discover the tool before claiming link creation is unavailable.
+- `verifying` / `retry-scheduled`: accepted credentials are checked in the background; do not request them again. Connector status is a saved read with observation age; only an explicit resend renews a link.
 - Connection `active`: registry lifecycle state permits further checks.
 - Binding admitted/projected: current policy permits this surface for the caller.
 - Workload running/ready: execution layer observation.

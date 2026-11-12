@@ -271,8 +271,8 @@ func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.Artifa
 		idSeed += "|shared"
 	}
 	preparing := api.Onboarding{
-		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
-		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
 		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
 		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
@@ -409,6 +409,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		// key; callers holding the stub id follow SupersededBy to the result.
 		preparing.Phase = api.PhaseRemoved
 		preparing.SupersededBy = onboarding.OnboardingID
+		preparing.Revision++
 		if err := c.Store.PutOnboarding(preparing); err != nil {
 			log.Printf("toolhub: superseded onboarding stub %s not recorded: %v", preparing.OnboardingID, err)
 		}
@@ -442,6 +443,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	copyDef := review.Definition
 	onboarding.Definition = &copyDef
+	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return failPrepare(err)
 	}

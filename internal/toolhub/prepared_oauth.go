@@ -60,6 +60,14 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	c.oauthFlows.mu.Lock()
 	// ponytail: one lock serializes handoff creation; use per-onboarding locks if starts become a bottleneck.
 	defer c.oauthFlows.mu.Unlock()
+	if current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID); err == nil {
+		onboarding = current
+	} else {
+		return nil, err
+	}
+	if onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseCleanupIncomplete {
+		return nil, api.ErrRevoked
+	}
 	for state, flow := range c.oauthFlows.flows {
 		if !c.now().Before(flow.expires) {
 			delete(c.oauthFlows.flows, state)
@@ -150,7 +158,7 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
-	api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, &onboarding)
 	if resend {
 		api.DeliverPrepareEvent(ctx, auth, onboarding, "link-resent")
 	}
@@ -294,6 +302,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.ProviderAuthorizationURL = ""
 	onboarding.ConfirmationNonce = ""
+	onboarding.ConfirmationUsed = false
 	onboarding.ConfirmationExpires = time.Time{}
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {

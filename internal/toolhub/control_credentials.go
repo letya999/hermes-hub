@@ -393,10 +393,10 @@ func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.En
 	if err != nil {
 		return nil, err
 	}
-	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+	if err := c.regenerateBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
@@ -437,25 +437,33 @@ func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.
 	if err := c.Store.PutOnboarding(*onboarding); err != nil {
 		return err
 	}
-	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, onboarding)
 	return nil
 }
 
 func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (!onboarding.ConfirmationUsed && onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationUsed || (!onboarding.ConfirmationUsed && onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
 		return nil
 	}
 	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	c.armWizard(onboarding)
+	expected := onboarding.Revision
 	onboarding.Revision++
-	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+	if err := c.Store.PutOnboardingIfRevision(*onboarding, expected); err != nil {
+		if errors.Is(err, api.ErrStale) {
+			current, readErr := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+			if readErr == nil && current.Phase == api.PhaseAwaitingConfirm && current.ConfirmationNonce != "" && c.now().Before(current.ConfirmationExpires) {
+				*onboarding = current
+				return nil
+			}
+		}
 		return err
 	}
 	// A fresh nonce means a fresh link — the channel must carry it because the
 	// tool result never will.
-	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, onboarding)
 	return nil
 }
 
@@ -618,7 +626,7 @@ func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, n
 	if err != nil {
 		return err
 	}
-	api.PostPrepareNotice(ctx, onboardingEnvelope(onboarding), onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, onboardingEnvelope(onboarding), &onboarding)
 	return nil
 }
 

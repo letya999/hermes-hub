@@ -99,11 +99,12 @@ func init() {
 		"tools.next-step.jira":    "After the restart, check Jira access or show tasks created in the last 2 days?",
 		"tools.next-step.generic": "After the restart, check connection status or continue setup?",
 
-		"routines.watch-no-success":  "no successful checks",
-		"routines.watch-unavailable": "• %s: source unavailable; last data %s",
-		"routines.no-changes":        "No new changes.",
-		"routines.unavailable-count": " Sources unavailable: %d.",
-		"routines.blocked":           "Routine «%s» stopped: %s. Open it with routine_get, fix it and resume — or delete it.",
+		"routines.watch-no-success":   "no successful checks",
+		"routines.watch-unavailable":  "• %s: source unavailable; last data %s",
+		"routines.no-changes":         "No new changes.",
+		"routines.origin-unavailable": "Routine origin unavailable.",
+		"routines.unavailable-count":  " Sources unavailable: %d.",
+		"routines.blocked":            "Routine «%s» stopped: %s. Open it with routine_get, fix it and resume — or delete it.",
 
 		"form.title":       "Hermes credentials",
 		"form.heading":     "Protected connector setup",

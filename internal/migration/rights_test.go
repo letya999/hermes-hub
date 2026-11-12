@@ -53,6 +53,40 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	}
 }
 
+func TestConnectorRecoveryOmitsRevokedBinding(t *testing.T) {
+	docs, err := catalog.LoadPinned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := toolhub.NewStore()
+	now := time.Now().UTC()
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Members: []string{"alice"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "org-default", PolicyRevision: 1,
+		Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&profile, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	tools := []byte("extended:\n  github: {via: mcp:github-mcp-server}\n")
+	if _, _, err := selectedConnectorTools(store, tools, docs, "alice-default", false); err == nil {
+		t.Fatal("publish accepted a connector without an active binding")
+	}
+	selected, core, err := selectedConnectorTools(store, tools, docs, "alice-default", true)
+	if err != nil || len(selected) != 0 || len(core) != 0 {
+		t.Fatalf("recovery resurrected revoked connector: selected=%v core=%v err=%v", selected, core, err)
+	}
+}
+
 // publishFixtureRevision stamps the smallest loadable managed revision: the
 // six published docs plus the current pointer the managed read requires.
 func publishFixtureRevision(t *testing.T, dir, user, revision string) {

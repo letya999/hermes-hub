@@ -497,6 +497,11 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
 	}
+	if settingsErr == nil {
+		if err := stack.ValidateRuntimeConnections(settings, binding.ContextRoot); err != nil {
+			return nil, err
+		}
+	}
 	if settingsErr == nil && settings.CapabilityMode == "managed" {
 		return m.managedRunArgs(binding, settings, container, generation)
 	}
@@ -557,6 +562,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
 	}
 	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, spawnSettings)
+	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, spawnSettings)
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
 		// Same contract as RenderEnvironment: a defaulted platform catalog is
@@ -702,6 +708,13 @@ func appendHostingRuntimeMount(args []string, root, env string, settings stack.S
 	return append(args, "--mount", "type=bind,src="+filepath.Join(root, "runtime", "hosting."+env+".key")+",dst=/run/hosting.key,readonly")
 }
 
+func appendConnectionRuntimeMounts(args []string, root string, settings stack.Settings) []string {
+	for _, connection := range stack.RuntimeConnections(settings, root) {
+		args = append(args, "--mount", "type=bind,src="+connection.Source+",dst="+connection.Target+",readonly")
+	}
+	return args
+}
+
 // managedRunArgs mirrors the managed Compose service: private managed state
 // layout, read-only effective config, scratch workspace, sealed extension
 // roots and the agent network only. No published port (internal network), no
@@ -748,6 +761,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
 	}
 	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, settings)
+	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, settings)
 	// Same skill contract as unmanaged spawns: the hub-built effective view
 	// mounts read-only at /skills and a failed build refuses the spawn.
 	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {

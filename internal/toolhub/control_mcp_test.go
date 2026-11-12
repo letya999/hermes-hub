@@ -73,7 +73,7 @@ func TestControlToolContractRoutesInstallBeforeLifecycle(t *testing.T) {
 	if !strings.Contains(prepare, "call this first") || !strings.Contains(prepare, "GitHub repository URL") {
 		t.Fatalf("prepare_source does not own explicit install routing: %q", prepare)
 	}
-	if !strings.Contains(prepare, "resend") || !strings.Contains(prepare, "required_credentials") {
+	if !strings.Contains(prepare, "connector_edit action=resend") || !strings.Contains(prepare, "Status never renews links") {
 		t.Fatalf("prepare_source does not route resend/status requests to resume: %q", prepare)
 	}
 	for _, op := range []string{"disable", "revoke", "remove"} {
@@ -271,7 +271,7 @@ func callControl(t *testing.T, session *mcp.ClientSession, op string, args map[s
 func confirmViaTrustedChannel(t *testing.T, baseURL string, store *Store, id string) {
 	t.Helper()
 	onboarding := mustOnboarding(t, store, id)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.ConfirmationNonce, Revision: onboarding.Revision, ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.ConfirmationNonce, Revision: api.ConfirmationRevision(onboarding), ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires})
 	if err != nil {
 		t.Fatal(err)
 	}

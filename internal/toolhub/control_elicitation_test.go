@@ -312,6 +312,12 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expired confirmation status: %v", err)
 	}
+	if confirmNonceOf(t, store, prepared["onboarding_id"]) != nonce {
+		t.Fatal("saved status renewed an expired confirmation")
+	}
+	if _, err := control.connectorResend(t.Context(), auth, map[string]any{"target": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
 	renewed := confirmNonceOf(t, store, prepared["onboarding_id"])
 	if renewed == "" || renewed == nonce {
 		t.Fatalf("expired confirmation was not renewed: status=%v", resumed)

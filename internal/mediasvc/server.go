@@ -73,6 +73,7 @@ func Serve(cfg Config) (http.Handler, error) {
 
 func (s *service) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/v1/audio/transcriptions", s.transcriptions)
 	mux.HandleFunc("/v1/audio/speech", s.speech)

@@ -112,10 +112,20 @@ func TestLinkResentPostsFreshMessage(t *testing.T) {
 		"definition_id": "user-mcp",
 		"repository":    "https://github.com/nspady/google-calendar-mcp",
 		"event":         "link-resent",
+		"event_id":      "0123456789abcdef0123456789abcdef",
 		"form_url":      "http://127.0.0.1:8090/connect/onboard-rsd?state=flow-2",
 	})
 	if second.Code != http.StatusOK {
 		t.Fatalf("resend notice=%d body=%s", second.Code, second.Body.String())
+	}
+	bad := post(map[string]string{
+		"onboarding_id": "onboard-rsd",
+		"phase":         "awaiting-oauth",
+		"event":         "link-resent",
+		"event_id":      "not-a-nonce",
+	})
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("malformed resend nonce accepted: %d", bad.Code)
 	}
 	entries, err := os.ReadDir(pending)
 	if err != nil {
@@ -152,13 +162,13 @@ func TestPrepareContinuationSurvivesPayloadDrift(t *testing.T) {
 	}
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	request := prepareOutcomeRequest{
-		OnboardingID: "onboard-drift", Phase: "awaiting-oauth",
+		OnboardingID: "onboard-drift", Phase: "enabled",
 		Repository: "https://github.com/taylorwilsdon/google_workspace_mcp",
 		FormURL:    "http://127.0.0.1:8090/connect/onboard-drift?k=wizard-key",
 	}
 	key := prepareOutcomeKey(request, "")
 	deliver := func(c identity.Envelope) error {
-		return gateway.deliverPrepareNotice(cfg.Users[0], c, key, "Войдите у провайдера", request, false)
+		return gateway.deliverPrepareNotice(cfg.Users[0], c, key, "Подключение готово", request, false)
 	}
 	if err := deliver(caller); err != nil {
 		t.Fatal(err)

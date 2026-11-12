@@ -22,8 +22,8 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 		idSeed = mode + ":" + definition.DefinitionID + "@" + definition.Version + ":" + sourceURL + ":" + commit
 	}
 	onboarding := api.Onboarding{
-		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
-		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
 		Mode: mode, SourceURL: sourceURL, CommitSHA: commit, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		Required: credentialHints(definition), Optional: optionalCredentialHints(definition), Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition),
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
@@ -39,10 +39,24 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 		c.armWizard(&onboarding)
 	}
-	if err := c.Store.PutOnboarding(onboarding); err != nil {
+	c.Store.mu.Lock()
+	defer c.Store.mu.Unlock()
+	if previous, ok := c.Store.onboardings[onboarding.OnboardingID]; ok {
+		if auth.Validate(previous.PrincipalID, previous.ContextID, previous.RuntimeID, previous.PolicyVersion) != nil || previous.Mode != mode {
+			return api.Onboarding{}, api.ErrUnauthorized
+		}
+		if previous.Phase == api.PhaseRemoved || previous.Phase == api.PhaseCleanupIncomplete {
+			return api.Onboarding{}, api.ErrRevoked
+		}
+		if previous.Phase != api.PhasePreparing && previous.Phase != api.PhaseReview && previous.Phase != api.PhaseFailed {
+			return cloneOnboarding(previous), nil
+		}
+		onboarding.Revision = previous.Revision + 1
+	}
+	if err := c.Store.putOnboardingLocked(onboarding); err != nil {
 		return api.Onboarding{}, err
 	}
-	return onboarding, nil
+	return cloneOnboarding(c.Store.onboardings[onboarding.OnboardingID]), nil
 }
 
 // bindReviewedContract attaches a reviewed credential-broker contract to a
@@ -391,12 +405,20 @@ func (c *ControlPlane) revokeAccess(onboarding api.Onboarding, connStatus api.St
 }
 
 func (c *ControlPlane) revokeBrokerCredential(onboarding api.Onboarding) error {
-	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
+	for i, id := range []string{onboarding.BrokerCredentialID, onboarding.BrokerRotateCredentialID} {
+		if id == "" || i == 1 && id == onboarding.BrokerCredentialID {
+			continue
+		}
+		if c.Broker == nil || !c.Broker.Enabled() {
+			return fmt.Errorf("%w: credential broker unavailable", api.ErrCredentialVisibilityUnknown)
+		}
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-		if control, err := c.brokerControl(auth, c.onboardingShared(onboarding)); err == nil {
-			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil && !brokerclient.IsNotFound(err) {
-				return err
-			}
+		control, err := c.brokerControl(auth, c.onboardingShared(onboarding))
+		if err != nil {
+			return err
+		}
+		if err := control.Revoke(context.Background(), id); err != nil && !brokerclient.IsNotFound(err) {
+			return err
 		}
 	}
 	return nil
@@ -750,12 +772,15 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 	// notice the owner sees the form's success page but never the chat
 	// confirmation, tools included.
 	if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
-		api.PostPrepareNotice(ctx, auth, latest, "", len(latest.Permissions))
+		c.deliverOutcomeNotice(ctx, auth, &latest)
 	}
 	return nil
 }
 
 func onboardingEnvelope(onboarding api.Onboarding) identity.Envelope {
+	if onboarding.Initiator != nil {
+		return *onboarding.Initiator
+	}
 	return identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 }
 
@@ -792,7 +817,7 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	api.PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	c.deliverOutcomeNotice(context.Background(), auth, &onboarding)
 	return nil
 }
 
@@ -812,7 +837,7 @@ func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.On
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	api.PostPrepareNotice(ctx, onboardingEnvelope(onboarding), onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, onboardingEnvelope(onboarding), &onboarding)
 	return nil
 }
 

@@ -380,6 +380,11 @@ func TestHealthzReflectsEngine(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unready engine reported healthy")
 	}
+	resp, _ = http.Get(srv.URL + "/livez")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("configured process reported not live: %d", resp.StatusCode)
+	}
 	s.stt = &fakeSTT{ready: true}
 	resp, _ = http.Get(srv.URL + "/healthz")
 	resp.Body.Close()

@@ -49,6 +49,7 @@ func TestRefreshCredentialFormArmsWizard(t *testing.T) {
 	// A re-mint (expired form) must keep the wizard nonce — the link in the
 	// channel stays the one the user already has.
 	stored.FormExpires = time.Now().Add(-time.Minute)
+	stored.Revision++
 	if err := store.PutOnboarding(stored); err != nil {
 		t.Fatal(err)
 	}
@@ -461,6 +462,9 @@ func TestBrokerReadyTransitionRenewsWizard(t *testing.T) {
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 		BrokerRequestID: "r1",
 		WizardNonce:     "wiz-key", WizardExpires: time.Now().Add(time.Minute),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
 	}
 	if err := control.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		t.Fatal(err)

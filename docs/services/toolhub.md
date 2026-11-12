@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-10
+last_verified: "2026-11-12"
 ---
 
 # toolhub
@@ -128,9 +128,9 @@ and before service effects complete.
   `source_ref`; malformed calls answer `status=invalid` with field-level
   errors. Earlier admission refusals use the central ToolHub audit with job/run
   correlation and leave the vault journal unchanged.
-- Connector calls release the registry admission lock, then reload and recheck
-  the selected tool with actual arguments, including `connector_edit`. Current
-  rights still fence dispatch without the legacy connector bundle flag.
+- Connector calls release the registry admission lock, then reload and recheck the selected tool with actual arguments, including `connector_edit`; current rights still fence dispatch without the legacy bundle flag.
+- Remote agent-tool handlers release the admission lock, then reload and recheck their binding before nested service or registry reads (`platform_status`, rights).
+- Local agent-tool handlers also release the registry admission lock before a long backend call. After runtime acquisition they reload and recheck the effective binding and current rights; a slow browser operation cannot hold up the model relay's independent rights decisions.
 - **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`
   is the supervisor's private-run context lane (SPEC-0098 M5). The
   control-plane bearer plus `X-Hub-Principal` resolve the enrolled identity;
@@ -210,7 +210,7 @@ and before service effects complete.
   tools only, bounded args — powers `mcp_tool` watch probes and
   `delivery=stream` polls) and `GET /v1/connectors` (caller-scoped inventory
   for communication-hub when its local registry is absent; sibling token or
-  supervisor bearer + `X-Hub-Principal`).
+  supervisor bearer + `X-Hub-Principal`). Structured-only reads return JSON text.
 - **Runtime restart relay**: ToolHub cannot write a spawned runtime's state —
   projection changes go to the supervisor as `POST /v1/restart-request`
   (identity triple = lookup key, not a grant); the runtime's own endpoint
@@ -253,8 +253,7 @@ and before service effects complete.
 
 ## State
 
-`connector_list` excludes removed, revoked and superseded onboarding records
-without deleting their history. Its candidates expose `definition_id`,
+`connector_list` excludes removed, revoked and superseded onboarding records without deleting their history. Its candidates expose `definition_id`,
 `onboarding_phase` and the transport of the recorded definition version when
 known. Owner-matching personal connections and active-team memberships expose
 `connection_id` and `connection_status` separately from onboarding phase.
@@ -266,29 +265,21 @@ Stale explicit references are excluded. Owned connections without onboarding
 remain visible, with no invented setup phase; their format is resolved from
 the pinned definition when available. Connection candidates expose the verified
 owner. Pending onboarding without a connection has no connection owner field.
-Connection candidates carry the last credential check time, its visibility
-(`active`, `inactive` or `unknown`) and a typed cause when one is known.
+An orphan onboarding from an older policy epoch remains listed for its exact principal/context/runtime, with phase and ID. The old setup link cannot authorize a new mutation.
+Connection candidates carry the last credential check time, its visibility (`active`, `inactive` or `unknown`) and a typed cause when one is known.
 `active` means the Broker or local credential backend saw the stored reference;
 it does not establish provider access or workload admission.
-For an exact connection ID without an owner onboarding, `connector_status`
-returns the same scoped candidate facts, including team connections visible to
-current members. `state: done` means the read completed, not that the provider
-works. Membership is rechecked; this read path does not change the lifecycle
-selector's denial of member mutations on team connections.
-The legacy control `status` body preserves `phase` as onboarding history and
-adds `connection_status` and credential check evidence only for an
-owner-matching connection. `connector_status` by current onboarding ID includes
-the same scoped candidate as `connector_list`. An `enabled`
-onboarding now suggests `diagnostics`, never `ready`: even an active registry
-record does not prove admission, workload readiness or provider access.
-Legacy `status` returns the same not-found text for a foreign and an unknown
-onboarding ID. Internal lookup reasons distinguish `scope`, `unknown`,
-`version` and `terminal` without placing those codes in the agent response;
-the remaining expiry/storage classifications are still pending CHG-0224.
-File-backed onboarding updates roll back the in-memory record if persistence
-fails before snapshot replacement, so a failed nonce refresh cannot appear in
-status. If directory sync fails after replacement, the error is reported and
-memory retains the same record as the replaced snapshot.
+For an exact connection ID without an owner onboarding, `connector_status` returns the same scoped candidate facts, including team connections visible to current members. `state: done` means the read completed, not provider readiness.
+`connector_status` is a saved read, including `observed_at` and `observation_code`; it never probes a provider, renews links or sends a notice. The lifecycle worker consumes Broker `/v1/events` with an owner-scoped durable cursor. A retention gap rechecks pending request records before advancing the cursor. Duplicate events are harmless; expired forms renew only on an explicit resend/reauth.
+
+Onboarding is canonical. Store writes enforce immutable ownership, monotonic revisions, legal phase edges and an absorbing removed tombstone. Install journal progress is derived from onboarding and committed with it. `verifying` has a 90-second durable lease; one probe has a 30-second deadline. Temporary failures retain the credential, back off and stop after five attempts; only an explicit authentication rejection returns to credential intake. Cleanup phase immediately denies tool dispatch even if the Broker is down; a deletion receipt still waits for every finalizer and verified zero.
+
+A notice version is persisted in the same onboarding row as its transition. The worker retries an unacknowledged notice after restart; the gateway dedupes it and fences older versions. Superseded notices have their own terminal outbox state. A queued notice is not confirmed channel delivery; a successful Telegram keyboard send persists its message receipt before completion. The separate action revision changes with reviewed action/nonce, so delivery metadata cannot invalidate consent. Consumed consent is never reissued by a status poll. `connector_edit action=resend` requires an exact owned ID. See ADR-0098.
+
+Membership is rechecked; this read path does not change the lifecycle selector's denial of member mutations on team connections. `connector_edit action=remove` resolves an exact owned connection or orphan onboarding after policy rotation. It binds cleanup to the current policy, clears setup nonces and waits for protected owner confirmation; expired remove links can be rearmed. Confirmation moves the connection to `deleting` and fences bindings. Broker credentials are listed under the owner identity, deleted, then listed again to prove `deleted`; backend uncertainty leaves `cleanup_incomplete` for retry. Only a personal owner can drop a bindingless connection record; a team member cannot remove a team connection. The legacy control `status` body preserves `phase` as onboarding history and adds `connection_status` and credential check evidence only for an owner-matching connection. `connector_status` by current onboarding ID includes the same scoped candidate as `connector_list`. An `enabled` onboarding now suggests `diagnostics`, never `ready`: even an active registry record does not prove admission, workload readiness or provider access. Legacy `status` returns the same not-found text for a foreign and an unknown onboarding ID. Internal lookup reasons distinguish `scope`, `unknown`, `version` and `terminal` without placing those codes in the agent response; the remaining expiry/storage classifications are still pending CHG-0224. ToolHub's next-write limit remains 32 MiB. SQLite reserves changed rows plus bounded page/WAL overhead, never the JSON size of the historical registry. Current rows are updated/deleted by key; history rows are append-only. Repeating an unchanged catalog enable creates no profile revision, projection revision, history or database write. Real changes produce one target profile revision; unreferenced digest-scoped catalog allows/ceilings are retired while denies, sibling references and immutable history remain.
+
+Legacy snapshot digests are verified on load. The next committed SQL mutation uses a canonical row digest (`meta.digest_format=rows-v1`) with the same stale writer fence. Keep a native SQLite backup before rollout: older binaries cannot read the new digest format, so rollback requires restoring the matched backup. No credential values enter this registry; routing identity and opaque Broker references stay inside the owning service volume. File-backed onboarding updates roll back the in-memory record if persistence fails before snapshot replacement, so a failed nonce refresh cannot appear in status. If directory sync fails after replacement, the error is reported and memory retains the same record as the replaced snapshot.
+
 For an awaiting-confirm onboarding, agent status now reports
 `next_action=await_user_confirmation`. The MCP `confirm` tool reads status
 without consuming a nonce or enabling a binding. Protected pages display the

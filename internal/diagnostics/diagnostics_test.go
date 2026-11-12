@@ -491,7 +491,7 @@ func TestHTTPLogsRouteWithoutSecretPathOrQuery(t *testing.T) {
 }
 
 func TestSafeRouteBoundsIdentifiers(t *testing.T) {
-	for input, want := range map[string]string{"/": "/", "/v1/jobs/private-id": "/v1/jobs", "/oauth/callback?code=secret": "/oauth"} {
+	for input, want := range map[string]string{"/": "/", "/v1/jobs/private-id": "/v1/jobs", "/v1/rights/private-id": "/v1/rights", "/v1/automation/private-id": "/v1/automation", "/oauth/callback?code=secret": "/oauth"} {
 		if got := safeRoute(input); got != want {
 			t.Fatalf("%q: got %q, want %q", input, got, want)
 		}

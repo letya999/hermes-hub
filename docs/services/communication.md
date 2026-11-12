@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-10
+last_verified: 2026-11-12
 ---
 
 # communication-hub
@@ -97,6 +97,20 @@ never enqueue an agent job,
 channel (`config.channels.*.voice` in the published revision, or the legacy
 `transcription` feature),
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
+
+Protected ToolHub confirmation notices require the service bearer and an
+owner-bound actor. The signed actor's current policy may differ from the
+gateway's loaded sibling routing snapshot; the final callback still goes to
+ToolHub with that actor for current-policy admission. A stale routing policy
+must be refreshed for new channel jobs, but it cannot suppress the owner's
+already-issued confirmation button.
+
+`GET /v1/prepare-delivery-status` is service-bearer-only. With an exact
+onboarding ID and notice version, it reads the durable outbox record matching
+the caller's principal/context/runtime identity and returns only `unknown`,
+`queued`, `uncertain` or `delivered`. It does not return links, chat content or
+credentials. ToolHub maps a notice not yet accepted by this gateway to
+`not_queued` before calling the endpoint.
 
 Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_SCOPE`
 (default 16), `HUB_SPOOL_MAX_PENDING_TOTAL` (128), `HUB_SCOPE_TOKEN_DAILY`

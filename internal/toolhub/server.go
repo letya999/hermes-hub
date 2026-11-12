@@ -417,6 +417,28 @@ type projectionEndpoint struct {
 	gateway *Gateway
 }
 
+func (e *projectionEndpoint) ConfigureResearch(root, jobURL, token, jobPath string) error {
+	if jobURL == "" || token == "" {
+		return errors.New("research backend is not configured")
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return errors.New("research storage unavailable")
+	}
+	h, err := newResearchHost(root, httpResearchRunner{URL: jobURL, Token: token, Path: jobPath}, e.EnrolledAuth, e.gateway.Store)
+	if err != nil {
+		return err
+	}
+	e.gateway.Research = h
+	return nil
+}
+
+func (e *projectionEndpoint) ResearchTick(context.Context) error {
+	if e.gateway.Research == nil {
+		return nil
+	}
+	return e.gateway.Research.tick(e.EnrolledPrincipals())
+}
+
 func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
 	return e.gateway.Control.ResumeRemovals(ctx)
 }
@@ -426,6 +448,17 @@ func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
 // production reconciler #285 schedules beside the removal retry loop.
 func (e *projectionEndpoint) Reconcile(ctx context.Context) error {
 	return e.gateway.Control.NewReconciler().ScanOnce(ctx)
+}
+
+func (e *projectionEndpoint) ReconcileOnboardings(ctx context.Context) {
+	g := e.gateway
+	g.mu.Lock()
+	var enrolled []identity.Envelope
+	for _, auth := range g.Tokens {
+		enrolled = append(enrolled, auth)
+	}
+	g.mu.Unlock()
+	g.Control.LifecyclePass(ctx, enrolled)
 }
 
 // PublicHandler is the opt-in public listener surface — only human-action

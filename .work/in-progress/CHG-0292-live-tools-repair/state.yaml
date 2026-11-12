@@ -2,13 +2,41 @@ schema: 1
 change: CHG-0292
 title: "Five-prompt live terminal, media and speech repair"
 status: in-progress
-updated: 2026-11-09
+updated: 2026-11-11
 phase: image-provider-blocked
 validation:
   local: passed
   live: partial
   terminal: passed
   browser_and_vision: passed
+  live_mock_browser_png_after_timeout_fix: passed
+  web_plugin_mount_stability_after_render: passed
+  live_web_tools_after_respawn: partial-provider-retry-passed
+  model_web_discovery_and_path_reporting: partial
   stt: passed
+  absolute_workspace_stt: passed
   telegram_voice_delivery: passed
+  mock_voice_delivery: passed
+  agent_tools_catalog_rebind: passed
+  live_documents: passed
+  live_skill_import_draft: passed
+  live_mock_routine_create_pause_resume_delivery_remove: passed
+  night_relay_caller_file_readability: passed
+  post_delivery_cleanup_contract_release_29: passed
+  operator_stale_snapshot_retry: passed
+  remote_tool_admission_deadlock_regression: passed
+  local_agent_tool_registry_fence_regression: passed
+  structured_read_tool_http_contract_regression: passed
+  live_mock_watch_existing_and_source_guard: passed
+  live_mock_assignment_plan_apply: passed
+  assignment_result_delivery_recovered: passed
+  agent_tools_catalog_rebind_18_3_10: passed
+  live_mock_goal_lifecycle: passed
+  live_mock_context_preview: passed
+  live_mock_settings_read_guard: passed
+  settings_interrupted_apply_recovery: passed
+  settings_snapshot_conflict_retry: passed
+  agent_tools_catalog_rebind_18_3_11: passed
+  live_mock_settings_restart_guard_18_3_11: passed
+  live_mock_combined_goal_context_settings: failed-model-instruction-compliance
   image_generation_and_edit: blocked-by-provider

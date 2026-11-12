@@ -534,8 +534,12 @@ func (s Settings) Validate() error {
 		return fmt.Errorf("drafts companion was removed; remove tools.drafts and drafts_url")
 	}
 	if s.Has("image_gen") || s.ImageGen != (media.ImageGen{}) {
-		if _, err := s.ImageGen.Normalize(); err != nil {
+		gen, err := s.ImageGen.Normalize()
+		if err != nil {
 			return err
+		}
+		if s.PassportServices["hub-media"] == "per-space" && (s.CapabilityMode != "managed" || gen.Provider != media.ProviderCLIProxy || !slices.Contains(media.CLIProxyChatImageModels(), gen.Model)) {
+			return fmt.Errorf("per-space hub-media requires a managed cliproxy chat-image model")
 		}
 	}
 	if err := s.Web.validate(); err != nil {

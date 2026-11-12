@@ -444,15 +444,19 @@ func (t *Tools) skillInstallLocal(ctx context.Context, arguments map[string]any)
 	if err != nil {
 		return nil, err
 	}
+	diff := diffTrees(st, name, tree)
 	link := t.skillDraftLink(ctx, map[string]string{
 		"draft_id": d.ID, "skill_name": name, "scope": "user",
 		"summary":    argString(arguments, "reason"),
+		"diff":       diff,
 		"findings":   d.Meta.ScanVerdict,
 		"provenance": "workspace " + rel,
 	})
 	return map[string]any{
 		"draft_id": d.ID, "name": name, "state": "draft",
 		"dropped_dot_paths": dropped, "notes": d.Meta.ImportNotes,
+		"diff": diff, "lint": map[string]any{"ok": true},
+		"scan":      map[string]any{"verdict": d.Meta.ScanVerdict, "findings": d.Meta.ScanFindings},
 		"link_sent": link != "", "confirm_url": link,
 	}, nil
 }

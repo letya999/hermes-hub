@@ -2,12 +2,14 @@ package toolhub
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,13 +43,30 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, restartApplied: map[string]uint64{}, restartDigests: map[string]string{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, brokerCursors: map[string]uint64{}, restartApplied: map[string]uint64{}, restartDigests: map[string]string{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveLocked(path)
+}
+
+// CanonicalSnapshotDigest verifies a substrate migration against its source
+// head, independently of the backend's physical row/digest format.
+func (s *Store) CanonicalSnapshotDigest() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.buildSnapshotLocked()
+	if err != nil {
+		return "", err
+	}
+	body, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // saveLocked lets authorization mutations become visible only after the same
@@ -275,6 +294,9 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 		}
 		store.projectionRevisions[key] = revision
 	}
+	for key, revision := range state.BrokerCursors {
+		store.brokerCursors[key] = revision
+	}
 	for key, revision := range state.RestartApplied {
 		store.restartApplied[key] = revision
 	}
@@ -381,7 +403,7 @@ func (s *Store) buildSnapshotLocked() (snapshot, error) {
 		}
 		s.installationID = id
 	}
-	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	state := snapshot{BrokerCursors: maps.Clone(s.brokerCursors), Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}
@@ -514,6 +536,10 @@ func (s *Store) changedOnDiskLocked() (bool, int64, error) {
 	return !ok || s.savedPath != s.path || stamp != s.diskStamp, 0, nil
 }
 
+// storeLoad is the seam through which tests can observe or delay the disk
+// snapshot Reload fetches. Production keeps it pointed at Load.
+var storeLoad = Load
+
 func (s *Store) Reload() error {
 	if s == nil || s.path == "" {
 		return nil
@@ -527,21 +553,49 @@ func (s *Store) Reload() error {
 		return err
 	}
 	s.mu.RUnlock()
-	s.mu.Lock()
-	changed, version, err := s.changedOnDiskLocked()
+	// Coalesce concurrent reloads without holding the state lock during I/O.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	s.mu.RLock()
+	changed, _, err = s.changedOnDiskLocked()
+	s.mu.RUnlock()
 	if err != nil || !changed {
-		s.mu.Unlock()
 		return err
 	}
-	fresh, err := Load(s.path)
+	// The snapshot read runs outside the write lock: a second SQLite
+	// connection and full scan can stall for tens of seconds on slow backing
+	// stores (Windows bind mounts), and holding s.mu across it serializes
+	// every concurrent reader behind that one fetch.
+	fresh, err := storeLoad(s.path)
 	if err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	// The adopted snapshot replaces in-memory state, but the fresh handle is
 	// redundant — s keeps its own. Without this every cross-instance reload
 	// leaks a SQLite connection (and locks the file on Windows).
 	defer func() { _ = fresh.CloseDB() }()
+	s.mu.Lock()
+	changed, version, err := s.changedOnDiskLocked()
+	if err != nil || !changed {
+		s.mu.Unlock()
+		return err
+	}
+	// A commit landing after Load leaves fresh stale. data_version is
+	// per-connection, so compare the persisted digest instead.
+	if s.db != nil {
+		var stored string
+		if err := s.db.QueryRow(`SELECT v FROM meta WHERE k = 'digest'`).Scan(&stored); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if stored != hex.EncodeToString(fresh.diskDigest[:]) {
+			s.mu.Unlock()
+			return api.ErrConflict
+		}
+	} else if stamp, ok := statStoreStamp(s.path); !ok || stamp != fresh.diskStamp {
+		s.mu.Unlock()
+		return api.ErrConflict
+	}
 	// Reads must not replace pending in-process mutations with the unchanged
 	// disk snapshot, nor race a Save and restore its older predecessor.
 	if fresh.diskDigest == s.diskDigest {
@@ -565,10 +619,13 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.brokerCursors = fresh.brokerCursors
 	s.restartApplied = fresh.restartApplied
 	s.restartDigests = fresh.restartDigests
 	s.grants = fresh.grants
 	s.onboardings = fresh.onboardings
+	s.operations = fresh.operations
+	s.recipes = fresh.recipes
 	s.publications = fresh.publications
 	s.sharedPolicies = fresh.sharedPolicies
 	s.teams = fresh.teams
@@ -583,6 +640,7 @@ func (s *Store) Reload() error {
 	s.diskStamp = fresh.diskStamp
 	s.dbVersion = version
 	s.dbFile = fresh.dbFile
+	s.dbRows, s.dbListCounts = fresh.dbRows, fresh.dbListCounts
 	s.mu.Unlock()
 	// Re-sync the lock-free status mirror wholesale: the freshly loaded set
 	// is authoritative, so connections removed on disk leave no stale entries.

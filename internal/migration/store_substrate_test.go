@@ -63,7 +63,8 @@ func TestMigrateToolHubStoreToSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourceDigest := sha256.Sum256(sourceBefore)
-	if report.SourceSHA256 != hex.EncodeToString(sourceDigest[:]) || report.DBDigest != report.SourceSHA256 {
+	canonicalDigest, err := migrated.CanonicalSnapshotDigest()
+	if err != nil || report.SourceSHA256 != hex.EncodeToString(sourceDigest[:]) || canonicalDigest != report.SourceSHA256 || report.DBDigest == "" {
 		t.Fatalf("migrated digest diverged: source=%s db=%s", report.SourceSHA256, report.DBDigest)
 	}
 

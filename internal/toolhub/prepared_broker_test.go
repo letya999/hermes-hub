@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
@@ -279,6 +279,20 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		t.Fatalf("stable wizard link did not reach the channel: %v", noticed)
 	}
 	ready.Store(true)
+	pending, err := control.Store.OnboardingFor(auth, preparing.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.reconcileBrokerReady(t.Context(), auth, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = control.Store.OnboardingFor(auth, preparing.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auth, &pending, pending.BrokerCredentialID); err != nil {
+		t.Fatal(err)
+	}
 	status, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": preparing.OnboardingID})
 	if err != nil || status["phase"] != api.PhaseAwaitingConfirm || status["tools_confirmed"] == false || admitCalls != 1 || grants.Load() != 1 || releases.Load() != 1 || revocations.Load() != 1 {
 		t.Fatalf("Broker admission did not complete and clean up: %+v %v (probe=%d grant=%d release=%d revoke=%d)", status, err, admitCalls, grants.Load(), releases.Load(), revocations.Load())
@@ -301,7 +315,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	}
 	control.AdmitWithCredentials = func(_ context.Context, _ api.ToolDefinition, _ map[string]string) (api.ToolDefinition, error) {
 		admitCalls++
-		return api.ToolDefinition{}, errors.New("Telegram session rejected fake-session")
+		return api.ToolDefinition{}, fmt.Errorf("%w: Telegram session rejected fake-session", api.ErrAuthBeforeEffect)
 	}
 	retry, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
 	if err != nil {
@@ -326,6 +340,20 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		return definition, nil
 	}
 	rotatedReady.Store(true)
+	pending, err = control.Store.OnboardingFor(auth, retry.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.reconcileBrokerReady(t.Context(), auth, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = control.Store.OnboardingFor(auth, retry.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auth, &pending, pending.BrokerCredentialID); err != nil {
+		t.Fatal(err)
+	}
 	rotated, err = control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID})
 	if err != nil || rotated["phase"] != api.PhaseAwaitingConfirm || admitCalls != 3 || grants.Load() != 4 || revocations.Load() != 3 {
 		t.Fatalf("rotated Broker credential was not admitted: %+v %v (probes=%d grants=%d revoked=%d)", rotated, err, admitCalls, grants.Load(), revocations.Load())

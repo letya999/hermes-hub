@@ -25,8 +25,32 @@ func (c *ControlPlane) prepareConnectorUpgrade(ctx context.Context, auth identit
 	if err := c.Store.RequireSelfInstall(auth); err != nil {
 		return nil, err
 	}
-	c.admissionMu.Lock()
-	defer c.admissionMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		c.admissionMu.Lock()
+		if c.admissionInFlight == nil {
+			c.admissionInFlight = make(map[string]chan struct{})
+		}
+		pending := c.admissionInFlight[onboardingID]
+		if pending == nil {
+			c.admissionInFlight[onboardingID] = make(chan struct{})
+			c.admissionMu.Unlock()
+			break
+		}
+		c.admissionMu.Unlock()
+		select {
+		case <-pending:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() {
+		c.admissionMu.Lock()
+		close(c.admissionInFlight[onboardingID])
+		delete(c.admissionInFlight, onboardingID)
+		c.admissionMu.Unlock()
+	}()
 	original, err := c.Store.OnboardingFor(auth, onboardingID)
 	if err != nil {
 		return nil, err

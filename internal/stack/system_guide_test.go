@@ -3,11 +3,38 @@ package stack
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/systemguide"
 )
+
+func TestMaterializeGlobalSkillsRejectsSymlinkView(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix symlink contract")
+	}
+	dir := t.TempDir()
+	target := t.TempDir()
+	marker := filepath.Join(target, "keep")
+	if err := os.WriteFile(marker, []byte("untouched"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, GeneratedSkillsDir(dir)); err != nil {
+		t.Fatal(err)
+	}
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	if err := MaterializeGlobalSkills(dir, s); err == nil {
+		t.Fatal("symlinked generated view accepted")
+	}
+	if body, err := os.ReadFile(marker); err != nil || string(body) != "untouched" {
+		t.Fatal("symlink target changed", err)
+	}
+}
 
 func TestSystemGuideRejectsCustomCatalogContentsInReservedDirectory(t *testing.T) {
 	dir := t.TempDir()
@@ -208,9 +235,17 @@ func TestSystemGuideOnlyRemainsAfterOptionalCatalogIsRemoved(t *testing.T) {
 	if err := MaterializeGlobalSkills(dir, s); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(GeneratedSkillsDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.GlobalSkillsDir = ""
 	if err := MaterializeGlobalSkills(dir, s); err != nil {
 		t.Fatal(err)
+	}
+	after, err := os.Stat(GeneratedSkillsDir(dir))
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("platform skills mount inode changed", err)
 	}
 	if _, err := os.Stat(filepath.Join(GeneratedSkillsDir(dir), "optional-skill")); !os.IsNotExist(err) {
 		t.Fatal("removed catalog left optional skills loadable")

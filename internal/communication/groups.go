@@ -163,7 +163,11 @@ func (g *Gateway) groupFor(chatID int64) *Group {
 func (g *Gateway) telegramUserFor(chatID, sender int64) (User, bool) {
 	if chatID >= 0 {
 		user, ok := g.users[sender]
-		return user, ok
+		if !ok {
+			return User{}, false
+		}
+		user = g.user(user.ID)
+		return user, user.Enabled
 	}
 	group := g.groupFor(chatID)
 	if group == nil {
@@ -171,7 +175,11 @@ func (g *Gateway) telegramUserFor(chatID, sender int64) (User, bool) {
 	}
 	if group.Mode == "topics" {
 		user, ok := g.users[sender]
-		return user, ok
+		if !ok {
+			return User{}, false
+		}
+		user = g.user(user.ID)
+		return user, user.Enabled
 	}
 	if !g.groupMember(*group, sender) {
 		return User{}, false

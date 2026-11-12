@@ -114,7 +114,7 @@ var argDocs = map[string]map[string]argDoc{
 		"name": {Desc: "Optional artifact name for the staged result."},
 	},
 	"media_transcribe": {
-		"path":       {Desc: "Audio file path inside the admitted scope."},
+		"path":       {Desc: "Audio file inside this workspace: work/voice.wav or /workspace/work/voice.wav."},
 		"language":   {Desc: "Expected audio language, when known."},
 		"timestamps": {Desc: "Include segment timestamps in the transcript."},
 	},
@@ -197,7 +197,7 @@ var argDocs = map[string]map[string]argDoc{
 
 	// ---- exposure
 	"exposure_list": {
-		"id": {Desc: "Show one exposure by id; empty lists all."},
+		"id": {Desc: "Optional endpoint name to filter live exposures; declared endpoints are always listed."},
 	},
 	"exposure_create": {
 		"name": {Desc: "Declared endpoint name to expose."},
@@ -303,7 +303,7 @@ var argDocs = map[string]map[string]argDoc{
 		"id": {Desc: "Assignment id."},
 	},
 	"assignment_plan": {
-		"plan": {Desc: "Saved draft plan object to dry-run."},
+		"plan": {Desc: "Candidate plan object with nonempty sources; each source has name and schedule. No assignment_id."},
 	},
 	"assignment_create": {
 		"text":  {Desc: "Owner's verbatim intent for the standing assignment."},
@@ -315,8 +315,8 @@ var argDocs = map[string]map[string]argDoc{
 		"id":                {Desc: "Assignment id."},
 		"action":            {Desc: "Steering verb.", Enum: []string{"update", "apply", "pause", "resume", "progress", "cancel", "complete"}},
 		"expected_revision": {Desc: "Plan revision from read; conflict means re-read."},
-		"plan":              {Desc: "Replacement plan object for action=update."},
-		"job_id":            {Desc: "Specialist job id for action=progress."},
+		"plan":              {Desc: "Replacement plan object for action=update; revision defaults to 1 on first save."},
+		"job_id":            {Desc: "Real in-flight specialist trigger job id for action=progress; the owner's current job cannot substitute."},
 		"summary":           {Desc: "Progress summary for action=progress."},
 		"finding":           {Desc: "Finding text for action=progress."},
 		"next_step":         {Desc: "Next step for action=progress."},
@@ -433,7 +433,7 @@ var argDocs = map[string]map[string]argDoc{
 	},
 	"connector_list": {},
 	"connector_status": {
-		"name":    {Desc: "Connector name or operation id."},
+		"name":    {Desc: "Exact onboarding or operation ID for a pending install; connector name or connection ID otherwise."},
 		"verbose": {Desc: "Include diagnostics in the report."},
 	},
 	"connector_install": {
@@ -441,8 +441,8 @@ var argDocs = map[string]map[string]argDoc{
 		"version": {Desc: "Version or digest to pin, when the candidate offers choices."},
 	},
 	"connector_edit": {
-		"name":   {Desc: "Connector name."},
-		"action": {Desc: "Lifecycle verb; reauth returns a protected URL only.", Enum: []string{"enable", "disable", "allow_writes", "reauth", "remove"}},
+		"name":   {Desc: "Connector name or exact owned connection/onboarding ID; resend requires an exact onboarding or operation ID."},
+		"action": {Desc: "disable stops use while retaining credentials; revoke cuts authorization; reauth opens protected credential entry including unfinished setups; resend repeats the current pending action, not credential entry after submission; remove requires protected owner confirmation. Secrets never enter chat.", Enum: []string{"enable", "disable", "revoke", "allow_writes", "reauth", "resend", "remove"}},
 	},
 
 	// ---- web

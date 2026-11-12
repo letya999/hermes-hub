@@ -24,14 +24,14 @@ func writeSSHConfig(t *testing.T, dir string) {
 	}
 	hostKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 	sshDir := filepath.Join(dir, "connections", "ssh")
-	if err = os.MkdirAll(filepath.Join(sshDir, "keys"), 0700); err != nil {
+	if err = os.MkdirAll(filepath.Join(sshDir, "keys"), 0750); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(sshDir, "keys", "id"), []byte("x"), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(sshDir, "keys", "id"), []byte("x"), 0640); err != nil {
 		t.Fatal(err)
 	}
 	body := "schema: 1\nhosts:\n  box:\n    host: 127.0.0.1\n    user: deploy\n    host_keys: [\"" + hostKey + "\"]\n    key_ref: \"file:keys/id\"\n    commands: [\"uptime\"]\n"
-	if err = os.WriteFile(filepath.Join(sshDir, "config.yaml"), []byte(body), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(sshDir, "config.yaml"), []byte(body), 0640); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -108,8 +108,11 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if !found {
 		t.Fatal("ssh config mount missing from RuntimeService")
 	}
-	// The HUB_SSH_* env lives on the unmanaged `hub` stdio server — managed
-	// execution reaches the ssh config through ToolHub.
+	managedEnv := RuntimeService(s, root, d)["environment"].(M)
+	if managedEnv["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || managedEnv["HUB_SSH_WRITE"] != "true" || managedEnv["HUB_SSH_TUNNEL"] != "true" || managedEnv["HUB_SSH_SHELL"] != "false" {
+		t.Fatal("managed SSH config environment missing")
+	}
+	// The unmanaged `hub` stdio server carries the same reviewed settings.
 	unmanaged := s
 	unmanaged.CapabilityMode = ""
 	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)

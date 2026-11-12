@@ -570,8 +570,8 @@ func superviseBrowser() error {
 	// profile, no /state/browser access, no shared CDP session.
 	mcp := "/opt/browser/node_modules/@playwright/mcp/cli.js"
 	for _, args := range [][]string{
-		{mcp, "--host", "0.0.0.0", "--port", "8931", "--allowed-hosts", mcpAllowedHosts("8931"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9223"},
-		{mcp, "--host", "0.0.0.0", "--port", "8932", "--allowed-hosts", mcpAllowedHosts("8932"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
+		{mcp, "--host", "0.0.0.0", "--port", "8931", "--allowed-hosts", mcpAllowedHosts("8931"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--timeout-action", "15000", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9223"},
+		{mcp, "--host", "0.0.0.0", "--port", "8932", "--allowed-hosts", mcpAllowedHosts("8932"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--timeout-action", "15000", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
 	} {
 		if err := start("node", args...); err != nil {
 			return err

@@ -388,3 +388,48 @@ func TestSishProviderOpenForwardClose(t *testing.T) {
 		t.Fatal("closing a closed handle must fail")
 	}
 }
+
+func TestSishProviderOpenThroughReviewedProxy(t *testing.T) {
+	target := startEcho(t)
+	cfg, relay, root, _ := sishFixture(t, target)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect || r.Host != cfg.Relay.Address() {
+			http.Error(w, "denied", http.StatusForbidden)
+			return
+		}
+		upstream, err := net.DialTimeout("tcp", r.Host, 2*time.Second)
+		if err != nil {
+			http.Error(w, "unreachable", http.StatusBadGateway)
+			return
+		}
+		client, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		buffered.Flush()
+		go func() { _, _ = io.Copy(upstream, client); upstream.Close() }()
+		go func() { _, _ = io.Copy(client, upstream); client.Close() }()
+	}))
+	defer proxy.Close()
+	provider := NewSishProvider(cfg, ProviderOptions{Root: root, Proxy: proxy.URL})
+	handle, err := provider.Open(context.Background(), Spec{Provider: "sish", Endpoint: "demo",
+		Bind: "demo.z", Target: target, PublicName: "demo.z.hub.example.com", Lifetime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer provider.Close(context.Background(), handle)
+	if got := relay.deliver(t, "demo.z:80", "through proxy"); got != "through proxy" {
+		t.Fatalf("proxied forward returned %q", got)
+	}
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "denied", http.StatusForbidden)
+	}))
+	defer denied.Close()
+	refused := NewSishProvider(cfg, ProviderOptions{Root: root, Proxy: denied.URL})
+	if _, err := refused.Open(context.Background(), Spec{Provider: "sish", Endpoint: "blocked",
+		Bind: "blocked.z", Target: target, PublicName: "blocked.z.hub.example.com"}); err == nil {
+		t.Fatal("proxy refusal fell back to direct relay access")
+	}
+}

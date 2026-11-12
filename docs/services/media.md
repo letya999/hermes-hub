@@ -1,18 +1,20 @@
 ---
 description: hub-media, hub-stt, hub-tts — media sidecars carrying provider credentials; sync image gen plus durable async jobs.
-last_verified: 2026-11-10
+last_verified: 2026-11-12
 ---
 
 # media services (hub-media, hub-stt, hub-tts)
 
-Three standalone sidecars, one code family (`internal/media`,
-`internal/mediasvc`). Each listens on its own container `:8090`, joins only
-the service network — never the docker socket — and shares the `media.auth`
-bearer. `hub-media` alone mounts its read-only `broker-secrets-media` key volume.
+Three standalone sidecar roles, one code family (`internal/media`,
+`internal/mediasvc`). Each listens on its own container `:8090` and never
+mounts the docker socket. The shared `hub-media` uses the infra owner's
+Broker grant; a managed space may instead declare `hub-media: per-space` and
+use its own media bearer and model relay.
 
-Declare all three shared services in the infra owner's authored stack passport
-and references to them in participating user stacks. Selecting `media` alone
-does not start undeclared containers. Set the channel voice in/out contract in
+Declare shared services in the infra owner's authored stack passport and
+references to them in participating user stacks. A private image account uses
+`hub-media: per-space` in its own stack passport. Selecting `media` alone does
+not start undeclared containers. Set the channel voice in/out contract in
 config.yaml. Managed `media_transcribe` receives `HUB_STT_URL` and the shared
 media bearer when hub-stt is declared; its multipart upload uses the admitted
 filesystem root and bounded bytes. `media_speak` runs in ToolHub against the
@@ -40,12 +42,28 @@ upstream key. The `image_gen` grant reconstructs an identical normalized
 config block inside spawned runtimes via `HUB_MANAGED_IMAGE_GEN` JSON, never
 from agent-editable state; a non-empty value is the feature-enabled marker.
 
+For `hub-media: per-space`, the runtime uses `hub-media-<owner>:8090` and the
+owner's `media.auth`. The sidecar calls `model-relay-<owner>:8318` using a
+separate generated `media-relay.auth` file containing only that owner's relay
+bearer. The provider credential stays behind the owner's model relay and
+Broker grant. This mode requires a managed space and a concrete allowlisted
+chat-image model in `image_gen`; the owner's `models.yaml` must publish an
+`image` route to that provider model. It does not mount the infra media signing key
+or accept the infra media grant. A shared `hub-media` remains available for
+spaces that deliberately use the shared image account.
+Changing this service mode recreates the owner's egress relay before the
+runtime respawns, so its allowlist includes the private media hostname.
+
 ## Data
 
 Each role keeps durable job data on its own volume (`hub-<role>-data` →
 `/data`). STT/TTS also set `HF_HOME=/data/hf` and `XDG_CACHE_HOME=/data/cache`
-for model caches. In-container healthcheck: `hub-media health` hits
-`http://127.0.0.1:8090/healthz` with a 5s client timeout.
+for model caches. Shared media uses `hub-media health`, which checks upstream
+readiness at `/healthz`. Per-space media uses `hub-media health-local` at
+`/livez`: during `space apply`, ToolHub deliberately denies model decisions
+until the recovery journal is removed, so waiting for upstream readiness
+inside that transaction would prevent it from finishing. Verify the provider
+with a real generation after publication.
 
 ## Fallback
 

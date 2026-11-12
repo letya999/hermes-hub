@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-11-09
+last_verified: 2026-11-12
 ---
 
 # Integration contracts
@@ -204,6 +204,11 @@ Settings `WebSettings` block: backend/search_backend/extract_backend,
 `search_providers` fan-out list, `keyless_fallback`/`keyless_rescue`,
 `extract_char_limit`, `provider_tier`, `cache_*`, `research.*` bounds
 (ceilings only — settings can tighten, never widen).
+Materialization updates each generated plugin directory in place so a running
+runtime's bind mount continues to see its files after `hubctl render` or a
+scoped `hubctl up`; removing and recreating the directory would strand that
+runtime on the old, empty inode. A live `web_providers` call checks this mount,
+while `web_search` alone does not because it uses upstream's built-in path.
 
 `hub-web` adds three tools inside the same toolset/gate: `web_providers`
 (inventory), `web_search_multi` (`providers` list or `["all"]`, ≤8
@@ -221,6 +226,11 @@ example searxng). Firecrawl and the other keyless-ring providers can work
 without local keys when their public endpoints are reachable and admitted
 by the space's egress relay. `ddgs` also needs its optional upstream package;
 no browser profile participates.
+
+Managed ToolHub `research_create` queues a durable owner job through
+Supervisor. `research_read` returns its actual status and final report;
+`research_list` omits report bodies. The model job is instructed to use the
+bundled skill and live web tools. A queued job is not a provider result.
 
 `deep-research-embedded` (`config/skills/`) is the on-disk state machine:
 `plan.yaml` → `sources.yaml` → `notes/` → `gaps.md` → drafts → cited

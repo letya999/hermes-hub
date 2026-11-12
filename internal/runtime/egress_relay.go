@@ -13,16 +13,16 @@ import (
 // egressRelayHandler is the managed runtime's only reviewed path off the
 // internal agent network: a forward proxy pinned to an operator-declared
 // host allowlist (HUB_EGRESS_RELAY_HOSTS, comma-separated, `*.` suffix
-// wildcards). It is not a generic CONNECT server — tunnels open to port 443
-// on allowlisted hosts only, and plain HTTP forwarding requires an absolute
-// URI whose host is listed. Everything else fails closed.
+// wildcards). CONNECT opens port 443 on listed hosts, plus the single exact
+// sish relay address rendered from reviewed exposure config. Plain HTTP still
+// requires an absolute URI whose host is listed. Everything else fails closed.
 // egressRelayResponseTimeout bounds how long the relay waits for upstream
 // response headers. Control-plane calls legitimately span minutes — a
 // skill-git install is a sequence of bounded 60s cells — so the cap sits
 // above that budget; the caller's own context still ends each request early.
 var egressRelayResponseTimeout = 10 * time.Minute
 
-func egressRelayHandler(allow map[string]bool) http.Handler {
+func egressRelayHandler(allow map[string]bool, connectTarget string) http.Handler {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		ResponseHeaderTimeout: egressRelayResponseTimeout,
@@ -33,11 +33,11 @@ func egressRelayHandler(allow map[string]bool) http.Handler {
 			if err != nil {
 				host, port = r.Host, "443"
 			}
-			if port != "443" || !egressAllowed(allow, host) {
+			if !(port == "443" && egressAllowed(allow, host)) && (connectTarget == "" || !strings.EqualFold(net.JoinHostPort(host, port), connectTarget)) {
 				http.Error(w, "host not allowed", http.StatusForbidden)
 				return
 			}
-			upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, "443"), 10*time.Second) // #nosec G704 -- host is allowlisted by egressAllowed above
+			upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second) // #nosec G704 -- host:port is allowlisted above
 			if err != nil {
 				http.Error(w, "upstream unreachable", http.StatusBadGateway)
 				return
@@ -145,11 +145,12 @@ func parseEgressHosts(value string) map[string]bool {
 
 func runEgressRelay() error {
 	allow := parseEgressHosts(os.Getenv("HUB_EGRESS_RELAY_HOSTS"))
+	connectTarget := strings.TrimSpace(os.Getenv("HUB_EGRESS_RELAY_CONNECT_TARGET"))
 	listen := strings.TrimSpace(os.Getenv("HUB_EGRESS_RELAY_LISTEN"))
 	if listen == "" {
 		listen = ":8319"
 	}
-	server := &http.Server{Addr: listen, Handler: egressRelayHandler(allow), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	server := &http.Server{Addr: listen, Handler: egressRelayHandler(allow, connectTarget), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	if err := server.ListenAndServe(); err != nil {
 		return fmt.Errorf("egress-relay: %w", err)
 	}

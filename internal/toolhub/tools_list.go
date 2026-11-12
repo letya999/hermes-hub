@@ -76,15 +76,36 @@ func toolQueryMatch(tool api.ProjectedTool, query string) bool {
 }
 
 func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit int) (map[string]any, error) {
-	projected, err := g.Store.ListProjectedTools(auth)
-	if err != nil {
-		return nil, err
-	}
-	if projected, err = g.filterProjectedTools(auth, projected); err != nil {
-		return nil, err
-	}
 	query = strings.ToLower(strings.TrimSpace(query))
 	name = strings.TrimPrefix(strings.TrimSpace(name), toolhubNamePrefix)
+	var projected []api.ProjectedTool
+	fastExact := false
+	if name != "" {
+		if tool, effective, err := g.Store.ResolveProjectedTool(auth, name); err == nil {
+			fastExact = true
+			allowed := true
+			if g.Governance != nil {
+				decision, err := g.governanceDecision(auth, tool.Tool, effective)
+				if err != nil {
+					return nil, err
+				}
+				allowed = decision.AllowsToolEffect(string(tool.Tool.Effect))
+			}
+			if allowed && (query == "" || toolQueryMatch(tool, query)) {
+				projected = []api.ProjectedTool{tool}
+			}
+		}
+	}
+	if !fastExact {
+		var err error
+		projected, err = g.Store.ListProjectedTools(auth)
+		if err != nil {
+			return nil, err
+		}
+		if projected, err = g.filterProjectedTools(auth, projected); err != nil {
+			return nil, err
+		}
+	}
 	detailed := query != "" || name != ""
 	entries := make([]map[string]any, 0, len(projected))
 	matched := 0
@@ -128,22 +149,24 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 	}
 	// Rights-denied selections surface as unavailable: the agent learns the
 	// missing capability.operation instead of guessing the tool vanished.
-	if denials, err := g.Store.RightsDenials(auth); err == nil && len(denials) > 0 {
-		unavailable := make([]map[string]any, 0, len(denials))
-		for _, denial := range denials {
-			if name != "" && denial.Name != name {
-				continue
-			}
-			unavailable = append(unavailable, map[string]any{"name": denial.Name, "unavailable": true, "missing_right": denial.Missing})
-		}
-		if len(unavailable) > 0 {
-			body["unavailable"] = unavailable
-		}
-		if name != "" && matched == 0 {
+	if name == "" || matched == 0 {
+		if denials, err := g.Store.RightsDenials(auth); err == nil && len(denials) > 0 {
+			unavailable := make([]map[string]any, 0, len(denials))
 			for _, denial := range denials {
-				if denial.Name == name {
-					body["missing_right"] = denial.Missing
-					break
+				if name != "" && denial.Name != name {
+					continue
+				}
+				unavailable = append(unavailable, map[string]any{"name": denial.Name, "unavailable": true, "missing_right": denial.Missing})
+			}
+			if len(unavailable) > 0 {
+				body["unavailable"] = unavailable
+			}
+			if name != "" && matched == 0 {
+				for _, denial := range denials {
+					if denial.Name == name {
+						body["missing_right"] = denial.Missing
+						break
+					}
 				}
 			}
 		}

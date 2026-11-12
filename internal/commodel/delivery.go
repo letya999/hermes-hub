@@ -136,6 +136,8 @@ type Delivery struct {
 	// StreamPosition orders status updates so a replayed event can never move
 	// the rendered status backwards.
 	StreamPosition uint64 `json:"stream_position,omitempty"`
+	PrepareKey     string `json:"prepare_key,omitempty"`
+	PrepareVersion uint64 `json:"prepare_version,omitempty"`
 	// StatusClosed marks the run's status message finalized: late events must
 	// not resurrect or edit it.
 	StatusClosed bool `json:"status_closed,omitempty"`

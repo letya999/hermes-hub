@@ -280,6 +280,171 @@ func TestModelRelayLadderFallsThroughOnOutageAndAuth(t *testing.T) {
 	}
 }
 
+func TestModelRelayQuotaExhaustedHasTypedError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"code":429,"message":"Reached free model rate limit. Your limit will reset in 24 minutes.","status":"RESOURCE_EXHAUSTED"}}`)
+	}))
+	defer upstream.Close()
+	handler, err := modelRelayHandler(oneHop(t, "a="+upstream.URL), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if response.Code != http.StatusTooManyRequests || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Error.Code != "model_quota_exhausted" || !strings.Contains(body.Error.Message, "rate limit") {
+		t.Fatalf("quota exhaustion not typed: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestModelRelayProviderBlockHasTypedError(t *testing.T) {
+	bodies := []string{
+		`{"error":{"code":403,"message":"This service has been disabled in this account for violation of Terms of Service.","status":"PERMISSION_DENIED"}}`,
+		`{"error":{"code":403,"message":"Account suspended by provider policy.","status":"PERMISSION_DENIED"}}`,
+		`{"error":{"code":403,"message":"Consumer deactivated for abuse.","type":"error"}}`,
+		`{"error":{"code":403,"message":"This key has been blocked by the provider."}}`,
+		`{"error":{"code":403,"message":"Project banned from this model."}}`,
+	}
+	for _, payload := range bodies {
+		calls := 0
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, payload)
+		}))
+		handler, err := modelRelayHandler(oneHop(t, "a="+upstream.URL), "synthetic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, chatRequest())
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if response.Code != http.StatusBadGateway || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Error.Code != "model_provider_blocked" || body.Error.Message == "" {
+			t.Fatalf("provider block not typed for %s: status=%d body=%s", payload, response.Code, response.Body.String())
+		}
+		second := httptest.NewRecorder()
+		handler.ServeHTTP(second, chatRequest())
+		if calls != 1 || second.Code != http.StatusBadGateway {
+			t.Fatalf("blocked provider retried early for %s: calls=%d status=%d", payload, calls, second.Code)
+		}
+		upstream.Close()
+	}
+}
+
+func TestModelRelayFallbackReportsSwitch(t *testing.T) {
+	var logs strings.Builder
+	orig := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"code":429,"message":"rate limit","status":"RESOURCE_EXHAUSTED"}}`)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer second.Close()
+	handler, err := modelRelayHandler(oneHop(t, "a="+first.URL+",b="+second.URL), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusOK || response.Header().Get("X-Model-Hop") != "b" || response.Header().Get("X-Model-Fallback") != "a" || response.Header().Get("X-Model-Fallback-Reason") != "quota" {
+		t.Fatalf("fallback switch not reported: status=%d headers=%v", response.Code, response.Header())
+	}
+	if !strings.Contains(logs.String(), "fallback") || !strings.Contains(logs.String(), "quota") {
+		t.Fatalf("fallback switch missing operator receipt: %q", logs.String())
+	}
+}
+
+func TestModelRelayLocalQuotaExhaustedHasTypedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := "providers:\n" +
+		"  a:\n    allow_private: true\n    url: " + srv.URL + "\n" +
+		"models:\n" +
+		"  default:\n    ladder:\n" +
+		"      - {provider: a, model: m1, limits: [{of: requests, amount: 1, per: 1d}]}\n"
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, chatRequest())
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request failed: %d", first.Code)
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, chatRequest())
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if second.Code != http.StatusTooManyRequests || json.Unmarshal(second.Body.Bytes(), &body) != nil || body.Error.Code != "model_quota_exhausted" {
+		t.Fatalf("local quota exhaustion not typed: status=%d body=%s", second.Code, second.Body.String())
+	}
+}
+
+func TestModelRelayProviderQuotaExhaustedHasTypedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_, _ = w.Write([]byte(`{"files":[{"provider":"antigravity","auth_index":"a1","email":"a@x","project_id":"p"}]}`))
+		case "/v0/management/api-call":
+			_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"groups\":[{\"displayName\":\"gemini\",\"buckets\":[{\"window\":\"1d\",\"resetTime\":\"2030-01-01T00:00:00Z\",\"remainingFraction\":0.3}]}]}"}`))
+		default:
+			_, _ = w.Write([]byte(`{"choices":[]}`))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("HUB_CLIPROXY_MGMT_KEY", "mgmt-fixture")
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := "providers:\n" +
+		"  a:\n    allow_private: true\n    url: " + srv.URL + "\n    via: cliproxy\n    upstream_kind: oauth-session\n" +
+		"models:\n" +
+		"  default:\n    ladder:\n" +
+		"      - {provider: a, model: m1, limits: [{of: provider_quota, amount: 50, unit: percent, per: 1d, clock: provider}]}\n"
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if response.Code != http.StatusTooManyRequests || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Error.Code != "model_quota_exhausted" {
+		t.Fatalf("provider quota exhaustion not typed: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestModelRelayLadderAllDown(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -367,12 +532,12 @@ func TestModelRelayHopsHealthEndpoint(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, chatRequest())
-	if response.Code != http.StatusBadGateway {
+	if response.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected exhausted ladder: %d", response.Code)
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/hops", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"a"`) || !strings.Contains(response.Body.String(), "cooldown_until") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"a"`) || !strings.Contains(response.Body.String(), "cooldown_until") || !strings.Contains(response.Body.String(), `"failure":"quota"`) {
 		t.Fatalf("hop health missing state: %d %s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()

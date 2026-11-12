@@ -1,14 +1,14 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-10"
+last_verified: "2026-11-12"
 ---
 # Routines
 
 ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
-Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights.
+Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights. Research jobs persist separately and replay their Supervisor job ID after restart; research_read shows the final report only after completion.
 
 `media_speak` uses this outbox for the active run's recorded destination: `delivery_id` and `status=queued` acknowledge enqueue, not sending. The worker rechecks `channels.send_voice`; synthesis/sending can still fail and uncertain sends are never blindly repeated.
-
+In the mock channel, the worker synthesizes audio and stores its bytes in the owner-scoped mock outbox; only a captured `voice_sent=true` record proves mock delivery. The ToolHub admission lock is released and authority rechecked before the communication callback, which asks ToolHub for the live send right.
 The M32 cutover places the clock, assignments, watches and protected nightly
 dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
 schedule with a normal routine occurrence and due recovery, keyed once per
@@ -17,8 +17,8 @@ through the normal delivery outbox; ordinary routine CRUD cannot change it.
 The schedule time and timezone come from the current published passport.
 Memory disablement overrides tool selection. Calls require `tools.use` and
 their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
-Settings changes use `settings_read`'s revision as `settings_edit.base_revision`
-and require current `config.edit_own`; stale or unpublished drafts are refused.
+Settings edits require current `config.edit_own` and `settings_read`'s revision; interrupted publications recover under the apply lock.
+Edits may respawn the runtime, so same-turn restore is uncertain.
 ToolHub reads gateway bindings from files or activated SQLite in place, read-only; cutover refuses legacy automation records/jobs until migration.
 New occurrences persist the current supervisor admission epoch; holds block admission and retries never adopt a later epoch.
 
@@ -129,8 +129,8 @@ settle into the new revision.
   `read_file`/`list_dir`/`hash_path` builtins. `needs[]` (≤4 read-tool
   calls, ≤64 KiB each via `needs()`) prefetch under the owner binding; a
   failed need is a probe error, container stays networkless.
-- `kind=tool` normalizes to `mcp_tool` — read-effect tools only under owner
-  grants via `/v1/tool-call`. `kind=render`/`kind=service` POST a bounded
+- `kind=tool` normalizes to `mcp_tool`: owner-granted read tools via `/v1/tool-call` (structured-only results become JSON text).
+  `kind=render`/`kind=service` POST a bounded
   structured request (kind/url/args/steps/wait_for, ≤512 KiB response) to an
   operator-registered `service_endpoints` entry — never a schedule-supplied
   URL; render steps are a declarative browser-action list. `github_issue`
@@ -260,7 +260,7 @@ It binds the verified owner envelope — never a Hermes session — and is
 managed through `POST/GET /v1/assignments`, the `assignment_*` agent tools
 and the `/assignments` `/assignment <id> …` chat commands.
 
-- Save the owner's intent as a draft immediately, before provider reads.
+- Save the owner's intent as a draft immediately, unless the owner explicitly requests `assignment_plan` first.
   Check public Telegram sources in batches of at most four with non-consuming
   `watch_chat_messages` bootstrap reads; persist checked accessible sources and
   `plan.unavailable` entries with reasons through CAS-guarded plan updates.
@@ -281,11 +281,11 @@ and the `/assignments` `/assignment <id> …` chat commands.
   scope and organization onto every artifact; receipts record
   `created|kept|replaced|removed` per source so re-apply is idempotent
   and a retired id is recreated with a `-rN` generation suffix, never
-  resurrected.
+  resurrected. For a one-time first HTTP read, use `watcher` with `deliver_mode=content`; `check expect=unchanged` requires a prior baseline. A completed `once:` schedule may finish its in-flight probe after retirement.
 - Lifecycle propagates to artifacts: pause/resume flip the applied
   schedules, cancel/complete tombstone them and fence the record
   terminal; wakes are fenced by the applied plan generation at admission
-  and claim, so a paused or re-planned assignment cannot run a stale job.
+  and claim, so a paused or re-planned assignment cannot run a stale job. The completing trigger's confirmed response remains sendable after its own source retires and occurrence moves to archive, while deleting the assignment or revoking delivery rights still blocks it.
   An active owner assignment may use the owner's currently selected and
   granted memory tools under the same `memory.enabled` switch. The exact
   owner, job, run and generation are checked at call time and before writes;
@@ -380,7 +380,7 @@ source task even if another conversation changes `/use` at the same time. To
 choose a different session, call `routine_list` with `view=destinations`, search
 by name, and pass the returned `task_id` as `destination_task_id`. The explicit
 `default` target is the root chat. The public create tool requires an origin or
-explicit destination; old private HTTP clients retain their prior behavior.
+explicit destination; old private HTTP clients retain their prior behavior. Mock-origin reminders return to the claimed mock chat and its captured outbox.
 
 `routine_read` displays the saved task name, chat/topic IDs, and `active`,
 `archived`, or `unavailable` status. An archived task is marked `archived`;
@@ -441,19 +441,19 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The current agent-tool catalog is hub-agent-tools@18.3.5 (platform Release 26); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The platform's new-space template selects `web_search`, `sessions`, `memory` and `media` through ToolHub; rights and service/provider configuration remain separate. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab.
+The current agent-tool catalog is hub-agent-tools@18.3.18 (platform Release 36); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The platform's new-space template selects `web_search`, `sessions`, `memory` and `media` through ToolHub; rights and service/provider configuration remain separate. `media_transcribe` resolves `/workspace/` paths into the same admitted workspace as relative paths, without accepting traversal. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab. For a local skill import, `file_write` stages `SKILL.md` first; `skill_edit action=install_local` reads the same `/workspace`-relative path and returns `diff`, `lint`, `scan` and a confirmation card. The skill becomes active only after owner approval and managed runtime refresh. For requested post-delivery cleanup, keep a pending reminder active and remove it only after history confirms delivery. Assignment plans carry nonempty sources[].schedule and structural dry-run verdicts; apply follows a saved verified plan, while progress requires a real assignment trigger job. Mock assignment sources bind to the claimed destination chat envelope before their first tick. Settings publication may respawn the current runtime; a request requiring a same-turn restore stops after `settings_read`.
 For recurring reminders, use `routine_create` with `kind=reminder` and an `every:` expression, then read the saved routine and its next due time. For a new watch, read its source through the projected ToolHub tool before creating it; `watch_sample` samples an existing watch. Stream delivery on a plain poll source requires `min_interval_seconds`. A blocked schedule records the safe authorization reason code for owner rights or channel binding; restore the actual right or binding before resuming.
 `memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent
 tool admission; selection does not grant the right. Current MCP discovery shows
 the five routine tools plus the watch and assignment families. A catalog
 upgrade creates no provider connection or external write grant.
-For ToolHub onboarding, `next_action=await_user_confirmation` requires the
-user's verified Telegram callback in the original chat; other channels cannot
+For ToolHub onboarding, `next_action=await_user_confirmation` requires the user's verified Telegram callback in the original chat; other channels cannot
 complete this step yet. The callback binds actor,
 action digest, revision and expiry and is consumed once; protected pages show
 status only. The agent-facing `confirm` tool reads status only; a tool call
 with a nonce never supplies human consent. Credential and OAuth submission
 save verified inputs and wait for this separate confirmation before enablement.
+After Broker form submission, query `connector_status` by exact onboarding/operation ID. It reads saved state, next_action and the last observation; background Broker events advance the onboarding. An expired one-time form does not imply a lost credential, and transient admissions retry without discarding it. Waiting for credentials, OAuth or confirmation sends a deterministic notice without launching a redundant model continuation. If the link or button is missing, use `connector_edit action=resend` for that ID; it queues a notice. `connector_status` reads the exact notice's durable channel outcome: `queued` is pending, `delivered` has a channel acknowledgement, `uncertain` is unconfirmed and `unknown` means the receipt could not be read. Recheck status before claiming delivery; do not use reauth to recover a missing notice. For an enabled browser connector, resend sends its viewer link. `reauth` explicitly opens credential entry even before setup confirmation and after a completed reauth cycle. `resend` repeats the current pending action; it does not replace submitted credentials. `disable` retains credentials; `revoke` cuts authorization, including a pending rotation target, without deleting the record. A missing old Broker credential cannot prevent an explicitly requested separate owner-scoped intake; its unknown status stays unknown. Never request secrets in chat. The effective system contract must be valid UTF-8; failed materialization preserves the previous readable file.
 
 Use the [operations rebuild procedure](operations.md). Runtime dev overlays
 update both hub-runtime and its hubctl executor. Verify actual managed MCP

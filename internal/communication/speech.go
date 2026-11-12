@@ -31,7 +31,7 @@ func (g *Gateway) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	}
 	principal := r.Header.Get("X-Hub-Principal")
 	mapping, found, err := g.spool.Mapping(in.JobID)
-	if err != nil || !found || mapping.PrincipalID != principal || mapping.ConversationID != in.ConversationID || !g.user(principal).Enabled || mapping.Channel != "telegram_bot" || g.authorizeGroupMapping(mapping) != nil {
+	if err != nil || !found || mapping.PrincipalID != principal || mapping.ConversationID != in.ConversationID || !g.user(principal).Enabled || (mapping.Channel != "telegram_bot" && mapping.Channel != "mock") || g.authorizeGroupMapping(mapping) != nil {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -39,6 +39,10 @@ func (g *Gateway) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID,
 		Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID,
 		Voice: strings.TrimSpace(in.Text), CreatedAt: g.now().UTC()}
+	if mapping.Channel == "mock" && !g.automationDeliveryTarget(principal, d) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	if !g.voiceRight(d) {
 		w.WriteHeader(http.StatusForbidden)
 		return

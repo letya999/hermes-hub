@@ -36,11 +36,17 @@ func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 		t.Fatal("supervisor bootstrap capabilities changed")
 	}
 	entrypoint := svc["entrypoint"].([]string)
-	if !reflect.DeepEqual(entrypoint[:8], []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--clear-groups", "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl"}) {
+	dockerGroup := fmt.Sprint(dockerSocketGID("/var/run/docker.sock"))
+	if !reflect.DeepEqual(entrypoint[:9], []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl"}) {
 		t.Fatal("supervisor must drop uid and all capabilities except FOWNER before starting")
 	}
 	if services["toolhub"].(M)["user"] != fmt.Sprintf("10001:%d", max(0, os.Getgid())) {
 		t.Fatal("operator uid leaked to ToolHub")
+	}
+	for _, name := range []string{"toolhub", "workload-controller"} {
+		if !reflect.DeepEqual(services[name].(M)["group_add"], []string{dockerGroup}) {
+			t.Fatalf("%s lacks Docker socket group", name)
+		}
 	}
 	if !reflect.DeepEqual(svc["networks"], []string{"default", sharedNetworkName, "supervisor-control"}) {
 		t.Fatal(svc["networks"])

@@ -57,7 +57,7 @@ type adminOnboardingView struct {
 func adminOnboardingOf(o api.Onboarding) adminOnboardingView {
 	code := o.ErrorCode
 	switch code {
-	case "", api.OpCodeAmbiguousTarget, api.OpCodeAmbiguousEntrypoint, api.OpCodeAmbiguousCredentialContract, api.OpCodeUnsupportedAuth, api.OpCodeProbeFailed, api.OpCodeCleanupIncomplete, api.OpCodeNotPermitted, api.OpCodeQuota, "unsupported_credential_contract":
+	case "", api.OpCodeAmbiguousTarget, api.OpCodeAmbiguousEntrypoint, api.OpCodeAmbiguousCredentialContract, api.OpCodeUnsupportedAuth, api.OpCodeProbeFailed, api.OpCodeCleanupIncomplete, api.OpCodeDeliveryUnavailable, api.OpCodeAdmissionUnavailable, api.OpCodeNotPermitted, api.OpCodeQuota, "unsupported_credential_contract":
 	default:
 		code = "unclassified_failure"
 	}

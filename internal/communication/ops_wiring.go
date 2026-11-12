@@ -34,7 +34,8 @@ func (g *Gateway) opsEngine() *commops.Engine {
 func (g *Gateway) configUser(id string) (User, bool) {
 	for _, u := range g.config.Users {
 		if u.ID == id && u.Enabled {
-			return u, true
+			u = g.user(id)
+			return u, u.Enabled
 		}
 	}
 	return User{}, false

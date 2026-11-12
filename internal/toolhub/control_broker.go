@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	brokerclient "github.com/letya999/credential-broker/client"
@@ -31,6 +32,10 @@ func (c *ControlPlane) brokerControl(auth identity.Envelope, shared bool) (*brok
 }
 
 func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, definition api.ToolDefinition) error {
+	return c.ensureBrokerIntake(ctx, auth, onboarding, definition, false)
+}
+
+func (c *ControlPlane) ensureBrokerIntake(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, definition api.ToolDefinition, explicitReauth bool) error {
 	if c == nil || c.Broker == nil || !c.Broker.Enabled() || len(definition.Credentials) == 0 {
 		return nil
 	}
@@ -72,6 +77,11 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 					onboarding.FormExpires = time.Time{}
 					onboarding.ConfirmationNonce = api.RandomNonce()
 					onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+					if onboarding.AdmissionPending {
+						onboarding.Phase = api.PhaseRetryScheduled
+						onboarding.ConfirmationNonce = ""
+						onboarding.ConfirmationExpires = time.Time{}
+					}
 					c.armWizard(onboarding)
 					onboarding.Revision++
 					if err := c.Store.PutOnboarding(*onboarding); err != nil {
@@ -113,7 +123,13 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(rotateTarget), nil, &credential)
 			switch {
 			case brokerclient.IsNotFound(err):
-				return fmt.Errorf("%w: %w", api.ErrCredentialVisibilityUnknown, err)
+				if !explicitReauth {
+					return fmt.Errorf("%w: %w", api.ErrCredentialVisibilityUnknown, err)
+				}
+				// A masked 404 proves nothing about the old secret. The owner
+				// can still authorize a separate, caller-owned replacement.
+				rotateTarget = ""
+				connectionID = api.DeterministicID("conn", auth.PrincipalID, onboarding.OnboardingID, "reauth", fmt.Sprint(onboarding.BrokerAttempts))
 			case err != nil:
 				return err
 			case credential.Status == "deleted":
@@ -158,7 +174,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		if deadLink {
 			// The QR invite or form link for the dead request never reaches
 			// the channel on its own; deliver the outcome notice again.
-			api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+			c.deliverOutcomeNotice(ctx, auth, onboarding)
 		}
 	}
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
@@ -168,13 +184,20 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 // it returns a channel sign-in link (QR invite and friends), records it on the
 // onboarding so the next status result can hand it to the agent directly.
 func (c *ControlPlane) deliverOutcomeNotice(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) {
-	url := api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
-	if url == "" || url == onboarding.ChannelAuthURL {
-		return
+	if current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID); err == nil {
+		*onboarding = current
 	}
-	onboarding.ChannelAuthURL = url
-	onboarding.Revision++
-	_ = c.Store.PutOnboarding(*onboarding)
+	if onboarding.Initiator == nil {
+		onboarding.Initiator = &auth
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(*onboarding); err != nil {
+			return
+		}
+	}
+	c.deliverOnboardingNotice(ctx, auth, onboarding.OnboardingID)
+	if current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID); err == nil {
+		*onboarding = current
+	}
 }
 
 // brokerRequestDead reports whether the request can still carry a credential
@@ -330,27 +353,37 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		}
 	}
 	if changed {
+		onboarding.ObservedAt, onboarding.ObservationCode = c.now(), ""
+		expected := onboarding.Revision
 		onboarding.Revision++
-		return c.Store.PutOnboarding(*onboarding)
+		if err := c.Store.PutOnboardingIfRevision(*onboarding, expected); err != nil {
+			if errors.Is(err, api.ErrStale) {
+				current, readErr := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+				if readErr == nil && current.Phase == api.PhaseAwaitingConfirm && current.BrokerCredentialID == request.CredentialID {
+					*onboarding = current
+					return nil
+				}
+			}
+			return err
+		}
+		c.deliverOutcomeNotice(ctx, auth, onboarding)
 	}
 	return nil
 }
 
 func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, credentialID string) error {
-	c.admissionMu.Lock()
-	defer c.admissionMu.Unlock()
 	current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
 	if err != nil {
 		return err
 	}
-	if !current.AdmissionPending {
+	if !current.AdmissionPending || current.Phase == api.PhaseRemoved || current.Phase == api.PhaseCleanupIncomplete || current.Phase == api.PhaseRevoked || len(current.Finalizers) > 0 {
 		*onboarding = current
 		return nil
 	}
 	if current.BrokerRequestID != onboarding.BrokerRequestID || current.BrokerCredentialID != "" && current.BrokerCredentialID != credentialID && current.BrokerRotateCredentialID != current.BrokerCredentialID {
 		return api.ErrStale
 	}
-	if current.ErrorCode == api.OpCodeProbeFailed {
+	if current.Phase == api.PhaseFailed || current.ErrorCode == api.OpCodeProbeFailed || c.now().Before(current.AdmissionNextAttempt) || current.Phase == api.PhaseVerifying && c.now().Before(current.AdmissionLeaseUntil) {
 		*onboarding = current
 		return nil
 	}
@@ -358,6 +391,17 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	if err != nil {
 		return err
 	}
+	expected := current.Revision
+	current.BrokerCredentialID, current.Locator = credentialID, credentialID
+	current.Phase = api.PhaseVerifying
+	current.AdmissionLeaseUntil = c.now().Add(90 * time.Second)
+	current.AdmissionAttempts++
+	current.Revision++
+	if err := c.Store.PutOnboardingIfRevision(current, expected); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	admitted, err := c.admitWithBrokerCredential(ctx, auth, current, definition, credentialID)
 	if err == nil && !c.selfInstallUsable(admitted) {
 		err = fmt.Errorf("%w: admitted Broker definition differs from reviewed entry", api.ErrUnauthorized)
@@ -369,15 +413,27 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	if readErr != nil {
 		return readErr
 	}
-	if !latest.AdmissionPending || latest.Phase != current.Phase || latest.BrokerRequestID != current.BrokerRequestID || latest.BrokerRotateCredentialID != current.BrokerRotateCredentialID {
+	if !latest.AdmissionPending || latest.Phase != current.Phase || len(latest.Finalizers) > 0 || !latest.AdmissionLeaseUntil.Equal(current.AdmissionLeaseUntil) || latest.BrokerRequestID != current.BrokerRequestID || latest.BrokerRotateCredentialID != current.BrokerRotateCredentialID {
 		return api.ErrStale
 	}
 	latest.BrokerCredentialID, latest.Locator = credentialID, credentialID
+	latest.ObservedAt, latest.ObservationCode = c.now(), ""
 	latest.FormNonce, latest.FormExpires = "", time.Time{}
+	latest.AdmissionLeaseUntil = time.Time{}
 	if err != nil {
-		latest.Phase = api.PhaseAwaitingCreds
+		latest.Phase = api.PhaseRetryScheduled
+		latest.AdmissionNextAttempt = c.now().Add(time.Duration(1<<min(latest.AdmissionAttempts, 6)) * time.Second)
+		if latest.AdmissionAttempts >= 5 {
+			latest.Phase = api.PhaseFailed
+		}
+		if errors.Is(err, api.ErrAuthBeforeEffect) {
+			latest.Phase = api.PhaseAwaitingCreds
+		}
 		latest.Error = locale.T(locale.Fallback(), "cred.failed", credentialProbeFailure(err, locale.Fallback()))
-		latest.ErrorCode = api.OpCodeProbeFailed
+		latest.ErrorCode = api.OpCodeAdmissionUnavailable
+		if errors.Is(err, api.ErrAuthBeforeEffect) {
+			latest.ErrorCode = api.OpCodeProbeFailed
+		}
 		if admitted.Source.ArchiveDigest != "" {
 			// Built evidence survives a rejected credential so rotation only
 			// re-runs the tools/list probe instead of rebuilding the artifact.
@@ -395,18 +451,23 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 		latest.Permissions, latest.Effects = api.ToolNames(admitted), api.EffectNames(admitted)
 		latest.ReviewDigest = admitted.Source.ReviewDigest
 		latest.AdmissionPending = false
-		latest.Error = ""
+		latest.Error, latest.ErrorCode = "", ""
+		latest.AdmissionNextAttempt, latest.AdmissionLeaseUntil = time.Time{}, time.Time{}
 		latest.Phase = api.PhaseAwaitingConfirm
 		latest.ConfirmationNonce = api.RandomNonce()
 		latest.ConfirmationExpires = c.now().Add(c.ttl())
 		latest.ConfirmationUsed = false
 		c.armWizard(&latest)
 	}
+	expected = latest.Revision
 	latest.Revision++
-	if err := c.Store.PutOnboarding(latest); err != nil {
+	if err := c.Store.PutOnboardingIfRevision(latest, expected); err != nil {
 		return err
 	}
 	*onboarding = latest
+	if err == nil {
+		c.deliverOutcomeNotice(ctx, auth, onboarding)
+	}
 	return nil
 }
 

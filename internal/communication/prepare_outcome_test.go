@@ -108,6 +108,9 @@ func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 	if !sawMock {
 		t.Fatal("no mock-channel notice spooled")
 	}
+	if job, err := gateway.spool.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("credential wait launched a redundant model turn: job=%v err=%v", job, err)
+	}
 }
 
 // CHG-0129 S2.7: when the operator exposes a public origin, toolhub mints
@@ -209,12 +212,21 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 		t.Fatalf("fresh form=%d body=%s", rec.Code, rec.Body.String())
 	}
 	pending, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
-	if err != nil || len(pending) != 2 {
+	if err != nil || len(pending) != 0 {
 		t.Fatalf("jobs=%v err=%v", pending, err)
 	}
 	outbox, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
 	if err != nil || len(outbox) != 2 {
 		t.Fatalf("notices=%v err=%v", outbox, err)
+	}
+	// A settled outcome may resume the agent; a human wait never does.
+	body["phase"] = "enabled"
+	if rec := post("alice", "control-token"); rec.Code != http.StatusOK {
+		t.Fatalf("settled status=%d", rec.Code)
+	}
+	pending, err = os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("settled continuations=%d err=%v", len(pending), err)
 	}
 	jobRaw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "pending", pending[0].Name()))
 	if err != nil {
@@ -316,7 +328,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 			}
 		}
 	}
-	if !sawLink || !sawHold {
+	if !sawLink || sawHold {
 		t.Fatalf("bot notice link=%v hold=%v", sawLink, sawHold)
 	}
 	body["form_url"] = "https://evil.example/credentials/onboard-form?nonce=abc"

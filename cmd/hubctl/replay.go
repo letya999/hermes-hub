@@ -255,7 +255,7 @@ func runReplayRun(out io.Writer, opts replayRunOpts) error {
 	}
 	if claimedDelivery != nil {
 		mock := channel.NewMock(channel.MockDeps{
-			Capture: func(d *commodel.Delivery) error {
+			Capture: func(_ context.Context, d *commodel.Delivery) error {
 				return writeJSONFile(filepath.Join(mockRoot, "mock-sent", commodel.FileID(d.ID)+".json"), map[string]any{"principal": bundle.Envelope.PrincipalID, "delivery": d})
 			},
 			LinkOwner:       func(chatID int64) (string, error) { return bundle.Envelope.PrincipalID, nil },

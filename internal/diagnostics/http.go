@@ -37,7 +37,7 @@ func safeRoute(path string) string {
 	if parts[0] == "v1" {
 		if len(parts) > 1 {
 			switch parts[1] {
-			case "jobs", "execute", "runtime", "leases", "runs", "usage", "routines", "hooks", "tools", "restart-request", "health", "state", "control", "settings", "self-env", "events", "cancel", "approval":
+			case "jobs", "execute", "runtime", "leases", "runs", "usage", "routines", "hooks", "tools", "restart-request", "health", "state", "control", "settings", "self-env", "events", "cancel", "approval", "rights", "automation", "memory-context", "memory-capture", "tool-call":
 				return "/v1/" + parts[1]
 			}
 		}

@@ -25,6 +25,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
@@ -958,6 +959,28 @@ func (g *Gateway) notifyTelegramConflict() {
 func (g *Gateway) user(id string) User {
 	for _, user := range g.config.Users {
 		if user.ID == id {
+			owner := g.config.ControlPrincipal
+			if owner == "" && len(g.config.Users) > 0 {
+				owner = g.config.Users[0].ID
+			}
+			if !g.config.Supervised || g.config.ControlTokensFile == "" || user.ID == owner {
+				return user
+			}
+			entries, err := serviceauth.ReadTokenEnvelopes(g.config.ControlTokensFile)
+			if err != nil {
+				user.Enabled = false
+				return user
+			}
+			runtimeID := user.RuntimeID
+			if runtimeID == "" {
+				runtimeID = user.ID
+			}
+			policy, ok := serviceauth.EnrolledPolicy(entries, user.ID, runtimeID)
+			if !ok {
+				user.Enabled = false
+				return user
+			}
+			user.PolicyVersion = policy
 			return user
 		}
 	}
@@ -968,7 +991,7 @@ func (g *Gateway) userByChatID(chatID int64) User {
 	for _, user := range g.config.Users {
 		for _, telegramID := range user.TelegramIDs {
 			if telegramID == chatID {
-				return user
+				return g.user(user.ID)
 			}
 		}
 	}

@@ -439,7 +439,17 @@ func (h *Host) AuthorizeOccurrence(ctx context.Context, auth identity.Envelope, 
 		return errUnauthorized
 	}
 	var occurrence commodel.RoutineOccurrence
-	if err := loadJSON(filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", commodel.FileID(occurrenceID)+".json"), &occurrence); err != nil {
+	path := filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", commodel.FileID(occurrenceID)+".json")
+	err := loadJSON(path, &occurrence)
+	archived := false
+	if os.IsNotExist(err) && kind == "" {
+		path = filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", "archive", commodel.FileID(occurrenceID)+".json")
+		if info, statErr := os.Lstat(path); statErr == nil && info.Mode().IsRegular() && info.Size() <= 128*1024 {
+			err = loadJSON(path, &occurrence)
+			archived = err == nil
+		}
+	}
+	if err != nil {
 		return errUnauthorized
 	}
 	if occurrence.Job.ID != occurrenceID || occurrence.Job.PrincipalID != auth.PrincipalID {
@@ -454,11 +464,30 @@ func (h *Host) AuthorizeOccurrence(ctx context.Context, auth identity.Envelope, 
 	// dispatch may find the occurrence still "pending" after a crash
 	// replay — both fences require the record to stay current, not a
 	// live dispatch. Ordinary routine payloads still require "dispatched".
-	if err != nil || !eng.OccurrenceCurrent(occurrence) ||
+	if archived {
+		if err != nil || !h.completedAssignmentResult(eng, auth, occurrence, kind) || h.cfg.AuthorizeChannel(ctx, occurrence.ScheduleID, occurrence.Job) != nil {
+			return errUnauthorized
+		}
+		return nil
+	}
+	if err != nil || (!eng.OccurrenceCurrent(occurrence) && !h.completedAssignmentResult(eng, auth, occurrence, kind)) ||
 		(kind != "routine-failure" && kind != "job" && occurrence.State != "dispatched") {
 		return errUnauthorized
 	}
 	return nil
+}
+
+func (h *Host) completedAssignmentResult(eng *routines.Engine, auth identity.Envelope, occurrence commodel.RoutineOccurrence, kind string) bool {
+	job := occurrence.Job
+	if kind != "" || job.AssignmentID == "" || occurrence.State != "dispatched" {
+		return false
+	}
+	assignment, err := eng.LoadAssignment(job.AssignmentID, auth)
+	if err != nil || assignment.State != "completed" || assignment.Progress.LastJobID != job.ID || assignment.AppliedRev != job.AssignmentPlanRevision || assignment.Plan == nil || assignment.Plan.Revision != job.AssignmentPlanRevision {
+		return false
+	}
+	var retired commodel.Schedule
+	return loadJSON(eng.CancelPath(occurrence.ScheduleID), &retired) == nil && retired.ScheduleID == occurrence.ScheduleID && retired.AssignmentID == job.AssignmentID && retired.AssignmentPlanRevision == job.AssignmentPlanRevision && retired.Revision == occurrence.Revision+1 && retired.Envelope.Equal(job.Envelope)
 }
 
 // RecordDeliveryOutcome settles a routine-failure notice's dedupe digest: a

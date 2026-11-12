@@ -51,6 +51,7 @@ func TestToolHubSaveFailsClosedWhenStateBudgetExhausted(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	onboarding.Error = strings.Repeat("x", int(size)+100)
+	onboarding.Revision++
 	if err := loaded.PutOnboarding(onboarding); !errors.Is(err, storagebudget.ErrQuota) {
 		t.Fatalf("put over owned budget admitted: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,6 +91,15 @@ func renderAutomationRouting(dir string, s Settings, secrets map[string]string) 
 		return errors.New("invalid communication routing owners")
 	}
 	seen, chats, slack := map[string]bool{}, map[int64]bool{}, map[string]bool{}
+	var enrolled map[string]identity.Envelope
+	if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil {
+		enrolled, err = serviceauth.ReadTokenEnvelopes(filepath.Join(dir, "toolhub-tokens.json"))
+		if err != nil {
+			return errors.New("invalid sibling routing enrollment")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	users := make([]routingUser, 0, len(source.Users))
 	for _, user := range source.Users {
 		if !identity.ValidID(user.ID) || seen[user.ID] {
@@ -99,6 +109,25 @@ func renderAutomationRouting(dir string, s Settings, secrets map[string]string) 
 		if !user.Enabled {
 			users = append(users, user)
 			continue
+		}
+		if user.ID != s.User {
+			found := false
+			for _, env := range enrolled {
+				found = found || env.PrincipalID == user.ID
+			}
+			if !found {
+				user.Enabled = false
+			} else {
+				runtimeID := user.RuntimeID
+				if runtimeID == "" {
+					runtimeID = user.ID
+				}
+				policy, ok := serviceauth.EnrolledPolicy(enrolled, user.ID, runtimeID)
+				if !ok {
+					return errors.New("sibling routing enrollment mismatched or ambiguous")
+				}
+				user.PolicyVersion = policy
+			}
 		}
 		for _, chat := range user.TelegramIDs {
 			if chat <= 0 || chats[chat] {
@@ -123,18 +152,18 @@ func renderAutomationRouting(dir string, s Settings, secrets map[string]string) 
 		return err
 	}
 	root := filepath.Join(dir, "automation-routing")
-	if err := os.MkdirAll(root, 0o750); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("unsafe communication routing directory")
 	}
-	if err := os.Chmod(root, 0o750); err != nil {
+	if err := os.Chmod(root, 0o755); err != nil {
 		return err
 	}
 	path := filepath.Join(root, s.Environment+".json")
 	if err := atomic(path, body); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o640)
+	return os.Chmod(path, 0o644)
 }

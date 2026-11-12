@@ -201,6 +201,49 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 	}
 }
 
+func TestManagedRunArgsMountsConnectionConfigs(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	settings, err := stack.ReadEffective(root, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Tools["exposure"] = stack.ToolEntry{Via: stack.ToolViaToolHub}
+	settings.Tools["ssh"] = stack.ToolEntry{Via: stack.ToolViaToolHub}
+	configDir := filepath.Join(root, "connections", "exposure")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sshDir := filepath.Join(root, "connections", "ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.managedRunArgs(binding(root), settings, "fixture", "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "type=bind,src=" + configDir + ",dst=/state/exposure,readonly"
+	if !slices.Contains(args, want) || !slices.Contains(args, "HUB_EXPOSURE_CONFIG=/state/exposure/config.yaml") ||
+		!slices.Contains(args, "type=bind,src="+sshDir+",dst=/state/ssh,readonly") || !slices.Contains(args, "HUB_SSH_CONFIG=/state/ssh/config.yaml") {
+		t.Fatal("managed connection configs missing from spawn")
+	}
+}
+
+func TestManagedSpawnRejectsMissingConnectionConfig(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] += "  exposure: {via: toolhub}\n"
+	})
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.runArgsWithGeneration(bound, "fixture", 0, "gen-1"); err == nil || !strings.Contains(err.Error(), "exposure config") {
+		t.Fatalf("managed spawn accepted missing exposure config: %v", err)
+	}
+}
+
 // SPEC-0053 R1.8: managed runtimes mount the rendered effective SOUL at
 // /state/hermes/SOUL.md — the raw persona alone is not what Hermes reads.
 func TestManagedRunArgsMountsEffectiveSoul(t *testing.T) {

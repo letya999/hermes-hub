@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"maps"
 	"slices"
 	"time"
 )
@@ -12,6 +13,11 @@ import (
 // the remove ladder mutates Finalizers in place, so the map and callers
 // must never share its backing array.
 func cloneOnboarding(o api.Onboarding) api.Onboarding {
+	if o.Initiator != nil {
+		actor := *o.Initiator
+		actor.Scopes = slices.Clone(actor.Scopes)
+		o.Initiator = &actor
+	}
 	o.Finalizers = slices.Clone(o.Finalizers)
 	if o.HumanConsent != nil {
 		consent := *o.HumanConsent
@@ -83,12 +89,43 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.putOnboardingLocked(onboarding)
+}
+
+func (s *Store) putOnboardingLocked(onboarding api.Onboarding) error {
 	previous, existed := s.onboardings[onboarding.OnboardingID]
+	onboarding = prepareOnboardingWrite(previous, onboarding)
+	if existed {
+		if api.RecordsEqual(previous, onboarding) {
+			return nil
+		}
+		if err := api.ValidateOnboardingTransition(previous, onboarding); err != nil {
+			return err
+		}
+	}
+	if err := onboarding.Validate(); err != nil {
+		return err
+	}
+	return s.commitOnboardingLocked(onboarding)
+}
+
+// commitOnboardingLocked also stores metadata-only acknowledgement facts, whose
+// version is NoticeVersion rather than the domain transition revision.
+func (s *Store) commitOnboardingLocked(onboarding api.Onboarding) error {
+	previous, existed := s.onboardings[onboarding.OnboardingID]
+	oldOps := s.operations
+	s.operations = maps.Clone(oldOps)
+	for id, op := range s.operations {
+		if op.OnboardingID == onboarding.OnboardingID {
+			s.operations[id] = installProgress(op, onboarding)
+		}
+	}
 	s.onboardings[onboarding.OnboardingID] = cloneOnboarding(onboarding)
 	if s.path != "" {
 		previousDigest := s.diskDigest
 		if err := s.saveLocked(s.path); err != nil {
 			if s.diskDigest == previousDigest {
+				s.operations = oldOps
 				if existed {
 					s.onboardings[onboarding.OnboardingID] = previous
 				} else {
@@ -99,6 +136,21 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 		}
 	}
 	return nil
+}
+
+// PutOnboardingIfRevision prevents concurrent Broker polls from replacing a
+// newer confirmation proof or resurrecting an onboarding being removed.
+func (s *Store) PutOnboardingIfRevision(onboarding api.Onboarding, expected uint64) error {
+	if err := onboarding.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.onboardings[onboarding.OnboardingID]
+	if !ok || previous.Revision != expected || onboarding.Revision != expected+1 {
+		return api.ErrStale
+	}
+	return s.putOnboardingLocked(onboarding)
 }
 
 // ConsumeConfirmation persists the single-use claim before binding work starts.
@@ -113,7 +165,6 @@ func (s *Store) consumeConfirmationLocked(expected api.Onboarding, completeWrite
 	if !ok || current.Revision != expected.Revision || current.ConfirmationUsed {
 		return api.Onboarding{}, fmt.Errorf("%w: confirmation already consumed or stale", api.ErrUnauthorized)
 	}
-	previous := cloneOnboarding(current)
 	current.ConfirmationUsed = true
 	if consent != nil {
 		current.HumanConsent = consent
@@ -122,17 +173,10 @@ func (s *Store) consumeConfirmationLocked(expected api.Onboarding, completeWrite
 		current.WritesEnabled, current.PendingWrites, current.Phase = true, false, api.PhaseEnabled
 	}
 	current.Revision++
-	s.onboardings[current.OnboardingID] = current
-	if s.path != "" {
-		previousDigest := s.diskDigest
-		if err := s.saveLocked(s.path); err != nil {
-			if s.diskDigest == previousDigest {
-				s.onboardings[expected.OnboardingID] = previous
-			}
-			return api.Onboarding{}, err
-		}
+	if err := s.putOnboardingLocked(current); err != nil {
+		return api.Onboarding{}, err
 	}
-	return cloneOnboarding(current), nil
+	return cloneOnboarding(s.onboardings[current.OnboardingID]), nil
 }
 
 // ClaimPreparingOnboarding atomically reports a fresh record already in flight
@@ -144,13 +188,17 @@ func (s *Store) ClaimPreparingOnboarding(onboarding api.Onboarding, maxAge time.
 		return api.Onboarding{}, false, err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == api.PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
-		s.mu.Unlock()
 		return existing, true, nil
 	}
-	s.onboardings[onboarding.OnboardingID] = onboarding
-	s.mu.Unlock()
-	return onboarding, false, s.persist()
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok {
+		onboarding.Revision = existing.Revision + 1
+	}
+	if err := s.putOnboardingLocked(onboarding); err != nil {
+		return api.Onboarding{}, false, err
+	}
+	return cloneOnboarding(s.onboardings[onboarding.OnboardingID]), false, nil
 }
 
 func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
@@ -250,10 +298,8 @@ func (s *Store) sharedConnectionCoversLocked(auth identity.Envelope, connection 
 	return policy.StoreOwner == connection.Owner.ID && slices.Contains(policy.Principals, auth.PrincipalID)
 }
 
-// sharedForeignConnection reports that connectionID is governed by a shared
-// credential policy whose store owner is someone other than this principal —
-// the member may cut its own binding but never the shared connection, its
-// ciphertext or the shared workload.
+// sharedForeignConnection protects team connections and shared-policy
+// connections from member-level lifecycle cleanup.
 func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	if connectionID == "" {
 		return false
@@ -261,7 +307,7 @@ func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	connection, ok := s.connections[connectionID]
-	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
+	return ok && (connection.Owner.Type != api.PrincipalOwner || connection.Owner.ID != principalID)
 }
 
 // teamConnectionCoversLocked admits a member to a team-owned connection: the

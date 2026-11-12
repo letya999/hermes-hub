@@ -249,14 +249,28 @@ func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
 	if err := os.WriteFile(keyPath, private, 0600); err != nil {
 		t.Fatal(err)
 	}
-	revokes := 0
+	requests := 0
+	deleted := false
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		revokes++
-		if revokes <= 3 {
+		requests++
+		if requests <= 3 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/connections/google-work/credentials":
+			status := "active"
+			if deleted {
+				status = "deleted"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `[{"id":"credential_1","connection_id":"google-work","status":"%s"}]`, status)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/credentials/credential_1":
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer broker.Close()
 	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir(),
@@ -302,6 +316,9 @@ func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
 	}
 	if !strings.Contains(onboarding.RemoveReceipt, "verified 0") {
 		t.Fatalf("receipt: %q", onboarding.RemoveReceipt)
+	}
+	if !deleted {
+		t.Fatal("broker credential was only revoked, not deleted")
 	}
 }
 
@@ -1042,6 +1059,7 @@ func TestOnboardingFinalizerSliceIsolation(t *testing.T) {
 	}
 	got.Finalizers = append(got.Finalizers, api.Finalizer{Name: "workloads", State: api.FinalizerPending})
 	got.Finalizers[0].State = api.FinalizerDone
+	got.Revision++
 	if err := store.PutOnboarding(got); err != nil {
 		t.Fatal(err)
 	}

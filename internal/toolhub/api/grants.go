@@ -26,6 +26,8 @@ const (
 	PhaseAwaitingCreds    string    = "awaiting-credentials"
 	PhaseAwaitingConfirm  string    = "awaiting-confirm"
 	PhaseAwaitingOAuth    string    = "awaiting-oauth"
+	PhaseVerifying        string    = "verifying"
+	PhaseRetryScheduled   string    = "retry-scheduled"
 	PhaseConfirmed        string    = "confirmed"
 	PhaseEnabled          string    = "enabled"
 	PhaseDisabled         string    = "disabled"
@@ -122,6 +124,7 @@ type Onboarding struct {
 	ConfirmationNonce   string           `json:"confirmation_nonce,omitempty"`
 	ConfirmationExpires time.Time        `json:"confirmation_expires,omitempty"`
 	ConfirmationUsed    bool             `json:"confirmation_used,omitempty"`
+	ActionRevision      uint64           `json:"action_revision,omitempty"`
 	HumanConsent        *HumanConsent    `json:"human_consent,omitempty"`
 	// RemoveNonce/RemoveExpires arm the destructive remove: the first call
 	// previews and issues the nonce; only a follow-up remove carrying it
@@ -178,8 +181,21 @@ type Onboarding struct {
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the
 	// protected form is submitted and the probe succeeds.
-	AdmissionPending bool   `json:"admission_pending,omitempty"`
-	Error            string `json:"error,omitempty"`
+	AdmissionPending     bool      `json:"admission_pending,omitempty"`
+	AdmissionAttempts    int       `json:"admission_attempts,omitempty"`
+	AdmissionNextAttempt time.Time `json:"admission_next_attempt,omitzero"`
+	AdmissionLeaseUntil  time.Time `json:"admission_lease_until,omitzero"`
+	ObservedAt           time.Time `json:"observed_at,omitzero"`
+	ObservationCode      string    `json:"observation_code,omitempty"`
+	// Initiator contains routing identity only, never credentials. Notification
+	// intent is committed with this record; the gateway owns actual delivery.
+	Initiator           *identity.Envelope `json:"initiator,omitempty"`
+	NoticeVersion       uint64             `json:"notice_version,omitempty"`
+	NoticeEvent         string             `json:"notice_event,omitempty"`
+	NoticeEventID       string             `json:"notice_event_id,omitempty"`
+	NoticeQueuedVersion uint64             `json:"notice_queued_version,omitempty"`
+	NoticeNextAttempt   time.Time          `json:"notice_next_attempt,omitzero"`
+	Error               string             `json:"error,omitempty"`
 	// ErrorCode is the stable machine-readable companion of Error; it is set
 	// from the failure cause via ErrorCode() and survives snapshot reloads.
 	ErrorCode string `json:"error_code,omitempty"`
@@ -329,6 +345,9 @@ func (t Team) CanWrite(principalID string) bool {
 }
 
 func (o Onboarding) Validate() error {
+	if o.AdmissionAttempts < 0 || o.BrokerAttempts < 0 {
+		return fmt.Errorf("%w: onboarding attempt count", ErrInvalid)
+	}
 	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
 		return fmt.Errorf("%w: onboarding identity", ErrInvalid)
 	}
@@ -336,7 +355,7 @@ func (o Onboarding) Validate() error {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseCleanupIncomplete, PhaseFailed:
+	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseVerifying, PhaseRetryScheduled, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseCleanupIncomplete, PhaseFailed:
 	default:
 		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
 	}
@@ -345,6 +364,12 @@ func (o Onboarding) Validate() error {
 	}
 	if o.DefinitionVersion != "" && !VersionPattern.MatchString(o.DefinitionVersion) {
 		return fmt.Errorf("%w: onboarding version", ErrInvalid)
+	}
+	if o.Initiator != nil && o.Initiator.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil {
+		return fmt.Errorf("%w: onboarding initiator", ErrInvalid)
+	}
+	if o.NoticeQueuedVersion > o.NoticeVersion {
+		return fmt.Errorf("%w: onboarding notice version", ErrInvalid)
 	}
 	return nil
 }

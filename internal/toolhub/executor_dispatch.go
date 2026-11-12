@@ -30,13 +30,20 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effect
 			return api.BackendResult{IsError: true, Text: tool.Name + " is unavailable: connector control is not configured"}, nil
 		}
 		result, err := g.Control.InvokeConnector(ctx, auth, tool.Name, arguments)
+		if tool.Name == "connector_status" && errors.Is(err, api.ErrNotFound) {
+			result, err = api.OperationResult{State: api.OpStateFailed, Summary: "connector not found"}, nil
+		}
+		var ambiguous *ErrAmbiguousTarget
+		if tool.Name == "connector_status" && errors.As(err, &ambiguous) {
+			result, err = api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Summary: "ambiguous connector", Candidates: ambiguous.Candidates}, nil
+		}
 		if err != nil {
 			return api.BackendResult{}, err
 		}
 		structured, _ := json.Marshal(result)
 		var body map[string]any
 		_ = json.Unmarshal(structured, &body)
-		return api.BackendResult{Structured: body, Text: result.Summary, IsError: result.State == api.OpStateFailed}, nil
+		return api.BackendResult{Structured: body, Text: string(structured), IsError: result.State == api.OpStateFailed}, nil
 	}
 	if tool.Executor == "runtime:toolhub" {
 		return g.execPlatform(ctx, auth, effective, tool, arguments)
@@ -49,6 +56,33 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effect
 	}
 	if tool.Executor == "runtime:channels" && tool.Name == "media_speak" {
 		return g.execSpeak(ctx, auth, arguments)
+	}
+	if tool.Executor == "flow:deep_research" {
+		if g.Research == nil {
+			return api.BackendResult{IsError: true, Text: tool.Name + " is unavailable: deep-research flow backend is not configured"}, nil
+		}
+		var result any
+		var err error
+		switch tool.Name {
+		case "research_create":
+			result, err = g.Research.create(auth, arguments)
+		case "research_read":
+			result, err = g.Research.read(auth, api.ArgString(arguments, "id"))
+		case "research_list":
+			result, err = g.Research.list(auth, api.ArgInt(arguments, "limit"))
+		default:
+			return api.BackendResult{IsError: true, Text: tool.Name + " is unavailable: unknown research operation"}, nil
+		}
+		if err != nil {
+			return api.BackendResult{IsError: true, Text: err.Error()}, nil
+		}
+		encoded, _ := json.Marshal(result)
+		var body map[string]any
+		if tool.Name == "research_list" {
+			encoded, _ = json.Marshal(map[string]any{"jobs": result})
+		}
+		_ = json.Unmarshal(encoded, &body)
+		return api.BackendResult{Text: string(encoded), Structured: body}, nil
 	}
 	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: %s", tool.Name, remoteBackendHint(tool.Executor))}, nil
 }

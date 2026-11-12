@@ -63,6 +63,10 @@ func safeIO(err error) error {
 	return ioError{err}
 }
 
+func vanishedChild(root, path string, err error) bool {
+	return path != root && errors.Is(err, fs.ErrNotExist)
+}
+
 func New(root string, limits Limits) (*Counter, error) {
 	if err := limits.Validate(); err != nil {
 		return nil, err
@@ -123,6 +127,9 @@ func (c *Counter) reconcileLocked() error {
 	for _, root := range c.roots {
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				if vanishedChild(root, path, walkErr) {
+					return nil
+				}
 				return safeIO(walkErr)
 			}
 			if d.Type()&os.ModeSymlink != 0 {
@@ -141,6 +148,10 @@ func (c *Counter) reconcileLocked() error {
 			}
 			info, err := d.Info()
 			if err != nil {
+				if vanishedChild(root, path, err) {
+					count--
+					return nil
+				}
 				return safeIO(err)
 			}
 			if !info.Mode().IsRegular() {

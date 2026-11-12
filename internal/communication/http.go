@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
 )
@@ -35,6 +36,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/skill-drafts", g.handleSkillDraftRequest)
 	mux.HandleFunc("/v1/skill-git", g.handleSkillGit)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
+	mux.HandleFunc("/v1/prepare-delivery-status", g.handlePrepareDeliveryStatus)
 	mux.HandleFunc("/v1/automation/deliveries", g.handleAutomationDelivery)
 	mux.HandleFunc("/v1/automation/owner-home", g.handleAutomationOwnerHome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
@@ -104,7 +106,7 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 		return false
 	}
 	user := g.user(env.PrincipalID)
-	if (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
+	if !user.Enabled || (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
 		return false
 	}
 	*principal = env.PrincipalID
@@ -178,6 +180,24 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 		in.ActorID = caller.PrincipalID
 		in.ScopeID = "user:" + caller.PrincipalID
 		in.OrganizationID = g.config.OrganizationID
+		if in.OriginJobID != "" {
+			lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
+			origin, found, err := g.spool.Mapping(in.OriginJobID)
+			if err != nil || !found {
+				http.Error(w, locale.T(lang, "routines.origin-unavailable"), http.StatusBadRequest)
+				return
+			}
+			if origin.Channel == "mock" {
+				user := g.user(caller.PrincipalID)
+				canonical := user.MockEnvelope(origin.ChatID)
+				if origin.PrincipalID != caller.PrincipalID || origin.ContextID != canonical.ContextID || origin.RuntimeID != canonical.RuntimeID || origin.PolicyVersion != canonical.PolicyVersion || origin.ExternalIdentityID != canonical.ExternalIdentityID || origin.DeliveryTargetID != canonical.DeliveryTargetID || origin.UserID != user.ID || origin.ActorID != user.ID || origin.ScopeID != "user:"+user.ID || origin.OrganizationID != in.OrganizationID || origin.TaskID != "default" || (in.DestinationTaskID != "" && in.DestinationTaskID != "current") || (in.Channel != "" && in.Channel != "mock") {
+					http.Error(w, locale.T(lang, "routines.origin-unavailable"), http.StatusBadRequest)
+					return
+				}
+				in.Channel, in.ChatID, in.TopicID = "mock", origin.ChatID, origin.TopicID
+				in.OriginJobID, in.DestinationTaskID = "", ""
+			}
+		}
 		if in.Channel == "" {
 			in.Channel = "telegram_bot"
 		}

@@ -133,6 +133,15 @@ func TestPlanWebProviderRoutingRecreatesEgressRelay(t *testing.T) {
 	}
 }
 
+func TestPlanPrivateMediaRecreatesEgressBeforeRuntimeRespawn(t *testing.T) {
+	changes := []passport.Change{ch("stack.services.hub-media.mode", "hub-media", passport.EffectRebuild)}
+	services := map[string]passportview.ServiceSpec{"hub-media": {Mode: "per-space"}, "egress-relay": {}, "hermes-runtime": {}}
+	actions := Plan(changes, services)
+	if len(actions) != 4 || actions[0].Kind != Rebuild || actions[0].Target != "hub-media" || actions[1].Kind != Recreate || actions[1].Target != "egress-relay" || actions[2].Kind != Recreate || actions[2].Target != "hub-media" || actions[3].Kind != Respawn || actions[3].Target != "hermes-runtime" {
+		t.Fatalf("private media must refresh egress before runtime: %+v", actions)
+	}
+}
+
 func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
 	services := map[string]passportview.ServiceSpec{
 		"hermes-runtime": {Mode: "supervised"}, "communication-hub": {Mode: "shared"}, "toolhub": {Mode: "shared"},

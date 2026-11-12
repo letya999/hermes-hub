@@ -80,6 +80,10 @@ func MigrateStoreSubstrate(from, to string) (StoreSubstrateReport, error) {
 	if err := migrated.CloseDB(); err != nil {
 		return report, err
 	}
+	canonicalDigest, err := migrated.CanonicalSnapshotDigest()
+	if err != nil {
+		return report, err
+	}
 	db, err := sql.Open("sqlite", "file:"+to)
 	if err != nil {
 		return report, err
@@ -97,7 +101,7 @@ func MigrateStoreSubstrate(from, to string) (StoreSubstrateReport, error) {
 		return report, err
 	}
 	sourceDigest := sha256.Sum256(source)
-	if hex.EncodeToString(sourceDigest[:]) != dbDigest {
+	if hex.EncodeToString(sourceDigest[:]) != canonicalDigest {
 		return report, fmt.Errorf("%w: migrated digest does not match source head", api.ErrInvalid)
 	}
 	report = StoreSubstrateReport{

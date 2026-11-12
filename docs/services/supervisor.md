@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-09
+last_verified: 2026-11-11
 ---
 
 # supervisor
@@ -74,6 +74,8 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   set; when unset the gateway talks to `hermes-runtime:8080` directly.
 - Managed runtimes join their private agent network. ToolHub, model and egress
   relays reach the shared control-plane services through their narrow routes.
+  Sish exposure uses the egress relay's exact reviewed SSH host:port CONNECT
+  exception; no broad TCP egress or direct fallback is granted.
 - Route every control-plane call (`/v1/jobs`, `/v1/resume`, `/v1/control`,
   `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`,
   `/v1/respawn`) to the correct

@@ -67,7 +67,7 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	if err != nil {
 		return fmt.Errorf("tools derivation: %w", err)
 	}
-	connectorSelections, connectorCore, err := selectedConnectorTools(store, rev.Docs["tools"], docs, profileID)
+	connectorSelections, connectorCore, err := selectedConnectorTools(store, rev.Docs["tools"], docs, profileID, false)
 	if err != nil {
 		return fmt.Errorf("tools derivation: %w", err)
 	}
@@ -113,7 +113,7 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 	if err != nil {
 		return fmt.Errorf("rights restore: tools derivation: %w", err)
 	}
-	connectorSelections, connectorCore, err := selectedConnectorTools(store, toolsBody, docs, profileID)
+	connectorSelections, connectorCore, err := selectedConnectorTools(store, toolsBody, docs, profileID, true)
 	if err != nil {
 		return fmt.Errorf("rights restore: tools derivation: %w", err)
 	}
@@ -172,11 +172,11 @@ func ValidateSelectedConnectors(dir string, toolsBody []byte, docs catalog.Docs)
 	if authored.Binding == nil {
 		return fmt.Errorf("connector selection requires tools.binding")
 	}
-	_, _, err = selectedConnectorTools(store, toolsBody, docs, authored.Binding.ProfileID)
+	_, _, err = selectedConnectorTools(store, toolsBody, docs, authored.Binding.ProfileID, false)
 	return err
 }
 
-func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string) ([]api.CapabilitySelection, []string, error) {
+func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string, skipMissingBinding bool) ([]api.CapabilitySelection, []string, error) {
 	var authored passportview.Tools
 	if err := yaml.Unmarshal(body, &authored); err != nil {
 		return nil, nil, err
@@ -223,6 +223,9 @@ func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs
 				}
 			}
 			if chosen == nil {
+				if skipMissingBinding {
+					continue // Recovery must not resurrect a revoked connector or strand the space.
+				}
 				return nil, nil, fmt.Errorf("connector %q has no active binding", name)
 			}
 			definition, err := store.Definition(chosen.DefinitionID, chosen.DefinitionVersion)

@@ -116,8 +116,9 @@ func TestConnectorStatusObservesInstallPhase(t *testing.T) {
 	if err := c.Store.PutOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ phase, state string }{{api.PhasePreparing, api.OpStateRunning}, {api.PhaseAwaitingCreds, api.OpStateAwaitingUser}, {api.PhaseAwaitingOAuth, api.OpStateAwaitingUser}, {api.PhaseAwaitingConfirm, api.OpStateAwaitingConfirm}, {api.PhaseFailed, api.OpStateFailed}, {api.PhaseEnabled, api.OpStateDone}} {
+	for _, tc := range []struct{ phase, state string }{{api.PhasePreparing, api.OpStateRunning}, {api.PhaseAwaitingCreds, api.OpStateAwaitingUser}, {api.PhaseAwaitingOAuth, api.OpStateAwaitingUser}, {api.PhaseFailed, api.OpStateFailed}, {api.PhaseAwaitingConfirm, api.OpStateAwaitingConfirm}, {api.PhaseEnabled, api.OpStateDone}} {
 		onboarding.Phase = tc.phase
+		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
 		}

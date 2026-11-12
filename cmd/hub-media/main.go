@@ -19,8 +19,12 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
-	if len(os.Args) > 1 && os.Args[1] == "health" {
-		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8090/healthz", nil)
+	if len(os.Args) > 1 && (os.Args[1] == "health" || os.Args[1] == "health-local") {
+		path := "/healthz"
+		if os.Args[1] == "health-local" {
+			path = "/livez"
+		}
+		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8090"+path, nil)
 		if err != nil {
 			log.Fatalf("health: %v", err)
 		}

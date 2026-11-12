@@ -303,6 +303,7 @@ func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
 		t.Fatal("no form nonce minted")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -377,6 +378,7 @@ func TestDeviceFlowPendingThenApproved(t *testing.T) {
 		t.Fatal("no form nonce")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +445,7 @@ func TestCredentialFormOffersDeviceFlowWhenSupported(t *testing.T) {
 		t.Fatal("no form nonce")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -498,6 +501,7 @@ func TestConnectPageOffersPasteRedirectForm(t *testing.T) {
 	}
 	onboarding.Phase = api.PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -612,6 +616,7 @@ func TestConnectPasteRejectsForeignState(t *testing.T) {
 	}
 	onboarding.Phase = api.PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

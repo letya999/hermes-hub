@@ -51,11 +51,11 @@ func writeHostingFiles(dir string, s Settings) error {
 		return fmt.Errorf("hosting configuration invalid: %s", issues[0])
 	}
 	cfg := hostingConfig(s)
-	if err := ensureTokenFile(filepath.Join(dir, "runtime", "hosting."+s.Environment+".key")); err != nil {
+	if err := ensureContainerTokenFile(filepath.Join(dir, "runtime", "hosting."+s.Environment+".key")); err != nil {
 		return err
 	}
 	if s.Hosting.Image != "" {
-		if err := ensureTokenFile(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")); err != nil {
+		if err := ensureContainerTokenFile(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")); err != nil {
 			return err
 		}
 		controller := toolhub.GenericControllerConfig{Hosting: hostingControllerSection(s), HostingOnly: true, HostingFleetRoot: "/fleet", HostingHelperVolume: hostingVolume(s) + "-controller", HostingCellInit: "/usr/local/bin/cellinit", StateRoot: "/state", ToolHiveBinary: "/usr/local/bin/thv", SeccompProfile: "/opt/hub/seccomp/seccomp-mcp-runtime.json", DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 1800}
@@ -63,7 +63,7 @@ func writeHostingFiles(dir string, s Settings) error {
 		if err != nil {
 			return err
 		}
-		if err = atomic(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json"), data); err != nil {
+		if err = atomicMode(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json"), data, 0644); err != nil {
 			return err
 		}
 	}
@@ -71,7 +71,7 @@ func writeHostingFiles(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	if err := atomic(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n')); err != nil {
+	if err := atomicMode(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n'), 0644); err != nil {
 		return err
 	}
 	if s.Hosting.Image == "" {
@@ -181,6 +181,7 @@ func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEn
 		controller["networks"] = []string{"default"}
 		controller["environment"] = M{"HOME": "/tmp", "TZ": s.Timezone, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": "hermes-hub-" + s.User + "-" + s.Environment}
 		controller["volumes"] = []any{M{"type": "volume", "source": "hosting-fleet", "target": "/fleet"}, M{"type": "volume", "source": "hosting-controller-state", "target": "/state"}, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json")), "target": "/config/hosting-controller.json", "read_only": true}, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")), "target": "/run/controller.key", "read_only": true}, M{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}}
+		controller["group_add"] = []string{fmt.Sprint(dockerSocketGID("/var/run/docker.sock"))}
 		controller["depends_on"] = M{name + "-init": M{"condition": "service_completed_successfully"}}
 		controller["cpus"] = "1"
 		controller["mem_limit"] = "256m"

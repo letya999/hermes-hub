@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -27,6 +28,12 @@ func (s *Spool) EnqueueDelivery(d Delivery) error {
 }
 
 func normalizeDelivery(d Delivery) (Delivery, error) {
+	if d.PrepareKey != "" {
+		decoded, err := hex.DecodeString(d.PrepareKey)
+		if err != nil || len(decoded) != 32 {
+			return d, errors.New("invalid prepare delivery identity")
+		}
+	}
 	if d.Format != "" && d.Format != formatMarkdown {
 		return d, errors.New("invalid delivery identity")
 	}
@@ -54,7 +61,7 @@ func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
 	if d.OccurrenceID == "" && (strings.HasPrefix(d.JobID, "routine-") || strings.HasPrefix(d.JobID, "batch2-")) {
 		d.OccurrenceID = d.JobID
 	}
-	for _, dir := range []string{"pending", "sending", "done", "failed"} {
+	for _, dir := range []string{"pending", "sending", "done", "failed", "superseded"} {
 		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json")); err == nil {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -147,12 +154,20 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 			break
 		}
 		b, err := s.fsys.ReadFile(filepath.Join(pending, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		var d Delivery
 		if err := json.Unmarshal(b, &d); err != nil {
 			return nil, err
+		}
+		if suppressed, err := s.suppressOldPrepareLocked(d, filepath.Join(pending, name)); err != nil {
+			return nil, err
+		} else if suppressed {
+			continue
 		}
 		if !d.Control || d.NotBefore.After(time.Now().UTC()) {
 			continue
@@ -169,6 +184,9 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 			break
 		}
 		b, err := s.fsys.ReadFile(filepath.Join(pending, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
