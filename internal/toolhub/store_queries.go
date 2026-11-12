@@ -2,6 +2,8 @@ package toolhub
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -30,6 +32,47 @@ func (s *Store) BindingsForProfile(profileID string) ([]api.ToolBinding, error) 
 		if binding.Status == api.ActiveStatus && binding.PrincipalID == profile.PrincipalID && binding.ContextID == profile.ContextID && binding.RuntimeID == profile.RuntimeID {
 			out = append(out, binding)
 		}
+	}
+	return out, nil
+}
+
+// SelectionGaps reports, per active managed profile, the selections no
+// capability rule can admit: the digest-split wedge publish leaves when it
+// repins selections ahead of catalog enable. Diagnostics only — it never
+// mutates. Selections whose pinned definition is missing or unreviewed are
+// skipped: they fail earlier at the definition check, not the rule check.
+func (s *Store) SelectionGaps() (map[string][]string, error) {
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now().UTC()
+	out := map[string][]string{}
+	for _, profile := range s.capabilityProfiles {
+		if profile.Status != api.ActiveStatus {
+			continue
+		}
+		policy, ok := s.capabilityPolicies[profile.PolicyID]
+		if !ok || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision {
+			continue
+		}
+		for _, selection := range profile.Selections {
+			definition, ok := s.definitions[definitionKey(selection.DefinitionID, selection.DefinitionVersion)]
+			if !ok || api.DefinitionDigest(definition) != selection.ImplementationDigest {
+				continue
+			}
+			tool, ok := selectionToolSpec(definition, selection)
+			if !ok {
+				continue
+			}
+			if !api.CapabilityCoverage(profile, policy, selection, tool, now) {
+				out[profile.ProfileID] = append(out[profile.ProfileID], selection.Name)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }

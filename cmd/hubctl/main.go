@@ -645,6 +645,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		issues, warnings := stack.DoctorScopeReport(s, secrets, orgSecrets)
+		warnings = append(warnings, toolhubDoctorWarnings(*dir, locale.LangOf(s.SpaceDir))...)
 		for _, warning := range warnings {
 			fmt.Fprintln(os.Stderr, locale.T(locale.LangOf(s.SpaceDir), "doctor.warning", warning))
 		}

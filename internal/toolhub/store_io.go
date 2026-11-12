@@ -241,7 +241,7 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 		case change.Policy != nil:
 			err = store.PutCapabilityPolicy(*change.Policy)
 		case change.Profile != nil:
-			err = store.PutCapabilityProfile(*change.Profile)
+			err = store.putCapabilityProfile(*change.Profile, true)
 		default:
 			err = store.PutGrant(*change.Grant)
 		}

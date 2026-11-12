@@ -185,7 +185,7 @@ func (s *Store) EnableCatalog(auth identity.Envelope, definitionID, version, iss
 			if err := profile.Validate(); err != nil {
 				return api.ToolBinding{}, err
 			}
-			if _, err := s.validateProfileAdmissionLocked(profile); err != nil {
+			if _, err := s.validateProfileAdmissionLocked(profile, false); err != nil {
 				return api.ToolBinding{}, err
 			}
 			copy := profile
@@ -205,7 +205,7 @@ func (s *Store) EnableCatalog(auth identity.Envelope, definitionID, version, iss
 			if err := candidate.Validate(); err != nil {
 				return api.ToolBinding{}, err
 			}
-			if _, err := s.validateProfileAdmissionLocked(candidate); err != nil {
+			if _, err := s.validateProfileAdmissionLocked(candidate, false); err != nil {
 				return api.ToolBinding{}, err
 			}
 			s.capabilityProfiles[id] = candidate

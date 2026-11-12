@@ -135,10 +135,23 @@ func (s *Store) PutCapabilityPolicy(policy api.CapabilityPolicy) error {
 // validateProfileAdmissionLocked runs the authority checks a profile
 // publication must pass against the current store: the named policy exists at
 // the pinned revision and lists the principal, every allow stays inside the
-// ceiling, and every selection pins a reviewed definition revision by digest.
-// Preview runs the identical checks so a previewed profile is exactly what
-// apply would admit.
-func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile) (api.CapabilityPolicy, error) {
+// ceiling, every selection pins a reviewed definition revision by digest, and
+// — for a new write of an active profile — no selection the write
+// introduces or repins may abandon the rules' implementation digest: when
+// the same capability tuple is governed at another digest, the selection is
+// the digest-split wedge a publish creates repinning ahead of catalog
+// enable, and rejecting the write at apply surfaces the cause instead of
+// silently emptying the projection. Plain uncovered selections (revoked
+// rules, never-authorized intent) stay writable — suppression under
+// projection is a legitimate state the denial surface and doctor report.
+// A selection carried byte-identical from the stored record re-affirms
+// existing authority: if its rules were since revoked, the gap is a
+// policy-side decision, not something this write introduced. Journal
+// replay skips the check: historical records load as written so a stored
+// split remains loadable and repairable, and a disabled profile projects
+// nothing to guard. Preview runs the identical checks so a previewed
+// profile is exactly what apply would admit.
+func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile, replay bool) (api.CapabilityPolicy, error) {
 	policy, exists := s.capabilityPolicies[profile.PolicyID]
 	if !exists || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || !slices.Contains(policy.Members, profile.PrincipalID) {
 		return api.CapabilityPolicy{}, fmt.Errorf("%w: profile policy or membership", api.ErrUnauthorized)
@@ -157,18 +170,53 @@ func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile) (a
 			}
 		}
 	}
+	carried := map[string]bool{}
+	for _, stored := range s.capabilityProfiles[profile.ProfileID].Selections {
+		body, _ := json.Marshal(stored)
+		carried[string(body)] = true
+	}
 	for _, selection := range profile.Selections {
 		definition, exists := s.definitions[definitionKey(selection.DefinitionID, selection.DefinitionVersion)]
-		if !exists || api.DefinitionDigest(definition) != selection.ImplementationDigest || !slices.ContainsFunc(definition.Tools, func(tool api.ToolSpec) bool {
-			return tool.Name == selection.ToolName && tool.CapabilityID == selection.CapabilityID && (len(tool.Uses) > 0 || api.RemoteExecutor(tool.Executor))
-		}) {
+		if !exists || api.DefinitionDigest(definition) != selection.ImplementationDigest {
 			return api.CapabilityPolicy{}, fmt.Errorf("%w: unreviewed capability implementation", api.ErrUnauthorized)
+		}
+		tool, ok := selectionToolSpec(definition, selection)
+		if !ok {
+			return api.CapabilityPolicy{}, fmt.Errorf("%w: unreviewed capability implementation", api.ErrUnauthorized)
+		}
+		if replay || profile.Status != api.ActiveStatus {
+			continue
+		}
+		if body, _ := json.Marshal(selection); carried[string(body)] {
+			continue
+		}
+		now := time.Now().UTC()
+		if !api.CapabilityCoverage(profile, policy, selection, tool, now) && api.CapabilityRepinConflict(profile, policy, selection, tool, now) {
+			return api.CapabilityPolicy{}, fmt.Errorf("%w: selection %s repinned past capability rules still pinned to another implementation digest", api.ErrUnauthorized, selection.Name)
 		}
 	}
 	return policy, nil
 }
 
+// selectionToolSpec resolves the catalog tool a selection pins — the same
+// name/capability match admission and projection use.
+func selectionToolSpec(definition api.ToolDefinition, selection api.CapabilitySelection) (api.ToolSpec, bool) {
+	for _, tool := range definition.Tools {
+		if tool.Name == selection.ToolName && tool.CapabilityID == selection.CapabilityID && (len(tool.Uses) > 0 || api.RemoteExecutor(tool.Executor)) {
+			return tool, true
+		}
+	}
+	return api.ToolSpec{}, false
+}
+
 func (s *Store) PutCapabilityProfile(profile api.CapabilityProfile) error {
+	return s.putCapabilityProfile(profile, false)
+}
+
+// putCapabilityProfile appends a profile record to the journal. Replay mode
+// exists only for snapshot restore: a stored record may predate a check the
+// current code enforces, and refusing it would strand the whole store.
+func (s *Store) putCapabilityProfile(profile api.CapabilityProfile, replay bool) error {
 	if err := profile.Validate(); err != nil {
 		return err
 	}
@@ -178,7 +226,7 @@ func (s *Store) PutCapabilityProfile(profile api.CapabilityProfile) error {
 	profile = owned
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.validateProfileAdmissionLocked(profile); err != nil {
+	if _, err := s.validateProfileAdmissionLocked(profile, replay); err != nil {
 		return err
 	}
 	old, exists := s.capabilityProfiles[profile.ProfileID]
@@ -443,7 +491,7 @@ func (s *Store) PreviewCapabilityProfile(candidate api.CapabilityProfile) (api.P
 	preview := api.ProfilePreview{ProfileID: candidate.ProfileID, CandidateRevision: candidate.Revision,
 		Current: []api.ProfilePreviewEntry{}, Candidate: []api.ProfilePreviewEntry{},
 		Added: []string{}, Removed: []string{}, Changed: []string{}}
-	candidatePolicy, err := s.validateProfileAdmissionLocked(candidate)
+	candidatePolicy, err := s.validateProfileAdmissionLocked(candidate, false)
 	if err != nil {
 		return preview, err
 	}

@@ -664,15 +664,23 @@ func allowedRuleSets(profile CapabilityProfile, policy CapabilityPolicy) [][]Cap
 	return sets
 }
 
-func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time) (CapabilityLimits, string, bool) {
-	active := func(rule CapabilityRule) bool { return rule.ExpiresAt.IsZero() || now.Before(rule.ExpiresAt) }
+func ruleActive(rule CapabilityRule, now time.Time) bool {
+	return rule.ExpiresAt.IsZero() || now.Before(rule.ExpiresAt)
+}
+
+// scanCapabilityRules returns the first active allow∩ceiling pair admitting
+// the tuple. admit decides whether the candidate prefix is acceptable:
+// CapabilityRuleDecision passes the deny check, coverage passes true. Never
+// merge unrelated rules' actions, resources, connections, expiry or
+// execution limits.
+func scanCapabilityRules(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time, admit func(candidate string) bool) (CapabilityLimits, string, bool) {
 	for _, allows := range allowedRuleSets(profile, policy) {
 		for _, allow := range allows {
-			if !active(allow) || !sameCapabilityTuple(allow, tuple) {
+			if !ruleActive(allow, now) || !sameCapabilityTuple(allow, tuple) {
 				continue
 			}
 			for _, ceiling := range policy.Ceiling {
-				if !active(ceiling) || !sameCapabilityTuple(allow, ceiling) {
+				if !ruleActive(ceiling, now) || !sameCapabilityTuple(allow, ceiling) {
 					continue
 				}
 				prefix := allow.PathPrefix
@@ -688,19 +696,76 @@ func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, 
 						continue
 					}
 				}
-				denied := false
-				for _, denies := range [][]CapabilityRule{policy.Denies, profile.Denies} {
-					for _, deny := range denies {
-						if active(deny) && sameCapabilityTuple(deny, tuple) && prefixContains(deny.PathPrefix, candidate) {
-							denied = true
-						}
-					}
-				}
-				if !denied {
+				if admit(candidate) {
 					return CapabilityLimits{min(allow.Limits.OutputBytes, ceiling.Limits.OutputBytes), min(allow.Limits.TimeoutSeconds, ceiling.Limits.TimeoutSeconds)}, prefix, true
 				}
 			}
 		}
 	}
 	return CapabilityLimits{}, "", false
+}
+
+func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time) (CapabilityLimits, string, bool) {
+	return scanCapabilityRules(profile, policy, tuple, actualPath, now, func(candidate string) bool {
+		for _, denies := range [][]CapabilityRule{policy.Denies, profile.Denies} {
+			for _, deny := range denies {
+				if ruleActive(deny, now) && sameCapabilityTuple(deny, tuple) && prefixContains(deny.PathPrefix, candidate) {
+					return false
+				}
+			}
+		}
+		return true
+	})
+}
+
+// CapabilityCoverage reports whether a selection's uses are backed by active
+// allow∩ceiling authority, ignoring deny rules. Coverage is the profile's
+// positive authority: a selection the rules cannot admit is suppressed under
+// projection — a gap the denial surface and diagnostics report, whatever its
+// cause (revocation, never-authorized intent, or the digest-split bug).
+// The path binding mirrors projection: a use without a path argument checks
+// the empty path, a path-scoped use asks whether any permitted path exists.
+func CapabilityCoverage(profile CapabilityProfile, policy CapabilityPolicy, selection CapabilitySelection, tool ToolSpec, now time.Time) bool {
+	for _, use := range tool.Uses {
+		tuple := CapabilityRule{CapabilityID: selection.CapabilityID, ImplementationDigest: selection.ImplementationDigest,
+			Action: use.Action, Resource: use.Resource, ConnectionID: selection.ConnectionID}
+		var actual *string
+		if use.PathArgument == "" {
+			empty := ""
+			actual = &empty
+		}
+		if _, _, covered := scanCapabilityRules(profile, policy, tuple, actual, now, func(string) bool { return true }); !covered {
+			return false
+		}
+	}
+	return len(tool.Uses) > 0 || RemoteExecutor(tool.Executor)
+}
+
+// CapabilityRepinConflict is the digest-split signature: a use tuple the
+// selection pins at its implementation digest is governed by an active rule
+// at a different digest. The publish bug abandoned the rules' digest when it
+// repinned selections; revocation or never-authorized intent does not match
+// (no rule at another digest governs the tuple) — those are legitimate
+// profile states the denial surface reports, while a repin that leaves the
+// rules behind is a write-time bug the admission gate refuses. Denies count
+// as governing: a tuple the rulebook knows only at another generation was
+// still repinned past its records.
+func CapabilityRepinConflict(profile CapabilityProfile, policy CapabilityPolicy, selection CapabilitySelection, tool ToolSpec, now time.Time) bool {
+	if len(tool.Uses) == 0 {
+		return false
+	}
+	sets := append(allowedRuleSets(profile, policy), policy.Ceiling, policy.Denies, profile.Denies)
+	for _, use := range tool.Uses {
+		for _, rules := range sets {
+			for _, rule := range rules {
+				if !ruleActive(rule, now) || rule.ImplementationDigest == "" || rule.ImplementationDigest == selection.ImplementationDigest {
+					continue
+				}
+				if rule.CapabilityID == selection.CapabilityID && rule.Action == use.Action && rule.Resource == use.Resource && rule.ConnectionID == selection.ConnectionID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

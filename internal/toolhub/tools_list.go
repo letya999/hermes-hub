@@ -147,19 +147,17 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		"returned": len(entries),
 		"note":     "Admitted ToolHub tools, re-read on every call — including tools enabled during this or another session. A name listed here but missing from your visible tool list is callable through tool_call({tool, arguments}). Hub workspace tools (mcp__hub__*) and the skills inventory (skill_search) live on the hub server.",
 	}
-	// Rights-denied selections surface as unavailable: the agent learns the
-	// missing capability.operation instead of guessing the tool vanished.
+	// Denied selections surface as unavailable: the agent learns the missing
+	// capability.operation or the capability_rules reason instead of guessing
+	// the tool vanished.
 	if name == "" || matched == 0 {
+		unavailable := make([]map[string]any, 0)
 		if denials, err := g.Store.RightsDenials(auth); err == nil && len(denials) > 0 {
-			unavailable := make([]map[string]any, 0, len(denials))
 			for _, denial := range denials {
 				if name != "" && denial.Name != name {
 					continue
 				}
 				unavailable = append(unavailable, map[string]any{"name": denial.Name, "unavailable": true, "missing_right": denial.Missing})
-			}
-			if len(unavailable) > 0 {
-				body["unavailable"] = unavailable
 			}
 			if name != "" && matched == 0 {
 				for _, denial := range denials {
@@ -169,6 +167,25 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 					}
 				}
 			}
+		}
+		if denials, err := g.Store.CapabilityDenials(auth); err == nil && len(denials) > 0 {
+			for _, denial := range denials {
+				if name != "" && denial.Name != name {
+					continue
+				}
+				unavailable = append(unavailable, map[string]any{"name": denial.Name, "unavailable": true, "reason": denial.Reason})
+			}
+			if name != "" && matched == 0 {
+				for _, denial := range denials {
+					if denial.Name == name {
+						body["reason"] = denial.Reason
+						break
+					}
+				}
+			}
+		}
+		if len(unavailable) > 0 {
+			body["unavailable"] = unavailable
 		}
 	}
 	if name != "" {

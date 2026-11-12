@@ -20,14 +20,14 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := selectedHubTools(toolhub.NewStore(), []byte("core: {files: {via: toolhub}}\n"), docs); err == nil {
+	if _, _, err := selectedHubTools(toolhub.NewStore(), []byte("core: {files: {via: toolhub}}\n"), docs, ""); err == nil {
 		t.Fatal("selected toolset accepted without its registered definition")
 	}
 	store := toolhub.NewStore()
 	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	selected, core, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\nextended:\n  memory: {via: toolhub, access: read}\n"), docs)
+	selected, core, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\nextended:\n  memory: {via: toolhub, access: read}\n"), docs, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,18 +38,73 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	if !slices.Equal(names, []string{"file_read", "memory_open", "memory_read", "memory_search"}) || len(core) != 1 || core[0] != "file_read" {
 		t.Fatalf("published selection/core mismatch: selections=%v core=%v", selected, core)
 	}
-	selected, _, err = selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/public]}}}}\n"), docs)
+	selected, _, err = selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/public]}}}}\n"), docs, "")
 	if err != nil || len(selected) != 1 || !slices.Equal(selected[0].PathScopes, []string{"/workspace/docs/public"}) {
 		t.Fatalf("selected path scope missing: %v %v", selected, err)
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [project_create]}, scope: {paths: [/workspace/docs]}}\n"), docs); err == nil {
+	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [project_create]}, scope: {paths: [/workspace/docs]}}\n"), docs, ""); err == nil {
 		t.Fatal("path scope admitted a tool without a path argument")
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {hosts: [example.test]}}\n"), docs); err == nil {
+	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {hosts: [example.test]}}\n"), docs, ""); err == nil {
 		t.Fatal("unsupported host scope admitted")
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, rules: {file_write: {scope: {hosts: [example.test]}}}}\n"), docs); err == nil {
+	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, rules: {file_write: {scope: {hosts: [example.test]}}}}\n"), docs, ""); err == nil {
 		t.Fatal("unsupported rule for unselected tool admitted")
+	}
+}
+
+// A publish on a binary whose compiled catalog is newer than the profile's
+// active binding must stamp selections against the bound revision — the
+// consented catalog generation — never the compiled one. Catalog enable is
+// the only transition that moves a profile to a newer definition.
+func TestSelectedHubToolsPinsBoundDefinition(t *testing.T) {
+	docs, err := catalog.LoadPinned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := toolhub.NewStore()
+	compiled := agenttools.HubToolsDefinition()
+	bound := compiled
+	bound.Version = "0.0.1"
+	if err := store.RegisterDefinition(bound); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterDefinition(compiled); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Members: []string{"alice"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "org-default", PolicyRevision: 1,
+		Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&profile, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		DefinitionID: bound.DefinitionID, DefinitionVersion: bound.Version, PolicyVersion: "policy-1",
+		WorkloadClass: bound.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	selected, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\n"), docs, "alice-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := api.DefinitionDigest(bound)
+	for _, selection := range selected {
+		if selection.DefinitionVersion != bound.Version || selection.ImplementationDigest != digest {
+			t.Fatalf("publish stamped the compiled catalog instead of the bound revision: %+v", selection)
+		}
 	}
 }
 

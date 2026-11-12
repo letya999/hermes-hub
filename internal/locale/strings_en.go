@@ -9,6 +9,7 @@ func init() {
 		"doctor.warning":                          "Warning: %s",
 		"doctor.connector-credential-missing":     "Optional connector %s has no %s; operations requiring this credential may fail.",
 		"doctor.mcp-credential-missing":           "MCP connector %s is unavailable until its referenced credential is configured.",
+		"doctor.capability-selection-gap":         "capability profile %s: %d selected tools have no covering capability rule; their projection is suppressed until hubctl catalog-enable repins the catalog's rules to its definition",
 		"supervisor.settings-invalid":             "Invalid settings edit request.",
 		"supervisor.settings-denied":              "Settings edit was denied or could not be published.",
 		"hubctl.space-apply-passport-right":       "This passport change requires %s.",

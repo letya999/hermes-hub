@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0302](in-progress/CHG-0302-capability-digest-split/plan.md) | Digest-split wedge closed: publish binds to the bound catalog revision, write gate refuses uncovered selections, capability-rule denials surface in tool_search, doctor warns — incident telegram-837846104 |
 | [CHG-0300](in-progress/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |
 | [CHG-0299](in-progress/CHG-0299-shared-project-and-multisession-cliproxy/plan.md) | Standalone hermes-hub-shared Compose project and one multi-session cliproxy per space; dev topology and artem_two apply verified |
 | [CHG-0298](in-progress/CHG-0298-connector-onboarding-reconciliation/plan.md) | Durable connector FSM and incremental registry deployed and live verified; protected owner/provider acceptance pending |
