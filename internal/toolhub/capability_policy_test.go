@@ -131,9 +131,15 @@ func TestPublishedToolScopeConstrainsCall(t *testing.T) {
 		{"path": "docs/public/a", "root": "archive", "scope": "workspace"},
 	} {
 		called = false
-		if err := s.AuthorizeProjectedCall(auth, "workspace_read", args, admit); err == nil || called {
-			t.Fatalf("out-of-scope call reached executor: %v %v", args, err)
+		// A name the profile declares stays denied — masked as
+		// record-not-found it reads as "no such tool" and sends the model
+		// back into tool_search for a name it can already see.
+		if err := s.AuthorizeProjectedCall(auth, "workspace_read", args, admit); !errors.Is(err, api.ErrUnauthorized) || called {
+			t.Fatalf("out-of-scope call masked or reached executor: %v %v", args, err)
 		}
+	}
+	if err := s.AuthorizeProjectedCall(auth, "workspace_missing", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("undeclared name was not not-found: %v", err)
 	}
 	profile.Revision++
 	profile.Selections[0].PathScopes = []string{"/workspace/docs/private"}
@@ -141,7 +147,7 @@ func TestPublishedToolScopeConstrainsCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	called = false
-	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); err == nil || called {
+	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); !errors.Is(err, api.ErrUnauthorized) || called {
 		t.Fatalf("old scope survived profile revision: %v", err)
 	}
 }
@@ -229,12 +235,16 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	s, auth, policy, profile := managedStore(t)
 	var calls, injections, admissions int
+	reasons := map[string]int{}
 	g := &Gateway{Store: s, AuditWrite: func(event string, fields map[string]string) error {
 		if event == "admit" {
 			admissions++
 			if fields["capability_id"] != "files.read" || fields["generation"] != "1" || fields["capability_policy_revision"] != "1" {
 				t.Fatalf("missing scope: %v", fields)
 			}
+		}
+		if event == "deny" || event == "reject" {
+			reasons[fields["reason"]]++
 		}
 		return nil
 	}, Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -268,6 +278,12 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	}
 	if calls != 1 || injections != 1 || admissions != 1 {
 		t.Fatalf("denied call had effects: %d/%d/%d", calls, injections, admissions)
+	}
+	// Deny classes: undeclared names stay not-found, out-of-scope arguments
+	// on a declared selection stay denied, post-admission schema failures
+	// stay invalid — argument values never reach the reason field.
+	if reasons["not-found"] != 5 || reasons["denied"] != 8 || reasons["invalid"] != 1 || reasons["error"] != 0 {
+		t.Fatalf("deny reasons misclassified: %v", reasons)
 	}
 	tools, err := s.ListProjectedTools(auth)
 	if err != nil || len(tools) != 1 || tools[0].Name != "workspace_read" {

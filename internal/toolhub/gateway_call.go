@@ -411,6 +411,18 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,
 			"policy_version": auth.PolicyVersion, "outcome": "deny",
 		}
+		// reason carries only the sentinel class — argument values and tool
+		// internals never reach the audit record.
+		switch {
+		case errors.Is(err, api.ErrNotFound):
+			fields["reason"] = "not-found"
+		case errors.Is(err, api.ErrInvalid):
+			fields["reason"] = "invalid"
+		case errors.Is(err, api.ErrUnauthorized):
+			fields["reason"] = "denied"
+		default:
+			fields["reason"] = "error"
+		}
 		if auth.CapabilityProfile != "" {
 			fields["capability_profile"], fields["environment"], fields["generation"] = auth.CapabilityProfile, auth.Environment, fmt.Sprint(auth.Generation)
 		}
@@ -556,7 +568,7 @@ func (g *Gateway) audit(event string, fields map[string]string) error {
 		g.Audit(event, fields)
 	}
 	attrs := make([]any, 0, 32)
-	for _, key := range []string{"principal_id", "context_id", "runtime_id", "policy_version", "sender_id", "team_id", "binding_id", "backend", "projection_rev", "outcome", "execution", "connection_id", "connection_revision", "credential_revision", "capability_id", "capability_profile", "environment", "generation", "job_id", "hermes_run_id", "tool_call_id", "capability_policy_revision", "capability_profile_revision", "implementation_digest", "admin", "target"} {
+	for _, key := range []string{"principal_id", "context_id", "runtime_id", "policy_version", "sender_id", "team_id", "binding_id", "backend", "projection_rev", "outcome", "execution", "connection_id", "connection_revision", "credential_revision", "capability_id", "capability_profile", "environment", "generation", "job_id", "hermes_run_id", "tool_call_id", "capability_policy_revision", "capability_profile_revision", "implementation_digest", "admin", "target", "reason"} {
 		if value, ok := fields[key]; ok {
 			attrs = append(attrs, key, value)
 		}

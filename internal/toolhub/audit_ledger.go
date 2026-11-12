@@ -27,6 +27,7 @@ func LedgerAuditWriter(ledger *audit.Ledger) func(string, map[string]string) err
 		record.ToolCallID = fields["tool_call_id"]
 		record.CorrelationID = fields["correlation_id"]
 		record.Receipt = api.SafeReceipt(fields["receipt"])
+		record.Reason = fields["reason"]
 		record.CapabilityID = fields["capability_id"]
 		record.CapabilityProfile = fields["capability_profile"]
 		record.ImplementationDigest = fields["implementation_digest"]

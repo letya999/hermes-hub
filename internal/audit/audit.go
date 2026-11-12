@@ -53,6 +53,9 @@ type Event struct {
 	ToolCallID                string    `json:"tool_call_id,omitempty"`
 	CorrelationID             string    `json:"correlation_id,omitempty"`
 	Name                      string    `json:"name,omitempty"`
+	// Reason is the bounded denial/failure class on decision events
+	// (denied, not-found, invalid, error) — never argument values.
+	Reason string `json:"reason,omitempty"`
 	// Receipt is a bounded provider mutation proof such as a Slack
 	// channel:timestamp pair. It never carries a credential or message body.
 	Receipt string `json:"receipt,omitempty"`
@@ -80,7 +83,7 @@ func validate(event Event) error {
 	if !ValidReceipt(event.Receipt) {
 		return fmt.Errorf("%w: unsafe receipt", ErrInvalid)
 	}
-	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment, event.SenderID, event.TeamID, event.BindingID} {
+	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment, event.SenderID, event.TeamID, event.BindingID, event.Reason} {
 		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("%w: capability metadata", ErrInvalid)
 		}

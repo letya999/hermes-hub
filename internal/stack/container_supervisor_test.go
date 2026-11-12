@@ -22,8 +22,13 @@ func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 	if _, ok := services["hermes-runtime"]; ok {
 		t.Fatal("resident user runtime")
 	}
-	if _, ok := svc["ports"]; ok {
-		t.Fatal("supervisor published host ports")
+	// The control endpoint may publish on loopback only — the operator reaches
+	// apply/respawn from the host where container IPs are not routable (Docker
+	// Desktop, WSL); any non-loopback publish exposes the docker-socket owner.
+	if ports, ok := svc["ports"]; ok {
+		if !reflect.DeepEqual(ports, []string{"127.0.0.1:8876:8876"}) {
+			t.Fatalf("supervisor publishes beyond loopback: %v", ports)
+		}
 	}
 	if svc["image"] != services["toolhub"].(M)["image"] || svc["read_only"] != true || svc["restart"] != "unless-stopped" {
 		t.Fatalf("supervisor contract: %#v", svc)

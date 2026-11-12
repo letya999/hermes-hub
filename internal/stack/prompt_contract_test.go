@@ -295,6 +295,20 @@ func TestChannelContractExplainsFiveSessionLimit(t *testing.T) {
 	}
 }
 
+// Incident 2026-11-12: settings_read returned the complete reviewed key set,
+// yet the model swept the workspace for a language knob for three minutes —
+// argument denials surfaced as "not an admitted tool name" and sent it back
+// into tool_search. The contract must make authoritative inventory answers
+// terminal, point language asks at the channel command and read denials as
+// denials.
+func TestChannelContractTerminatesAuthoritativeAnswers(t *testing.T) {
+	for _, want := range []string{"manageable_keys", "/language", "denial", "ends the search"} {
+		if !strings.Contains(contractMid, want) {
+			t.Errorf("channel contract missing %q", want)
+		}
+	}
+}
+
 func TestChannelContractBansContextEcho(t *testing.T) {
 	// Incident 2026-11-10: the model reproduced injected context blocks and the
 	// retained step log verbatim — 220K chars fanned out as 75 chat messages.

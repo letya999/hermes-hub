@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0300](in-progress/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |
 | [CHG-0299](in-progress/CHG-0299-shared-project-and-multisession-cliproxy/plan.md) | Standalone hermes-hub-shared Compose project and one multi-session cliproxy per space; dev topology and artem_two apply verified |
 | [CHG-0298](in-progress/CHG-0298-connector-onboarding-reconciliation/plan.md) | Durable connector FSM and incremental registry deployed and live verified; protected owner/provider acceptance pending |
 | [CHG-0297](in-progress/CHG-0297-owner-connector-cleanup/plan.md) | Owner connector cleanup across policy epochs, orphan onboarding and missing credential state; implementation in progress |

@@ -652,13 +652,18 @@ func (s *Store) managedToolLocked(auth identity.Envelope, name string, arguments
 		return api.ProjectedTool{}, api.EffectiveBinding{}, err
 	}
 	for _, selection := range profile.Selections {
-		if selection.Name == name {
-			tool, effective, err := s.managedSelectionLocked(auth, profile, policy, selection, arguments, projection)
-			if err != api.ErrUnauthorized {
-				return tool, effective, err
-			}
-			break
+		if selection.Name != name {
+			continue
 		}
+		tool, effective, err := s.managedSelectionLocked(auth, profile, policy, selection, arguments, projection)
+		if !errors.Is(err, api.ErrUnauthorized) {
+			return tool, effective, err
+		}
+		// The caller's own profile declares this name, so the call is denied —
+		// arguments outside the admitted capability, a missing right or a stale
+		// binding — not missing. Masking it as record-not-found sends the model
+		// back into tool_search for a name it can already see in its inventory.
+		return api.ProjectedTool{}, api.EffectiveBinding{}, fmt.Errorf("%w: %s is denied for this call — run tool_search for its admitted shape and missing right", api.ErrUnauthorized, name)
 	}
 	return api.ProjectedTool{}, api.EffectiveBinding{}, api.ErrNotFound
 }
