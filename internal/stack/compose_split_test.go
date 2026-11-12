@@ -20,7 +20,7 @@ func TestSplitInfraComposeFollowsPassportAndPreservesModelGrantVolume(t *testing
 		"networks": M{managedAgentNetwork(s): M{"name": managedAgentNetwork(s), "internal": true}},
 	}
 	shared, user := SplitInfraCompose(s, full)
-	if shared["name"] != "hermes-hub-alice-dev" || user["name"] != "hermes-hub-alice-dev-user" {
+	if shared["name"] != "hermes-hub-shared-dev" || user["name"] != "hermes-hub-alice-dev-user" {
 		t.Fatalf("project split: shared=%v user=%v", shared["name"], user["name"])
 	}
 	for _, name := range []string{"credential-broker", "toolhub", "cliproxy"} {
@@ -46,10 +46,13 @@ func TestSplitInfraComposeFollowsPassportAndPreservesModelGrantVolume(t *testing
 
 func TestSplitInfraComposeKeepsSharedOnlyOwnerInOneProject(t *testing.T) {
 	infra := true
-	s := Settings{Infra: &infra, PassportServices: map[string]string{"toolhub": "shared"}}
-	full := M{"name": "hermes-hub-alice-dev", "services": M{"toolhub": M{}}}
+	s := Settings{Infra: &infra, Environment: "dev", PassportServices: map[string]string{"toolhub": "shared"}}
+	full := M{"name": "hermes-hub-alice-dev", "services": M{"toolhub": M{}}, "volumes": M{"toolhub-data": M{}}}
 	shared, user := SplitInfraCompose(s, full)
-	if user != nil || shared["name"] != full["name"] {
+	if user != nil || shared["name"] != SharedProjectName("dev") {
 		t.Fatalf("shared-only owner produced an extra project: shared=%v user=%v", shared["name"], user)
+	}
+	if got := shared["volumes"].(M)["toolhub-data"].(M)["name"]; got != "hermes-hub-alice-dev_toolhub-data" {
+		t.Fatalf("shared volume must pin the pre-split name: %v", got)
 	}
 }

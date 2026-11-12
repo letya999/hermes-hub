@@ -30,7 +30,7 @@ func serviceKind(instance string) string {
 // their own name.
 func planServiceName(instance string, s Settings) string {
 	switch instance {
-	case "cliproxy", "browser":
+	case "cliproxy", "browser", "hub-media":
 		return instance + "-" + s.User
 	case "hosting":
 		return hostingName(s)
@@ -38,6 +38,13 @@ func planServiceName(instance string, s Settings) string {
 		return hostingName(s) + "-ctl"
 	}
 	return instance
+}
+
+func mediaServiceName(s Settings) string {
+	if s.PassportServices["hub-media"] == "per-space" {
+		return planServiceName("hub-media", s)
+	}
+	return "hub-media"
 }
 
 func newComposePlan(s Settings) *composePlan {
@@ -174,15 +181,44 @@ func ComposeChecked(s Settings, projectRoot, dir string) (M, error) {
 	return result, nil
 }
 
-// SplitInfraCompose keeps the infra owner's shared services in the original
-// project (and therefore on their existing volumes), while placing its
-// per-space services in a separate project. The published stack passport is
-// the only source of service placement.
+// SharedProjectName names the standalone project that holds every service
+// declared shared: infra is its own stack, not a service inside whichever
+// user space happens to own it.
+func SharedProjectName(environment string) string {
+	return "hermes-hub-shared-" + environment
+}
+
+// SplitInfraCompose moves the infra owner's shared services into the
+// standalone shared project, while placing its per-space services in a
+// separate project. Shared volumes keep their pre-split names so the renamed
+// project reattaches the existing data instead of minting empty volumes
+// beside it. The published stack passport is the only source of service
+// placement.
 func SplitInfraCompose(s Settings, full M) (shared, user M) {
-	if !s.RendersInfra() || !HasPerSpaceServices(s) {
+	if !s.RendersInfra() {
 		return full, nil
 	}
-	shared, user = maps.Clone(full), maps.Clone(full)
+	shared = maps.Clone(full)
+	shared["name"] = SharedProjectName(s.Environment)
+	// Anonymous-by-key volumes would derive from the new project name and
+	// come up empty; pin them to the infra project's existing volume names.
+	// Entries already named (broker-materialized, state, recovery) and
+	// external volumes keep their explicit identity.
+	sharedVolumes := maps.Clone(full["volumes"].(M))
+	for key, raw := range sharedVolumes {
+		vol, ok := raw.(M)
+		if !ok || vol["external"] == true {
+			continue
+		}
+		if _, named := vol["name"]; !named {
+			sharedVolumes[key] = M{"name": full["name"].(string) + "_" + key}
+		}
+	}
+	shared["volumes"] = sharedVolumes
+	if !HasPerSpaceServices(s) {
+		return shared, nil
+	}
+	user = maps.Clone(full)
 	sharedServices, userServices := M{}, M{}
 	services := full["services"].(M)
 	for name, service := range services {

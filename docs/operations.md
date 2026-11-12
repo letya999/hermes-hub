@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-10
+last_verified: 2026-11-12
 ---
 
 # Operations
@@ -32,6 +32,9 @@ build, select `hubctl build --dir spaces/alice toolhub`, then `hubctl up --dir
 spaces/alice --no-build toolhub`. Neither path should recreate unrelated
 services. Agent-tool contract changes additionally require catalog rebind
 and managed runtime respawn.
+`hubctl connector link` reads only a live action link and refuses expired/spent
+confirmation. Use the explicit `hubctl connector resend --target <onboarding-id>`
+write action to renew a pending link; it requires connector lifecycle authority.
 Changing `config.web.backend`, `search_backend`, `extract_backend`, or
 `search_providers` also recreates that space's egress relay before the
 managed runtime respawns, so the configured provider hosts become reachable.
@@ -154,11 +157,12 @@ Tool selection grants no authority; a managed profile binds the exact
    space's `communication.users.yaml` (`id`, `runtime_id`, `telegram_ids`,
    `features`, `policy_version`) — no entry, no routed jobs; an entry with
    empty `telegram_ids` still jobs but cannot notify.
-   Keep `policy_version` current when editing this file. A sibling `space
-   apply` now refreshes the infra space's generated automation routing after
-   enrolling its runtime token. After a manual routing edit, render the infra
-   space and recreate only communication-hub so its loaded channel map agrees
-   with ToolHub's routing file.
+   The enrolled sibling runtime token is authoritative for its current
+   `policy_version`: communication-hub resolves it when routing each request,
+   and the generated automation routing uses it after sibling `space apply`.
+   A missing or ambiguous enrollment disables that sibling route. After a
+   manual channel edit, render the infra space and recreate only
+   communication-hub so its loaded channel IDs agree with ToolHub's routing file.
 7. **Bring up** — `hubctl doctor --user <id>`, then
    `hubctl up --user <id> --env dev|prod`. Up renders `generated/` (compose,
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
@@ -176,11 +180,12 @@ Tool selection grants no authority; a managed profile binds the exact
    grant still keeps the proxy unavailable and needs credential enrollment.
 
    A published infra owner has two generated Compose plans: `compose.shared.<env>.yaml`
-   contains only `shared` services in its original project and preserves its
-   volumes; `compose.user.<env>.yaml` contains that owner's `per-space` services
-   in a separate project. `hubctl up` starts the shared plan first, then the
-   user plan. Other users keep one per-space Compose project each. Run `hubctl`
-   for lifecycle operations so a later up cannot rejoin the two plans.
+   contains only `shared` services in the standalone `hermes-hub-shared-<env>`
+   project and preserves its original volume names; `compose.user.<env>.yaml`
+   contains that owner's `per-space` services in a separate project. `hubctl up`
+   starts the shared plan first, then the user plan. Other users keep one
+   per-space Compose project each. Run `hubctl` for lifecycle operations so a
+   later up cannot rejoin the two plans.
 
    A *managed* space additionally needs, before `up`: an execution selection
    (`execution.<env>.json` — `mode: supervisor`,
@@ -409,14 +414,20 @@ access revocation even if audit fails, and unverified cleanup returns uncertaint
 `secret activity` shows operation/phase/auth/execution/delivery fields without
 credential dictionary names. This is not a migration or a live provider receipt.
 
+The shared runtime enrollment and model-admin maps stay on the same inode for live bind mounts and use mode `0640` with the operator group, matching the agent UID plus operator GID used by Compose. Resetting them to owner-only `0600` after a root render makes the service unable to read its authorization map.
+
+## Effective system instructions
+
+Skill descriptions are truncated at Unicode character boundaries. Materialization rejects invalid UTF-8 before replacing the previous effective SOUL. This prevents Hermes from silently skipping the whole system contract on a decoding error. After a prompt rollout, verify the mounted file with Hermes' own `load_soul_md`, including the onboarding section; tool endpoint readiness alone does not prove the model loaded its instructions.
+
 ## Human-action links
 
 `/credentials`, `/confirm`, `/remove`, `/connect`, `/device` are one-time
 `?t=` URLs; spent/expired → 410. The stable wizard link `/connect/<id>?k=`
-is the exception: one URL per onboarding that renders the current phase
+is the exception: one URL per intake cycle that renders the current phase
 (credentials form, broker hop, confirm, OAuth interstitial, progress,
 result) and self-refreshes through the flow; it expires with the onboarding
-and dies on terminal phases' TTL. Default target is loopback. For other-
+and dies on terminal phases' TTL. Explicit `connector_edit action=reauth` rotates the wizard capability and opens credential entry; it never sends the old confirmation page as a new credential form. Default target is loopback. For other-
 device access publish TLS and set `HUB_PUBLIC_ORIGIN=https://<host>` (https
 only — anything else mints loopback) + `HUB_PUBLIC_LISTEN=<addr>` on
 hub-toolhub; that listener serves only human-action paths (control/gateway
@@ -433,7 +444,24 @@ Opt-in per environment: `features.exposure` + a reviewed
 `connections/exposure/config.yaml` (provider `sish`, pinned relay host keys,
 `zone`, `key_ref` file:/broker:, bounds, named endpoints). Render fails
 closed without a valid config; the config mounts read-only at
-`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into the runtime env.
+`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into both Compose and
+supervisor-spawned runtimes. `exposure_list` reports the declared endpoint names
+and target classes even when no tunnel is open; it does not prove a service's
+content is safe to publish.
+The mounted directory must be traversable and its config/key files readable by
+the runtime's effective group; keep the private key inaccessible to others.
+Render and supervised spawn now validate the reviewed config and each `file:`
+credential as uid 10001 with the runtime's primary gid before starting. The
+same connection spec supplies both Compose and supervisor mounts and env paths.
+Managed sish uses the per-space egress relay: its only non-HTTPS CONNECT target
+is the exact host and port from the reviewed exposure config. The stack
+passport must declare `egress-relay: {mode: per-space}` for this space; the
+relay host does not gain generic HTTP egress. The executor never falls back
+to a direct relay dial after proxy refusal. Render and supervised spawn reject
+a managed sish configuration when that per-space relay is undeclared.
+An edit to `connections/exposure/config.yaml` is not hot-reloaded by an
+already-running managed runtime. Respawn that owner's runtime after the edit;
+verify `exposure_list` again before relying on the new endpoint set.
 `hubctl exposure enrol --dir <space>` materializes the relay keypair
 (file refs) or stages a broker grant (broker refs) and prints VPS enrolment
 steps — it never prints the private half.
@@ -649,6 +677,11 @@ revision. This lets the apply finish while the journal correctly blocks
 ordinary ToolHub decisions; other runtime restart requests still use the
 `agents.restart_self` decision. Keep the endpoint on the control network or
 expose it only temporarily on local loopback for host-side apply.
+If an interrupted effects phase included an image rebuild, verify the rebuilt
+image tag and running containers first. An operator may then rerun
+`space apply --confirm --recover-rebuilt-image` to restore the prior revision,
+replay service effects, and retry publication. Without that flag, recovery
+remains blocked for an uncertain image build.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
@@ -673,7 +706,7 @@ leaf at the next ToolHub night tick — audit-kind block bodies (routine, system
 probe, compaction, untrusted, background replies) collapse to stub
 lines while mem:id headers and interactive owner/agent blocks stay
 byte-identical; oversized eligible days first get a `long_summary` from
-the same rollup call so detail lands in `summaries/daily/`. 
+the same rollup call so detail lands in `summaries/daily/`.
 `memory_leaf_retention_days` (≥2) expires a leaf older than the window —
 `git rm` + commit + prov.db row drop — but only after the day's rollup
 state is complete and its daily summary exists; unverified days are
@@ -691,7 +724,8 @@ an incomplete apply denies admission and each subsequent commit guard.
 Failed work stays pending; a communication outage leaves the digest
 in ToolHub's delivery outbox. `model-relay-caller.auth` is a rendered,
 caller-only file mounted read-only for the matching owner; never inspect or
-copy its contents into diagnostics.
+copy its contents into diagnostics. Rendering gives the service group read access
+(0640); ToolHub joins the host file group so nightly work can read the mount.
 
 An external memory backend rides the hub-owned provider seam, never the
 upstream plugin path: select `memory_provider: {via: native}` in the
@@ -794,6 +828,10 @@ Managed `browser_open` creates its own Playwright tab in the chosen profile;
 visible text or, when numeric, seconds in the interval (0, 30]. Captures
 return a path under the shared workspace's `browser/` directory; the named
 file must exist there before treating a capture as delivered.
+Both Playwright MCP profiles allow 15 seconds for a browser action; the
+upstream 5-second default timed out on screenshot rendering and footer
+stability for a live page. A failed capture still needs a fresh call and a
+verified file before it is reported as complete.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; full `hubctl` builds prune
@@ -1202,14 +1240,34 @@ Known traps from live acceptance:
   readiness while every job stalls `uncertain`. Check
   `PRAGMA integrity_check` on each `managed/<env>/hermes/*.db` after a
   rename or host migration.
-- **ToolHub SQLite on Docker Desktop** — inspect the actual `/state` mount;
-  this dev stack binds it from `C:` even though the process runs in Linux.
-  Provision an activated `store.db` for the service uid/gid with mode `0600`.
-  Verify a live WAL and `PRAGMA integrity_check` from a Linux container using
-  the service mount. Windows SQLite can report a false malformed image while
-  the Linux writer holds WAL; stop ToolHub before host-side inspection or
-  mutation. ToolHub's unchanged-store check uses SQLite `data_version` so
-  checkpoint-only timestamp changes do not trigger a full registry reload.
+- **ToolHub SQLite on Docker Desktop** — keep the stack's space directories on
+  the Ubuntu filesystem, not under `/mnt/c` or a Windows `C:` bind. Confirm
+  the actual `/state` mount with `docker inspect`; the container being Linux
+  does not prove its database is on a Linux filesystem. To move an existing
+  stack, stop both owner and managed-space Compose projects without deleting
+  volumes, copy their space directories with numeric uid/gid preserved, and
+  include `store.db`, its WAL and SHM from the stopped source. Check SQLite
+  `PRAGMA integrity_check` on the destination before starting services. Keep
+  the ToolHub store private to uid 10001 (`0600`); the rendered routing and
+  non-secret configs must be readable by the service, while controller and
+  hosting keys remain limited to the service group (`0640`). The rendered
+  supervisor runtime env files and `runtime.auth` must also be group-readable
+  (`0640`): the supervisor's Docker CLI reads them through `--env-file`.
+  `hubctl render` makes the generated skill views writable by the supervisor's
+  group while retaining their mount inode; the generated parent also needs
+  group write for the effective config and policy snapshot. Docker socket
+  access uses its actual host GID, passed to supervisor and Docker-using
+  services at render. Render and start from the Ubuntu path, then check all
+  service restarts and a real MCP call.
+  Assignment, routine and watch tools call communication-hub, which calls
+  ToolHub back for rights; dispatch those after releasing the registry's
+  SQLite admission transaction and reverify rights before execution. Holding
+  that transaction through the callback makes `assignments.list` wait for
+  its own single SQLite connection until the HTTP timeout.
+  Windows SQLite can report a false malformed image while the Linux writer
+  holds WAL; stop ToolHub before host-side inspection or mutation. ToolHub's
+  unchanged-store check uses SQLite `data_version` so checkpoint-only
+  timestamp changes do not trigger a full registry reload.
 - **`/model` chat command is currently dead for managed principals** behind
   the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
   only into a gateway inside its own managed space, and managed spaces run

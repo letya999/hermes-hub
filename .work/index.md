@@ -16,6 +16,10 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0299](in-progress/CHG-0299-shared-project-and-multisession-cliproxy/plan.md) | Standalone hermes-hub-shared Compose project and one multi-session cliproxy per space; dev topology and artem_two apply verified |
+| [CHG-0298](in-progress/CHG-0298-connector-onboarding-reconciliation/plan.md) | Durable connector FSM and incremental registry deployed and live verified; protected owner/provider acceptance pending |
+| [CHG-0297](in-progress/CHG-0297-owner-connector-cleanup/plan.md) | Owner connector cleanup across policy epochs, orphan onboarding and missing credential state; implementation in progress |
+| [CHG-0296](in-progress/CHG-0296-managed-exposure-config/plan.md) | Supervisor-spawned exposure config and safe declared-endpoint listing; live dev verification in progress |
 | [CHG-0295](in-progress/CHG-0295-response-fanout-safety/plan.md) | Telegram response fan-out cap (5 parts + answer.md) and context-echo/tool_call contract clauses after incident telegram-837846020; live rerun pending |
 | [CHG-0294](in-progress/CHG-0294-telegram-admission-sqlite/plan.md) | Telegram queued progress, SQLite startup and ToolHub projection latency; local verification in progress |
 | [CHG-0293](in-progress/CHG-0293-toolhub-primary-toolsets/plan.md) | Select and verify primary ToolHub toolsets in platform defaults and both Artem passports; live acceptance on artem_two in progress |

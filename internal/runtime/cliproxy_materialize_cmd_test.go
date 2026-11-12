@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	brokeridentity "github.com/letya999/credential-broker/identity"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 )
 
 // The cliproxy init companion runs `hub-runtime cliproxy-materialize`; the
@@ -52,9 +53,11 @@ func TestRunCliproxyMaterializeEndToEnd(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		// Session binds the instance slot; the proxy key binds its own
-		// <instance>-key slot — both are dedicated workload identities.
-		return (actor.BindingID == "cliproxy-google-1" || actor.BindingID == "cliproxy-google-1-key") && actor.WorkloadID == actor.BindingID
+		// Session and proxy key each pin their own dedicated workload slot,
+		// derived from the instance plus the credential ref.
+		sessionSlot := credentialbroker.CliproxySessionBinding("cliproxy-google-1", "google-one-1")
+		keySlot := credentialbroker.CliproxyKeyBinding("cliproxy-google-1", "cliproxy-google-1")
+		return (actor.BindingID == sessionSlot || actor.BindingID == keySlot) && actor.WorkloadID == actor.BindingID
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -125,7 +128,7 @@ func TestRunCliproxyMaterializeEndToEnd(t *testing.T) {
 	if err := Run([]string{"cliproxy-materialize"}); err != nil {
 		t.Fatalf("second materialization: %v", err)
 	}
-	session, err := os.ReadFile(filepath.Join(auths, "session.json"))
+	session, err := os.ReadFile(filepath.Join(auths, "google-one-1.json"))
 	if err != nil || !strings.Contains(string(session), "SENTINEL") {
 		t.Fatalf("session not delivered: %v", err)
 	}

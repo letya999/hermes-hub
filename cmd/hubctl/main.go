@@ -678,9 +678,14 @@ func run(ctx context.Context, args []string) error {
 				client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 					return fmt.Errorf("model catalog redirects are not followed")
 				}}
-				composePath := filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
+				// The shared cliproxy runs under the standalone shared
+				// project, so its published port resolves from that file.
+				composePath := filepath.Join(*dir, "generated", "compose.shared."+*environment+".yaml")
 				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
-					composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
+					composePath = filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
+					if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
+						composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
+					}
 				}
 				portLookup := doctorPortLookup(*dir, func(ctx context.Context, env, args []string) ([]byte, error) {
 					cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell

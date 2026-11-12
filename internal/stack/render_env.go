@@ -5,14 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/skillstore"
-	"github.com/letya999/hermes-hub/internal/sshcap"
 	"github.com/letya999/hermes-hub/internal/vault"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -82,19 +81,8 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if s.CapabilityMode == "managed" && s.ExecutionMode != "supervisor" {
 		return fmt.Errorf("managed runtime requires supervisor-executed runtimes; static managed launch is not proven")
 	}
-	if s.Has("ssh") {
-		// Fail render on a broken capability config rather than shipping a
-		// runtime whose ssh tools would all deny.
-		if _, err = sshcap.Load(filepath.Join(dir, "connections", "ssh", "config.yaml")); err != nil {
-			return fmt.Errorf("ssh config: %w", err)
-		}
-	}
-	if s.Has("exposure") {
-		// Same fail-closed contract: a broken exposure config must stop the
-		// render rather than ship silently-denying exposure tools.
-		if _, err = exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml")); err != nil {
-			return fmt.Errorf("exposure config: %w", err)
-		}
+	if err := ValidateRuntimeConnections(s, dir); err != nil {
+		return err
 	}
 	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
@@ -124,6 +112,11 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	}
 	if info, err := os.Lstat(ownerAutomation); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("unsafe automation owner directory")
+	}
+	if os.Getgid() >= 0 {
+		if err := os.Chown(ownerAutomation, -1, os.Getgid()); err != nil {
+			return err
+		}
 	}
 	if err := os.Chmod(ownerAutomation, 0770); err != nil {
 		return err
@@ -212,6 +205,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = ensureRuntimeAuth(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if err = allowServiceGroupRead(filepath.Join(dir, "runtime.auth")); err != nil {
+		return err
+	}
 	if s.CapabilityMode == "managed" {
 		if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
 			return err
@@ -225,6 +221,22 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	}
 	if voiceServicesEnabled(s) || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
+			return err
+		}
+	}
+	if s.Has("image_gen") && s.PassportServices["hub-media"] == "per-space" {
+		if s.CapabilityMode != "managed" {
+			return fmt.Errorf("per-space hub-media requires a managed model relay")
+		}
+		relayAuth, readErr := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+		if readErr != nil || strings.TrimSpace(relayAuth["HUB_MODEL_RELAY_AUTH"]) == "" {
+			return fmt.Errorf("per-space hub-media model relay auth is unavailable")
+		}
+		path := filepath.Join(dir, "media-relay.auth")
+		if err = writeEnvFile(path, map[string]string{"HUB_MEDIA_UPSTREAM_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"]}); err != nil {
+			return err
+		}
+		if err = allowServiceGroupRead(path); err != nil {
 			return err
 		}
 	}
@@ -255,11 +267,14 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			return err
 		}
 		if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
-			runtimeExtra["HUB_MEDIA_URL"] = "http://hub-media:8090"
+			runtimeExtra["HUB_MEDIA_URL"] = "http://" + mediaServiceName(s) + ":8090"
 			runtimeExtra["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
 		}
 	}
 	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted, runtimeExtra); err != nil {
+		return err
+	}
+	if err = allowServiceGroupRead(filepath.Join(dir, "runtime."+s.Environment+".env")); err != nil {
 		return err
 	}
 	if err = writeSupervisorPolicy(dir, s); err != nil {
@@ -285,7 +300,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		// docker exec children inherit the container env, so the agenttools
 		// executor sees the same relay. NO_PROXY keeps the control relays
 		// direct — proxying them would loop back through egress anyway.
-		if len(managedEgressHosts(s, dir)) > 0 {
+		if len(managedEgressHosts(s, dir)) > 0 || managedExposureRelay(s, dir) != "" {
 			// Uppercase only: env files validate keys as [A-Z0-9_]* and every
 			// consumer (Go http.DefaultTransport, requests, httpx) honors it.
 			managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
@@ -304,13 +319,13 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 				}
 			}
 		}
-		if slices.Contains(managedEgressHosts(s, dir), "hub-media") {
+		if slices.Contains(managedEgressHosts(s, dir), mediaServiceName(s)) {
 			auth, err := runtimeMediaAuth(dir, s)
 			if err != nil {
 				return err
 			}
 			if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
-				managedEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
+				managedEnv["HUB_MEDIA_URL"] = "http://" + mediaServiceName(s) + ":8090"
 				managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
 				if _, declared := s.PassportServices["hub-stt"]; declared {
 					managedEnv["HUB_STT_URL"] = "http://hub-stt:8090"
@@ -322,6 +337,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			managedEnv["HUB_COMMUNICATION_AUTH"] = runtimeAuthToken(filepath.Join(dir, "runtime.auth"))
 		}
 		if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), managedEnv); err != nil {
+			return err
+		}
+		if err = allowServiceGroupRead(filepath.Join(dir, "managed-runtime."+s.Environment+".env")); err != nil {
 			return err
 		}
 	}
@@ -340,6 +358,10 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if shared, user := SplitInfraCompose(s, compose); user != nil {
 		outputs["compose.shared."+environment+".yaml"] = shared
 		outputs["compose.user."+environment+".yaml"] = user
+	} else if s.RendersInfra() {
+		// A shared-only owner still deploys under the standalone shared
+		// project name — the union compose file is that plan.
+		outputs["compose."+environment+".yaml"] = shared
 	}
 	// Generated files are reproducible; secrets and agent memories are never overwritten.
 	for name, v := range outputs {
@@ -375,6 +397,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = MaterializeHubPlugins(dir, root, s); err != nil {
 		return err
 	}
+	if err = shareGeneratedRuntimeViews(dir); err != nil {
+		return err
+	}
 	// Init seeds only a stub; heal it to the global template. Real user edits
 	// differ from the stub and are never overwritten.
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
@@ -390,6 +415,56 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	}
 	if err = os.Chmod(filepath.Join(dir, "archive"), 0755); err != nil {
 		return err
+	}
+	return nil
+}
+
+// The supervisor rebuilds these generated views as uid 10001 with the
+// renderer's primary group; keep all other generated outputs untouched.
+func shareGeneratedRuntimeViews(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	generated := filepath.Join(dir, "generated")
+	if info, err := os.Lstat(generated); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("unsafe generated directory")
+	}
+	if err := os.Chown(generated, -1, os.Getgid()); err != nil {
+		return err
+	}
+	if err := os.Chmod(generated, 0775); err != nil {
+		return err
+	}
+	for _, root := range []string{GeneratedSkillsDir(dir), GeneratedEffectiveSkillsDir(dir), GeneratedSkillsMetaDir(dir), GeneratedPluginsDir(dir)} {
+		if root == GeneratedPluginsDir(dir) {
+			if _, err := os.Lstat(root); os.IsNotExist(err) {
+				continue
+			}
+		}
+		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("generated skill view contains symlink")
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if err := os.Chown(path, -1, os.Getgid()); err != nil {
+				return err
+			}
+			mode := info.Mode().Perm() | 0060
+			if entry.IsDir() {
+				mode |= 0010
+			} else if info.Mode().Perm()&0100 != 0 {
+				mode |= 0010
+			}
+			return os.Chmod(path, mode)
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -491,7 +566,7 @@ func managedEgressHosts(s Settings, dir string) []string {
 	if s.Has("image_gen") {
 		// Image generation always goes through the hub-media sidecar; the
 		// runtime never holds provider keys.
-		hosts["hub-media"] = true
+		hosts[mediaServiceName(s)] = true
 		if _, declared := s.PassportServices["hub-stt"]; declared {
 			hosts["hub-stt"] = true
 		}
@@ -633,7 +708,7 @@ func writeSupervisorPolicy(dir string, s Settings) error {
 func writeToolHubFiles(dir string, s Settings) error {
 	runtimeDir := filepath.Join(dir, "runtime")
 	keyPath := filepath.Join(runtimeDir, "generic-controller.key")
-	if err := ensureTokenFile(keyPath); err != nil {
+	if err := ensureContainerTokenFile(keyPath); err != nil {
 		return err
 	}
 	key, err := os.ReadFile(keyPath)
@@ -650,7 +725,7 @@ func writeToolHubFiles(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	if err = atomic(filepath.Join(runtimeDir, "generic-controller.json"), append(body, '\n')); err != nil {
+	if err = atomicMode(filepath.Join(runtimeDir, "generic-controller.json"), append(body, '\n'), 0644); err != nil {
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "toolhub.auth"), map[string]string{"HUB_TOOLHIVE_ADMISSION_TOKEN": token})

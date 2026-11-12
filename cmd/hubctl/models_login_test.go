@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokeridentity "github.com/letya999/credential-broker/identity"
 )
 
 // writeModelsLoginDocs publishes one complete test revision: the cliproxy
@@ -94,9 +95,9 @@ func TestModelsLoginGrantsReadyCredentialsAndCleansBind(t *testing.T) {
 		}
 	}
 	// The broker admits one dedicated credential per (binding, context,
-	// principal): the session binds the instance, the key binds its own slot
-	// for the init companion plus the relay hop binding for model-relay.
-	want := map[string]string{"session": "cliproxy-google-1", "proxy_access": "cliproxy-google-1-key", "proxy_access_relay:model-relay-d84bbb323fab1aed32ec71ad": "model-relay-d84bbb323fab1aed32ec71ad"}
+	// principal): the session and the key each pin their own ref-derived
+	// slot on the instance, plus the relay hop binding for model-relay.
+	want := map[string]string{"session:cliproxy-google-1-google-one-1": "cliproxy-google-1-google-one-1", "proxy_access:cliproxy-google-1-key-cliproxy-google-1": "cliproxy-google-1-key-cliproxy-google-1", "proxy_access_relay:model-relay-d84bbb323fab1aed32ec71ad": "model-relay-d84bbb323fab1aed32ec71ad"}
 	seen := map[string]string{}
 	for _, g := range broker.grants {
 		kind := strings.TrimPrefix(g.IdempotencyKey, "models-login:grant:google-pro-1:")
@@ -230,6 +231,39 @@ func TestModelsLoginReusesExistingCredentialForSecondRoute(t *testing.T) {
 	for _, request := range broker.requestLog {
 		if !strings.HasPrefix(request.IdempotencyKey, "models-login:google-pro-1:") {
 			t.Fatalf("enrollment did not reuse existing credential: %s", request.IdempotencyKey)
+		}
+	}
+}
+
+// A service named like the real cliproxy-google produces onboarding ids
+// longer than the broker's 40-char id budget ("models-login-cliproxy-google-
+// proxy_access" = 41 chars): enrollment must still mint valid request ids
+// instead of failing with invalid_request.
+func TestModelsLoginOnboardingIDFitsBrokerBudget(t *testing.T) {
+	dir := t.TempDir()
+	writeModelsLoginDocs(t, dir)
+	path := filepath.Join(dir, "generated", "passports", "r-x", "models.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	longSvc := "  cliproxy-google-extra-long-name:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n"
+	if err := os.WriteFile(path, append(raw, []byte(longSvc)...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	broker := &fakeModelsBroker{requests: map[string]brokerv1.Request{
+		"cliproxy-session": {Status: "ready", CredentialID: "cred-sess"},
+		"model-api-key":    {Status: "ready", CredentialID: "cred-key"},
+	}}
+	if _, err := modelsLogin(context.Background(), dir, "cliproxy-google-extra-long-name", broker, broker); err != nil {
+		t.Fatal(err)
+	}
+	if len(broker.requestLog) != 2 {
+		t.Fatalf("session + key requests expected: %+v", broker.requestLog)
+	}
+	for _, r := range broker.requestLog {
+		if !brokeridentity.ValidID(r.OnboardingID) {
+			t.Fatalf("onboarding id %q must satisfy the broker id budget", r.OnboardingID)
 		}
 	}
 }

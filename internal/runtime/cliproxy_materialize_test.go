@@ -9,9 +9,10 @@ import (
 	"testing"
 )
 
-// cliproxyMaterialize delivers one oauth session file and one proxy_access
-// key into the instance's tmpfs views: /cliproxy/auths holds exactly the
-// session file, /run/cliproxy-cfg holds the operator config plus api-keys.
+// cliproxyMaterialize delivers the oauth session files and proxy_access
+// keys into the instance's tmpfs views: /cliproxy/auths holds one <ref>.json
+// per enrolled session, /run/cliproxy-cfg holds the operator config plus
+// api-keys.
 func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
@@ -56,7 +57,7 @@ func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := os.ReadFile(filepath.Join(auths, "session.json"))
+	session, err := os.ReadFile(filepath.Join(auths, "google-one-1.json"))
 	if err != nil || !strings.Contains(string(session), "SENTINEL") {
 		t.Fatalf("session file not delivered: %v", err)
 	}
@@ -71,6 +72,81 @@ func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
 	}
 	if resolver.calls["file"] != 1 || resolver.calls["env"] != 1 {
 		t.Fatalf("expected one session + one key resolution, got %v", resolver.calls)
+	}
+}
+
+// One instance hosts every OAuth session its owner's services point at:
+// two services sharing an endpoint yield two <ref>.json files and two
+// api-keys, each resolved under the ref's own workload slot.
+func TestCliproxyMaterializeDeliversAllInstanceSessions(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	models := head + "kind: models\nservices:\n" +
+		"  chat:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n" +
+		"    auth: {upstream: {kind: oauth-session, ref: cliproxy-alice}, proxy_access: {kind: broker-key, ref: cliproxy}}\n" +
+		"  images:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n" +
+		"    auth: {upstream: {kind: oauth-session, ref: google-ag}, proxy_access: {kind: broker-key, ref: cliproxy-google}}\n"
+	docs := map[string]string{
+		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
+		"config.yaml":    head + "kind: config\n",
+		"models.yaml":    models,
+		"workspace.yaml": head + "kind: workspace\n",
+		"tools.yaml":     head + "kind: tools\n",
+		"grants.yaml":    head + "kind: grants\n",
+	}
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	grants := `{"chat": {"cliproxy-alice": {"init": "g-sess-a"}, "cliproxy": {"init": "g-key-a", "relay": "g-key-a-r"}},` +
+		`"images": {"google-ag": {"init": "g-sess-b"}, "cliproxy-google": {"init": "g-key-b", "relay": "g-key-b-r"}}}`
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(grants), 0600); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(dir, "base")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "config.yaml"), []byte("port: 8317\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auths, cfg := filepath.Join(dir, "auths"), filepath.Join(dir, "cfg")
+	resolver := &fakeCliproxyPlane{
+		files: map[string][]byte{"g-sess-a": []byte(`{"token":"A"}`), "g-sess-b": []byte(`{"token":"B"}`)},
+		envs:  map[string]string{"g-key-a/MODEL_API_KEY": "KEY-A", "g-key-b/MODEL_API_KEY": "KEY-B"},
+	}
+	err := cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+		Instance: "cliproxy-alice", Owner: "alice",
+		GeneratedDir: gen, BaseDir: base, AuthsDir: auths, CfgDir: cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cliproxy-alice.json", "google-ag.json"} {
+		if _, err := os.ReadFile(filepath.Join(auths, name)); err != nil {
+			t.Fatalf("session %s not delivered: %v", name, err)
+		}
+	}
+	rendered, _ := os.ReadFile(filepath.Join(cfg, "config.yaml"))
+	if !strings.Contains(string(rendered), "KEY-A") || !strings.Contains(string(rendered), "KEY-B") {
+		t.Fatalf("rendered config must carry both api-keys: %s", rendered)
+	}
+	want := []string{"cliproxy-alice", "cliproxy-alice-google-ag", "cliproxy-alice-key", "cliproxy-alice-key-cliproxy-google"}
+	if len(resolver.bindings) != len(want) {
+		t.Fatalf("bindings: want %v, got %v", want, resolver.bindings)
+	}
+	for i, b := range want {
+		if resolver.bindings[i] != b {
+			t.Fatalf("bindings: want %v, got %v", want, resolver.bindings)
+		}
 	}
 }
 
@@ -250,16 +326,18 @@ func TestCliproxyMaterializeRejectsNonMapBaseConfig(t *testing.T) {
 }
 
 type fakeCliproxyPlane struct {
-	files map[string][]byte
-	envs  map[string]string
-	calls map[string]int
+	files    map[string][]byte
+	envs     map[string]string
+	calls    map[string]int
+	bindings []string
 }
 
-func (f *fakeCliproxyPlane) File(_ context.Context, grant string) ([]byte, error) {
+func (f *fakeCliproxyPlane) File(_ context.Context, binding, grant string) ([]byte, error) {
 	if f.calls == nil {
 		f.calls = map[string]int{}
 	}
 	f.calls["file"]++
+	f.bindings = append(f.bindings, binding)
 	b, ok := f.files[grant]
 	if !ok {
 		return nil, fmt.Errorf("no file for grant %s", grant)
@@ -267,11 +345,12 @@ func (f *fakeCliproxyPlane) File(_ context.Context, grant string) ([]byte, error
 	return b, nil
 }
 
-func (f *fakeCliproxyPlane) Env(_ context.Context, grant, target string) (string, error) {
+func (f *fakeCliproxyPlane) Env(_ context.Context, binding, grant, target string) (string, error) {
 	if f.calls == nil {
 		f.calls = map[string]int{}
 	}
 	f.calls["env"]++
+	f.bindings = append(f.bindings, binding)
 	v, ok := f.envs[grant+"/"+target]
 	if !ok {
 		return "", fmt.Errorf("no env for grant %s", grant)

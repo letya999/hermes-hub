@@ -104,7 +104,7 @@ func TestCliproxyInstanceGetsOnlyItsSession(t *testing.T) {
 		hc, _ := init["healthcheck"].(M)
 		test, _ := hc["test"].([]string)
 		joined := strings.Join(test, " ")
-		if !strings.Contains(joined, "/run/cliproxy-cfg/config.yaml") || !strings.Contains(joined, "/cliproxy/auths/session.json") {
+		if !strings.Contains(joined, "/run/cliproxy-cfg/config.yaml") || !strings.Contains(joined, "/cliproxy/auths/*.json") {
 			t.Fatalf("%s-init must healthcheck the materialized files: %v", name, init["healthcheck"])
 		}
 	}

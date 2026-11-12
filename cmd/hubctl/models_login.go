@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +13,22 @@ import (
 	"sort"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokeridentity "github.com/letya999/credential-broker/identity"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
+
+// modelsLoginOnboardingID fits the broker's 40-char id budget: the readable
+// "models-login-<service>-<kind>" when valid, else a deterministic hash form
+// so long service names still enroll idempotently.
+func modelsLoginOnboardingID(service, kind string) string {
+	base := "models-login-" + service + "-" + kind
+	if brokeridentity.ValidID(base) {
+		return base
+	}
+	sum := sha256.Sum256([]byte(base))
+	return "models-login-" + hex.EncodeToString(sum[:])[:16]
+}
 
 type modelsLoginGrant struct {
 	GrantID          string `json:"grant_id,omitempty"`
@@ -88,7 +103,7 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 		requestService := enrollmentService(ref, contractID)
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: contractID, ContractRevision: 1, ConnectionID: ref,
-			OnboardingID:   "models-login-" + requestService + "-" + kind,
+			OnboardingID:   modelsLoginOnboardingID(requestService, kind),
 			IdempotencyKey: "models-login:" + requestService + ":" + kind, OwnerKind: "user",
 		})
 		if err != nil {
@@ -101,11 +116,9 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 		return request.CredentialID, nil
 	}
 	grant := func(credentialID, contractID, kind, binding string, client modelsBrokerClient, out *modelsLoginGrant) error {
-		idempotencyKey := "models-login:grant:" + service + ":" + kind
-		if kind == "proxy_access_relay" {
-			// A prior unscoped grant must not conflict with the new binding.
-			idempotencyKey += ":" + binding
-		}
+		// The slot is part of the key: moving a service between instances
+		// re-grants the same credential without colliding with the old slot.
+		idempotencyKey := "models-login:grant:" + service + ":" + kind + ":" + binding
 		g, err := client.Grant(ctx, credentialID, brokerv1.GrantRequest{
 			ContractID: contractID, ContractRevision: 1,
 			PrincipalID: owner, ContextID: owner, RuntimeID: owner,
@@ -127,12 +140,12 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 		return report, err
 	}
 	if sessionCred != "" {
-		if err := grant(sessionCred, "cliproxy-session", "session", instance, control, &report.Session); err != nil {
+		if err := grant(sessionCred, "cliproxy-session", "session", credentialbroker.CliproxySessionBinding(instance, svc.Auth.Upstream.Ref), control, &report.Session); err != nil {
 			return report, err
 		}
 	}
 	if keyCred != "" {
-		if err := grant(keyCred, "model-api-key", "proxy_access", instance+"-key", control, &report.ProxyAccess.Init); err != nil {
+		if err := grant(keyCred, "model-api-key", "proxy_access", credentialbroker.CliproxyKeyBinding(instance, svc.Auth.ProxyAccess.Ref), control, &report.ProxyAccess.Init); err != nil {
 			return report, err
 		}
 		if err := grant(keyCred, "model-api-key", "proxy_access_relay", credentialbroker.ModelRelayBinding(owner, service), relay, &report.ProxyAccess.Relay); err != nil {

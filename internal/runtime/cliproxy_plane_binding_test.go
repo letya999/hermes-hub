@@ -19,10 +19,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// The init companion holds two different lease identities: the session grant
-// pins the instance slot and the api key's init grant pins <instance>-key —
-// the broker admits one dedicated credential per (binding, context,
-// principal), so a shared slot would collide.
+// The init companion resolves each credential under its own lease identity:
+// every grant pins the workload slot it was issued to — the broker admits
+// one dedicated credential per (binding, context, principal), so a shared
+// slot would collide.
 func TestBrokerCliproxyPlaneAcquiresPerPurposeBindings(t *testing.T) {
 	pub, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -74,14 +74,13 @@ func TestBrokerCliproxyPlaneAcquiresPerPurposeBindings(t *testing.T) {
 	defer server.Close()
 	actor := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", PolicyVersion: "cliproxy-materialize"}
 	plane := brokerCliproxyPlane{
-		cfg:      credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "cliproxy", Issuer: "hermes-cliproxy-session"},
-		actor:    actor,
-		instance: "cliproxy-google-1",
+		cfg:   credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "cliproxy", Issuer: "hermes-cliproxy-session"},
+		actor: actor,
 	}
-	if _, err := plane.File(context.Background(), "g-sess"); err != nil {
+	if _, err := plane.File(context.Background(), "cliproxy-google-1", "g-sess"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plane.Env(context.Background(), "g-key", "MODEL_API_KEY"); err != nil {
+	if _, err := plane.Env(context.Background(), "cliproxy-google-1-key", "g-key", "MODEL_API_KEY"); err != nil {
 		t.Fatal(err)
 	}
 	if len(leases) != 2 {
