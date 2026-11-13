@@ -317,6 +317,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 			_ = passport.PointCurrent(abs, "pending")
 			return report, fmt.Errorf("space apply: rollback journal: %w", err)
 		}
+		report.Pruned, _ = passport.PruneRevisions(abs, prevID)
 		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
 	}
 	if len(authored) != 0 {
@@ -339,6 +340,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		_ = passport.PointCurrent(abs, "pending")
 		return report, fmt.Errorf("space apply: completion journal: %w", err)
 	}
+	report.Pruned, _ = passport.PruneRevisions(abs, prevID)
 	return report, nil
 }
 

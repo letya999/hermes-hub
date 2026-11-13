@@ -277,7 +277,10 @@ func runChaosCase(t *testing.T, repo, linuxBinary, imageName, target, phase stri
 		t.Fatal(err)
 	}
 	cfg.Token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(token)), "HUB_RUNTIME_AUTH="))
-	chaosWrite(t, filepath.Join(space, "hermes.prod.yaml"), []byte("model:\n  provider: custom\n  default: gpt-4o-mini\n  base_url: "+providerURL+"\nplatform_toolsets:\n  api_server: [hermes-api-server, toolhub]\nmcp_servers:\n  toolhub:\n    url: "+endpoint+"\n    timeout: 30\n    skip_preflight: false\n    headers:\n      Authorization: Bearer ${HUB_RUNTIME_AUTH}\n"))
+	if err := os.MkdirAll(filepath.Join(space, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	chaosWrite(t, filepath.Join(space, "generated", "hermes.prod.yaml"), []byte("model:\n  provider: custom\n  default: gpt-4o-mini\n  base_url: "+providerURL+"\nplatform_toolsets:\n  api_server: [hermes-api-server, toolhub]\nmcp_servers:\n  toolhub:\n    url: "+endpoint+"\n    timeout: 30\n    skip_preflight: false\n    headers:\n      Authorization: Bearer ${HUB_RUNTIME_AUTH}\n"))
 	body, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)

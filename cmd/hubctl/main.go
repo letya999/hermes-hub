@@ -684,9 +684,6 @@ func run(ctx context.Context, args []string) error {
 				composePath := filepath.Join(*dir, "generated", "compose.shared."+*environment+".yaml")
 				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
 					composePath = filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
-					if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
-						composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
-					}
 				}
 				portLookup := doctorPortLookup(*dir, func(ctx context.Context, env, args []string) ([]byte, error) {
 					cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
@@ -730,9 +727,6 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+*environment+".yaml")
-	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
-		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
-	}
 	prefix := []string{"compose", "-f", composePath}
 	composeEnv := supervisorComposeEnv(abs)
 	dockerCmd := func(args ...string) *exec.Cmd {
@@ -1088,9 +1082,6 @@ func brokerStoreCommand(ctx context.Context, dir, root, env, op string) error {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+env+".yaml")
-	if _, err := os.Stat(composePath); os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir
-		composePath = filepath.Join(abs, "compose."+env+".yaml")
-	}
 	envv := supervisorComposeEnv(abs)
 	docker := func(a ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", a...) // #nosec G702 -- fixed docker executable, argv without shell

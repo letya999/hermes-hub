@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-10"
+last_verified: "2026-11-13"
 ---
 
 # Spaces
@@ -353,6 +353,11 @@ affected service actions. Repeated recovery is idempotent. If a first apply
 may have touched services, an image build was interrupted, or replay fails,
 the journal stays in place and `current` is pending until operator repair;
 ToolHub admission remains closed. A dev apply does not alter the prod sibling.
+Completed publications prune superseded revisions to the live pointer chain —
+`current`, the mounted view's pinned revision and the just-replaced previous —
+plus the newest three bundles for audit slack; an open journal or pending
+pointer skips the sweep, and crashed-publish staging/temp artifacts are
+collected by the same pass.
 
 `settings_read` reads the active config passport revision and reviewed values
 through ToolHub. `settings_edit` sends one setting with that revision as

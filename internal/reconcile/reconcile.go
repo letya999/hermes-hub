@@ -52,6 +52,7 @@ type Report struct {
 	Steps      []StepResult `json:"steps"`
 	RolledBack bool         `json:"rolled_back"`
 	Failed     *Action      `json:"failed_action,omitempty"`
+	Pruned     []string     `json:"pruned_revisions,omitempty"`
 }
 
 // Plan groups a classified diff into ordered unique actions. The action

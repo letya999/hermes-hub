@@ -230,8 +230,11 @@ func writeHermesSources(t *testing.T, ctxRoot string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(ctxRoot, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	for _, env := range []string{"dev", "prod"} {
-		if err := os.WriteFile(filepath.Join(ctxRoot, "hermes."+env+".yaml"), source, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "hermes."+env+".yaml"), source, 0600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime."+env+".env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\nOPENAI_API_KEY=test-key\n"), 0600); err != nil {

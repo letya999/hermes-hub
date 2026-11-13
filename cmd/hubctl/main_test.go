@@ -56,7 +56,7 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := run(ctx, []string{"render", "--dir", dir, "--root", "../.."}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "compose.prod.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "generated", "compose.prod.yaml")); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"unknown"}, {"init", "--dir", dir}, {"render", "unexpected"}, {"init", "--user", "../other"}} {

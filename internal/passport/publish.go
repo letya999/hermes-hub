@@ -25,6 +25,7 @@ func (r Revision) Publish(spaceDir string) error {
 	if err := r.Activate(spaceDir); err != nil {
 		return errors.Join(err, RestoreCurrent(spaceDir, previous, r.Provenance.Environment))
 	}
+	_, _ = PruneRevisions(spaceDir, previous)
 	return nil
 }
 

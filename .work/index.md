@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0303](in-progress/CHG-0303-space-hygiene-retention/plan.md) | Bounded passport revisions (pointer chain + slack sweep under apply lock), generated-only renders, retired space leftovers removed |
 | [CHG-0302](in-progress/CHG-0302-capability-digest-split/plan.md) | Digest-split wedge closed: publish binds to the bound catalog revision, write gate refuses uncovered selections, capability-rule denials surface in tool_search, doctor warns — incident telegram-837846104 |
 | [CHG-0300](in-progress/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |
 | [CHG-0301](in-progress/CHG-0301-store-reload-foreign-commit/plan.md) | Store reload falls back to db+WAL file stamps when data_version cannot see a foreign-process commit (Docker Desktop bind mounts) — host-side apply no longer wedges rights decide at 503 until restart |

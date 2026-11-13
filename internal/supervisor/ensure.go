@@ -435,7 +435,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return Binding{}, errors.New("runtime env file is unavailable")
 	}
-	for _, file := range []string{"hermes." + m.environment() + ".yaml", "SOUL.md"} {
+	for _, file := range []string{filepath.Join("generated", "hermes."+m.environment()+".yaml"), "SOUL.md"} {
 		info, err := os.Lstat(filepath.Join(abs, file))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Binding{}, errors.New("runtime input file unavailable")
@@ -620,7 +620,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
 			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
 		} else {
-			for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+			for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
 				if _, err := os.Stat(file.source); err == nil {
 					args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 				}

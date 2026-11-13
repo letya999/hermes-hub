@@ -271,7 +271,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	if err != nil {
 		return "", err
 	}
-	source := filepath.Join(binding.ContextRoot, "hermes."+env+".yaml")
+	source := filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
 	envName := "runtime." + env + ".env"
 	if settings.CapabilityMode == "managed" {

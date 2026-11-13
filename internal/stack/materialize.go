@@ -153,7 +153,7 @@ func writeModelRegistryRevision(dir string, s Settings, revisionID string) error
 // Inputs mirror what the in-container startup used to read from the env file
 // and runtime.auth produced by this same render.
 func materializeHermesConfig(dir string, s Settings) error {
-	source := filepath.Join(dir, "hermes."+s.Environment+".yaml")
+	source := filepath.Join(dir, "generated", "hermes."+s.Environment+".yaml")
 	dest := filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")
 	envFile := "runtime." + s.Environment + ".env"
 	if s.CapabilityMode == "managed" {

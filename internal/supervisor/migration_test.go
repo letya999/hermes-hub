@@ -522,7 +522,7 @@ func TestLegacySelectionPreventsSupervisorFromStartingContext(t *testing.T) {
 }
 
 func TestRuntimeInputSymlinkAndDirectoryAreRejected(t *testing.T) {
-	for _, name := range []string{"managed-runtime.prod.env", "hermes.prod.yaml", "SOUL.md"} {
+	for _, name := range []string{"managed-runtime.prod.env", filepath.Join("generated", "hermes.prod.yaml"), "SOUL.md"} {
 		t.Run(name, func(t *testing.T) {
 			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 			_ = os.Remove(filepath.Join(root, name))

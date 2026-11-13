@@ -372,8 +372,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		if err = atomic(filepath.Join(dir, "generated", name), b); err != nil {
 			return err
 		}
-		// One-release compatibility for callers that still look beside settings.yaml.
-		if err = atomic(filepath.Join(dir, name), b); err != nil {
+		// The retired root mirror is no longer written or read; a stale copy
+		// must never resurrect when generated/ is absent.
+		if err = os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -408,7 +409,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = MaterializeSoulEffective(dir, s); err != nil {
 		return err
 	}
-	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md", filepath.Join("generated", "soul-effective."+environment+".md")} {
+	for _, p := range []string{filepath.Join("generated", "hermes."+environment+".yaml"), "SOUL.md", filepath.Join("generated", "soul-effective."+environment+".md")} {
 		if err = os.Chmod(filepath.Join(dir, p), 0644); err != nil {
 			return err
 		}

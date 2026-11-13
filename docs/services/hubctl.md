@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-11-07
+last_verified: 2026-11-13
 ---
 
 # hubctl
@@ -67,9 +67,11 @@ other authored drafts must be applied separately. A settings publication
 also journals the previous and candidate authored `config.yaml` bytes so a
 crash restores the exact source file alongside the effective revision.
 
-`render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
-and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in
-`generated/` is hand-edited; re-render instead.
+`render`/`init`/`up` generate the space compose (`generated/compose.dev.yaml`),
+config and materialized dirs under `spaces/<user>/` — see docs/spaces.md.
+Rendered files live only under `generated/`; retired root-level copies are
+removed by the same render. Nothing in `generated/` is hand-edited; re-render
+instead.
 
 ## Controller role
 
