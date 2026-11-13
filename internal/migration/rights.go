@@ -63,7 +63,7 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 		return fmt.Errorf("rights derivation: %w", err)
 	}
 	gov := toolhub.NewGovernanceStore(toolhub.GovernanceStorePath(storePath))
-	selections, core, err := selectedHubTools(store, rev.Docs["tools"], docs)
+	selections, core, err := selectedHubTools(store, rev.Docs["tools"], docs, profileID)
 	if err != nil {
 		return fmt.Errorf("tools derivation: %w", err)
 	}
@@ -109,7 +109,7 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 			}
 		}
 	}
-	selections, core, err := selectedHubTools(store, toolsBody, docs)
+	selections, core, err := selectedHubTools(store, toolsBody, docs, profileID)
 	if err != nil {
 		return fmt.Errorf("rights restore: tools derivation: %w", err)
 	}
@@ -272,10 +272,61 @@ func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs
 	return selections, core, nil
 }
 
+// selectedHubDefinition resolves the first-party definition revision publish
+// stamps selections against. The profile's active hub-agent-tools binding is
+// the consented catalog generation — the same rule connector selections
+// already follow — so an apply on a newer binary repins membership onto the
+// bound revision instead of silently upgrading the implementation the
+// capability rules still authorize. Only catalog enable moves a profile to a
+// newer definition. When the profile has no binding yet (first bootstrap),
+// the compiled catalog definition registered in the store is the selection
+// target; a stored definition that differs from the compiled one is still
+// refused there.
+func selectedHubDefinition(store *toolhub.Store, profileID string) (*api.ToolDefinition, error) {
+	if profileID != "" {
+		bindings, err := store.BindingsForProfile(profileID)
+		if err != nil && !errors.Is(err, api.ErrNotFound) {
+			return nil, err
+		}
+		var chosen *api.ToolBinding
+		for i := range bindings {
+			if bindings[i].DefinitionID != agenttools.HubToolsDefinitionID {
+				continue
+			}
+			if chosen == nil || bindings[i].ProjectionRevision > chosen.ProjectionRevision ||
+				(bindings[i].ProjectionRevision == chosen.ProjectionRevision && bindings[i].ToolBindingID > chosen.ToolBindingID) {
+				chosen = &bindings[i]
+			}
+		}
+		if chosen != nil {
+			definition, err := store.Definition(chosen.DefinitionID, chosen.DefinitionVersion)
+			if err != nil {
+				return nil, fmt.Errorf("bound first-party definition: %w", err)
+			}
+			return &definition, nil
+		}
+	}
+	compiled := agenttools.HubToolsDefinition()
+	registered, err := store.Definition(compiled.DefinitionID, compiled.Version)
+	if err != nil {
+		if errors.Is(err, api.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if api.DefinitionDigest(registered) != api.DefinitionDigest(compiled) {
+		return nil, fmt.Errorf("first-party definition differs from pinned catalog")
+	}
+	return &registered, nil
+}
+
 // selectedHubTools resolves the compiler-validated first-party families from
-// the pinned catalog. Selection only chooses an implementation; profile
-// policy, published rights and the live ledger still decide admission.
-func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs) ([]api.CapabilitySelection, []string, error) {
+// the pinned catalog. Selection chooses membership and scopes only — the
+// implementation stays pinned to the profile's active binding, so publish
+// can never rotate the catalog generation past catalog enable, the one
+// transition that also derives the capability rules the projection needs.
+// A rebuilt binary therefore never smuggles an upgrade into durable state.
+func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string) ([]api.CapabilitySelection, []string, error) {
 	var authored passportview.Tools
 	if err := yaml.Unmarshal(body, &authored); err != nil {
 		return nil, nil, err
@@ -283,26 +334,22 @@ func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs) ([]a
 	if len(authored.Core) == 0 && len(authored.Extended) == 0 {
 		return nil, nil, nil
 	}
-	definition := agenttools.HubToolsDefinition()
-	registered, err := store.Definition(definition.DefinitionID, definition.Version)
+	registered, err := selectedHubDefinition(store, profileID)
 	if err != nil {
-		if errors.Is(err, api.ErrNotFound) {
-			for name, entry := range authored.Core {
-				if name != "platform" && entry.Via == "toolhub" {
-					return nil, nil, fmt.Errorf("selected first-party definition unavailable: %w", err)
-				}
-			}
-			for name, entry := range authored.Extended {
-				if name != "platform" && entry.Via == "toolhub" {
-					return nil, nil, fmt.Errorf("selected first-party definition unavailable: %w", err)
-				}
-			}
-			return nil, nil, nil
-		}
 		return nil, nil, err
 	}
-	if api.DefinitionDigest(registered) != api.DefinitionDigest(definition) {
-		return nil, nil, fmt.Errorf("first-party definition differs from pinned catalog")
+	if registered == nil {
+		for name, entry := range authored.Core {
+			if name != "platform" && entry.Via == "toolhub" {
+				return nil, nil, fmt.Errorf("selected first-party definition unavailable: %w", api.ErrNotFound)
+			}
+		}
+		for name, entry := range authored.Extended {
+			if name != "platform" && entry.Via == "toolhub" {
+				return nil, nil, fmt.Errorf("selected first-party definition unavailable: %w", api.ErrNotFound)
+			}
+		}
+		return nil, nil, nil
 	}
 	byName := make(map[string]api.ToolSpec, len(registered.Tools))
 	for _, tool := range registered.Tools {
@@ -359,8 +406,8 @@ func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs) ([]a
 						}
 					}
 				}
-				selection := api.CapabilitySelection{CapabilityID: tool.CapabilityID, DefinitionID: definition.DefinitionID,
-					DefinitionVersion: definition.Version, ImplementationDigest: api.DefinitionDigest(registered), ToolName: member, Name: member, PathScopes: paths}
+				selection := api.CapabilitySelection{CapabilityID: tool.CapabilityID, DefinitionID: registered.DefinitionID,
+					DefinitionVersion: registered.Version, ImplementationDigest: api.DefinitionDigest(*registered), ToolName: member, Name: member, PathScopes: paths}
 				if previous, exists := selected[member]; exists && len(previous.PathScopes) > 0 && len(paths) > 0 {
 					selection.PathScopes, err = intersectSelectedPaths(previous.PathScopes, paths)
 					if err != nil {

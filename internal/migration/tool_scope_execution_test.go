@@ -24,7 +24,7 @@ func TestAuthoredToolScopeReachesExecutor(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	selected, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/a]}}}}\n"), docs)
+	selected, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/a]}}}}\n"), docs, "")
 	if err != nil || len(selected) != 1 || len(selected[0].PathScopes) != 1 || selected[0].PathScopes[0] != "/workspace/docs/a" {
 		t.Fatalf("authored selection: %+v %v", selected, err)
 	}

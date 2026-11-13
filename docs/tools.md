@@ -63,11 +63,9 @@ overwrite drifted bytes — a vocabulary change must bump `catalog.Release`
 and land as a new directory. `internal/catalog`'s parity test proves the
 catalogs match the real handlers, sections, compose services and this file;
 a space loads only a pinned release (`catalog.Load`) and every unknown
-capability, operation, toolset, service or release fails closed.
-
-M32 integration keeps track 2's immutable releases 14–16. Track 1 independently
-emitted a different release 14 at `8cb598fb` (the governed settings contract);
-its original bytes remain in that commit, not under the same release number here.
+capability, operation, toolset, service or release fails closed. M32 keeps
+track 2's immutable releases 14–16; track 1 emitted a different release 14
+at `8cb598fb`, whose original bytes remain in that commit.
 Release 20 adds `memory_open` and pairs with `hub-agent-tools@18.0.2`.
 Release 21 pairs with `hub-agent-tools@18.1.0`, renames the ToolHub `web`
 family to `web_search`, adds provider and cache operations, and removes the
@@ -92,15 +90,10 @@ audio path relative to the admitted workspace or the same path under
 Release 28 pairs with `hub-agent-tools@18.3.7`: `skill_edit install_local`
 returns its draft diff, lint and scan, and the tool description names the
 `file_write` staging step and `/workspace`-relative path.
-Release 29 pairs with `hub-agent-tools@18.3.8`: `routine_remove` guidance keeps a one-time reminder active until `routine_read` history confirms delivery when cleanup was requested after firing.
-The next immutable agent-tool version, `hub-agent-tools@18.3.10` on Release 29, clarifies: `assignment_plan` requires a candidate `sources[].schedule` plan and checks structure only; `assignment_edit` saves that plan before apply and records progress only from a real trigger job. An owner-requested plan-first order takes precedence over the default draft-first workflow; standalone watches are not assignment substitutes. A one-time first HTTP read uses `watcher` with `deliver_mode=content`: `check expect=unchanged` skips the first tick without a baseline. The completing job's verified response can still be sent after its source retires and occurrence archives; owner deletion and revoked delivery rights remain fences.
-
-`hub-agent-tools@18.3.11` makes the settings edit restart risk explicit: publication may respawn the current managed runtime and interrupt the caller's turn. When the owner requires a same-turn restore or uninterrupted chat, the agent stops after `settings_read` and reports that limit.
-Release 30 pairs with `hub-agent-tools@18.3.12`: `exposure_list` returns sorted declared endpoint names and safe target classes alongside live tunnels. A `hub_public_listener` endpoint is the onboarding surface, not a test website. Release 31 pairs with `hub-agent-tools@18.3.13`: owner inventory includes stale orphan onboarding IDs; confirmed remove reclaims owned connections across policy epochs and reports incomplete cleanup until Broker deletion is verified. Release 32 paired with `hub-agent-tools@18.3.14` for the initial reconciliation/resend fix. Release 33 pairs with `hub-agent-tools@18.3.15`: connector status is a saved read; Broker event consumption, durable notice intent, action revisions and bounded per-onboarding admissions own progress. A queued notice is not a delivery receipt. Release 34 pairs with `hub-agent-tools@18.3.16`: explicit reauth reopens credential entry during unfinished setup and after previous reauth cycles; `connector_edit action=revoke` exposes authorization revocation independently of removal. System contract rendering preserves Unicode boundaries and rejects invalid UTF-8.
-Release 35 pairs with `hub-agent-tools@18.3.17`: research jobs persist under the owning ToolHub state, execute through the idempotent Supervisor model job, recover after ToolHub restarts, and expose queued/running/terminal status plus the final report through `research_read`. A queued job is not a completed result. Release 36 pairs with `hub-agent-tools@18.3.18`: connector status reports the channel outbox receipt for the current notice. `link_sent` means queued; `delivery_status=delivered` is the channel acknowledgement, `uncertain` is an unconfirmed send, and `unknown` means the receipt could not be read. Resend event IDs share the generator's hex validation contract. Release 37 pairs with `hub-agent-tools@18.3.19`: a call denied on a declared selection's arguments, scope or rights reports an authorization denial instead of record-not-found; deny events carry a bounded `reason` class (`not-found`, `denied`, `invalid`, `error`), never argument values. The prompt contract states `settings_read.manageable_keys` is the complete reviewed key set, chat language lives in `/language`, and an authoritative inventory answer ends the search.
-Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit`
-and ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current
-rights; memory writes need a verified owner assignment and owner-confirmed edits.
+Release 29 pairs with `hub-agent-tools@18.3.8`: `routine_remove` keeps a one-time reminder active until `routine_read` confirms delivery when cleanup was requested after firing. `hub-agent-tools@18.3.10` on the same release clarifies: `assignment_plan` requires a candidate `sources[].schedule` plan and checks structure only; `assignment_edit` saves that plan before apply and records progress only from a real trigger job. An owner-requested plan-first order takes precedence over the default draft-first workflow; standalone watches are not assignment substitutes. A one-time first HTTP read uses `watcher` with `deliver_mode=content`; `check expect=unchanged` skips the first tick without a baseline. The completing job's verified response can still be sent after its source retires; owner deletion and revoked delivery rights remain fences. `hub-agent-tools@18.3.11` makes the settings edit restart risk explicit: publication may respawn the current managed runtime and interrupt the caller's turn; when the owner requires a same-turn restore or uninterrupted chat, the agent stops after `settings_read` and reports that limit.
+Release 30 pairs with `hub-agent-tools@18.3.12`: `exposure_list` returns sorted declared endpoint names and safe target classes alongside live tunnels; `hub_public_listener` is the onboarding surface, not a test site. Release 31 pairs with `hub-agent-tools@18.3.13`: owner inventory includes stale orphan onboarding IDs; confirmed remove reclaims owned connections across policy epochs and reports incomplete cleanup until Broker deletion is verified. Release 32 paired with `hub-agent-tools@18.3.14` for the initial reconciliation/resend fix. Release 33 pairs with `hub-agent-tools@18.3.15`: connector status is a saved read; Broker events, durable notice intent, action revisions and bounded per-onboarding admissions own progress — a queued notice is not a delivery receipt. Release 34 pairs with `hub-agent-tools@18.3.16`: explicit reauth reopens credential entry during unfinished setup and after previous reauth cycles; `connector_edit action=revoke` exposes authorization revocation independently of removal. System contract rendering preserves Unicode boundaries and rejects invalid UTF-8.
+Release 35 pairs with `hub-agent-tools@18.3.17`: research jobs persist under the owning ToolHub state and expose queued/running/terminal status plus the report through `research_read`; a queued job is not a completed result. Release 36 pairs with `hub-agent-tools@18.3.18`: connector status reports the channel outbox receipt — `link_sent` is queued, `delivered` the channel ack, `uncertain` unconfirmed, `unknown` unreadable. Release 37 pairs with `hub-agent-tools@18.3.19`: a denial on a declared selection's arguments, scope or rights reports an authorization denial, not record-not-found, with a bounded `reason` class (`not-found`, `denied`, `invalid`, `error`), never argument values. `settings_read.manageable_keys` is the complete reviewed key set; chat language is `/language`; an authoritative inventory answer ends the search.
+Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights; memory writes need a verified owner assignment and owner-confirmed edits.
 
 ## mcp__toolhub__ — control plane
 
@@ -164,28 +157,35 @@ Six tools are always projected, never operator-selectable or removable
 | `tool_search` | Search the extended inventory by name, description, params, definition |
 | `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call; core/visible names are rejected and must be invoked directly |
 
-Selection in `tools.yaml` and rights in `grants.yaml` are independent.
-On apply, first-party `toolhub` family members in the published revision
-replace that definition's selections in the bound capability profile. The
-profile's core bound controls direct schemas, including an empty core; an
-open session re-reads the profile for list and call admission. A tool with no
-active `tools.use` or domain grant remains unavailable. For the `files`
-handler, selected `scope.paths` narrow the admitted path before dispatch and
-reach the executor's filesystem root. Supported roots are `/workspace`,
-`/archive` and `/organization`; unsupported path roots, host/URL scopes and
-tools without a path argument refuse apply. Per-tool path rules intersect
-with their toolset scope.
-Apply also refuses a selected first-party family when the pinned ToolHub
-definition has not been registered.
+Selection in `tools.yaml` and rights in `grants.yaml` are independent. On
+apply, first-party `toolhub` family members in the published revision replace
+that definition's selections in the bound capability profile, pinned to the
+revision the profile's active binding already consents to — a rebuilt binary
+never upgrades the implementation mid-apply. Only `hubctl catalog-enable`
+moves a profile to a newer catalog version, deriving the matching capability
+rules in the same write; a publish repinning a selection past rules still
+pinned to another implementation digest is refused. The profile's core bound
+controls direct schemas, including an empty core; an open session re-reads
+the profile for list and call admission. A tool with no active `tools.use`
+or domain grant remains unavailable: `tool_search` reports it under
+`unavailable` with its `missing_right`; a selection the capability rules
+deny (expired, explicit deny, or a repin the rules never followed) reports
+`reason=capability_rules` — an operator repair state, not a grantable gap.
+For the `files` handler, selected `scope.paths` narrow the admitted path
+before dispatch and reach the executor's filesystem root. Supported roots
+are `/workspace`, `/archive` and `/organization`; unsupported path roots,
+host/URL scopes and tools without a path argument refuse apply. Per-tool
+path rules intersect with their toolset scope. Apply also refuses a selected
+first-party family when the pinned ToolHub definition has not been
+registered.
 Managed calls, including `tool_call` and self-installed connector tools,
 require a live `tools.use` grant plus the selected tool's own operation right.
 `tools.configure` authorizes changing the selection and grants no invocation.
 The authored grants passport may only publish rights already issued in
 ToolHub's protected ledger; editing the passport cannot issue a right.
-Prepared MCP connectors publish their discovered members as immutable
-`connector.tool.<digest>` capabilities. Enabling a connector updates the
-owner's bound profile; calls use the current profile and rights and dispatch
-to that connector's MCP server.
+Prepared MCP connectors publish discovered members as immutable
+`connector.tool.<digest>` capabilities; enabling updates the owner's bound
+profile and calls dispatch to that connector's MCP server.
 
 ## First-party families
 
@@ -207,7 +207,7 @@ word where one exists):
 | context | `context_status`, `context_edit` | handler:context | threshold/journal/live token estimate; `context_edit` action=compact runs turn-boundary compaction |
 | settings | `settings_read`, `settings_edit` | handler:settings in ToolHub control plane | `settings_read` returns the active config passport revision, published values and `manageable_keys` — the complete reviewed allowlist: an absent key cannot be changed through any tool, and chat language lives in the `/language` channel command, not ToolHub settings; `settings_edit` requires `key`, `base_revision` and the current issued plus published `config.edit_own` right, then publishes and reconciles a new six-passport revision; an omitted/empty `value` removes that authored leaf; stale base or unpublished draft refuses without changing effective state; rollback and interrupted-publication recovery retry only stale SQLite snapshot conflicts, at most three times under the apply lock; secrets are never shown |
 
-Goal and context handler calls release ToolHub registry admission before invoking the owner runtime, then recheck the binding. Their supervisor or model-relay calls may re-enter ToolHub for rights; holding admission during that callback can stall the request.
+Goal and context calls release ToolHub registry admission before invoking the owner runtime, then recheck the binding — their supervisor/model-relay callbacks may re-enter ToolHub for rights, so holding admission would stall the request.
 | ssh | `ssh_list`, `ssh_read`, `ssh_write`, `ssh_exec`, `ssh_shell`, `ssh_tunnel` | handler:ssh | declared hosts only; `ssh_shell` action open\|send\|read\|close, `ssh_tunnel` action open\|list\|close; write/shell/tunnel need their own grant |
 | exposure | `exposure_list`, `exposure_create`, `exposure_remove` | handler:exposure | list declared names and target classes plus live tunnels; open only a reviewed endpoint by name |
 | sites | `site_list`, `site_publish`, `site_remove` | handler:sites | own hosted sites (was hosting); publish/remove are `request_id` + `expected_revision` fenced |
@@ -223,11 +223,11 @@ Goal and context handler calls release ToolHub registry admission before invokin
 | memory | `memory_open` | runtime:toolhub | from a live private owner run, mint a one-hour bearer link to ToolHub's read-only private-memory view; each page request rechecks published `memory.enabled`, the selected tool and current `memory.search` right; no upstream OpenKnowledge vault mount or UI write path |
 
 An enabled prepared connector can expose a reviewed upgrade mode through
-`prepare_source` with its exact `onboarding_id` and `upgrade_mode` (for example
-Telegram `send`). ToolHub reuses the owner's Broker credential, probes the new
-surface, rejects any tool or environment drift outside the prepared catalog,
-and requires the normal owner confirmation and enable before replacing the
-old binding. New write tools remain gated by the current selection and grants.
+`prepare_source` with its exact `onboarding_id` and `upgrade_mode` (for
+example Telegram `send`). ToolHub reuses the owner's Broker credential,
+probes the new surface, rejects drift outside the prepared catalog, and
+requires the normal owner confirmation and enable before replacing the old
+binding. New write tools remain gated by the current selection and grants.
 
 ## memory — the vault contract
 

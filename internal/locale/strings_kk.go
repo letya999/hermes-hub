@@ -9,6 +9,7 @@ func init() {
 		"doctor.warning":                          "Ескерту: %s",
 		"doctor.connector-credential-missing":     "%s қосымша коннекторында %s жоқ; осы құпия деректі қажет ететін әрекеттер сәтсіз аяқталуы мүмкін.",
 		"doctor.mcp-credential-missing":           "MCP %s коннекторы көрсетілген құпия дерек бапталмайынша қолжетімсіз.",
+		"doctor.capability-selection-gap":         "capability %s профилі: %d таңдалған құралдың capability ережесі жоқ; hubctl catalog-enable каталог ережелерін оның анықтамасына қайта бекіткенше олардың проекциясы басылған",
 		"supervisor.settings-invalid":             "Параметрлерді өзгерту сұрауы жарамсыз.",
 		"supervisor.settings-denied":              "Параметрлерді өзгерту қабылданбады немесе жарияланбады.",
 		"hubctl.space-apply-passport-right":       "Бұл паспорт өзгерісі үшін %s құқығы қажет.",

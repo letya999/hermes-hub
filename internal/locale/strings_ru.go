@@ -9,6 +9,7 @@ func init() {
 		"doctor.warning":                          "Предупреждение: %s",
 		"doctor.connector-credential-missing":     "У необязательного коннектора %s нет %s; операции, требующие этот секрет, могут завершиться ошибкой.",
 		"doctor.mcp-credential-missing":           "MCP-коннектор %s недоступен, пока не настроен указанный для него секрет.",
+		"doctor.capability-selection-gap":         "профиль capability %s: у %d выбранных инструментов нет покрывающего capability-правила; их проекция подавлена до hubctl catalog-enable, который перепривяжет правила каталога к его определению",
 		"supervisor.settings-invalid":             "Некорректный запрос на изменение настроек.",
 		"supervisor.settings-denied":              "Изменение настроек отклонено или не удалось опубликовать.",
 		"hubctl.space-apply-passport-right":       "Для этого изменения паспорта требуется право %s.",

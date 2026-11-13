@@ -254,11 +254,24 @@ func (s *Store) rightsMissingLocked(auth identity.Envelope, profile api.Capabili
 
 // RightsDenial is one selection a rights ceiling hides: the projected name
 // and the missing capability.operation so tools_list can answer "why can't
-// I do X" truthfully. Capability-rule denials stay silent — they are not
-// the principal's rights story.
+// I do X" truthfully.
 type RightsDenial struct {
 	Name    string `json:"name"`
 	Missing string `json:"missing_right"`
+}
+
+// DenialCapabilityRules is the reason token tools_list reports for a
+// selection the capability rules deny under projection: the rules never
+// followed the selected implementation, expired, or an explicit deny
+// suppresses it. Unlike a missing right, no grant the principal can issue
+// admits the tool — an operator repairs the capability records.
+const DenialCapabilityRules = "capability_rules"
+
+// CapabilityDenial is one selection suppressed at the capability-rule stage
+// even though its binding resolves.
+type CapabilityDenial struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // RightsDenials lists the selections the rights gate suppresses. Empty for
@@ -299,6 +312,53 @@ func (s *Store) RightsDenials(auth identity.Envelope) ([]RightsDenial, error) {
 			}
 			for _, right := range s.rightsMissingLocked(auth, profile, tool, now) {
 				out = append(out, RightsDenial{Name: selection.Name, Missing: right})
+			}
+		}
+	}
+	return out, nil
+}
+
+// CapabilityDenials lists the selections capability rules deny under
+// projection — distinct from RightsDenials: the selection resolves its
+// binding and definition, yet no allow∩ceiling pair admits it (or a deny
+// does). tools_list surfaces these so the model reports "suppressed by
+// capability rules" instead of concluding the tool does not exist. Empty for
+// unmanaged callers.
+func (s *Store) CapabilityDenials(auth identity.Envelope) ([]CapabilityDenial, error) {
+	if auth.CapabilityProfile == "" {
+		return nil, nil
+	}
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, policy, err := s.capabilityProfileLocked(auth)
+	if err != nil {
+		return nil, nil // no usable profile → nothing to attribute
+	}
+	var out []CapabilityDenial
+	for _, selection := range profile.Selections {
+		var found *api.EffectiveBinding
+		for _, binding := range s.bindings {
+			if binding.DefinitionID != selection.DefinitionID || binding.DefinitionVersion != selection.DefinitionVersion || binding.ConnectionID != selection.ConnectionID {
+				continue
+			}
+			effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+			if err != nil {
+				continue
+			}
+			found = &effective
+		}
+		if found == nil {
+			continue
+		}
+		for _, tool := range found.Definition.ProjectedToolSpecs(found.Binding) {
+			if tool.Name != selection.ToolName || tool.CapabilityID != selection.CapabilityID {
+				continue
+			}
+			if _, _, allowed := api.CapabilityDecision(profile, policy, selection, tool, nil, true); !allowed {
+				out = append(out, CapabilityDenial{Name: selection.Name, Reason: DenialCapabilityRules})
 			}
 		}
 	}
