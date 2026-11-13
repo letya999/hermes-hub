@@ -36,7 +36,7 @@ FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77
 # runtime image. UV_COMPILE_BYTECODE trades a slower build for an image that
 # does not pay the compile cost (or attempt writes on the read-only rootfs) at
 # every container start.
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS python_build
+FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS python_build
 ENV PYTHONUNBUFFERED=1 UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY --from=uv /uv /usr/local/bin/uv
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -91,7 +91,7 @@ USER 10001:10001
 # hub-runtime: the agent's Python world — pruned upstream checkout, compiled
 # venv and Node for stdio MCP. Voice lives in dedicated services (SPEC-0082
 # R2); the browser display stack moves to the per-space sidecar (R4).
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS runtime
+FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 # PYTHONDONTWRITEBYTECODE stays set: python_build already compiled the venv,
 # and nothing may write .pyc into the writable mounts at runtime.
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
@@ -118,7 +118,7 @@ USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["idle"]
 
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS browser
+FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS browser
 # hub-browser (SPEC-0082 R4, ADR-0083 D3): the per-space sidecar owning the
 # headed-Chromium display stack. CDP binds the container interfaces and is
 # reachable only on the space-internal network; the sole host-published
