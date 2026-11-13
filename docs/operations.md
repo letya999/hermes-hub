@@ -1246,7 +1246,8 @@ Known traps from live acceptance:
   does not prove its database is on a Linux filesystem. To move an existing
   stack, stop both owner and managed-space Compose projects without deleting
   volumes, copy their space directories with numeric uid/gid preserved, and
-  include `store.db`, its WAL and SHM from the stopped source. Check SQLite
+  include `store.db` (plus `-journal`/`-wal` leftovers, if any) from the
+  stopped source. Check SQLite
   `PRAGMA integrity_check` on the destination before starting services. Keep
   the ToolHub store private to uid 10001 (`0600`); the rendered routing and
   non-secret configs must be readable by the service, while controller and
@@ -1264,10 +1265,27 @@ Known traps from live acceptance:
   SQLite admission transaction and reverify rights before execution. Holding
   that transaction through the callback makes `assignments.list` wait for
   its own single SQLite connection until the HTTP timeout.
-  Windows SQLite can report a false malformed image while the Linux writer
-  holds WAL; stop ToolHub before host-side inspection or mutation. ToolHub's
-  unchanged-store check uses SQLite `data_version` so checkpoint-only
-  timestamp changes do not trigger a full registry reload.
+  The ToolHub store runs SQLite in rollback-journal mode, not WAL: a WAL's
+  shared-memory index cannot propagate through a Docker Desktop bind mount,
+  so a WAL connection's view froze at map time, a second connection failed
+  with `SQLITE_IOERR_SHORT_READ`, and blind writes/checkpoints physically
+  erased foreign frames — observed live when a host-side `space apply`
+  profile write vanished within seconds. The rollback journal needs no
+  shared index: every reader sees the authoritative file and file locks
+  serialize host and container writers. ToolHub's unchanged-store check
+  still starts with SQLite `data_version`, then compares a rate-limited
+  content hash of `store.db` (of `-wal` when a WAL-era file still exists):
+  `data_version` only sees commits this connection can observe, while the
+  file hash is a signal a foreign writer cannot mask. A real change loads a
+  snapshot made from byte copies of the store files — never a second live
+  connection — and adopts it; a snapshot overtaken by a mid-load commit is
+  refused with a conflict and converges on the next probe. Symmetrically,
+  every save compares the current file hash and, on drift, arbitrates with
+  the persisted digest read from a byte copy: a foreign commit refuses the
+  save with a conflict so the next reload adopts it, while the store's own
+  out-of-band writes re-baseline and proceed. The in-transaction digest
+  check stays as the last fence — in rollback mode the connection's view is
+  truthful again.
 - **`/model` chat command is currently dead for managed principals** behind
   the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
   only into a gateway inside its own managed space, and managed spaces run

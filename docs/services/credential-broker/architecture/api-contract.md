@@ -1,6 +1,6 @@
 ---
 description: "Версия v1, audiences, errors и отделение секретного runtime-канала."
-last_verified: "2026-11-12"
+last_verified: "2026-11-13"
 ---
 
 # HTTP API и identity contract

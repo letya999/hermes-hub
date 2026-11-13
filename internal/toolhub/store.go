@@ -19,6 +19,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type Store struct {
@@ -29,10 +30,12 @@ type Store struct {
 	db                  *sql.DB
 	dbVersion           int64
 	dbFile              os.FileInfo
+	digestPollUnix      atomic.Int64
 	dbRows              map[dbKey][32]byte
 	dbListCounts        map[string]int
 	diskDigest          [32]byte
 	diskStamp           storeStamp
+	fileHash            [32]byte
 	installationID      string
 	syncDirectory       func(string) error
 	Reconnect           *ReconnectController

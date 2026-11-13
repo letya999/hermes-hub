@@ -23,8 +23,22 @@ var chmodStore = os.Chmod
 // Open creates or opens a service DB, running migrate once inside one
 // transaction when the store predates this schema version.
 func Open(path string, schema int, migrate func(*sql.Tx) error) (*sql.DB, error) {
+	return open(path, schema, migrate, "WAL")
+}
+
+// OpenRollback opens the store in rollback-journal mode. The shared ToolHub
+// store has writers on both sides of a Docker Desktop bind mount — a WAL's
+// shared-memory index cannot propagate there, so every connection's view
+// freezes at map time and blind writes physically erase foreign frames.
+// The rollback journal needs no shared index: every reader sees the
+// authoritative file and file locks serialize the writers.
+func OpenRollback(path string, schema int, migrate func(*sql.Tx) error) (*sql.DB, error) {
+	return open(path, schema, migrate, "DELETE")
+}
+
+func open(path string, schema int, migrate func(*sql.Tx) error, journalMode string) (*sql.DB, error) {
 	v := url.Values{}
-	v.Add("_pragma", "journal_mode(WAL)")
+	v.Add("_pragma", "journal_mode("+journalMode+")")
 	v.Add("_pragma", "synchronous(FULL)")
 	db, err := sql.Open("sqlite", "file:"+path+"?"+v.Encode())
 	if err != nil {

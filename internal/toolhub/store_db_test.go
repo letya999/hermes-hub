@@ -259,18 +259,167 @@ func TestStoreDBReloadUsesDataVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = loaded.CloseDB() })
-	loaded.diskStamp = storeStamp{} // A checkpoint may change the file stamp without a data commit.
+	prevPoll := storeDigestPollInterval
+	storeDigestPollInterval = 0
+	t.Cleanup(func() { storeDigestPollInterval = prevPoll })
+	// A checkpoint-style stamp drift without a data commit is invisible to
+	// the db watcher — file stamps churn on bind mounts, so only a digest
+	// change re-triggers a load.
+	loaded.diskStamp = storeStamp{}
 	if err := loaded.Reload(); err != nil {
 		t.Fatal(err)
 	}
 	if loaded.diskStamp != (storeStamp{}) {
-		t.Fatal("unchanged SQLite data triggered a full reload")
+		t.Fatal("stamp-only drift reloaded the store")
 	}
 	if _, err := seed.db.Exec("UPDATE meta SET v='foreign' WHERE k='digest'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := loaded.Reload(); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("foreign SQLite commit was not detected: %v", err)
+	}
+}
+
+// Regression for the dev-stack wedge: on a bind mount whose shared WAL
+// index never propagates (Docker Desktop), a foreign process's commit
+// moves only the file stamps while this connection's data_version stays
+// pinned — a host-side apply once left ToolHub deciding on a stale
+// passport pin until a restart forced a fresh Load.
+func TestStoreDBReloadAdoptsForeignCommitWhenDataVersionStalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+
+	prev := storeDataVersion
+	storeDataVersion = func(*sql.DB) (int64, error) { return loaded.dbVersion, nil }
+	t.Cleanup(func() { storeDataVersion = prev })
+	prevPoll := storeDigestPollInterval
+	storeDigestPollInterval = 0
+	t.Cleanup(func() { storeDigestPollInterval = prevPoll })
+
+	seed.projectionRevisions["alice"]++
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Reload(); err != nil {
+		t.Fatalf("stalled data_version blocked the foreign commit: %v", err)
+	}
+	if loaded.projectionRevisions["alice"] != 1 {
+		t.Fatal("foreign commit was never adopted")
+	}
+	stamp := loaded.diskStamp
+	if err := loaded.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.diskStamp != stamp {
+		t.Fatal("settled store reloaded again")
+	}
+}
+
+// A commit another process lands after this store's last load is invisible
+// to its frozen WAL view — its next save must refuse the conflict rather
+// than checkpoint an outdated snapshot over the newer rows.
+func TestStoreDBSaveRefusesToOverwriteForeignCommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+
+	prevVersion := storeDataVersion
+	storeDataVersion = func(*sql.DB) (int64, error) { return loaded.dbVersion, nil }
+	t.Cleanup(func() { storeDataVersion = prevVersion })
+	prevPoll := storeDigestPollInterval
+	storeDigestPollInterval = 0
+	t.Cleanup(func() { storeDigestPollInterval = prevPoll })
+
+	seed.projectionRevisions["alice"]++
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded.projectionRevisions["bob"]++
+	if err := loaded.Save(path); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("blind save overwrote foreign commit: %v", err)
+	}
+	fresh, err := Load(path)
+	if err != nil {
+		t.Fatalf("foreign commit destroyed: %v", err)
+	}
+	defer func() { _ = fresh.CloseDB() }()
+	if fresh.projectionRevisions["alice"] != 1 || fresh.projectionRevisions["bob"] != 0 {
+		t.Fatal("file lost foreign rows or absorbed the refused write")
+	}
+	if err := loaded.Reload(); err != nil {
+		t.Fatalf("foreign commit never adopted: %v", err)
+	}
+	if loaded.projectionRevisions["alice"] != 1 {
+		t.Fatal("foreign commit not adopted after refused save")
+	}
+}
+
+// A commit landing while Reload fetches its snapshot leaves that fetch a
+// step behind; the store refuses the stale fetch once, then converges on
+// the newer state at the next probe — even when the commits came from a
+// process this connection cannot observe.
+func TestStoreDBReloadRefusesSnapshotOvertakenDuringLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "store.db")
+	seed := NewStore()
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = seed.CloseDB() })
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loaded.CloseDB() })
+
+	prevVersion := storeDataVersion
+	storeDataVersion = func(*sql.DB) (int64, error) { return loaded.dbVersion, nil }
+	t.Cleanup(func() { storeDataVersion = prevVersion })
+	prevPoll := storeDigestPollInterval
+	storeDigestPollInterval = 0
+	t.Cleanup(func() { storeDigestPollInterval = prevPoll })
+
+	seed.projectionRevisions["alice"]++
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	prevLoad := storeLoad
+	storeLoad = func(p string) (*Store, error) {
+		fresh, err := prevLoad(p)
+		if err != nil {
+			return nil, err
+		}
+		seed.projectionRevisions["bob"]++
+		return fresh, seed.Save(p)
+	}
+	t.Cleanup(func() { storeLoad = prevLoad })
+
+	if err := loaded.Reload(); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("overtaken snapshot adopted: %v", err)
+	}
+	storeLoad = prevLoad
+	if err := loaded.Reload(); err != nil {
+		t.Fatalf("settled store never adopted: %v", err)
+	}
+	if loaded.projectionRevisions["alice"] != 1 || loaded.projectionRevisions["bob"] != 1 {
+		t.Fatal("foreign commits lost")
 	}
 }
 
@@ -424,7 +573,13 @@ func TestProjectionFingerprintTracksPersistedInputs(t *testing.T) {
 	if err != nil || !cacheable {
 		t.Fatalf("initial fingerprint: cacheable=%t err=%v", cacheable, err)
 	}
-	loaded.diskStamp = storeStamp{} // SQLite checkpoints may change file metadata only.
+	// SQLite checkpoints may change file metadata only. The stamp drift
+	// makes the store look changed until Reload re-baselines it; the
+	// projection itself must stay identical.
+	loaded.diskStamp = storeStamp{}
+	if err := loaded.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	if same, ok, err := g.projectionFingerprint(aliceAuth()); err != nil || !ok || same != first {
 		t.Fatalf("checkpoint-only stamp changed projection: cacheable=%t err=%v", ok, err)
 	}

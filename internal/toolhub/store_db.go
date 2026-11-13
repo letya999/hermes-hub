@@ -38,7 +38,7 @@ func (s *Store) CloseDB() error {
 }
 
 func openStoreDB(path string) (*sql.DB, error) {
-	db, err := sqlitedb.Open(path, toolhubDBSchema, func(tx *sql.Tx) error {
+	db, err := sqlitedb.OpenRollback(path, toolhubDBSchema, func(tx *sql.Tx) error {
 		stmts := []string{
 			`CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
 			`CREATE TABLE ent (collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (collection, id))`,
@@ -497,6 +497,7 @@ func loadDB(path string) (*Store, error) {
 		store.diskDigest = rowsDigest(store.dbRows, state.InstallationID)
 	}
 	store.diskStamp = stamp
+	store.fileHash, _ = storeFileHash(path)
 	return store, nil
 }
 
@@ -564,6 +565,22 @@ func (s *Store) saveDBLocked(path string) error {
 	}
 	defer release()
 	err = func() error {
+		// A foreign-process commit may be invisible to this connection's
+		// frozen WAL view — the in-transaction digest read below can return
+		// the stale value this snapshot was built from, and a fresh SQLite
+		// connection short-reads the live file on this mount. Hash drift
+		// alone could be this connection's own out-of-band write, so the
+		// copied digest arbitrates: only a real foreign commit makes a
+		// blind save refuse instead of checkpointing its outdated rows
+		// over the newer commit.
+		if s.fileHash != ([32]byte{}) {
+			if hash, ok := storeFileHash(path); ok && hash != s.fileHash {
+				if digest, ok := storeSnapshotDigest(path); !ok || digest != hex.EncodeToString(s.diskDigest[:]) {
+					return api.ErrConflict
+				}
+				s.fileHash = hash
+			}
+		}
 		tx, err := s.db.Begin()
 		if err != nil {
 			return err
@@ -660,5 +677,6 @@ func (s *Store) saveDBLocked(path string) error {
 	s.dbRows, s.dbListCounts = index, counts
 	s.diskStamp, _ = statStoreStamp(path)
 	s.dbFile, _ = os.Stat(path)
+	s.fileHash, _ = storeFileHash(path)
 	return nil
 }

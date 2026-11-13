@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-11-12
+last_verified: 2026-11-13
 ---
 
 # Testing

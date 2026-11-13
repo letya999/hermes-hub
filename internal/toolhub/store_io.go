@@ -2,6 +2,7 @@ package toolhub
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -519,6 +520,13 @@ func (s *Store) persistAndNotify() error {
 // Reload replaces in-memory state from the persisted snapshot. In-memory
 // stores (no path) are unchanged so tests can mutate without a round-trip.
 func (s *Store) changedOnDiskLocked() (bool, int64, error) {
+	return s.changedOnDisk(false)
+}
+
+// forced bypasses the digest poll's rate limiter — the rechecks inside a
+// Reload in flight must answer with the freshest content signal, not a
+// cached "unchanged" from the entry probe that just detected the change.
+func (s *Store) changedOnDisk(forced bool) (bool, int64, error) {
 	if s.db != nil {
 		info, err := os.Stat(s.path)
 		if err != nil {
@@ -529,16 +537,128 @@ func (s *Store) changedOnDiskLocked() (bool, int64, error) {
 		}
 		// WAL checkpoints can change file timestamps without changing data.
 		// data_version advances only for commits from another connection.
-		version, err := dbDataVersion(s.db)
-		return version != s.dbVersion, version, err
+		version, err := storeDataVersion(s.db)
+		if err != nil {
+			return false, 0, err
+		}
+		if version != s.dbVersion {
+			return true, version, nil
+		}
+		// data_version only advances for commits this connection can
+		// observe; on bind mounts whose shared WAL index never propagates
+		// (Docker Desktop) a blind connection stays stale forever, file
+		// stamps churn without commits, and a fresh SQLite connection
+		// short-reads the live file outright — so the bytes a commit
+		// actually moves are the one signal that cannot be masked.
+		if !forced {
+			last := s.digestPollUnix.Load()
+			now := time.Now().UnixNano()
+			if now-last < int64(storeDigestPollInterval) || !s.digestPollUnix.CompareAndSwap(last, now) {
+				return false, version, nil
+			}
+		}
+		hash, ok := storeFileHash(s.path)
+		return ok && hash != s.fileHash, version, nil
 	}
 	stamp, ok := statStoreStamp(s.path)
 	return !ok || s.savedPath != s.path || stamp != s.diskStamp, 0, nil
 }
 
 // storeLoad is the seam through which tests can observe or delay the disk
-// snapshot Reload fetches. Production keeps it pointed at Load.
-var storeLoad = Load
+// snapshot Reload fetches.
+var storeLoad = loadStoreSnapshot
+
+// copyStoreFiles byte-copies the database and its WAL under dir so a fresh
+// SQLite connection can replay the latest commits: a second connection
+// against the live file on a Docker Desktop bind mount fails with
+// SQLITE_IOERR_SHORT_READ once the shared wal-index drifts.
+func copyStoreFiles(path, dir string) {
+	for _, suffix := range []string{"", "-wal"} {
+		if body, err := os.ReadFile(path + suffix); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, "store.db"+suffix), body, 0600) // #nosec G306 -- copy of an already store-scoped file.
+		}
+	}
+}
+
+// storeSnapshotDigest re-reads the persisted digest from a byte copy. File
+// drift alone cannot tell a foreign commit apart from this connection's own
+// out-of-band writes — the digest is the arbiter.
+func storeSnapshotDigest(path string) (string, bool) {
+	dir, err := os.MkdirTemp("", "toolhub-digest")
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	copyStoreFiles(path, dir)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "store.db")+"?mode=ro")
+	if err != nil {
+		return "", false
+	}
+	db.SetMaxIdleConns(0)
+	defer func() { _ = db.Close() }()
+	var digest string
+	if err := db.QueryRow(`SELECT v FROM meta WHERE k = 'digest'`).Scan(&digest); err != nil {
+		return "", false
+	}
+	return digest, true
+}
+
+// loadStoreSnapshot reads a point-in-time store. A second SQLite connection
+// against the live file on a Docker Desktop bind mount fails with
+// SQLITE_IOERR_SHORT_READ once the shared wal-index drifts, so the db backend
+// is loaded from a byte copy — the WAL copy replays the latest commits on
+// open. fileHash is the live files' hash at fetch start, the overtaken fence
+// baseline.
+func loadStoreSnapshot(path string) (*Store, error) {
+	if !isStoreDB(path) {
+		return Load(path)
+	}
+	baseline, _ := storeFileHash(path)
+	dir, err := os.MkdirTemp("", "toolhub-snapshot")
+	if err != nil {
+		return Load(path)
+	}
+	copyStoreFiles(path, dir)
+	fresh, err := Load(filepath.Join(dir, "store.db"))
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	_ = fresh.CloseDB()
+	_ = os.RemoveAll(dir)
+	// The adopted snapshot carries the real file's identity, not the temp
+	// copy's — savedPath feeds the save fence, dbFile the SameFile guard.
+	fresh.path = path
+	fresh.savedPath = path
+	fresh.dbFile, _ = os.Stat(path)
+	fresh.diskStamp, _ = statStoreStamp(path)
+	fresh.fileHash = baseline
+	return fresh, nil
+}
+
+// storeDataVersion reads the connection's data_version; tests pin it to
+// simulate mounts where a foreign process's commit never advances it.
+var storeDataVersion = dbDataVersion
+
+// storeDigestPollInterval bounds how often an otherwise-unchanged store
+// re-hashes the persisted bytes for commits its connection cannot see.
+var storeDigestPollInterval = time.Second
+
+// storeFileHash hashes the bytes a commit actually moves: the WAL while it
+// carries frames, else the main database file. A second SQLite connection on
+// a Docker Desktop bind mount fails with SQLITE_IOERR_SHORT_READ once the
+// shared wal-index drifts, so persisted-content checks must not go through
+// SQLite at all. shm-map drift and mtime churn cannot fake a different hash.
+func storeFileHash(path string) ([32]byte, bool) {
+	if body, err := os.ReadFile(path + "-wal"); err == nil {
+		return sha256.Sum256(body), true
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return [32]byte{}, false
+	}
+	return sha256.Sum256(body), true
+}
 
 func (s *Store) Reload() error {
 	if s == nil || s.path == "" {
@@ -557,7 +677,7 @@ func (s *Store) Reload() error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	s.mu.RLock()
-	changed, _, err = s.changedOnDiskLocked()
+	changed, _, err = s.changedOnDisk(true)
 	s.mu.RUnlock()
 	if err != nil || !changed {
 		return err
@@ -575,33 +695,37 @@ func (s *Store) Reload() error {
 	// leaks a SQLite connection (and locks the file on Windows).
 	defer func() { _ = fresh.CloseDB() }()
 	s.mu.Lock()
-	changed, version, err := s.changedOnDiskLocked()
+	changed, version, err := s.changedOnDisk(true)
 	if err != nil || !changed {
 		s.mu.Unlock()
 		return err
 	}
-	// A commit landing after Load leaves fresh stale. data_version is
-	// per-connection, so compare the persisted digest instead.
-	if s.db != nil {
-		var stored string
-		if err := s.db.QueryRow(`SELECT v FROM meta WHERE k = 'digest'`).Scan(&stored); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		if stored != hex.EncodeToString(fresh.diskDigest[:]) {
-			s.mu.Unlock()
-			return api.ErrConflict
-		}
-	} else if stamp, ok := statStoreStamp(s.path); !ok || stamp != fresh.diskStamp {
-		s.mu.Unlock()
-		return api.ErrConflict
-	}
 	// Reads must not replace pending in-process mutations with the unchanged
 	// disk snapshot, nor race a Save and restore its older predecessor.
 	if fresh.diskDigest == s.diskDigest {
+		// The drift was stamp-only (a checkpoint moved the file, or the
+		// baseline predates it); re-baseline so the fallback stops
+		// re-triggering loads that can only reproduce in-memory state.
 		s.dbVersion = version
+		s.diskStamp = fresh.diskStamp
+		s.fileHash = fresh.fileHash
 		s.mu.Unlock()
 		return nil
+	}
+	// A commit landing after the fetch leaves fresh stale; the file hash
+	// catches commits this connection cannot observe through a broken
+	// shared WAL index. The next probe converges on the newer state.
+	overtaken := false
+	if isStoreDB(s.path) {
+		if hash, ok := storeFileHash(s.path); ok {
+			overtaken = hash != fresh.fileHash
+		}
+	} else if body, err := os.ReadFile(s.path); err == nil { // #nosec G304 -- same store file already locked above.
+		overtaken = sha256.Sum256(body) != fresh.diskDigest
+	}
+	if overtaken {
+		s.mu.Unlock()
+		return api.ErrConflict
 	}
 	stopped := make([]string, 0)
 	for id, old := range s.workloads {
@@ -638,6 +762,7 @@ func (s *Store) Reload() error {
 	s.bindingChanges = fresh.bindingChanges
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
+	s.fileHash = fresh.fileHash
 	s.dbVersion = version
 	s.dbFile = fresh.dbFile
 	s.dbRows, s.dbListCounts = fresh.dbRows, fresh.dbListCounts

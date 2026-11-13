@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-12"
+last_verified: "2026-11-13"
 ---
 
 # Tool surface
