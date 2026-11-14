@@ -28,7 +28,7 @@ func setToolHubLimits(t *testing.T, bytes, nextWrite, lifecycleBytes int64, file
 // state dir without bound.
 func TestToolHubSaveFailsClosedWhenStateBudgetExhausted(t *testing.T) {
 	dir := t.TempDir()
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-quota", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, Revision: 1}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-quota", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1}
 	store := NewStore()
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatalf("seed onboarding: %v", err)
@@ -183,9 +183,9 @@ func TestToolHubSaveRunsStorageMaintenance(t *testing.T) {
 func TestToolHubMaintenanceNeverPrunesLiveState(t *testing.T) {
 	store := NewStore()
 	now := time.Now()
-	live := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-live", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, Revision: 1, CreatedAt: now.Add(-90 * 24 * time.Hour)}
-	removedFresh := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-removed-fresh", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseRemoved, Revision: 1, CreatedAt: now.Add(-24 * time.Hour)}
-	removedOld := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-removed-old", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseRemoved, Revision: 1, CreatedAt: now.Add(-31 * 24 * time.Hour)}
+	live := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-live", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, CreatedAt: now.Add(-90 * 24 * time.Hour)}
+	removedFresh := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-removed-fresh", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageGone, Tombstone: api.TombstoneRemoved, Revision: 1, CreatedAt: now.Add(-24 * time.Hour)}
+	removedOld := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-removed-old", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageGone, Tombstone: api.TombstoneRemoved, Revision: 1, CreatedAt: now.Add(-31 * 24 * time.Hour)}
 	for _, record := range []api.Onboarding{live, removedFresh, removedOld} {
 		if err := store.PutOnboarding(record); err != nil {
 			t.Fatalf("seed %s: %v", record.OnboardingID, err)

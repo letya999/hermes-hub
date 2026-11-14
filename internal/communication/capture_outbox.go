@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -222,9 +224,68 @@ func (g *Gateway) kickCapture() {
 	}
 }
 
+// Adaptive-throttle constants (SRE "Handling Overload", client-side
+// throttling): the producer stops pushing once requests outrun accepts by
+// the K multiplier, rejects locally instead of charging a saturated
+// backend for turning work away. The window decays over roughly two
+// minutes of traffic; P is capped below 1 so the pass always keeps a
+// probe alive to notice recovery.
+const (
+	captureThrottleK      = 2.0
+	captureThrottleWindow = 2 * time.Minute
+	captureThrottleMaxP   = 0.9
+	// captureThrottleMinReq: the ratio needs a minimum sample — a cold
+	// window (requests=1, accepts=0) would otherwise shed on the prior
+	// alone, before the pass learned anything about the backend.
+	captureThrottleMinReq = 8.0
+	// captureFailStop ends a pass after this many consecutive rejects or
+	// transport failures; the sweep ticker retries.
+	captureFailStop = 3
+	// captureBacklogLogDepth is the depth that makes a pass log its
+	// backlog — the outbox is observable before latency is.
+	captureBacklogLogDepth = 32
+	// captureMaxAge settles an event whose commit window is long dead:
+	// the fact it carries references a job nobody can recover, and an
+	// endless retry is a wedge, not durability. The ack record remains
+	// the audit trail (recorded intentional non-outcome).
+	captureMaxAge = 24 * time.Hour
+)
+
+// captureThrottled reports whether the pump should shed this post locally.
+// Locally-shed attempts still count as requests — pushing harder against a
+// refusing backend only tightens the throttle.
+func (g *Gateway) captureThrottled(now time.Time, rand float64) bool {
+	t := &g.captureThrottle
+	if !t.last.IsZero() {
+		f := math.Exp(-float64(now.Sub(t.last)) / float64(captureThrottleWindow))
+		t.requests *= f
+		t.accepts *= f
+	}
+	t.last = now
+	t.requests++
+	if t.requests < captureThrottleMinReq {
+		return false
+	}
+	p := (t.requests - captureThrottleK*t.accepts) / (t.requests + 1)
+	if p > captureThrottleMaxP {
+		p = captureThrottleMaxP
+	}
+	return p > 0 && rand < p
+}
+
+// captureThrottleRecord scores one posted request: a definitive non-
+// overload response counts as an accept, transport errors, 5xx and 429 do
+// not.
+func (g *Gateway) captureThrottleRecord(accepted bool) {
+	if accepted {
+		g.captureThrottle.accepts++
+	}
+}
+
 // pumpCaptures drains the durable capture outbox one pass: each pending
 // event is posted to ToolHub and acked only on a committed or permanently
-// settled response.
+// settled response. The pass stops early when ToolHub is shedding or the
+// throttle closes — pending events survive for the next sweep.
 func (g *Gateway) pumpCaptures(ctx context.Context) {
 	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
 	if base == "" {
@@ -235,9 +296,22 @@ func (g *Gateway) pumpCaptures(ctx context.Context) {
 		log.Print("capture outbox read failed")
 		return
 	}
-	for _, ev := range events {
+	if len(events) > captureBacklogLogDepth {
+		log.Printf("capture outbox depth=%d oldest=%ds", len(events), int(time.Since(events[0].ObservedAt).Seconds()))
+	}
+	failures := 0
+	for i, ev := range events {
 		if ctx.Err() != nil {
 			return
+		}
+		if g.captureThrottled(time.Now(), rand.Float64()) {
+			break
+		}
+		if time.Since(ev.ObservedAt) > captureMaxAge {
+			if err := g.spool.ackCapture(ev.EventID); err != nil {
+				log.Print("capture expiry acknowledgement failed")
+			}
+			continue // settled as expired — recorded non-outcome
 		}
 		token, header := g.captureCredential(ev.UserID)
 		if token == "" {
@@ -245,16 +319,26 @@ func (g *Gateway) pumpCaptures(ctx context.Context) {
 		}
 		status, err := g.postCapture(ctx, base, token, header, ev)
 		switch {
-		case err != nil:
-			// Transport failure — the event stays for the next sweep.
-			continue
+		case err != nil || status == http.StatusTooManyRequests:
+			// Systemic refusal — dead backend or shed gate. Count toward
+			// fail-stop; a per-event status never blocks the siblings
+			// behind it (a wedged event must not poison the whole pass).
+			g.captureThrottleRecord(false)
+			failures++
 		case status >= 200 && status < 300 || status == http.StatusBadRequest || status == http.StatusForbidden:
+			g.captureThrottleRecord(true)
+			failures = 0
 			if err := g.spool.ackCapture(ev.EventID); err != nil {
 				log.Print("capture acknowledgement failed")
 			}
 		default:
-			// No commit reported — the record stays for the next sweep.
-			continue
+			// Per-event refusal (stale run, unavailable commit) — stays
+			// for the next sweep without holding up the rest of the pass.
+			g.captureThrottleRecord(false)
+		}
+		if failures >= captureFailStop {
+			log.Printf("capture outbox pass stopped after %d consecutive refusals, %d events still pending", failures, len(events)-i)
+			return
 		}
 	}
 }

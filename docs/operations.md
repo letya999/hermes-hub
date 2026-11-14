@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-12
+last_verified: 2026-11-14
 ---
 
 # Operations
@@ -304,6 +304,22 @@ active ledger; keep that archive for historical investigation. The new live
 ledger begins with a rollover marker. Do not apply this path to schema-2 or
 segmented audit files; they require reconciliation of operation outcomes.
 
+## Overload admission
+
+ToolHub treats overload as explicit state: an exponential-moving-average of
+interactive request latency (decide, memory-context, tool-call, MCP) over a
+40 ms threshold sheds background endpoints (`/v1/memory-capture`,
+`/v1/admin/diagnose/`) with `429` + `Retry-After` before any work runs; a
+rising-edge log line marks the transition. The in-process automation tick
+defers its whole pass while the gate holds — due work keeps its catch-up
+window. Communication-hub's capture pump applies the matching client-side
+adaptive throttle (SRE `P = max(0,(requests−2·accepts)/(requests+1))` over a
+decayed 2-minute window, capped at 0.9 so a recovery probe always passes)
+plus a fail-stop of three consecutive transport or 429 refusals; per-event
+refusals never hold up siblings, and events older than 24 h settle as
+expired (the ack record is the audit trail). Depth beyond 32 pending
+captures logs `capture outbox depth=… oldest=…`.
+
 ## Operator mutations require `--confirm`
 
 `hubctl grant`, `hubctl capability`, `hubctl governance`, `hubctl secret`,
@@ -345,6 +361,16 @@ Connector verbs run identically on three surfaces — `connector_*` tools,
 `hubctl connector <verb> --target <sel>` (`--profile`/`--env`/`--generation`),
 and `POST /v1/connectors:*` on the control listener — all through
 `ControlPlane.InvokeConnector`, one journal.
+
+Against a running ToolHub prefer `hubctl connector <verb> --service`: it posts
+the verb to `/v1/connectors:invoke` so the live listener owns the store write
+and the CLI never trips the save-side stale fence. The bearer resolves from
+`--token`/`HUB_TOOLHUB_TOKEN` or the matching principal in the
+`toolhub-tokens.json` found walking up from `--toolhub-store`;
+`--toolhub-url`/`HUB_TOOLHUB_URL` overrides the default `127.0.0.1:8090`.
+A bare `status --service` reads `GET /v1/connectors`. `link` and `confirm`
+stay file-mode — they mint and read protected nonces, which never cross the
+service surface.
 
 Team connectors (ADR-0058) are operator-published, not conversational:
 
@@ -966,6 +992,12 @@ run admission. Out-of-process ToolHub rights checks retain fail-closed behavior
 and allow up to 20 s for a decision under host load.
 Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
+Exception: connector-prepare notices are the one bounded auto-retry — the
+delivery loop sweeps `outbox/failed` every 15 s and requeues them with
+NotBefore backoff (30 s → 2 m → 10 m), at most 4 sends and only while the
+record is fresher than one hour. A newer prepare version supersedes the
+record instead; an exhausted or aged record stays `failed` for audit, and a
+requeue logs `gateway prepare requeue deliveries=N`.
 Published stack identity/scope-kind bindings are immutable; Telegram links are provisioned only in
 trusted host config after verifying the numeric account ID — never link
 from username/email/message-request.

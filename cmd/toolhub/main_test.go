@@ -137,7 +137,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	defer func() { removalRetryInterval = oldInterval }()
 	path := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 		if err == nil {
 			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
 			got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
-			if err == nil && got.Phase == api.PhaseRemoved {
+			if err == nil && got.Removed() {
 				cancel()
 				if err := <-done; err != nil {
 					t.Fatal(err)
@@ -359,7 +359,7 @@ func TestRemovalRetryLoopReportsFailure(t *testing.T) {
 func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -380,8 +380,8 @@ func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
 	got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("removal did not resume at startup: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("removal did not resume at startup: %v %s", err, got.NoticePhase())
 	}
 }
 
@@ -464,9 +464,10 @@ func TestRunServesPublicSurface(t *testing.T) {
 		resp, err := client.Get("http://" + publicAddr + "/confirm/x?t=t")
 		if err == nil {
 			resp.Body.Close()
-			// Reaching the confirm handler with an unknown onboarding is a 401;
-			// a refused connection means the public listener never started.
-			if resp.StatusCode == http.StatusUnauthorized {
+			// Reaching the confirm handler with an unknown onboarding is the
+			// dead-link landing (410); a refused connection means the public
+			// listener never started.
+			if resp.StatusCode == http.StatusGone {
 				return
 			}
 			t.Fatalf("public surface status=%d", resp.StatusCode)

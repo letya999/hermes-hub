@@ -52,6 +52,55 @@ func TestLoadEffectiveGeneratedReadsMountedView(t *testing.T) {
 	}
 }
 
+// The memoized slot follows the current pointer: republishing a new
+// revision, or mutating a published document, busts the cache so the
+// next call re-reads and re-validates instead of serving stale state.
+func TestLoadEffectiveGeneratedFollowsRepublishAndMutation(t *testing.T) {
+	gen := filepath.Join(t.TempDir(), "generated")
+	writeRev := func(rev, user string) {
+		revDir := filepath.Join(gen, "passports", rev)
+		if err := os.MkdirAll(revDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: " + rev + "}\n"
+		docs := map[string]string{
+			"stack.yaml":     head + "kind: stack\nidentity: {user: " + user + "}\n",
+			"config.yaml":    head + "kind: config\n",
+			"models.yaml":    head + "kind: models\n",
+			"workspace.yaml": head + "kind: workspace\n",
+			"tools.yaml":     head + "kind: tools\n",
+			"grants.yaml":    head + "kind: grants\n",
+		}
+		for name, body := range docs {
+			if err := os.WriteFile(filepath.Join(revDir, name), []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeRev("r-a", "alice")
+	writeRev("r-b", "carol")
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-a\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	eff, err := LoadEffectiveGenerated(gen)
+	if err != nil || eff.Stack.Identity.User != "alice" {
+		t.Fatalf("first load: %v %+v", err, eff.Stack.Identity)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-b\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	eff, err = LoadEffectiveGenerated(gen)
+	if err != nil || eff.Stack.Identity.User != "carol" {
+		t.Fatalf("republish not picked up: %v %+v", err, eff.Stack.Identity)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "r-b", "grants.yaml"), []byte("apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-OTHER}\nkind: grants\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEffectiveGenerated(gen); err == nil {
+		t.Fatal("in-place mutation served from cache without re-validation")
+	}
+}
+
 // A current pointer whose id escapes the passports tree is a poisoned
 // publish: both the pointer read and the full load refuse to join it.
 func TestCurrentRejectsTraversalRevision(t *testing.T) {

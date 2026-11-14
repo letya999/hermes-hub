@@ -67,6 +67,10 @@ func SeedInventory() []ToolSection {
 		// memory_provider likewise: the section governs the rendered
 		// external-provider config + egress (SPEC-0085 R11).
 		native("memory_provider", EffectRead),
+		// tool_search is the upstream deferred-tool bridge switch rendered
+		// as tools.tool_search.enabled — off by default so ToolHub's
+		// tool_search/tool_call pair stays the only discovery surface.
+		native("tool_search", EffectRead),
 		// Hub-owned MCP surfaces rendered into the effective config.
 		// browser_guest is a distinct anonymous-profile emission under its
 		// own section so governance can gate it separately.

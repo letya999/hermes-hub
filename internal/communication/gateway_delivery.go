@@ -215,7 +215,9 @@ func (g *Gateway) worker(ctx context.Context) {
 // one-second fallback tick (SPEC-0053 R2.3).
 func (g *Gateway) deliveryLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
+	prepareSweep := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	defer prepareSweep.Stop()
 	for {
 		g.deliverOne(ctx)
 		select {
@@ -223,6 +225,15 @@ func (g *Gateway) deliveryLoop(ctx context.Context) {
 			return
 		case <-g.spool.Notify():
 		case <-ticker.C:
+		case <-prepareSweep.C:
+			// A transient Telegram failure parks a prepare notice in
+			// outbox/failed; the bounded sweep returns it to pending so an
+			// onboarding link is not lost to one bad send.
+			if n, err := g.spool.RequeueFailedPrepares(g.now(), PrepareRequeueMaxAttempts); err != nil {
+				log.Printf("gateway prepare requeue err=%v", err)
+			} else if n > 0 {
+				log.Printf("gateway prepare requeue deliveries=%d", n)
+			}
 		}
 	}
 }

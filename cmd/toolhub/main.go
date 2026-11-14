@@ -99,7 +99,11 @@ func runWithContext(ctx context.Context) error {
 		if !ok {
 			return errors.New("automation: ToolHub projection unavailable")
 		}
-		host, err := newAutomationHost(ctx, projection, store)
+		var overloaded func() bool
+		if og, ok := handler.(interface{ Overloaded() bool }); ok {
+			overloaded = og.Overloaded
+		}
+		host, err := newAutomationHost(ctx, projection, store, overloaded)
 		if err != nil {
 			return err
 		}

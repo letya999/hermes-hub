@@ -65,8 +65,8 @@ func TestPreparePostPersistBrokerFailureRevokesForm(t *testing.T) {
 		t.Fatal("broker rejection accepted")
 	}
 	onboarding, found := control.Store.FindOnboardingByKey(aliceAuth(), "post-persist-failure")
-	if !found || onboarding.Phase != api.PhaseFailed || onboarding.FormNonce != "" || !onboarding.FormExpires.IsZero() || onboarding.Error == "" {
-		t.Fatalf("failed onboarding retains live form: phase=%s nonce=%t expiry=%v error=%q", onboarding.Phase, onboarding.FormNonce != "", onboarding.FormExpires, onboarding.Error)
+	if !found || onboarding.Stage != api.StageFailed || onboarding.GateNonce(api.GateCredentials) != "" || !onboarding.GateExpiry(api.GateCredentials).IsZero() || onboarding.Error == "" {
+		t.Fatalf("failed onboarding retains live form: phase=%s nonce=%t expiry=%v error=%q", onboarding.NoticePhase(), onboarding.GateNonce(api.GateCredentials) != "", onboarding.GateExpiry(api.GateCredentials), onboarding.Error)
 	}
 	if _, err := control.Invoke(t.Context(), aliceAuth(), "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 		t.Fatal(err)

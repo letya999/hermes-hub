@@ -508,6 +508,20 @@ func (s *Store) credentialFor(id string) (api.CredentialReference, bool) {
 	return reference, ok
 }
 
+// bindingStatus reports the binding lifecycle for an onboarding view —
+// enabled/disabled lives on the binding, not on the onboarding stage.
+func (s *Store) bindingStatus(bindingID string) api.Status {
+	if bindingID == "" {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if binding, ok := s.bindings[bindingID]; ok {
+		return binding.Status
+	}
+	return ""
+}
+
 // Connections returns a snapshot of every connection record — the
 // reconciler's desired-state list.
 func (s *Store) Connections() []api.Connection {
@@ -608,7 +622,118 @@ func (s *Store) PutBinding(binding api.ToolBinding) error {
 		s.projectionRevisions[key] = binding.ProjectionRevision
 	}
 	s.bindings[binding.ToolBindingID] = binding
+	if binding.Status == api.ActiveStatus {
+		// Pending selection transition: an authored connector toolset with no
+		// active binding materializes its selections here instead of waiting
+		// for the next passport publish. Admission refusal leaves the toolset
+		// pending — a structural problem for apply to surface, never a wedge.
+		s.materializePendingSelectionsLocked(binding)
+	}
 	return nil
+}
+
+// materializePendingSelectionsLocked fills profile selections for authored
+// connector toolsets that point at this binding's definition. Selections
+// pinned to a superseded connection are replaced — a connector re-onboard
+// re-points the toolset without a passport publish. Idempotent: re-running
+// with the same binding reproduces the same selection set. Admission
+// refusals are dropped, not fatal — the pending toolset simply stays
+// unmaterialized until publish-time validation explains why.
+func (s *Store) materializePendingSelectionsLocked(binding api.ToolBinding) {
+	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
+	if !ok {
+		return
+	}
+	for _, profile := range s.capabilityProfiles {
+		if profile.Status != api.ActiveStatus || profile.PrincipalID != binding.PrincipalID ||
+			profile.ContextID != binding.ContextID || profile.RuntimeID != binding.RuntimeID {
+			continue
+		}
+		changed := false
+		selections := slices.Clone(profile.Selections)
+		coreTools := slices.Clone(profile.CoreTools)
+		for _, ts := range profile.Toolsets {
+			toolsetDefID := ts.Name
+			if strings.HasPrefix(ts.Via, "mcp:") {
+				toolsetDefID = strings.TrimPrefix(ts.Via, "mcp:")
+			} else if ts.Via != "mcp" {
+				continue
+			}
+			if toolsetDefID != binding.DefinitionID {
+				continue
+			}
+			fresh, freshCore, err := api.DeriveConnectorSelections(definition, binding, ts.Name, ts.Access, ts.Include, ts.Exclude, ts.Placement)
+			if err != nil {
+				continue
+			}
+			kept := selections[:0]
+			for _, sel := range selections {
+				if sel.Toolset != ts.Name {
+					kept = append(kept, sel)
+				}
+			}
+			selections = append(kept, fresh...)
+			for _, name := range freshCore {
+				if !slices.Contains(coreTools, name) {
+					coreTools = append(coreTools, name)
+				}
+			}
+			changed = true
+		}
+		if !changed || selectionsEqual(selections, profile.Selections) && slices.Equal(coreTools, profile.CoreTools) {
+			continue
+		}
+		profile.Selections, profile.CoreTools = selections, coreTools
+		profile.Revision++
+		profile.IssuedBy, profile.IssuedAt, profile.Confirmation = "platform", time.Now().UTC(), nil
+		if err := api.Confirm(&profile, "platform", profile.IssuedAt); err != nil {
+			continue
+		}
+		if err := profile.Validate(); err != nil {
+			continue
+		}
+		_ = s.putCapabilityProfileLocked(profile, false)
+	}
+}
+
+// MaterializePendingSelections is the convergence sweep the periodic
+// reconciler runs: every active binding retries the authored-toolset
+// materialization, which no-ops when selections already match. Bindings
+// committed through a path that skipped the activation hook — including
+// stores written before the hook existed — self-heal here instead of
+// waiting for a re-onboard or passport publish.
+func (s *Store) MaterializePendingSelections() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, binding := range s.bindings {
+		if binding.Status != api.ActiveStatus {
+			continue
+		}
+		s.materializePendingSelectionsLocked(binding)
+	}
+}
+
+// selectionsEqual compares two selection lists as sets — publish order and
+// materialize-append order differ, so order-insensitive comparison is what
+// keeps re-activation idempotent.
+func selectionsEqual(a, b []api.CapabilitySelection) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, sel := range a {
+		body, _ := json.Marshal(sel)
+		counts[string(body)]++
+	}
+	for _, sel := range b {
+		body, _ := json.Marshal(sel)
+		key := string(body)
+		if counts[key] == 0 {
+			return false
+		}
+		counts[key]--
+	}
+	return true
 }
 
 func (s *Store) PutWorkloadInstance(workload api.WorkloadInstance) error {
@@ -1321,7 +1446,7 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 		return api.EffectiveBinding{}, fmt.Errorf("%w: exact runtime owner", api.ErrUnauthorized)
 	}
 	for _, o := range s.onboardings {
-		if o.Phase == api.PhaseCleanupIncomplete && o.PrincipalID == binding.PrincipalID && o.ContextID == binding.ContextID && o.RuntimeID == binding.RuntimeID && (o.BindingID == bindingID || o.ConnectionID != "" && o.ConnectionID == binding.ConnectionID) {
+		if o.CleanupIncomplete() && o.PrincipalID == binding.PrincipalID && o.ContextID == binding.ContextID && o.RuntimeID == binding.RuntimeID && (o.BindingID == bindingID || o.ConnectionID != "" && o.ConnectionID == binding.ConnectionID) {
 			return api.EffectiveBinding{}, fmt.Errorf("%w: cleanup in progress", api.ErrRevoked)
 		}
 	}

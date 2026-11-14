@@ -8,7 +8,7 @@ import (
 )
 
 func prepareOnboardingWrite(before, after api.Onboarding) api.Onboarding {
-	if before.BrokerRequestID != after.BrokerRequestID && after.Phase == api.PhaseAwaitingCreds {
+	if before.BrokerRequestID != after.BrokerRequestID && after.Awaiting(api.GateCredentials) {
 		after.AdmissionAttempts = 0
 		after.AdmissionLeaseUntil, after.AdmissionNextAttempt = time.Time{}, time.Time{}
 	}
@@ -21,7 +21,7 @@ func prepareOnboardingWrite(before, after api.Onboarding) api.Onboarding {
 	if after.Initiator == nil {
 		after.Initiator = before.Initiator
 	}
-	if before.OnboardingID == "" || before.ConfirmationNonce != after.ConfirmationNonce || api.ConfirmationActionDigest(before) != api.ConfirmationActionDigest(after) {
+	if before.OnboardingID == "" || before.GateNonce(api.GateConfirmSetup) != after.GateNonce(api.GateConfirmSetup) || api.ConfirmationActionDigest(before) != api.ConfirmationActionDigest(after) {
 		after.ActionRevision = 0 // The current domain revision already names this action.
 	} else {
 		after.ActionRevision = api.ConfirmationRevision(before)
@@ -31,7 +31,7 @@ func prepareOnboardingWrite(before, after api.Onboarding) api.Onboarding {
 	if after.NoticeVersion == before.NoticeVersion && after.NoticeQueuedVersion < after.NoticeVersion && after.NoticeNextAttempt.Before(before.NoticeNextAttempt) {
 		after.NoticeNextAttempt = before.NoticeNextAttempt
 	}
-	if after.Initiator != nil && noticeRequired(after) && (before.Initiator == nil || before.RemoveNonce != after.RemoveNonce || before.Phase != after.Phase || before.ConfirmationNonce != after.ConfirmationNonce || before.FormNonce != after.FormNonce || before.BrokerAuthorizationURL != after.BrokerAuthorizationURL) {
+	if after.Initiator != nil && noticeRequired(after) && (before.Initiator == nil || gateSignature(before) != gateSignature(after) || before.Stage != after.Stage || before.BrokerAuthorizationURL != after.BrokerAuthorizationURL) {
 		after.NoticeVersion++
 		after.NoticeEvent, after.NoticeEventID = "", ""
 		after.NoticeNextAttempt = time.Time{}
@@ -39,12 +39,14 @@ func prepareOnboardingWrite(before, after api.Onboarding) api.Onboarding {
 	return after
 }
 
-func noticePhase(phase string) bool {
-	switch phase {
-	case api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, api.PhaseAwaitingOAuth, api.PhaseEnabled, api.PhaseFailed, api.PhaseCleanupIncomplete:
-		return true
+// gateSignature identifies the armed action link: kind+nonce+expiry is the
+// one tuple a notice bump cares about — any change means a new link for the
+// owner.
+func gateSignature(o api.Onboarding) string {
+	if o.Gate == nil {
+		return ""
 	}
-	return false
+	return o.Gate.Kind + "\x00" + o.Gate.Nonce + "\x00" + o.Gate.Expires.UTC().Format(time.RFC3339Nano)
 }
 
 // Install progress is a projection of the canonical onboarding, never a
@@ -54,19 +56,21 @@ func installProgress(op api.Operation, o api.Onboarding) api.Operation {
 		return op
 	}
 	op.Steps = slices.Clone(op.Steps)
-	op.State, op.ErrorCode = connectorOnboardingOperationState(o), o.ErrorCode
-	collected := o.Phase != api.PhasePreparing && o.Phase != api.PhaseReview && o.Phase != api.PhaseAwaitingCreds && o.Phase != api.PhaseAwaitingOAuth
-	if collected {
+	op.State, op.ErrorCode = connectorOpStateFromOnboarding(o), o.ErrorCode
+	if o.CredsCollected() {
 		markStep(&op, api.OpStepCollectCredentials, api.OpStepDone)
 	} else {
 		markStep(&op, api.OpStepCollectCredentials, api.OpStepPending)
 	}
-	if !o.AdmissionPending && (o.Phase == api.PhaseAwaitingConfirm || o.Phase == api.PhaseConfirmed || o.Phase == api.PhaseEnabled) {
+	if !o.AdmissionPending && (o.GateKind() == api.GateConfirmSetup || o.Stage == api.StageLive) {
 		markStep(&op, api.OpStepAdmitProbe, api.OpStepDone)
 	}
-	if o.Phase == api.PhaseEnabled {
+	if o.Stage == api.StageLive {
 		markStep(&op, api.OpStepBind, api.OpStepDone)
 		markStep(&op, api.OpStepProject, api.OpStepDone)
+		// Reaching live settles the outcome notification too — the step
+		// cannot stay wedged on whether a channel notice was queued.
+		markStep(&op, api.OpStepNotify, api.OpStepDone)
 	}
 	if o.NoticeVersion > 0 && o.NoticeQueuedVersion == o.NoticeVersion {
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
@@ -74,6 +78,11 @@ func installProgress(op api.Operation, o api.Onboarding) api.Operation {
 	return op
 }
 
+// noticeRequired mirrors the old noticePhase set: settled live/failed
+// outcomes and every armed human action on a non-terminal record.
 func noticeRequired(o api.Onboarding) bool {
-	return noticePhase(o.Phase) || o.RemoveNonce != "" && o.Phase != api.PhaseRemoved
+	if o.Stage == api.StageLive || o.Stage == api.StageFailed {
+		return true
+	}
+	return o.Stage != api.StageGone && o.Gate != nil
 }

@@ -132,6 +132,26 @@ Available here | Verification**. Include a brief reason and supported next
 step for unavailable entries. An empty list means "nothing returned by this
 scope/surface", unless a complete authoritative inventory proves more.
 
+## How to answer "Which toolsets are selected?"
+
+1. Call `tool_search` — its `toolsets` block is the authoritative answer:
+   `core` and `extended` arrays name the authored tools.yaml selections with
+   `via` (toolhub, mcp:<definition>) and live `tools_admitted`/`tools_total`
+   counts recomputed on every call. Pass `toolset=<name>` to list one set's
+   member tools; each entry's `toolset` field is its authored membership.
+2. Keep the vocabularies separate: a **toolset** is the operator's tools.yaml
+   selection; a **capability** is a `family.operation` right; a **source**
+   (`sources` block, `definition` field) is where a tool is transported from;
+   a tool-name **prefix** is only a naming convention. Grouping names by
+   prefix and presenting the buckets as toolsets is fabrication — the
+   toolsets block already carries the real grouping and counts.
+3. `tools_admitted: 0` on a selected set means the set projects nothing for
+   this caller right now — check `unavailable` for the missing right or the
+   connector state before calling the set empty.
+4. The projected inventory is live: connector and MCP tools join or leave
+   within a session without a restart, so re-run `tool_search` after any
+   selection or connection change instead of reusing stale counts.
+
 ## Agent skills
 
 Skills are governed content: a skill is a `SKILL.md` (frontmatter +
@@ -219,6 +239,28 @@ mirror and drops update tracking.
   accept changed credential recipes/tool surfaces without confirmation.
 - `disabled`, `revoked`, `deleting`: intentional lifecycle restrictions. Do not
   revive them during recovery or treat them as transient service failures.
+- `stale_policy` (result `code` or inventory `badge`): the record exists but
+  predates the current policy epoch — a dead state, not a missing record.
+  Manage verbs (enable/disable/revoke/allow_writes/reauth/resend) always fail
+  on it by design; the only legal transition is `connector_edit action=remove`
+  (owner-confirmed), then `connector_install` for a fresh record. Never retry
+  reauth on a stale target and never call it "not found".
+- When reporting connectors to the user, name the connector and its
+  `you_must` — one record means one human step ("click the removal
+  link", "finish the credential form"). Do not narrate raw onboarding IDs,
+  phases or nonces unless the user asked for internals; exact IDs belong in
+  tool arguments, not in prose.
+- `resend` repeats the current pending action — including an armed removal:
+  on a record awaiting remove-confirmation it re-issues the remove link, and
+  an expired link is re-armed automatically. On a normal setup record it
+  re-issues the setup link. Protected links expire (~60 min): a failed or
+  ignored confirmation needs `resend` (or a repeated `remove`), not a guess
+  that the record vanished.
+- `unreachable after N consecutive failures`: a local client circuit breaker,
+  opened by repeated transport-level errors — not proof of backend downtime.
+  Domain failures arrive as failed results (`state:"failed"` + `code`) and do
+  not count. Check liveness with one cheap call such as `tool_search`; if the
+  breaker just tripped, wait ~60s for cooldown instead of declaring an outage.
 
 Never say "I ran detailed diagnostics" without the corresponding tool evidence.
 Never say "working now" based only on an enabled flag, operation completion,

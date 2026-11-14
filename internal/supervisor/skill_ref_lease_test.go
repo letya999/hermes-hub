@@ -114,4 +114,14 @@ func TestRuntimeFailureClassesAreAllowlisted(t *testing.T) {
 	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "reason=runtime_is_not_registered") {
 		t.Fatal("runtime failure log did not allowlist its reason")
 	}
+	output.Reset()
+	writeRuntimeFailure(rec, http.StatusServiceUnavailable, errors.New("managed topology: start control relay: exit status 125: Unable to find image 'hermes-hub-dev-x-hermes-runtime:local' locally"))
+	if strings.Contains(output.String(), "hermes-hub-dev-x") || !strings.Contains(output.String(), "reason=unable_to_find_image") {
+		t.Fatal("runtime failure log did not allowlist the missing-image reason")
+	}
+	output.Reset()
+	writeRuntimeFailure(rec, http.StatusServiceUnavailable, errors.New("managed topology: attach control relay: exit status 1: secret=private"))
+	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "reason=attach_control_relay") {
+		t.Fatal("runtime failure log did not allowlist the relay-attach reason")
+	}
 }

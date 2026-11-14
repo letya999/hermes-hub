@@ -65,6 +65,12 @@ const (
 	OpCodeAdmissionUnavailable        = "admission_unavailable"
 	OpCodeNotPermitted                = "not_permitted"
 	OpCodeQuota                       = "quota"
+	OpCodeNotFound                    = "not_found"
+	// OpCodeStalePolicy marks a target that exists but predates the caller's
+	// policy epoch — a dead state, not a missing record. The only legal
+	// transition is removal; manage verbs report it instead of a bare
+	// not-found so callers stop retrying reauth and take the cleanup path.
+	OpCodeStalePolicy = "stale_policy"
 )
 
 const (
@@ -81,15 +87,17 @@ type OperationStep struct {
 }
 
 // OperationResult is the uniform connector_* tool result — the only shape
-// the agent ever sees. No nonces, URLs, tokens or prose instructions.
+// the agent ever sees. No nonces, URLs, tokens or prose instructions. State
+// and you_must carry the model vocabulary (model_contract.go); delivery is
+// channel-confirmed truth, never an outbox assumption.
 type OperationResult struct {
 	OperationID     string               `json:"operation_id,omitempty"`
 	State           string               `json:"state"`
 	Code            string               `json:"code,omitempty"`
 	Summary         string               `json:"summary"`
-	NextAction      string               `json:"next_action,omitempty"`
-	LinkSent        bool                 `json:"link_sent,omitempty"`
-	DeliveryStatus  string               `json:"delivery_status,omitempty"`
+	YouMust         string               `json:"you_must,omitempty"`
+	Delivery        string               `json:"delivery,omitempty"`
+	Channel         string               `json:"channel,omitempty"`
 	Candidates      []OperationCandidate `json:"candidates,omitempty"`
 	Finalizers      []Finalizer          `json:"finalizers,omitempty"`
 	Receipt         string               `json:"receipt,omitempty"`
@@ -110,11 +118,16 @@ type OperationCandidate struct {
 	CredentialVisibility string    `json:"credential_visibility,omitempty"`
 	CredentialCheckedAt  time.Time `json:"credential_checked_at,omitempty"`
 	HealthCause          string    `json:"health_cause,omitempty"`
-	OnboardingPhase      string    `json:"onboarding_phase,omitempty"`
-	ObservedAt           time.Time `json:"observed_at,omitzero"`
-	ObservationCode      string    `json:"observation_code,omitempty"`
-	// Badge marks candidates the caller can use but does not own — today the
-	// only value is "team" for a member's team-owned connection.
+	// State and YouMust carry the model vocabulary — derived from the record,
+	// never the raw wire phase.
+	State           string    `json:"state,omitempty"`
+	YouMust         string    `json:"you_must,omitempty"`
+	ObservedAt      time.Time `json:"observed_at,omitzero"`
+	ObservationCode string    `json:"observation_code,omitempty"`
+	// Badge marks exceptional candidates: "team" for a member's team-owned
+	// connection the caller may use but never own, and "stale_policy" for an
+	// owned record that predates the caller's policy epoch — visible in the
+	// inventory but manageable only through remove, never manage verbs.
 	Badge string `json:"badge,omitempty"`
 }
 
@@ -174,7 +187,7 @@ func (o Operation) Validate() error {
 		seen[step.Name] = true
 	}
 	switch o.ErrorCode {
-	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeDeliveryUnavailable, OpCodeAdmissionUnavailable, OpCodeNotPermitted, OpCodeQuota:
+	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeDeliveryUnavailable, OpCodeAdmissionUnavailable, OpCodeNotPermitted, OpCodeQuota, OpCodeNotFound, OpCodeStalePolicy:
 	default:
 		return fmt.Errorf("%w: operation error code", ErrInvalid)
 	}

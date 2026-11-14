@@ -151,9 +151,10 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
 	preparing := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-gate1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
-		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
-	}
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, SourceURL: "https://github.com/example/slack-mcp-server",
+		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(preparing); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		t.Fatalf("definition registered before tools/list: %v", err)
 	}
 	stored, err := store.onboarding(preparing.OnboardingID)
-	if err != nil || stored.Definition == nil || len(stored.Definition.Tools) != 0 || !stored.AdmissionPending || stored.FormNonce == "" {
+	if err != nil || stored.Definition == nil || len(stored.Definition.Tools) != 0 || !stored.AdmissionPending || stored.GateNonce(api.GateCredentials) == "" {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 	if len(stored.Definition.CredentialGroups) != 3 || stored.Definition.CredentialGroups[0][0] != "SLACK_MCP_XOXC_TOKEN" {
@@ -196,7 +197,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	}
 	gateway := &Gateway{Control: control}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/credentials/"+preparing.OnboardingID+"?nonce="+stored.FormNonce, nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/credentials/"+preparing.OnboardingID+"?nonce="+stored.GateNonce(api.GateCredentials), nil)
 	req.Host = "127.0.0.1"
 	gateway.serveCredentials(rec, req)
 	formHTML := rec.Body.String()
@@ -227,7 +228,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || len(collapsed) != 1 || collapsed["SLACK_MCP_XOXP_TOKEN"] != "xoxp-copied" {
 		t.Fatalf("copied token was not kept as one way: %+v %v", collapsed, err)
 	}
-	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/credentials/"+preparing.OnboardingID+"?nonce="+stored.FormNonce, strings.NewReader("SLACK_MCP_XOXP_TOKEN=one&SLACK_MCP_XOXB_TOKEN=two"))
+	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/credentials/"+preparing.OnboardingID+"?nonce="+stored.GateNonce(api.GateCredentials), strings.NewReader("SLACK_MCP_XOXP_TOKEN=one&SLACK_MCP_XOXB_TOKEN=two"))
 	post.Host = "127.0.0.1"
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec = httptest.NewRecorder()
@@ -242,7 +243,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, "", locale.LangRU), "required") {
 		t.Fatal("alternative field is required")
 	}
-	nonce := stored.FormNonce
+	nonce := stored.GateNonce(api.GateCredentials)
 	if err := control.SubmitCredentials(preparing.OnboardingID, nonce, map[string]string{"SLACK_MCP_XOXC_TOKEN": "only-half"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("partial alternative accepted: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		t.Fatalf("probe failure=%v", err)
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
-	if stored.Phase != api.PhaseAwaitingCreds || stored.FormNonce != nonce || stored.Error == "" || strings.Contains(stored.Error, "xoxp-real-token-value") {
+	if !stored.Awaiting(api.GateCredentials) || stored.GateNonce(api.GateCredentials) != nonce || stored.Error == "" || strings.Contains(stored.Error, "xoxp-real-token-value") {
 		t.Fatalf("probe failure mutated onboarding: %+v", stored)
 	}
 	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {
@@ -271,7 +272,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
 	admitted, err := store.Definition("slack-mcp-server", "0.0.2")
-	if err != nil || stored.Phase != api.PhaseAwaitingConfirm || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
+	if err != nil || !stored.Awaiting(api.GateConfirmSetup) || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
 		t.Fatalf("admitted=%+v stored=%+v err=%v", admitted.Tools, stored, err)
 	}
 }
@@ -344,9 +345,10 @@ func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	}
 	preparing := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-gate-local", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: "https://github.com/example/slack-mcp-server",
-		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
-	}
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, SourceURL: "https://github.com/example/slack-mcp-server",
+		DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(preparing); err != nil {
 		t.Fatal(err)
 	}
@@ -369,16 +371,16 @@ func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return admittedGateDefinition("0.0.2", "channels_list"), nil
 	}
-	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}, locale.LangRU); err != nil {
+	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.GateNonce(api.GateCredentials), map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}, locale.LangRU); err != nil {
 		t.Fatal(err)
 	}
-	if pending := mustOnboarding(t, store, preparing.OnboardingID); pending.Phase != api.PhaseAwaitingConfirm || pending.ConfirmationUsed {
+	if pending := mustOnboarding(t, store, preparing.OnboardingID); !pending.Awaiting(api.GateConfirmSetup) || pending.ConfirmationUsed {
 		t.Fatal("credential intake bypassed human consent")
 	}
 	finishAsHuman(t, control, preparing.OnboardingID)
 	stored, _ = store.onboarding(preparing.OnboardingID)
-	if stored.Phase != api.PhaseEnabled || stored.BrokerCredentialID != "" || !seenLocal {
-		t.Fatalf("phase=%s broker=%q local=%v", stored.Phase, stored.BrokerCredentialID, seenLocal)
+	if stored.Stage != api.StageLive || stored.BrokerCredentialID != "" || !seenLocal {
+		t.Fatalf("phase=%s broker=%q local=%v", stored.NoticePhase(), stored.BrokerCredentialID, seenLocal)
 	}
 	contracted := admittedGateDefinition("1.0.0", "channels_list")
 	control.Broker = &credentialbroker.Config{URL: "https://broker.example"}
@@ -404,8 +406,9 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 	open := func(id, principal string) api.Onboarding {
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: principal, ContextID: principal, RuntimeID: "runtime", PolicyVersion: "policy-1",
-			Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now(),
-		}
+			Mode:          api.OnboardingSelfInstall,
+			Stage:         api.StagePending,
+			PreparingStub: true, DefinitionID: "slack-mcp-server", DefinitionVersion: "0.0.2", Revision: 1, CreatedAt: time.Now()}
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
 		}
@@ -423,17 +426,17 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return api.ToolDefinition{DefinitionID: "not valid"}, nil
 	}
-	if err := control.SubmitCredentials(alice.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, api.ErrInvalid) {
+	if err := control.SubmitCredentials(alice.OnboardingID, stored.GateNonce(api.GateCredentials), map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("invalid manifest: %v", err)
 	}
 	stored, _ = store.onboarding(alice.OnboardingID)
-	if stored.Phase != api.PhaseAwaitingCreds || stored.FormNonce == "" || stored.Error == "" || strings.Contains(stored.Error, "Проверяю поля") {
+	if !stored.Awaiting(api.GateCredentials) || stored.GateNonce(api.GateCredentials) == "" || stored.Error == "" || strings.Contains(stored.Error, "Проверяю поля") {
 		t.Fatalf("register failure was not recorded: %+v", stored.Error)
 	}
 	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return admittedGateDefinition("0.0.2", "channels_list"), nil
 	}
-	if err := control.SubmitCredentials(alice.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
+	if err := control.SubmitCredentials(alice.OnboardingID, stored.GateNonce(api.GateCredentials), map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Definition("slack-mcp-server", "0.0.2"); err != nil {
@@ -445,11 +448,11 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 	}
 	bob := open("onboard-bob", "bob")
 	bobStored, _ := store.onboarding(bob.OnboardingID)
-	if err := control.SubmitCredentials(bob.OnboardingID, bobStored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
+	if err := control.SubmitCredentials(bob.OnboardingID, bobStored.GateNonce(api.GateCredentials), map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
 		t.Fatal(err)
 	}
 	bobStored, _ = store.onboarding(bob.OnboardingID)
-	if bobStored.DefinitionVersion != "0.0.3" || bobStored.Phase != api.PhaseAwaitingConfirm {
+	if bobStored.DefinitionVersion != "0.0.3" || !bobStored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("bob onboarding=%+v", bobStored.DefinitionVersion)
 	}
 	owner, userOwned = store.userPublicationOwner("slack-mcp-server", "0.0.2")

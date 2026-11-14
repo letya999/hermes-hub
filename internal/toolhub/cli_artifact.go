@@ -384,7 +384,7 @@ func (c *ControlPlane) prepareCLIArtifact(ctx context.Context, auth identity.Env
 		api.DeliverPrepareEvent(background, auth, preparing, "prepare-started")
 		body, err := c.finishCLIArtifact(background, auth, preparing, source, binary, fixed, config, requestKey, shared)
 		latest := c.latestPrepareRecord(auth, preparing)
-		log.Printf("toolhub cli artifact prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
+		log.Printf("toolhub cli artifact prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.NoticePhase(), err)
 		if c.PrepareDone != nil {
 			c.PrepareDone(background, auth, latest)
 		}
@@ -404,8 +404,8 @@ func (c *ControlPlane) prepareCLIArtifact(ctx context.Context, auth identity.Env
 
 func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, binary string, fixedArgs []string, config api.ArtifactImportConfig, requestKey string, shared bool) (map[string]any, error) {
 	failPrepare := func(err error) (map[string]any, error) {
-		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == api.PhasePreparing {
-			latest.Phase = api.PhaseFailed
+		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.PreparingStub {
+			latest.Stage, latest.PreparingStub = api.StageFailed, false
 			if persistErr := c.persistFailure(latest, api.PublicPrepareError(err), err); persistErr != err {
 				return nil, persistErr
 			}
@@ -474,12 +474,12 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 			return failPrepare(err)
 		}
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, definition, source.Repository, source.CommitSHA)
+	onboarding, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, definition, source.Repository, source.CommitSHA, shared)
 	if err != nil {
 		return failPrepare(err)
 	}
 	if onboarding.OnboardingID != preparing.OnboardingID {
-		preparing.Phase = api.PhaseRemoved
+		preparing.Stage, preparing.Tombstone, preparing.PreparingStub = api.StageGone, api.TombstoneRemoved, false
 		preparing.SupersededBy = onboarding.OnboardingID
 		preparing.Revision++
 		if err := c.Store.PutOnboarding(preparing); err != nil {

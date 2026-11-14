@@ -155,22 +155,22 @@ func (s *Store) CheckOrganizationRights(principal, environment, organization, pr
 // apply must never rewrite the prod profile's rights, and a bound revision
 // must never touch a sibling generation.
 func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion string, now time.Time) error {
-	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", "", nil, nil, now)
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", "", nil, nil, nil, now)
 }
 
 // DeriveRightsAndSelections replaces the bound profile's selections with the
 // published tools passport. Bindings and connections keep their own lifecycle.
 func DeriveRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
-	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", definitionID, selections, core, now)
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", definitionID, selections, core, nil, now)
 }
 
 // DerivePublishedRightsAndSelections stamps the immutable passport identity
 // with the profile update. The gateway compares it to current on each call.
-func DerivePublishedRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
-	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, passportRevision, definitionID, selections, core, now)
+func DerivePublishedRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, toolsets []api.ProfileToolset, now time.Time) error {
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, passportRevision, definitionID, selections, core, toolsets, now)
 }
 
-func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
+func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, toolsets []api.ProfileToolset, now time.Time) error {
 	issued, err := IssuedRightCeiling(gov, doc, principal, now)
 	if err != nil {
 		return err
@@ -202,7 +202,7 @@ func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 	}
 	for _, profile := range bound {
 		repin := policyVersion != "" && profile.PolicyVersion != policyVersion
-		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selections) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound || profile.PassportRevision != passportRevision)
+		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selections) || !slices.Equal(profile.CoreTools, core) || !reflect.DeepEqual(profile.Toolsets, toolsets) || !profile.CoreBound || profile.PassportRevision != passportRevision)
 		if equalRightRules(profile.Rights, rules) && !repin && !selectionChanged {
 			continue
 		}
@@ -212,6 +212,7 @@ func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 			profile.Selections = slices.Clone(selections)
 			profile.CoreBound = true
 			profile.CoreTools = slices.Clone(core)
+			profile.Toolsets = slices.Clone(toolsets)
 		}
 		if repin {
 			profile.PolicyVersion = policyVersion

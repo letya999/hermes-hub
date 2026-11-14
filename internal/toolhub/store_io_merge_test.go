@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -86,7 +87,7 @@ func TestInitializedMissingStoreRefusesEmptyLoad(t *testing.T) {
 func TestFailedOnboardingSaveDoesNotExposeUncommittedNonce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "toolhub", "store.json")
 	store := NewStore()
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, ConfirmationNonce: "old-nonce"}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "old-nonce", Expires: time.Time{}}, Revision: 1}
 	if err := store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +107,12 @@ func TestFailedOnboardingSaveDoesNotExposeUncommittedNonce(t *testing.T) {
 	}
 	changed := record
 	changed.Revision++
-	changed.ConfirmationNonce = "uncommitted-nonce"
+	changed.ArmGate(api.GateConfirmSetup, "uncommitted-nonce", time.Time{})
 	if err := store.PutOnboarding(changed); err == nil {
 		t.Fatal("failed save reported success")
 	}
 	visible, err := store.OnboardingFor(aliceAuth(), record.OnboardingID)
-	if err != nil || visible.Revision != record.Revision || visible.ConfirmationNonce != record.ConfirmationNonce {
+	if err != nil || visible.Revision != record.Revision || visible.GateNonce(api.GateConfirmSetup) != record.GateNonce(api.GateConfirmSetup) {
 		t.Fatalf("uncommitted nonce exposed: %+v %v", visible, err)
 	}
 	newRecord := record
@@ -127,7 +128,7 @@ func TestFailedOnboardingSaveDoesNotExposeUncommittedNonce(t *testing.T) {
 func TestOnboardingDirectorySyncFailureKeepsReplacedSnapshotVisible(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "toolhub", "store.json")
 	store := NewStore()
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, ConfirmationNonce: "old-nonce"}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "old-nonce", Expires: time.Time{}}, Revision: 1}
 	if err := store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}
@@ -141,12 +142,12 @@ func TestOnboardingDirectorySyncFailureKeepsReplacedSnapshotVisible(t *testing.T
 	store.syncDirectory = func(string) error { return os.ErrPermission }
 	changed := record
 	changed.Revision++
-	changed.ConfirmationNonce = "replaced-nonce"
+	changed.ArmGate(api.GateConfirmSetup, "replaced-nonce", time.Time{})
 	if err := store.PutOnboarding(changed); err == nil {
 		t.Fatal("directory sync failure was lost")
 	}
 	visible, err := store.OnboardingFor(aliceAuth(), record.OnboardingID)
-	if err != nil || visible.Revision != changed.Revision || visible.ConfirmationNonce != changed.ConfirmationNonce {
+	if err != nil || visible.Revision != changed.Revision || visible.GateNonce(api.GateConfirmSetup) != changed.GateNonce(api.GateConfirmSetup) {
 		t.Fatalf("memory diverged after snapshot replacement: %+v %v", visible, err)
 	}
 	disk, err := Load(path)
@@ -154,7 +155,7 @@ func TestOnboardingDirectorySyncFailureKeepsReplacedSnapshotVisible(t *testing.T
 		t.Fatal(err)
 	}
 	visible, err = disk.OnboardingFor(aliceAuth(), record.OnboardingID)
-	if err != nil || visible.Revision != changed.Revision || visible.ConfirmationNonce != changed.ConfirmationNonce {
+	if err != nil || visible.Revision != changed.Revision || visible.GateNonce(api.GateConfirmSetup) != changed.GateNonce(api.GateConfirmSetup) {
 		t.Fatalf("snapshot replacement missing: %+v %v", visible, err)
 	}
 }
@@ -162,7 +163,7 @@ func TestOnboardingDirectorySyncFailureKeepsReplacedSnapshotVisible(t *testing.T
 func TestConfirmationClaimSaveFailureKeepsMemoryAndDiskAligned(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "toolhub", "store.json")
 	store := NewStore()
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-claim", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, ConfirmationNonce: "nonce"}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-claim", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce", Expires: time.Time{}}, Revision: 1}
 	if err := store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}

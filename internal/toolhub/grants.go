@@ -6,6 +6,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -170,7 +171,7 @@ func (s *Store) consumeConfirmationLocked(expected api.Onboarding, completeWrite
 		current.HumanConsent = consent
 	}
 	if completeWrites {
-		current.WritesEnabled, current.PendingWrites, current.Phase = true, false, api.PhaseEnabled
+		current.WritesEnabled, current.PendingWrites, current.Stage = true, false, api.StageLive
 	}
 	current.Revision++
 	if err := s.putOnboardingLocked(current); err != nil {
@@ -189,7 +190,7 @@ func (s *Store) ClaimPreparingOnboarding(onboarding api.Onboarding, maxAge time.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == api.PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.PreparingStub && now.Before(existing.CreatedAt.Add(maxAge)) {
 		return existing, true, nil
 	}
 	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok {
@@ -501,6 +502,95 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (api.Onboarding
 	return cloneOnboarding(onboarding), nil
 }
 
+// OnboardingSlot resolves the record holding the owner's slot for a
+// definition — see onboardingSlotLocked for the matching rules.
+func (s *Store) OnboardingSlot(auth identity.Envelope, definitionID string) (api.Onboarding, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.onboardingSlotLocked(auth, definitionID)
+}
+
+// onboardingSlotLocked is the one place a repeat install discovers "the owner
+// already has this connector". The slot key is
+// (principal, context, runtime, policy, definition): any non-terminal record
+// matching it can hold the slot, so a fresh request attaches instead of
+// minting a sibling. Two record kinds deliberately stay outside the slot —
+// an upgrade-keyed record is a parallel version change by contract, and a
+// shared (team-scope) record never answers a personal install. Preparing
+// stubs do match — a caller that needs the live holder skips them, while a
+// prepare caller uses a fresh stub to dedup its own in-flight build.
+// Pre-fix stores can hold siblings; the best holder wins deterministically —
+// non-stub over stub, live over pending over failed, connection-bound over
+// loose, then newest — so every caller resolves the same target.
+func (s *Store) onboardingSlotLocked(auth identity.Envelope, definitionID string) (api.Onboarding, bool) {
+	if definitionID == "" {
+		return api.Onboarding{}, false
+	}
+	var best api.Onboarding
+	found := false
+	for _, o := range s.onboardings {
+		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion || o.DefinitionID != definitionID {
+			continue
+		}
+		if !onboardingSlotEligible(o) {
+			continue
+		}
+		if !found || onboardingSlotRank(o) > onboardingSlotRank(best) || onboardingSlotRank(o) == onboardingSlotRank(best) && o.CreatedAt.After(best.CreatedAt) {
+			best, found = o, true
+		}
+	}
+	return best, found
+}
+
+// onboardingSlotEligible mirrors the slot's matching rules so the load-time
+// quarantine and the runtime claim agree on which records compete.
+func onboardingSlotEligible(o api.Onboarding) bool {
+	if o.Stage == api.StageGone || strings.HasPrefix(o.IdempotencyKey, upgradeKeyPrefix) {
+		return false
+	}
+	if o.Definition != nil && o.Definition.Workload.Class == api.Shared {
+		return false
+	}
+	return true
+}
+
+// onboardingSlotRank picks the deterministic slot holder: non-stub over stub,
+// live over pending over failed, connection-bound over loose.
+func onboardingSlotRank(o api.Onboarding) int {
+	score := 0
+	if !o.PreparingStub {
+		score += 8
+	}
+	switch o.Stage {
+	case api.StageLive:
+		score += 4
+	case api.StagePending:
+		score += 2
+	}
+	if o.ConnectionID != "" {
+		score++
+	}
+	return score
+}
+
+// supersedeOnboardingLocked retires a slot corpse so the retry minted under a
+// different seed becomes the one live record — the loser keeps its audit
+// history and names its replacement.
+func (s *Store) supersedeOnboardingLocked(previous api.Onboarding, newID string) error {
+	previous.Retire(api.TombstoneRemoved)
+	previous.SupersededBy = newID
+	previous.Revision++
+	return s.putOnboardingLocked(previous)
+}
+
+// SupersedeOnboarding is the locked-entry variant for callers that do not
+// already hold the store mutex.
+func (s *Store) SupersedeOnboarding(previous api.Onboarding, newID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.supersedeOnboardingLocked(previous, newID)
+}
+
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -508,7 +598,7 @@ func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onb
 	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.IdempotencyKey == key && key != "" {
-			if onboarding.Phase == api.PhaseRemoved {
+			if onboarding.DeadEnd() {
 				removed, found = onboarding, true
 				continue
 			}

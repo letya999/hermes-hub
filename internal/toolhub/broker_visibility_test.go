@@ -25,12 +25,15 @@ func TestRefreshBrokerRequestPreservesInvisibleCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &ControlPlane{Store: s, Now: time.Now, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: staleBrokerKey(t), KeyID: "toolhub", Issuer: "hermes-toolhub"}}
-	o, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "visibility-check", definition, "", "")
+	o, _, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "visibility-check", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.Phase, o.BrokerCredentialID, o.Locator = api.PhaseAwaitingConfirm, "credential_invisible", "credential_invisible"
-	o.BrokerRequestID, o.ConfirmationNonce = "request_existing", "existing-confirmation"
+	o.BrokerCredentialID, o.Locator = "credential_invisible", "credential_invisible"
+	o.Stage = api.StagePending
+	o.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	o.BrokerRequestID = "request_existing"
+	o.ArmGate(api.GateConfirmSetup, "existing-confirmation", time.Time{})
 	o.Revision++
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
@@ -74,7 +77,7 @@ func TestBrokerReuseDoesNotReplaceInvisibleCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &ControlPlane{Store: s, Now: time.Now, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: staleBrokerKey(t), KeyID: "toolhub", Issuer: "hermes-toolhub"}}
-	o, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "reuse-check", d, "", "")
+	o, _, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "reuse-check", d, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +106,7 @@ func TestBrokerRotationPreservesInvisibleTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &ControlPlane{Store: s, Now: time.Now, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: staleBrokerKey(t), KeyID: "toolhub", Issuer: "hermes-toolhub"}}
-	o, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "rotate-check", d, "", "")
+	o, _, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "rotate-check", d, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

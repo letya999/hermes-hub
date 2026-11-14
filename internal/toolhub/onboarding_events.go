@@ -53,7 +53,7 @@ func (c *ControlPlane) ReconcileBrokerEvents(ctx context.Context, auth identity.
 	c.Store.mu.RLock()
 	var pending []api.Onboarding
 	for _, o := range c.Store.onboardings {
-		if o.PrincipalID == auth.PrincipalID && o.ContextID == auth.ContextID && o.RuntimeID == auth.RuntimeID && o.PolicyVersion == auth.PolicyVersion && (o.Phase == api.PhaseAwaitingCreds || o.Phase == api.PhaseVerifying || o.Phase == api.PhaseRetryScheduled) && (page.Gap || cursor == 0 || requests[o.BrokerRequestID]) {
+		if o.PrincipalID == auth.PrincipalID && o.ContextID == auth.ContextID && o.RuntimeID == auth.RuntimeID && o.PolicyVersion == auth.PolicyVersion && (o.Awaiting(api.GateCredentials) || o.AdmissionPending && o.Stage == api.StagePending && o.GateKind() == "") && (page.Gap || cursor == 0 || requests[o.BrokerRequestID]) {
 			pending = append(pending, cloneOnboarding(o))
 		}
 	}

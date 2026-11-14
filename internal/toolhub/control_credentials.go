@@ -63,7 +63,7 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	definition.Tools = nil
 	definition.Source.ToolContractDigest = ""
 	definition.Source.ToolContractSource = ""
-	onboarding.Phase = api.PhaseAwaitingCreds
+	onboarding.Stage = api.StagePending
 	onboarding.Required = hints
 	onboarding.AdmissionPending = true
 	onboarding.Error = api.PublicPrepareError(errors.New(review.AdmissionDetail))
@@ -85,14 +85,11 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	}
 	onboarding.ReviewDigest = ""
 	if brokerGate {
-		onboarding.FormNonce = ""
-		onboarding.FormExpires = time.Time{}
+		onboarding.ArmGate(api.GateCredentials, "", time.Time{})
 	} else {
-		onboarding.FormNonce = api.RandomNonce()
-		onboarding.FormExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	}
-	onboarding.ConfirmationNonce = ""
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -403,10 +400,10 @@ func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.En
 		return nil, err
 	}
 	body := c.statusBody(onboarding, true)
-	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
+	if onboarding.Awaiting(api.GateCredentials) && onboarding.GateNonce(api.GateCredentials) != "" && c.now().Before(onboarding.GateExpiry(api.GateCredentials)) {
 		body["input"] = "localhost-form"
 	}
-	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
+	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Awaiting(api.GateCredentials) {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
 	}
@@ -420,18 +417,17 @@ func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.En
 // loopback link expires. The old nonce is replaced, so an old URL cannot be
 // replayed while the same request key still identifies the onboarding.
 func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
+	if onboarding == nil || !onboarding.Awaiting(api.GateCredentials) {
 		return nil
 	}
 	if onboarding.BrokerRequestID != "" || onboarding.AdmissionPending && onboarding.BrokerCredentialID != "" {
 		return nil
 	}
 	now := c.now()
-	if onboarding.FormNonce != "" && now.Before(onboarding.FormExpires) {
+	if onboarding.GateNonce(api.GateCredentials) != "" && now.Before(onboarding.GateExpiry(api.GateCredentials)) {
 		return nil
 	}
-	onboarding.FormNonce = api.RandomNonce()
-	onboarding.FormExpires = now.Add(c.ttl())
+	onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), now.Add(c.ttl()))
 	c.armWizard(onboarding)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(*onboarding); err != nil {
@@ -442,11 +438,10 @@ func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.
 }
 
 func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationUsed || (!onboarding.ConfirmationUsed && onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+	if onboarding == nil || onboarding.GateKind() != api.GateConfirmSetup || onboarding.ConfirmationUsed || (!onboarding.ConfirmationUsed && onboarding.GateNonce(api.GateConfirmSetup) != "" && c.now().Before(onboarding.GateExpiry(api.GateConfirmSetup))) {
 		return nil
 	}
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.ConfirmationUsed = false
 	c.armWizard(onboarding)
 	expected := onboarding.Revision
@@ -454,7 +449,7 @@ func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.En
 	if err := c.Store.PutOnboardingIfRevision(*onboarding, expected); err != nil {
 		if errors.Is(err, api.ErrStale) {
 			current, readErr := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
-			if readErr == nil && current.Phase == api.PhaseAwaitingConfirm && current.ConfirmationNonce != "" && c.now().Before(current.ConfirmationExpires) {
+			if readErr == nil && current.GateKind() == api.GateConfirmSetup && current.GateNonce(api.GateConfirmSetup) != "" && c.now().Before(current.GateExpiry(api.GateConfirmSetup)) {
 				*onboarding = current
 				return nil
 			}
@@ -484,13 +479,13 @@ func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[
 	if onboarding.AdmissionPending && onboarding.Definition != nil && onboarding.Definition.CredentialContractID != "" {
 		return fmt.Errorf("%w: contracted credentials must be submitted to Broker", api.ErrUnauthorized)
 	}
-	if onboarding.FormNonce == "" || nonce != onboarding.FormNonce {
+	if onboarding.GateNonce(api.GateCredentials) == "" || nonce != onboarding.GateNonce(api.GateCredentials) {
 		return fmt.Errorf("%w: form nonce", api.ErrUnauthorized)
 	}
-	if onboarding.FormExpires.IsZero() || c.now().After(onboarding.FormExpires) {
+	if onboarding.GateExpiry(api.GateCredentials).IsZero() || c.now().After(onboarding.GateExpiry(api.GateCredentials)) {
 		return fmt.Errorf("%w: expired form", api.ErrUnauthorized)
 	}
-	if onboarding.Phase != api.PhaseAwaitingCreds && onboarding.Phase != api.PhaseAwaitingConfirm {
+	if onboarding.GateKind() != api.GateCredentials {
 		return fmt.Errorf("%w: credentials not expected", api.ErrUnauthorized)
 	}
 	filtered, err := filterSubmittedCredentials(onboarding.Required, values)
@@ -598,11 +593,8 @@ func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[
 	}
 	onboarding.Locator = locator
 	onboarding.CredentialOwner = owner
-	onboarding.FormNonce = ""
-	onboarding.FormExpires = time.Time{}
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.ConfirmationUsed = false
 	c.armWizard(&onboarding)
 	onboarding.Revision++

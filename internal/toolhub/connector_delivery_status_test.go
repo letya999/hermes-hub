@@ -25,21 +25,21 @@ func TestConnectorStatusReportsChannelDelivery(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_AUTH", "service-bearer")
 	onboarding := api.Onboarding{OnboardingID: "onboard-test", NoticeVersion: 3, NoticeQueuedVersion: 3}
 	control := &ControlPlane{}
-	result := api.OperationResult{NextAction: "submit_credentials"}
+	result := api.OperationResult{YouMust: api.YouMustClickLink}
 	control.observeNoticeDelivery(t.Context(), auth, onboarding, &result)
-	if result.DeliveryStatus != api.PrepareDeliveryUncertain || result.Code != api.OpCodeDeliveryUnavailable || result.NextAction != "resend" || !result.LinkSent {
+	if result.Delivery != api.DeliveryUncertain || result.Code != api.OpCodeDeliveryUnavailable || result.YouMust != api.YouMustRetry || !noticeDelivered(result) {
 		t.Fatalf("uncertain delivery not actionable: %+v", result)
 	}
 	status = api.PrepareDeliveryDelivered
 	result = api.OperationResult{}
 	control.observeNoticeDelivery(t.Context(), auth, onboarding, &result)
-	if result.DeliveryStatus != api.PrepareDeliveryDelivered || result.Code != "" || !result.LinkSent {
+	if result.Delivery != api.DeliverySent || result.Code != "" || !noticeDelivered(result) {
 		t.Fatalf("delivered receipt not exposed: %+v", result)
 	}
 	onboarding.NoticeVersion++
 	result = api.OperationResult{}
 	control.observeNoticeDelivery(t.Context(), auth, onboarding, &result)
-	if result.DeliveryStatus != api.PrepareDeliveryNotQueued || result.LinkSent {
+	if result.Delivery != api.DeliveryNotSent || noticeDelivered(result) {
 		t.Fatalf("unqueued notice misreported: %+v", result)
 	}
 }

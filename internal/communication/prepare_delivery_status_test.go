@@ -23,7 +23,7 @@ func TestPrepareDeliveryStatusRequiresOwnerAndReportsReceipt(t *testing.T) {
 	}
 	actor := cfg.Users[0].Envelope(11)
 	id := "onboard-receipt"
-	check := func(token, origin string, wantCode int, wantStatus string) {
+	check := func(token, origin string, wantCode int, wantStatus, wantChannel string) {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodGet, "/v1/prepare-delivery-status?onboarding_id="+id+"&notice_version=1", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -37,23 +37,27 @@ func TestPrepareDeliveryStatusRequiresOwnerAndReportsReceipt(t *testing.T) {
 		if wantStatus != "" {
 			var body struct {
 				DeliveryStatus string `json:"delivery_status"`
+				Channel        string `json:"channel"`
 			}
 			if json.Unmarshal(w.Body.Bytes(), &body) != nil || body.DeliveryStatus != wantStatus {
 				t.Fatalf("delivery status=%q want=%q", body.DeliveryStatus, wantStatus)
 			}
+			if body.Channel != wantChannel {
+				t.Fatalf("delivery channel=%q want=%q", body.Channel, wantChannel)
+			}
 		}
 	}
-	check(cfg.ControlAuth, "", http.StatusUnauthorized, "")
-	check(cfg.AutomationAuth, "https://untrusted.example", http.StatusUnauthorized, "")
-	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryUnknown)
-	delivery := Delivery{ID: "prepare-" + id + "-awaiting-credentials-v1-notice", ChatID: 11, Text: "test", CreatedAt: time.Now(), PrepareKey: prepareDeliveryIdentity(actor, id), PrepareVersion: 1}
+	check(cfg.ControlAuth, "", http.StatusUnauthorized, "", "")
+	check(cfg.AutomationAuth, "https://untrusted.example", http.StatusUnauthorized, "", "")
+	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryUnknown, "")
+	delivery := Delivery{ID: "prepare-" + id + "-awaiting-credentials-v1-notice", Channel: "telegram_bot", ChatID: 11, Text: "test", CreatedAt: time.Now(), PrepareKey: prepareDeliveryIdentity(actor, id), PrepareVersion: 1}
 	if _, err := g.spool.enqueuePrepareDelivery(delivery); err != nil {
 		t.Fatal(err)
 	}
-	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryQueued)
+	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryQueued, "telegram_bot")
 	foreign := actor
 	foreign.PrincipalID = "other"
-	if got, err := g.spool.prepareDeliveryStatus(foreign, id, 1); err != nil || got != api.PrepareDeliveryUnknown {
+	if got, _, err := g.spool.prepareDeliveryStatus(foreign, id, 1); err != nil || got != api.PrepareDeliveryUnknown {
 		t.Fatalf("foreign owner saw notice: status=%q err=%v", got, err)
 	}
 	claimed, err := g.spool.ClaimDelivery()
@@ -67,7 +71,7 @@ func TestPrepareDeliveryStatusRequiresOwnerAndReportsReceipt(t *testing.T) {
 	if err := g.spool.CompleteDelivery(claimed.ID); err != nil {
 		t.Fatal(err)
 	}
-	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryDelivered)
+	check(cfg.AutomationAuth, "", http.StatusOK, api.PrepareDeliveryDelivered, "telegram_bot")
 	failed := delivery
 	failed.ID = "prepare-" + id + "-awaiting-credentials-v2-notice"
 	failed.PrepareVersion = 2
@@ -81,7 +85,7 @@ func TestPrepareDeliveryStatusRequiresOwnerAndReportsReceipt(t *testing.T) {
 	if err := g.spool.UncertainDelivery(claimed.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := g.spool.prepareDeliveryStatus(actor, id, 2); err != nil || got != api.PrepareDeliveryUncertain {
+	if got, _, err := g.spool.prepareDeliveryStatus(actor, id, 2); err != nil || got != api.PrepareDeliveryUncertain {
 		t.Fatalf("failed notice: status=%q err=%v", got, err)
 	}
 }

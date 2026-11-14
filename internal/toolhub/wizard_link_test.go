@@ -31,8 +31,9 @@ func TestRefreshCredentialFormArmsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds, DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-	}
+		Mode:  api.OnboardingCatalog,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, DefinitionID: "fixture-def", DefinitionVersion: "1.0.0"}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +49,7 @@ func TestRefreshCredentialFormArmsWizard(t *testing.T) {
 	}
 	// A re-mint (expired form) must keep the wizard nonce — the link in the
 	// channel stays the one the user already has.
-	stored.FormExpires = time.Now().Add(-time.Minute)
+	stored.ArmGate(api.GateCredentials, "", time.Now().Add(-time.Minute))
 	stored.Revision++
 	if err := store.PutOnboarding(stored); err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func TestBrokerRequestArmsWizard(t *testing.T) {
 	definition.CredentialContractID = "c1"
 	definition.CredentialContractRevision = 1
 	definition.CredentialContractEnv = map[string]string{"TOKEN": "TOKEN"}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb-wiz-broker", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1"}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb-wiz-broker", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1"}
 
 	if err := control.ensureBrokerRequest(context.Background(), aliceAuth(), &onboarding, definition); err != nil {
 		t.Fatal(err)
@@ -119,7 +120,7 @@ func TestNewOnboardingArmsWizard(t *testing.T) {
 	control := &ControlPlane{Store: store, Now: time.Now}
 	definition := remoteDefinition()
 	definition.Credentials = []api.CredentialInput{{Name: "TOKEN", Required: true}}
-	onboarding, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "wiz-arm", definition, "", "")
+	onboarding, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "wiz-arm", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,12 +147,12 @@ func TestNewOnboardingArmsWizardConfirmOnly(t *testing.T) {
 	control := &ControlPlane{Store: store, Now: time.Now}
 	definition := remoteDefinition()
 	definition.Credentials = []api.CredentialInput{{Name: "OPT", Required: false}}
-	onboarding, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "wiz-confirm", definition, "", "")
+	onboarding, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "wiz-confirm", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if onboarding.Phase != api.PhaseAwaitingConfirm {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 	if onboarding.WizardNonce == "" || onboarding.WizardExpires.IsZero() {
 		t.Fatal("confirm-only onboarding did not arm the wizard")
@@ -167,11 +168,11 @@ func TestConnectWizardRendersCredentialPhase(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-creds", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "form-nonce", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-		FormNonce: "form-nonce", FormExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestConnectWizardRendersCredentialPhase(t *testing.T) {
 	badReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-wiz-creds?k=forged", nil)
 	badReq.Host = "127.0.0.1"
 	gateway.serveConnect(bad, badReq)
-	if bad.Code != http.StatusUnauthorized {
+	if bad.Code != http.StatusGone {
 		t.Fatalf("forged wizard key status=%d", bad.Code)
 	}
 }
@@ -201,10 +202,10 @@ func TestConnectWizardExpiredKeyRejected(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-exp", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
-		FormNonce: "f", FormExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(-time.Minute),
-	}
+		Mode:        api.OnboardingCatalog,
+		Stage:       api.StagePending,
+		Gate:        &api.Gate{Kind: api.GateCredentials, Nonce: "f", Expires: time.Now().Add(time.Hour)},
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(-time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestConnectWizardExpiredKeyRejected(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-wiz-exp?k=wiz-key", nil)
 	req.Host = "127.0.0.1"
 	gateway.serveConnect(rec, req)
-	if rec.Code != http.StatusUnauthorized {
+	if rec.Code != http.StatusGone {
 		t.Fatalf("expired wizard key status=%d", rec.Code)
 	}
 }
@@ -228,12 +229,12 @@ func TestConnectWizardAcceptsCredentialPost(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-post", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "form-nonce", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-		Required:  []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-		FormNonce: "form-nonce", FormExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		Required:    []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -268,11 +269,11 @@ func TestConnectWizardConfirmStep(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-confirm", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "confirm-nonce", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		ConfirmationNonce: "confirm-nonce", ConfirmationExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +297,8 @@ func TestConnectWizardConfirmStep(t *testing.T) {
 	}
 	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-wiz-confirm")
-	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled && latest.Phase != api.PhaseAwaitingOAuth) {
-		t.Fatalf("wizard confirm did not advance: phase=%v err=%v", latest.Phase, err)
+	if err != nil || (!latest.ConfirmationUsed && latest.Stage != api.StageLive && !latest.Awaiting(api.GateOAuth)) {
+		t.Fatalf("wizard confirm did not advance: phase=%v err=%v", latest.NoticePhase(), err)
 	}
 }
 
@@ -311,11 +312,11 @@ func TestConnectWizardConfirmPendingWrites(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-writes", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, PendingWrites: true,
+		Mode:  api.OnboardingCatalog,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "confirm-nonce", Expires: time.Now().Add(time.Hour)}, PendingWrites: true,
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-		ConfirmationNonce: "confirm-nonce", ConfirmationExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestConnectWizardConfirmPendingWrites(t *testing.T) {
 	}
 	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-wiz-writes")
-	if err != nil || !latest.WritesEnabled || latest.Phase != api.PhaseEnabled {
+	if err != nil || !latest.WritesEnabled || latest.Stage != api.StageLive {
 		t.Fatalf("writes confirm did not apply: %+v err=%v", latest, err)
 	}
 }
@@ -343,10 +344,11 @@ func TestConnectWizardRendersOAuthPhase(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-oauth", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingOAuth,
+		Mode:                     api.OnboardingRemote,
+		Stage:                    api.StagePending,
+		Gate:                     &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-wiz&client_id=c&response_type=code",
-		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -377,11 +379,11 @@ func TestRefreshConfirmationRenewsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-confirm-renew", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "old", Expires: time.Now().Add(-time.Minute)},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-		ConfirmationNonce: "old", ConfirmationExpires: time.Now().Add(-time.Minute),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(-time.Minute),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(-time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -410,12 +412,12 @@ func TestSubmitCredentialsRenewsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-submit", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "form-nonce", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
-		Required:  []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-		FormNonce: "form-nonce", FormExpires: time.Now().Add(time.Hour),
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Minute),
-	}
+		Required:    []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +425,7 @@ func TestSubmitCredentialsRenewsWizard(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := store.onboarding("onb-wiz-submit")
-	if err != nil || stored.Phase != api.PhaseAwaitingConfirm {
+	if err != nil || !stored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("submit did not reach confirm: %+v err=%v", stored, err)
 	}
 	if stored.WizardNonce != "wiz-key" || stored.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
@@ -458,19 +460,20 @@ func TestBrokerReadyTransitionRenewsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-broker-ready", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingSelfInstall,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 		BrokerRequestID: "r1",
-		WizardNonce:     "wiz-key", WizardExpires: time.Now().Add(time.Minute),
-	}
+		WizardNonce:     "wiz-key", WizardExpires: time.Now().Add(time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if onboarding.Phase != api.PhaseAwaitingConfirm {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 	if onboarding.WizardNonce != "wiz-key" || onboarding.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
 		t.Fatalf("wizard not renewed on broker ready: %+v", onboarding)
@@ -528,19 +531,20 @@ func TestBrokerAdmissionRenewsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-admit", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
+		Mode:  api.OnboardingCatalog,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, AdmissionPending: true,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		BrokerRequestID: "r1",
-		WizardNonce:     "wiz-key", WizardExpires: time.Now().Add(time.Minute),
-	}
+		WizardNonce:     "wiz-key", WizardExpires: time.Now().Add(time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if onboarding.Phase != api.PhaseAwaitingConfirm {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 	if onboarding.WizardNonce != "wiz-key" || onboarding.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
 		t.Fatalf("wizard not renewed on broker admission: %+v", onboarding)
@@ -589,16 +593,17 @@ func TestBrokerCredentialReuseArmsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-reuse", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.ensureBrokerRequest(context.Background(), auth, &onboarding, definition); err != nil {
 		t.Fatal(err)
 	}
-	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.WizardNonce == "" {
+	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.WizardNonce == "" {
 		t.Fatalf("credential reuse did not arm wizard: %+v", onboarding)
 	}
 }
@@ -613,10 +618,11 @@ func TestConnectWizardOAuthPastePost(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-oauth-post", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingOAuth,
+		Mode:                     api.OnboardingRemote,
+		Stage:                    api.StagePending,
+		Gate:                     &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-wiz&client_id=c",
-		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -660,11 +666,12 @@ func TestConnectWizardBrokerPagePollsRequest(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-broker-poll", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingSelfInstall,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 		BrokerRequestID: "r1", BrokerAuthorizationURL: "https://broker.example/connect/r1",
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +685,7 @@ func TestConnectWizardBrokerPagePollsRequest(t *testing.T) {
 		t.Fatalf("broker-ready wizard page status=%d body=%.300s", rec.Code, rec.Body.String())
 	}
 	stored, err := store.onboarding("onb-wiz-broker-poll")
-	if err != nil || stored.Phase != api.PhaseAwaitingConfirm {
+	if err != nil || !stored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("page did not advance the phase: %+v err=%v", stored, err)
 	}
 }
@@ -711,11 +718,12 @@ func TestConnectWizardBrokerPagePending(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-broker-pend", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingSelfInstall,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 		BrokerRequestID: "r1", BrokerAuthorizationURL: "https://broker.example/connect/r1",
-		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
-	}
+		WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -742,14 +750,15 @@ func TestConnectWizardWaitingPhases(t *testing.T) {
 	store := NewStore()
 	control := &ControlPlane{Store: store, Now: time.Now}
 	auth := aliceAuth()
-	for _, phase := range []string{api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed} {
+	for _, phase := range []string{api.PhasePreparing, "review", api.PhaseConfirmed} {
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: "onb-wiz-wait-" + phase, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-			Mode: api.OnboardingSelfInstall, Phase: phase,
+			Mode:         api.OnboardingSelfInstall,
 			DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 			WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
 		}
+		applyOnboardingPhase(&onboarding, phase)
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
 		}
@@ -776,10 +785,11 @@ func TestConnectWizardTerminalPhases(t *testing.T) {
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: "onb-wiz-term-" + phase, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-			Mode: api.OnboardingSelfInstall, Phase: phase,
+			Mode:         api.OnboardingSelfInstall,
 			DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 			WizardNonce: "wiz-key", WizardExpires: time.Now().Add(time.Hour),
 		}
+		applyOnboardingPhase(&onboarding, phase)
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
 		}
@@ -810,14 +820,13 @@ func TestConnectWizardCredentialPostRedirectsToWizard(t *testing.T) {
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-credredir", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, SourceURL: "https://github.com/zereight/gitlab-mcp",
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: api.RandomNonce(), Expires: time.Now().Add(time.Hour)}, SourceURL: "https://github.com/zereight/gitlab-mcp",
 		DefinitionID: "gitlab", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
-		FormNonce:     api.RandomNonce(),
-		FormExpires:   time.Now().Add(time.Hour),
 		WizardNonce:   "wiz-key",
 		WizardExpires: time.Now().Add(time.Hour),
-		Required:      []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
-	}
+		Required:      []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +838,7 @@ func TestConnectWizardCredentialPostRedirectsToWizard(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{Control: control}
-	form := url.Values{"nonce": {onboarding.FormNonce}, "GITLAB_PERSONAL_ACCESS_TOKEN": {"glpat-fixture"}}
+	form := url.Values{"nonce": {onboarding.GateNonce(api.GateCredentials)}, "GITLAB_PERSONAL_ACCESS_TOKEN": {"glpat-fixture"}}
 	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/connect/onb-wiz-credredir?k=wiz-key", strings.NewReader(form.Encode()))
 	post.Host = "127.0.0.1"
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -861,11 +870,12 @@ func TestPreparedOAuthReuseRenewsWizard(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wiz-oauth-renew", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingOAuth,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
 		DefinitionID: "fixture-def", DefinitionVersion: "1.0.0",
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-renew",
-		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(-time.Minute),
-	}
+		WizardNonce:              "wiz-key", WizardExpires: time.Now().Add(-time.Minute)}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

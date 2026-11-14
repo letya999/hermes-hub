@@ -9,6 +9,11 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
+// upgradeKeyPrefix namespaces upgrade idempotency keys. Upgrade records are
+// deliberately parallel siblings — the onboarding slot never matches them and
+// an upgrade claim never attaches to an ordinary install's record.
+const upgradeKeyPrefix = "upgrade:"
+
 // prepareConnectorUpgrade admits a reviewed capability change against an
 // existing owner-bound Broker session. The old binding remains live until the
 // ordinary confirmation and enable path replaces it.
@@ -55,9 +60,9 @@ func (c *ControlPlane) prepareConnectorUpgrade(ctx context.Context, auth identit
 	if err != nil {
 		return nil, err
 	}
-	key := "upgrade:" + original.OnboardingID + ":" + mode
+	key := upgradeKeyPrefix + original.OnboardingID + ":" + mode
 	if existing, ok := c.Store.FindOnboardingByKey(auth, key); ok {
-		if existing.Phase == api.PhaseRemoved || existing.Phase == api.PhaseFailed {
+		if existing.Stage == api.StageGone || existing.Stage == api.StageFailed {
 			return nil, api.ErrRevoked
 		}
 		if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
@@ -65,7 +70,7 @@ func (c *ControlPlane) prepareConnectorUpgrade(ctx context.Context, auth identit
 		}
 		return c.statusBody(existing, false), nil
 	}
-	if original.Phase != api.PhaseEnabled || original.BrokerCredentialID == "" {
+	if original.Stage != api.StageLive || original.BrokerCredentialID == "" {
 		return nil, fmt.Errorf("%w: enabled Broker connection required", api.ErrUnauthorized)
 	}
 	c.Store.mu.RLock()
@@ -102,17 +107,14 @@ func (c *ControlPlane) prepareConnectorUpgrade(ctx context.Context, auth identit
 	if err := c.registerAdmittedDefinition(&admitted, auth.PrincipalID); err != nil {
 		return nil, err
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, key, admitted, original.SourceURL, original.CommitSHA)
+	onboarding, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, key, admitted, original.SourceURL, original.CommitSHA, false)
 	if err != nil {
 		return nil, err
 	}
 	onboarding.Definition = &admitted
 	onboarding.BrokerCredentialID, onboarding.Locator = original.BrokerCredentialID, original.BrokerCredentialID
 	onboarding.ReviewDigest = admitted.Source.ReviewDigest
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err

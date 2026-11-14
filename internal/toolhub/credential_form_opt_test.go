@@ -28,13 +28,12 @@ func TestLoopbackFormOptionalFieldsAndDemote(t *testing.T) {
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-opt1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, SourceURL: "https://github.com/zereight/gitlab-mcp",
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: api.RandomNonce(), Expires: time.Now().Add(time.Hour)}, SourceURL: "https://github.com/zereight/gitlab-mcp",
 		DefinitionID: "gitlab", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
-		FormNonce:   api.RandomNonce(),
-		FormExpires: time.Now().Add(time.Hour),
-		Required:    []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
-		Optional:    []api.CredentialHint{{Name: "GITLAB_PROJECT_ID", Delivery: "env"}},
-	}
+		Required: []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
+		Optional: []api.CredentialHint{{Name: "GITLAB_PROJECT_ID", Delivery: "env"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +49,7 @@ func TestLoopbackFormOptionalFieldsAndDemote(t *testing.T) {
 	}
 	gateway := &Gateway{Control: control}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/credentials/"+onboarding.OnboardingID+"?nonce="+onboarding.FormNonce, nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/credentials/"+onboarding.OnboardingID+"?nonce="+onboarding.GateNonce(api.GateCredentials), nil)
 	req.Host = "127.0.0.1"
 	gateway.serveCredentials(rec, req)
 	body := rec.Body.String()
@@ -60,7 +59,7 @@ func TestLoopbackFormOptionalFieldsAndDemote(t *testing.T) {
 		}
 	}
 	// Owner demotes the required token and fills only the optional input.
-	form := url.Values{"nonce": {onboarding.FormNonce}, "opt:GITLAB_PERSONAL_ACCESS_TOKEN": {"1"}, "GITLAB_PROJECT_ID": {"42"}}
+	form := url.Values{"nonce": {onboarding.GateNonce(api.GateCredentials)}, "opt:GITLAB_PERSONAL_ACCESS_TOKEN": {"1"}, "GITLAB_PROJECT_ID": {"42"}}
 	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/credentials/"+onboarding.OnboardingID, strings.NewReader(form.Encode()))
 	post.Host = "127.0.0.1"
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -72,8 +71,8 @@ func TestLoopbackFormOptionalFieldsAndDemote(t *testing.T) {
 		t.Fatalf("demoted submit rejected: %d %s", rec.Code, rec.Body.String())
 	}
 	stored, err := store.onboarding(onboarding.OnboardingID)
-	if err != nil || stored.Phase == api.PhaseAwaitingCreds || stored.Locator == "" {
-		t.Fatalf("phase=%s locator=%q err=%v", stored.Phase, stored.Locator, err)
+	if err != nil || stored.Awaiting(api.GateCredentials) || stored.Locator == "" {
+		t.Fatalf("phase=%s locator=%q err=%v", stored.NoticePhase(), stored.Locator, err)
 	}
 	bundle, err := secrets.Get(stored.Locator, "alice")
 	if err != nil {

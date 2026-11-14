@@ -45,7 +45,12 @@ func (s *Store) RequestOnboardingNotice(auth identity.Envelope, id string) error
 	if auth.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil {
 		return api.ErrUnauthorized
 	}
-	if o.Phase != api.PhaseAwaitingCreds && o.Phase != api.PhaseAwaitingConfirm && o.Phase != api.PhaseAwaitingOAuth {
+	// An armed removal counts as a pending notice even outside setup phases:
+	// the owner may ask for the remove link again on a failed record. A
+	// consumed confirmation keeps its gate tombstone, so it still counts.
+	awaiting := o.Awaiting(api.GateCredentials) || o.Awaiting(api.GateOAuth) || o.GateKind() == api.GateConfirmSetup
+	armedRemoval := o.GateNonce(api.GateRemove) != "" && !o.Removed()
+	if !awaiting && !armedRemoval {
 		return api.ErrConflict
 	}
 	o.Revision++

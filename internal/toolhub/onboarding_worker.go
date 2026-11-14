@@ -41,10 +41,10 @@ func (c *ControlPlane) LifecyclePass(ctx context.Context, enrolled []identity.En
 			continue
 		}
 		pending := noticeRequired(o) && o.NoticeVersion > o.NoticeQueuedVersion && !c.now().Before(o.NoticeNextAttempt)
-		retry := o.AdmissionPending && o.BrokerCredentialID != "" && (o.Phase == api.PhaseVerifying || o.Phase == api.PhaseRetryScheduled) && !c.now().Before(o.AdmissionNextAttempt) && !c.now().Before(o.AdmissionLeaseUntil)
-		refresh := pending && o.Phase == api.PhaseAwaitingConfirm && !o.ConfirmationUsed && !c.now().Before(o.ConfirmationExpires)
-		repair := (o.Phase == api.PhaseAwaitingCreds && o.BrokerRequestID != "" || o.Phase == api.PhaseAwaitingOAuth) && c.now().Sub(o.ObservedAt) >= 30*time.Second
-		adopt := o.Initiator == nil && o.Phase == api.PhaseAwaitingConfirm && c.now().Before(o.ConfirmationExpires)
+		retry := o.AdmissionPending && o.BrokerCredentialID != "" && o.Stage == api.StagePending && o.GateKind() == "" && !c.now().Before(o.AdmissionNextAttempt) && !c.now().Before(o.AdmissionLeaseUntil)
+		refresh := pending && o.Awaiting(api.GateConfirmSetup) && !c.now().Before(o.GateExpiry(api.GateConfirmSetup))
+		repair := (o.Awaiting(api.GateCredentials) && o.BrokerRequestID != "" || o.Awaiting(api.GateOAuth)) && c.now().Sub(o.ObservedAt) >= 30*time.Second
+		adopt := o.Initiator == nil && o.Awaiting(api.GateConfirmSetup) && c.now().Before(o.GateExpiry(api.GateConfirmSetup))
 		if !pending && !retry && !refresh && !repair && !adopt {
 			continue
 		}
@@ -66,7 +66,7 @@ func (c *ControlPlane) LifecyclePass(ctx context.Context, enrolled []identity.En
 				if current.Initiator == nil {
 					current.Initiator = &actor
 				}
-				if current.Phase == api.PhaseAwaitingOAuth {
+				if current.Awaiting(api.GateOAuth) {
 					definition, derr := c.definitionOf(current)
 					if derr == nil {
 						_, err = c.ensurePreparedOAuth(ctx, actor, current, definition, false)
@@ -112,15 +112,15 @@ func (c *ControlPlane) startLifecycleTask(ctx context.Context, key string, work 
 }
 
 func (c *ControlPlane) deferBrokerAdmission(auth identity.Envelope, o api.Onboarding, credential string) error {
-	if o.BrokerCredentialID == credential && (o.Phase == api.PhaseRetryScheduled || o.Phase == api.PhaseVerifying) {
+	if o.BrokerCredentialID == credential && o.Stage == api.StagePending && o.GateKind() == "" {
 		return nil
 	}
 	expected := o.Revision
 	o.BrokerCredentialID, o.Locator = credential, credential
 	o.ObservedAt, o.ObservationCode = c.now(), ""
-	o.Phase = api.PhaseRetryScheduled
+	o.Stage = api.StagePending
+	o.ClearGate()
 	o.AdmissionNextAttempt, o.AdmissionLeaseUntil = time.Time{}, time.Time{}
-	o.FormNonce, o.FormExpires = "", time.Time{}
 	o.Revision++
 	err := c.Store.PutOnboardingIfRevision(o, expected)
 	if errors.Is(err, api.ErrStale) {
@@ -133,7 +133,7 @@ func (s *Store) recordOnboardingObservation(auth identity.Envelope, id string, a
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	o, ok := s.onboardings[id]
-	if !ok || auth.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil || o.Phase == api.PhaseRemoved || o.Phase == api.PhaseCleanupIncomplete || !at.After(o.ObservedAt) {
+	if !ok || auth.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil || o.DeadEnd() || o.CleanupIncomplete() || !at.After(o.ObservedAt) {
 		return
 	}
 	o.ObservedAt, o.ObservationCode = at, ""

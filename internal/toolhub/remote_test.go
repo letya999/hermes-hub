@@ -408,11 +408,11 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if err := fix.control.SubmitCredentials(onboardingID, "wrong-nonce", map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}
-	if err := fix.control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); err != nil {
+	if err := fix.control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding = mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.AdmissionPending {
+	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.AdmissionPending {
 		t.Fatalf("post-submit=%+v", onboarding)
 	}
 	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboardingID)
@@ -543,7 +543,7 @@ func TestRemoteSecretStaysOutOfStoreFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, persisted, prepared["onboarding_id"].(string))
-	if err := fix.control.SubmitCredentials(onboarding.OnboardingID, onboarding.FormNonce, map[string]string{"GITHUB_TOKEN": "ghp_storecheck"}); err != nil {
+	if err := fix.control.SubmitCredentials(onboarding.OnboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GITHUB_TOKEN": "ghp_storecheck"}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(storePath)

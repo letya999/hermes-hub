@@ -23,7 +23,7 @@ func (s *Store) claimRemovalTarget(auth identity.Envelope, target string) (Conne
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	owned := func(o api.Onboarding) bool {
-		return o.PrincipalID == auth.PrincipalID && o.ContextID == auth.ContextID && o.RuntimeID == auth.RuntimeID && o.Phase != api.PhaseRemoved && o.SupersededBy == ""
+		return o.PrincipalID == auth.PrincipalID && o.ContextID == auth.ContextID && o.RuntimeID == auth.RuntimeID && !o.DeadEnd() && o.SupersededBy == ""
 	}
 	var selected api.Onboarding
 	if o, ok := s.onboardings[target]; ok && owned(o) {
@@ -84,16 +84,17 @@ func (s *Store) claimRemovalTarget(auth identity.Envelope, target string) (Conne
 		selected = api.Onboarding{Schema: api.SchemaVersion,
 			OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "remove", connection.ConnectionID),
 			PrincipalID:  auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
-			Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled, DefinitionID: connection.DefinitionID,
+			Mode: api.OnboardingCatalog, Stage: api.StageLive, DefinitionID: connection.DefinitionID,
 			ConnectionID: connection.ConnectionID, Revision: 1, CreatedAt: time.Now().UTC()}
 	}
 	previous, existed := s.onboardings[selected.OnboardingID]
 	selected.PolicyVersion = auth.PolicyVersion
 	selected.Initiator = &auth
-	selected.FormNonce, selected.ConfirmationNonce, selected.WizardNonce = "", "", ""
-	if selected.Phase != api.PhaseCleanupIncomplete && connection.Status != api.DeletingStatus {
-		selected.RemoveNonce = ""
-		selected.RemoveExpires = time.Time{}
+	selected.ClearGateKind(api.GateCredentials)
+	selected.ClearGateKind(api.GateConfirmSetup)
+	selected.WizardNonce = ""
+	if !selected.CleanupIncomplete() && connection.Status != api.DeletingStatus {
+		selected.ClearGateKind(api.GateRemove)
 	}
 	selected.BrokerAuthorizationURL, selected.ChannelAuthURL = "", ""
 	selected.PendingWrites = false

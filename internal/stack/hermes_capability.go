@@ -134,6 +134,18 @@ func disabledToolsets(s Settings) []string {
 	return disabled
 }
 
+// toolSearchBridgeEnabled renders the upstream deferred-tool bridge switch
+// (`tools.tool_search.enabled`). The bridge stays off unless the operator
+// re-enabled it through the reviewed `native:tool_search` pseudo-toolset —
+// the ToolHub tool_search/tool_call pair is the only default discovery
+// surface, so upstream's per-source grouping cannot re-label the inventory.
+func (s Settings) toolSearchBridgeEnabled() string {
+	if s.Has("tool_search") {
+		return "on"
+	}
+	return "off"
+}
+
 // managedAgentSection is the managed-mode `agent:` config block: the compiled
 // denylist plus the api_server platform-hint override. Upstream's stock hint
 // claims MEDIA: markers and non-image files are never intercepted — true for
@@ -179,6 +191,7 @@ func managedHermesConfig(s Settings) M {
 		"mcp_servers": managedMCPServers(s),
 		"timeouts":    M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}},
 		"plugins":     M{"enabled": []string{}},
+		"tools":       M{"tool_search": M{"enabled": s.toolSearchBridgeEnabled()}},
 		"skills":      M{},
 		"hooks":       M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without

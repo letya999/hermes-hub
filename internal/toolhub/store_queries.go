@@ -121,7 +121,7 @@ func (s *Store) onboardingForConnection(connectionID string) (api.Onboarding, bo
 	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.ConnectionID != connectionID || onboarding.SupersededBy != "" ||
-			onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseRevoked {
+			onboarding.Terminal() {
 			continue
 		}
 		if connection.Owner.Type == api.PrincipalOwner && onboarding.PrincipalID != connection.Owner.ID {

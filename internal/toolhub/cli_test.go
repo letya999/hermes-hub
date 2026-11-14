@@ -469,7 +469,7 @@ func TestPrepareCLISpecStrictness(t *testing.T) {
 		t.Fatalf("owner rg spec denied: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.Mode != api.OnboardingSelfInstall {
+	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.Mode != api.OnboardingSelfInstall {
 		t.Fatalf("onboarding=%+v", onboarding)
 	}
 	definition, err := fix.store.Definition("owner-search", "1.0.0")
@@ -578,8 +578,8 @@ func TestPrepareCLIArtifactHappyPath(t *testing.T) {
 	if pub.Visibility != api.PublicationUser || pub.OwnerPrincipalID != "alice" {
 		t.Fatalf("publication=%+v", pub)
 	}
-	if onboarding.Phase != api.PhaseAwaitingConfirm && onboarding.Phase != api.PhaseAwaitingCreds {
-		t.Fatalf("onboarding phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateConfirmSetup) && !onboarding.Awaiting(api.GateCredentials) {
+		t.Fatalf("onboarding phase=%s", onboarding.NoticePhase())
 	}
 }
 
@@ -731,27 +731,41 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 		t.Fatalf("builds=%d", builds)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if onboarding.Phase != api.PhaseAwaitingConfirm {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
-	// A preparing stub for the same request key reports in-flight without a
-	// second build.
+	// A fresh preparing stub for the slot dedups a repeat call without a
+	// second build — the definition slot, not the request key, resolves it.
+	spec2 := map[string]any{
+		"name": "owner-tool-2", "source": githubCommitURL(), "binary": "/usr/local/bin/tool",
+		"tools": []any{map[string]any{"name": "run", "effect": "read"}},
+	}
 	stub := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, "dup2"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, DefinitionID: "owner-tool", DefinitionVersion: "1.0.0",
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, DefinitionID: "owner-tool-2", DefinitionVersion: "1.0.0",
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
-		IdempotencyKey: "dup2", Revision: 1, CreatedAt: fix.control.now(),
-	}
+		IdempotencyKey: "dup2", Revision: 1, CreatedAt: fix.control.now()}
 	if _, _, err := fix.store.ClaimPreparingOnboarding(stub, 35*time.Minute, fix.control.now()); err != nil {
 		t.Fatal(err)
 	}
-	body, err = fix.control.prepareCLIArtifact(context.Background(), auth, spec, "dup2", false)
+	body, err = fix.control.prepareCLIArtifact(context.Background(), auth, spec2, "dup2", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if builds != 1 || body["phase"] != api.PhasePreparing {
 		t.Fatalf("in-flight prepare rebuilt: builds=%d body=%v", builds, body)
+	}
+	// A repeat install under a different request key attaches to the existing
+	// slot holder — the real record answers, no second build runs.
+	body, err = fix.control.prepareCLIArtifact(context.Background(), auth, spec, "dup-other", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 1 || body["onboarding_id"] != onboarding.OnboardingID {
+		t.Fatalf("repeat install did not attach to the slot holder: builds=%d body=%v", builds, body)
 	}
 }
 

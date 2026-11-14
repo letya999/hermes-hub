@@ -199,18 +199,18 @@ func TestRemoveEmitsVerifiedReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateAwaitingConfirm {
+	if result.State != api.ModelStateWaitingYou {
 		t.Fatalf("remove preview: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.GateNonce(api.GateRemove)}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseRemoved {
+	if err != nil || !onboarding.Removed() {
 		t.Fatalf("onboarding after purge: %v %+v", err, onboarding)
 	}
 	if len(onboarding.Finalizers) == 0 {
@@ -283,12 +283,12 @@ func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce})
+	body, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.GateNonce(api.GateRemove)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseCleanupIncomplete {
+	if err != nil || !onboarding.CleanupIncomplete() {
 		t.Fatalf("expected cleanup_incomplete after broker 500: %v %+v", err, onboarding)
 	}
 	if body["finalizer"] != api.FinalizerBrokerCredential {
@@ -311,7 +311,7 @@ func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
 		}
 	}
 	onboarding, err = restarted.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseRemoved {
+	if err != nil || !onboarding.Removed() {
 		t.Fatalf("onboarding after retries: %v %+v", err, onboarding)
 	}
 	if !strings.Contains(onboarding.RemoveReceipt, "verified 0") {
@@ -326,8 +326,7 @@ func TestResumeRemovalAfterRestartWithPendingFinalizers(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	onboarding := m13P3EnabledOnboarding(t, store, auth)
 	onboarding.Finalizers = newRemoveLadder()
-	onboarding.RemoveNonce = "spent-remove"
-	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.ArmGate(api.GateRemove, "spent-remove", time.Now().Add(-time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -340,16 +339,15 @@ func TestResumeRemovalAfterRestartWithPendingFinalizers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("pending finalizers not resumed: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("pending finalizers not resumed: %v %s", err, got.NoticePhase())
 	}
 }
 
 func TestResumeRemovalAfterCrashBeforeFinalizerRecord(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	onboarding := m13P3EnabledOnboarding(t, store, auth)
-	onboarding.RemoveNonce = "spent-remove"
-	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.ArmGate(api.GateRemove, "spent-remove", time.Now().Add(-time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -362,8 +360,8 @@ func TestResumeRemovalAfterCrashBeforeFinalizerRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("remove before finalizer record not resumed: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("remove before finalizer record not resumed: %v %s", err, got.NoticePhase())
 	}
 }
 
@@ -388,11 +386,11 @@ func TestRemoveVerifyZeroBlocksOnLeftover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.GateNonce(api.GateRemove)}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseCleanupIncomplete {
+	if err != nil || !onboarding.CleanupIncomplete() {
 		t.Fatalf("leftover volume not caught by verify-zero: %v %+v", err, onboarding)
 	}
 	var verify *api.Finalizer
@@ -444,11 +442,11 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.GateNonce(api.GateRemove)}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseRemoved {
+	if err != nil || !onboarding.Removed() {
 		t.Fatalf("sweep did not converge: %v %+v", err, onboarding)
 	}
 	if len(purged) != 4 {
@@ -467,7 +465,7 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.State != api.OpStateDone || !strings.Contains(resumed.Summary, "verified 0") {
+	if resumed.State != api.ModelStateDone || !strings.Contains(resumed.Summary, "verified 0") {
 		t.Fatalf("resumed remove: %+v", resumed)
 	}
 	status, err := c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"operation_id": result.OperationID})
@@ -690,10 +688,9 @@ func TestMaterializeBindingPinsCredentialRecipe(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "pin-recipe"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Phase: api.PhaseEnabled, Locator: "loc_pin", RecipeDigest: digest,
+		Stage: api.StageLive, Locator: "loc_pin", RecipeDigest: digest,
 		Required: []api.CredentialHint{{Name: "ACME_TOKEN", Secret: true, Delivery: "env"}},
-		Revision: 1, CreatedAt: time.Now(),
-	}
+		Revision: 1, CreatedAt: time.Now()}
 	c := &ControlPlane{Store: store, Now: time.Now}
 	if _, err := c.materializeBinding(context.Background(), auth, onboarding, definition); err != nil {
 		t.Fatal(err)
@@ -837,8 +834,8 @@ func TestCompactionBoundsSnapshot(t *testing.T) {
 			Target: "x", PrincipalID: "alice", State: api.OpStateDone, CreatedAt: old, UpdatedAt: old,
 		}
 	}
-	store.onboardings["dead-old"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-old", PrincipalID: "alice", Phase: api.PhaseRemoved, Revision: 1, CreatedAt: old}
-	store.onboardings["dead-new"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-new", PrincipalID: "alice", Phase: api.PhaseRemoved, Revision: 1, CreatedAt: time.Now()}
+	store.onboardings["dead-old"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-old", PrincipalID: "alice", Stage: api.StageGone, Tombstone: api.TombstoneRemoved, Revision: 1, CreatedAt: old}
+	store.onboardings["dead-new"] = api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "dead-new", PrincipalID: "alice", Stage: api.StageGone, Tombstone: api.TombstoneRemoved, Revision: 1, CreatedAt: time.Now()}
 	store.operations["op-fresh"] = api.Operation{Schema: api.SchemaVersion, OperationID: "op-fresh", Intent: api.OpIntentInstall, Target: "x", PrincipalID: "alice", State: api.OpStateDone, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	store.operations["op-failed"] = api.Operation{Schema: api.SchemaVersion, OperationID: "op-failed", Intent: api.OpIntentInstall, Target: "x", PrincipalID: "alice", State: api.OpStateFailed, ErrorCode: api.OpCodeProbeFailed, CreatedAt: old, UpdatedAt: old}
 	path := filepath.Join(t.TempDir(), "store.json")
@@ -913,24 +910,23 @@ func TestRemoveSweepsSiblingOnboardingsOfConnection(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "sibling-attempt"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "2.0.0",
-		Phase: api.PhaseAwaitingCreds, ConnectionID: enabled.ConnectionID,
-		Revision: 1, CreatedAt: time.Now(),
-	}
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, ConnectionID: enabled.ConnectionID,
+		Revision: 1, CreatedAt: time.Now()}
 	dead := sibling
 	dead.OnboardingID = api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "dead-attempt")
-	dead.Phase = api.PhaseFailed
+	dead.Stage = api.StageFailed
 	other := sibling
 	other.OnboardingID = api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "other-connector")
 	other.ConnectionID = "conn-different"
-	other.Phase = api.PhaseEnabled
+	other.Stage = api.StageLive
 	for _, o := range []api.Onboarding{sibling, dead, other} {
 		if err := store.PutOnboarding(o); err != nil {
 			t.Fatal(err)
 		}
 	}
 	enabled.Finalizers = newRemoveLadder()
-	enabled.RemoveNonce = "spent-remove"
-	enabled.RemoveExpires = time.Now().Add(-time.Hour)
+	enabled.ArmGate(api.GateRemove, "spent-remove", time.Now().Add(-time.Hour))
 	enabled.Revision++
 	if err := store.PutOnboarding(enabled); err != nil {
 		t.Fatal(err)
@@ -943,14 +939,14 @@ func TestRemoveSweepsSiblingOnboardingsOfConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := store.OnboardingFor(auth, sibling.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("sibling onboarding not swept: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("sibling onboarding not swept: %v %s", err, got.NoticePhase())
 	}
-	if got, err = store.OnboardingFor(auth, dead.OnboardingID); err != nil || got.Phase != api.PhaseFailed {
-		t.Fatalf("terminal sibling rewritten: %v %s", err, got.Phase)
+	if got, err = store.OnboardingFor(auth, dead.OnboardingID); err != nil || got.Stage != api.StageFailed {
+		t.Fatalf("terminal sibling rewritten: %v %s", err, got.NoticePhase())
 	}
-	if got, err = store.OnboardingFor(auth, other.OnboardingID); err != nil || got.Phase != api.PhaseEnabled {
-		t.Fatalf("unrelated onboarding swept: %v %s", err, got.Phase)
+	if got, err = store.OnboardingFor(auth, other.OnboardingID); err != nil || got.Stage != api.StageLive {
+		t.Fatalf("unrelated onboarding swept: %v %s", err, got.NoticePhase())
 	}
 }
 
@@ -960,8 +956,7 @@ func TestFinalizerStepDelayHaltsLadderForResume(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	onboarding := m13P3EnabledOnboarding(t, store, auth)
 	onboarding.Finalizers = newRemoveLadder()
-	onboarding.RemoveNonce = "spent-remove"
-	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.ArmGate(api.GateRemove, "spent-remove", time.Now().Add(-time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -992,16 +987,16 @@ func TestFinalizerStepDelayHaltsLadderForResume(t *testing.T) {
 		t.Fatalf("halted remove returned %v", err)
 	}
 	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase == api.PhaseRemoved {
-		t.Fatalf("remove should be mid-ladder: %v %s", err, got.Phase)
+	if err != nil || got.Removed() {
+		t.Fatalf("remove should be mid-ladder: %v %s", err, got.NoticePhase())
 	}
 	restarted := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir()}
 	if err := restarted.ResumeRemovals(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	got, err = store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("mid-ladder remove not resumed: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("mid-ladder remove not resumed: %v %s", err, got.NoticePhase())
 	}
 	for _, step := range got.Finalizers {
 		if step.State != api.FinalizerDone {
@@ -1025,7 +1020,7 @@ func TestConnectorStatusReportsSweptRemoveDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if armed.State != api.OpStateAwaitingConfirm || armed.OperationID == "" {
+	if armed.State != api.ModelStateWaitingYou || armed.OperationID == "" {
 		t.Fatalf("remove not armed: %+v", armed)
 	}
 	// Another onboarding finishing the same connection's ladder sweeps this
@@ -1034,7 +1029,7 @@ func TestConnectorStatusReportsSweptRemoveDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	onboarding.Phase = api.PhaseRemoved
+	onboarding.Retire(api.TombstoneRemoved)
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -1043,7 +1038,7 @@ func TestConnectorStatusReportsSweptRemoveDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != api.OpStateDone {
+	if got.State != api.ModelStateDone {
 		t.Fatalf("swept remove reported %q, want done", got.State)
 	}
 }

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,8 +59,8 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: "onb-1", Mode: api.OnboardingCatalog,
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", PolicyVersion: "policy-1",
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Phase: api.PhaseAwaitingConfirm, Revision: 1,
-		ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour),
+		Stage: api.StagePending, Revision: 1,
+		Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +112,19 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err = registry.OnboardingFor(aliceAuth(), "onb-1")
-	if err != nil || !onboarding.ConfirmationUsed || onboarding.ConfirmationNonce != "nonce-1" {
+	if err != nil || !onboarding.ConfirmationUsed || onboarding.GateNonce(api.GateConfirmSetup) != "nonce-1" {
 		t.Fatal("link command reset consumed consent")
 	}
 	// A separate pending action tests expiry without reusing consumed consent.
+	// It pins a different definition — the load-time slot dedup (same
+	// principal+definition) would otherwise tombstone it behind onb-1.
+	definition2 := api.CLICatalogDefinitions()[1]
+	if err := registry.RegisterDefinition(definition2); err != nil {
+		t.Fatal(err)
+	}
 	onboarding.OnboardingID, onboarding.Revision, onboarding.ConfirmationUsed = "onb-2", 1, false
-	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	onboarding.DefinitionID, onboarding.DefinitionVersion = definition2.DefinitionID, definition2.Version
+	onboarding.ArmGate(api.GateConfirmSetup, "nonce-1", time.Now().Add(-time.Minute))
 	if err := registry.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +135,7 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if _, err := captureStdout(t, func() error { return runConnector(ctx, append([]string{"link"}, append(base, "--confirm")...)) }); !errors.Is(err, api.ErrLinkGone) {
 		t.Fatalf("expired link was silently renewed: %v", err)
 	}
-	onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "nonce-fresh", time.Now().Add(time.Hour)
+	onboarding.ArmGate(api.GateConfirmSetup, "nonce-fresh", time.Now().Add(time.Hour))
 	onboarding.Revision++
 	if err := registry.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -147,8 +157,8 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err = reloaded.OnboardingFor(aliceAuth(), "onb-2")
-	if err != nil || onboarding.Phase != api.PhaseConfirmed {
-		t.Fatalf("live confirmation phase=%s err=%v", onboarding.Phase, err)
+	if err != nil || !onboarding.ConfirmationUsed {
+		t.Fatalf("live confirmation phase=%s err=%v", onboarding.NoticePhase(), err)
 	}
 
 }
@@ -306,7 +316,7 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	if err := registry.PutOnboarding(api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-wri", Mode: api.OnboardingSelfInstall,
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", PolicyVersion: "policy-1",
-		DefinitionID: "wri", DefinitionVersion: "1.0.0", Phase: api.PhaseEnabled,
+		DefinitionID: "wri", DefinitionVersion: "1.0.0", Stage: api.StageLive,
 		BindingID: binding.ToolBindingID, ConnectionID: connection.ConnectionID,
 		Revision: 1, CreatedAt: time.Now(),
 	}); err != nil {
@@ -326,7 +336,7 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"status"}, append(base, "--target", "wri")...))
 	})
-	if err != nil || !strings.Contains(out, `"state":"done"`) || !strings.Contains(out, "wri") {
+	if err != nil || !strings.Contains(out, `"state":"ready"`) || !strings.Contains(out, "wri") {
 		t.Fatalf("status output=%q err=%v", out, err)
 	}
 	out, err = captureStdout(t, func() error {
@@ -340,8 +350,14 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := reloaded.OnboardingFor(aliceAuth(), "onb-wri")
-	if err != nil || onboarding.Phase != api.PhaseDisabled {
-		t.Fatalf("phase after CLI disable: %v %q", err, onboarding.Phase)
+	if err != nil || onboarding.Stage != api.StageLive {
+		t.Fatalf("stage after CLI disable: %v %q", err, onboarding.Stage)
+	}
+	disabledOut, err := captureStdout(t, func() error {
+		return runConnector(ctx, append([]string{"status"}, append(base, "--target", "wri")...))
+	})
+	if err != nil || !strings.Contains(disabledOut, `"state":"paused"`) {
+		t.Fatalf("status after CLI disable: %q %v", disabledOut, err)
 	}
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"enable"}, append(base, "--target", "wri")...))
@@ -358,13 +374,13 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"reauth"}, append(base, "--target", "wri")...))
 	})
-	if err != nil || !strings.Contains(out, `"state":"awaiting_user"`) || strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"waiting_you"`) || strings.Contains(out, `"link_sent"`) {
 		t.Fatalf("reauth output=%q err=%v", out, err)
 	}
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"remove"}, append(base, "--target", "wri")...))
 	})
-	if err != nil || !strings.Contains(out, `"state":"awaiting_confirm"`) || strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"waiting_you"`) || strings.Contains(out, `"link_sent"`) {
 		t.Fatalf("remove output=%q err=%v", out, err)
 	}
 	out, err = captureStdout(t, func() error {
@@ -382,7 +398,67 @@ func TestConnectorFacadeVerbsCLI(t *testing.T) {
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"allow-writes"}, append(base, "--target", "wri", "--on")...))
 	})
-	if err != nil || !strings.Contains(out, `"state":"awaiting_confirm"`) || strings.Contains(out, `"link_sent":true`) {
+	if err != nil || !strings.Contains(out, `"state":"waiting_you"`) || strings.Contains(out, `"link_sent"`) {
 		t.Fatalf("allow-writes on output=%q err=%v", out, err)
+	}
+}
+
+// --service carries facade verbs through /v1/connectors:invoke — the same
+// admission path the agent tools use, never a parallel file write.
+func TestConnectorServiceCallPostsInvoke(t *testing.T) {
+	var gotTool, gotAuth string
+	var gotArgs map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path != "/v1/connectors:invoke" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Tool string         `json:"tool"`
+			Args map[string]any `json:"args"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotTool, gotArgs = body.Tool, body.Args
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"state": "done", "summary": "1 connector(s)"})
+	}))
+	defer server.Close()
+	result, err := connectorServiceCall(context.Background(), server.URL, "svc-token", "connector_list", map[string]any{"target": "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTool != "connector_list" || gotAuth != "Bearer svc-token" || gotArgs["target"] != "github" {
+		t.Fatalf("invoke payload: tool=%q auth=%q args=%v", gotTool, gotAuth, gotArgs)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(result, &decoded); err != nil || decoded["state"] != "done" {
+		t.Fatalf("invoke result: %v %s", err, result)
+	}
+}
+
+func TestConnectorServiceTokenWalksUpToTokensFile(t *testing.T) {
+	root := t.TempDir()
+	store := filepath.Join(root, "runtime", "toolhub", "store.db")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]identity.Envelope{
+		"token-alice-000000000000000000000000": {Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "conv", DeliveryTargetID: "conv", PolicyVersion: "policy-1"},
+		"token-bob-00000000000000000000000000": {Schema: identity.Schema, PrincipalID: "bob", ExternalIdentityID: "bob", ContextID: "bob", RuntimeID: "runtime", ConversationID: "conv", DeliveryTargetID: "conv", PolicyVersion: "policy-1"},
+	}
+	body, _ := json.Marshal(entries)
+	if err := os.WriteFile(filepath.Join(root, "toolhub-tokens.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := connectorServiceToken("", store, "alice")
+	if err != nil || token != "token-alice-000000000000000000000000" {
+		t.Fatalf("walk-up token: %q %v", token, err)
+	}
+	if _, err := connectorServiceToken("", store, "carol"); err == nil {
+		t.Fatal("unenrolled principal must fail loudly, not guess a token")
+	}
+	if got, err := connectorServiceToken("explicit", store, "alice"); err != nil || got != "explicit" {
+		t.Fatalf("explicit --token wins: %q %v", got, err)
 	}
 }

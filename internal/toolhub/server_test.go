@@ -699,10 +699,11 @@ func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth id
 
 func TestPendingCredentialElicitRequiresPendingActionAndURLCap(t *testing.T) {
 	store := NewStore()
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb-elicit", Phase: api.PhaseAwaitingCreds,
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb-elicit",
+		Stage:       api.StagePending,
+		Gate:        &api.Gate{Kind: api.GateCredentials, Nonce: "n1", Expires: time.Now().Add(time.Hour)},
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingCatalog, DefinitionID: "catalog-read", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
-		FormNonce: "n1", FormExpires: time.Now().Add(time.Hour)}
+		Mode: api.OnboardingCatalog, DefinitionID: "catalog-read", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}

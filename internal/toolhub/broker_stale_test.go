@@ -245,7 +245,7 @@ func TestRefreshBrokerRequestHealsDeadRequest(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "dead-request", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "dead-request", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestRefreshBrokerRequestHealsDeadCredential(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "dead-credential", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "dead-credential", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,9 +319,9 @@ func TestRefreshBrokerRequestHealsDeadCredential(t *testing.T) {
 	onboarding.BrokerAuthorizationURL = "http://127.0.0.1/connect/request_1"
 	onboarding.BrokerCredentialID = "credential_dead"
 	onboarding.Locator = "credential_dead"
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = time.Now().Add(time.Hour)
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), time.Now().Add(time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -329,7 +329,7 @@ func TestRefreshBrokerRequestHealsDeadCredential(t *testing.T) {
 	if err := control.refreshBrokerRequest(t.Context(), auth, &onboarding); err != nil {
 		t.Fatalf("dead credential aborted refresh: %v", err)
 	}
-	if onboarding.Phase != api.PhaseAwaitingCreds || onboarding.BrokerCredentialID != "" || onboarding.Locator != "" {
+	if !onboarding.Awaiting(api.GateCredentials) || onboarding.BrokerCredentialID != "" || onboarding.Locator != "" {
 		t.Fatalf("onboarding was not reset to awaiting-creds: %+v", onboarding)
 	}
 	if onboarding.BrokerRequestID != "request_new" {
@@ -380,16 +380,16 @@ func TestConfirmSucceedsWhenOldGrantMissing(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "confirm-drift", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "confirm-drift", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	onboarding.BrokerRequestID = "request_1"
 	onboarding.BrokerCredentialID = "credential_2"
 	onboarding.Locator = "credential_2"
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = "nonce-x"
-	onboarding.ConfirmationExpires = time.Now().Add(time.Hour)
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.ArmGate(api.GateConfirmSetup, "nonce-x", time.Now().Add(time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestConfirmSucceedsWhenOldGrantMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != api.PhaseConfirmed || stored.BindingID == "" {
+	if !stored.ConfirmationUsed || stored.BindingID == "" {
 		t.Fatalf("confirm did not bind: %+v", stored)
 	}
 }
@@ -451,7 +451,7 @@ func TestEnsureBrokerRequestDropsDeadRotateTarget(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "rotate-drift", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "rotate-drift", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestEnsureBrokerRequestHealsDeadRecordedRequest(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "regen-dead", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "regen-dead", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

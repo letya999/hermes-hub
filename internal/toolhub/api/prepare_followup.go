@@ -67,7 +67,7 @@ func PostPrepareNoticeWithDelivery(ctx context.Context, auth identity.Envelope, 
 	payload := map[string]any{
 		"onboarding_id":     onboarding.OnboardingID,
 		"notice_version":    onboarding.NoticeVersion,
-		"phase":             onboarding.Phase,
+		"phase":             onboarding.NoticePhase(),
 		"definition_id":     onboarding.DefinitionID,
 		"contract_id":       onboarding.BrokerContractID,
 		"broker_request_id": onboarding.BrokerRequestID,
@@ -75,8 +75,8 @@ func PostPrepareNoticeWithDelivery(ctx context.Context, auth identity.Envelope, 
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
-	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.RemoveNonce == "" {
-		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.ConfirmationNonce, Revision: ConfirmationRevision(onboarding), ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires}
+	if onboarding.Awaiting(GateConfirmSetup) {
+		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.Gate.Nonce, Revision: ConfirmationRevision(onboarding), ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.Gate.Expires}
 	}
 	// The reviewed contract declares how credentials may be collected; the
 	// channel offers that intake (e.g. QR login) instead of sniffing ids.
@@ -105,40 +105,42 @@ func PostPrepareNoticeWithDelivery(ctx context.Context, auth identity.Envelope, 
 }
 
 // ReadPrepareDeliveryStatus checks the channel's persisted outcome, never the
-// mere acknowledgement that a notice entered its queue.
-func ReadPrepareDeliveryStatus(ctx context.Context, auth identity.Envelope, onboardingID string, version uint64) string {
+// mere acknowledgement that a notice entered its queue, and names the channel
+// that holds the delivery so the caller can say where it went.
+func ReadPrepareDeliveryStatus(ctx context.Context, auth identity.Envelope, onboardingID string, version uint64) (string, string) {
 	base, token := prepareRoute()
 	if base == "" || auth.PrincipalID == "" || onboardingID == "" || version == 0 {
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 	query := url.Values{"onboarding_id": {onboardingID}, "notice_version": {strconv.FormatUint(version, 10)}}
 	callCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, base+"/v1/prepare-delivery-status?"+query.Encode(), nil) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
 	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 	var result struct {
 		DeliveryStatus string `json:"delivery_status"`
+		Channel        string `json:"channel"`
 	}
 	if json.NewDecoder(response.Body).Decode(&result) != nil {
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 	switch result.DeliveryStatus {
 	case PrepareDeliveryUnknown, PrepareDeliveryQueued, PrepareDeliveryDelivered, PrepareDeliveryUncertain:
-		return result.DeliveryStatus
+		return result.DeliveryStatus, result.Channel
 	default:
-		return PrepareDeliveryUnknown
+		return PrepareDeliveryUnknown, ""
 	}
 }
 
@@ -223,45 +225,46 @@ func credentialNoticeURL(onboarding Onboarding) string {
 // against an explicit form origin. Selection order matches the channel notice
 // so elicitation and notices never disagree about which link is live.
 func ActionURL(origin string, onboarding Onboarding) string {
-	if onboarding.OnboardingID == "" {
+	if onboarding.OnboardingID == "" || onboarding.Stage == StageGone {
 		return ""
 	}
-	if onboarding.Phase == PhaseCleanupIncomplete {
+	gate := onboarding.Gate
+	if gate == nil {
 		return ""
 	}
-	// A live remove link outranks other pending actions: the preview mints it
-	// while the onboarding still sits in its previous phase.
-	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
-		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.RemoveNonce)
+	if gate.Kind == GateRemove {
+		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
 	}
-	// An armed wizard collapses the interactive phases into one stable link:
+	// An armed wizard collapses the interactive gates into one stable link:
 	// the page renders the live step itself, so a rotated OAuth state or a
 	// reminted broker request never strands the URL the channel delivered.
 	if onboarding.WizardNonce != "" {
-		switch onboarding.Phase {
-		case PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth:
-			return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+	}
+	switch gate.Kind {
+	case GateConfirmSetup:
+		if gate.Nonce != "" && !onboarding.ConfirmationUsed {
+			return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
 		}
-	}
-	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
-		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.ConfirmationNonce)
-	}
-	// External action links (provider OAuth, broker connect) hop through
-	// /connect/ so the destination URL and its state never sit in chat text.
-	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
-		if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
-			if state := parsed.Query().Get("state"); state != "" {
-				return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+	case GateOAuth:
+		// External action links (provider OAuth, broker connect) hop through
+		// /connect/ so the destination URL and its state never sit in chat text.
+		if onboarding.ProviderAuthorizationURL != "" {
+			if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
+				if state := parsed.Query().Get("state"); state != "" {
+					return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+				}
 			}
 		}
+	case GateCredentials:
+		if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
+			return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
+		}
+		if gate.Nonce != "" {
+			return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
+		}
 	}
-	if onboarding.Phase == PhaseAwaitingCreds && onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
-		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
-	}
-	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" {
-		return ""
-	}
-	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.FormNonce)
+	return ""
 }
 
 func ErrString(text string) error {

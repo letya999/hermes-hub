@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -161,7 +162,7 @@ func TestDeliverPrepareOutcomePostsNotice(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_AUTH", "control-token")
 	api.DeliverPrepareOutcome(context.Background(), identity.Envelope{}, api.Onboarding{OnboardingID: "onboard-abc"})
 	api.DeliverPrepareOutcome(context.Background(), identity.Envelope{PrincipalID: "alice"}, api.Onboarding{})
-	api.DeliverPrepareOutcome(context.Background(), identity.Envelope{PrincipalID: "alice"}, api.Onboarding{OnboardingID: "onboard-abc", Phase: api.PhaseAwaitingCreds, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp", Error: "token xoxp-abcdefghijklmnop"})
+	api.DeliverPrepareOutcome(context.Background(), identity.Envelope{PrincipalID: "alice"}, api.Onboarding{OnboardingID: "onboard-abc", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp", Error: "token xoxp-abcdefghijklmnop"})
 	if !strings.Contains(saw, "Bearer control-token") || !strings.Contains(saw, "alice") || !strings.Contains(saw, "onboard-abc") || strings.Contains(saw, "abcdefghijklmnop") || !strings.Contains(saw, "[redacted]") {
 		t.Fatal("prepare outcome request was not redacted")
 	}

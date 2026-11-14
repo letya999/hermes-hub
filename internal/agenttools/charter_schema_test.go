@@ -67,7 +67,7 @@ func TestCharterSchemaContract(t *testing.T) {
 	}
 }
 
-// The connector facade consumes `target` (normalized from `name`) and
+// The connector facade consumes `target` (normalized from `name`/`id`) and
 // `version` — the spec must declare the vocabulary the executor reads.
 func TestConnectorInstallDeclaresFacadeArgs(t *testing.T) {
 	for _, spec := range HubToolsDefinition().Tools {
@@ -78,8 +78,8 @@ func TestConnectorInstallDeclaresFacadeArgs(t *testing.T) {
 		for _, arg := range spec.Arguments {
 			names[arg.Name] = true
 		}
-		if !names["name"] || !names["version"] || len(spec.Arguments) != 2 {
-			t.Fatalf("connector_install must declare name+version, got %v", names)
+		if !names["name"] || !names["version"] || !names["id"] || len(spec.Arguments) != 3 {
+			t.Fatalf("connector_install must declare name+id+version, got %v", names)
 		}
 	}
 }

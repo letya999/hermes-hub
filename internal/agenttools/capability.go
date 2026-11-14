@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.3.19",
+		Version:      "18.6.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -204,9 +204,9 @@ func HubToolsDefinition() api.ToolDefinition {
 			// travel through tool args or results.
 			remote("connector_search", "connectors.search", "connectors.discover", "Search the connector catalog by name and kind; returns connector ids and availability.", api.ReadEffect, "runtime:connectors", opt("query"), opt("kind"), intArg("limit", false)),
 			remote("connector_list", "connectors.list", "connectors.discover", "List owned connections and onboarding records, including stale owner cleanup targets, with their recorded status.", api.ReadEffect, "runtime:connectors"),
-			remote("connector_status", "connectors.status", "connectors.discover", "Read connector state by exact onboarding or operation ID, including the channel's durable delivery_status for the current notice. link_sent means queued, not delivered; uncertain or unknown must not be called a delivered message. Status does not contact providers, renew links or send messages.", api.ReadEffect, "runtime:connectors", str("name"), boolArg("verbose", false)),
-			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector candidate from connector_search; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("version")),
-			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable; disable use without deleting credentials; revoke authorization; allow_writes; reauth to open protected credential entry even while setup awaits confirmation; resend the current setup notice or enabled browser viewer link by exact onboarding or operation ID; remove an owned connection or stale onboarding after protected owner confirmation. Never request credentials in chat.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
+			remote("connector_status", "connectors.status", "connectors.discover", "Read connector state by exact onboarding or operation ID; the result carries the contract fields state, you_must and delivery+channel — sent means the named channel confirmed the send, uncertain means unconfirmed, never a delivered message. Status does not contact providers, renew links or send messages.", api.ReadEffect, "runtime:connectors", str("name"), opt("id"), boolArg("verbose", false)),
+			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector candidate from connector_search; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("id"), opt("version")),
+			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable; disable use without deleting credentials; revoke authorization; allow_writes; reauth to open protected credential entry even while setup awaits confirmation; resend the current setup notice or enabled browser viewer link by exact onboarding or operation ID; remove an owned connection or stale onboarding after protected owner confirmation. Never request credentials in chat.", api.WriteEffect, "runtime:connectors", str("name"), opt("id"), str("action")),
 
 			// ---- web: hub-side web provider relay; cataloged names over
 			// the space's configured search/fetch backends
@@ -237,7 +237,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("platform_status", "platform.status", "platform.status", "Show own health and diagnostics with allowlisted fields only.", api.ReadEffect, "runtime:toolhub"),
 			remote("platform_bootstrap", "platform.bootstrap", "platform.bootstrap", "Show or complete pending first-run setup steps; idempotent after completion.", api.WriteEffect, "runtime:toolhub", opt("action"), opt("step")),
 			remote("platform_usage", "platform.usage", "platform.usage", "Show space consumption: tokens and cost per model and period against models.yaml limits.", api.ReadEffect, "runtime:toolhub", opt("period")),
-			remote("tool_search", "platform.search", "tools.list", "Search the extended tool inventory by name, description, parameters or definition; names matching here are callable through tool_call.", api.ReadEffect, "runtime:toolhub", opt("query"), opt("name"), intArg("limit", false)),
+			remote("tool_search", "platform.search", "tools.list", "Search the extended tool inventory by name, description, parameters, definition or authored toolset; the toolsets block answers which toolsets are selected (a state:pending set is authored but not connected — check connector_status) and names matching here are callable through tool_call.", api.ReadEffect, "runtime:toolhub", opt("query"), opt("name"), opt("toolset"), intArg("limit", false)),
 			remote("tool_call", "platform.call", "tools.use", "Invoke one extended tool by name with arguments; admission identical to a direct call.", api.WriteEffect, "runtime:toolhub", str("tool"), objArg("arguments", true)),
 			remote("memory_open", "memory.open", "memory.search", "Get a one-hour URL for the owner's private memory search and read view in ToolHub. Current memory rights are checked on every page request.", api.ReadEffect, "runtime:toolhub"),
 		},

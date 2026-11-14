@@ -27,7 +27,9 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 	defer server.Close()
 
 	auth := identity.Envelope{PrincipalID: "p1"}
-	onboarding := Onboarding{OnboardingID: "onb-1", Phase: PhaseAwaitingCreds, FormNonce: "n/1",
+	onboarding := Onboarding{OnboardingID: "onb-1",
+		Stage:        StagePending,
+		Gate:         &Gate{Kind: GateCredentials, Nonce: "n/1", Expires: time.Time{}},
 		DefinitionID: "def-1", SourceURL: "https://github.com/a/b", Error: "boom",
 		CreatedAt: time.Date(2026, 10, 17, 10, 55, 2, 0, time.UTC)}
 
@@ -70,19 +72,19 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 		t.Fatalf("event payload: %v", got)
 	}
 	// settled phases carry no form URL
-	onboarding.Phase = PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = "human-confirmation-nonce"
+	onboarding.Stage = StagePending
+	onboarding.ArmGate(GateConfirmSetup, "", time.Time{})
+	onboarding.ArmGate(GateConfirmSetup, "human-confirmation-nonce", time.Now().Add(time.Minute))
 	onboarding.Revision = 7
-	onboarding.ConfirmationExpires = time.Now().Add(time.Minute)
 	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
 	proof, ok := got["confirmation"].(map[string]any)
-	if !ok || proof["nonce"] != onboarding.ConfirmationNonce || proof["revision"] != float64(7) || proof["action_digest"] != ConfirmationActionDigest(onboarding) || proof["expires_at"] == "" {
+	if !ok || proof["nonce"] != onboarding.GateNonce(GateConfirmSetup) || proof["revision"] != float64(7) || proof["action_digest"] != ConfirmationActionDigest(onboarding) || proof["expires_at"] == "" {
 		t.Fatalf("trusted channel proof missing: %v", got)
 	}
 	got = nil
 	settled := onboarding
-	settled.Phase = PhaseEnabled
-	settled.ConfirmationExpires = time.Now()
+	settled.Stage = StageLive
+	settled.ArmGate(GateConfirmSetup, "", time.Now())
 	PostPrepareNotice(context.Background(), auth, settled, "", 3)
 	if _, ok := got["form_url"]; ok && got["form_url"] != "" {
 		t.Fatalf("settled form url: %v", got["form_url"])
@@ -109,7 +111,7 @@ func TestPostPrepareNoticeCarriesCredentialIntake(t *testing.T) {
 
 	// The reviewed telegram-session contract declares QR intake; the gateway
 	// needs it in the payload instead of pattern-matching the contract id.
-	onboarding := Onboarding{OnboardingID: "onb-tg", Phase: PhaseAwaitingCreds, BrokerContractID: "telegram-session", BrokerContractRevision: 3, BrokerRequestID: "req-1"}
+	onboarding := Onboarding{OnboardingID: "onb-tg", Stage: StagePending, Gate: &Gate{Kind: GateCredentials, Nonce: "", Expires: time.Time{}}, BrokerContractID: "telegram-session", BrokerContractRevision: 3, BrokerRequestID: "req-1"}
 	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
 	if got["credential_intake"] != "telegram_qr" {
 		t.Fatalf("intake missing from payload: %v", got)
@@ -128,12 +130,16 @@ func TestPostPrepareNoticeCarriesCredentialIntake(t *testing.T) {
 // provider URL and its state stay off the wire text.
 func TestCredentialNoticeURLActionLinks(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
-	oauth := Onboarding{OnboardingID: "onb-oa", Phase: PhaseAwaitingOAuth,
+	oauth := Onboarding{OnboardingID: "onb-oa",
+		Stage:                    StagePending,
+		Gate:                     &Gate{Kind: GateOAuth, Nonce: "", Expires: time.Time{}},
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c"}
 	if got := credentialNoticeURL(oauth); got != "http://127.0.0.1:9999/connect/onb-oa?state=flow-xyz" {
 		t.Fatalf("oauth action link=%q", got)
 	}
-	broker := Onboarding{OnboardingID: "onb-br", Phase: PhaseAwaitingCreds,
+	broker := Onboarding{OnboardingID: "onb-br",
+		Stage:           StagePending,
+		Gate:            &Gate{Kind: GateCredentials, Nonce: "", Expires: time.Time{}},
 		BrokerRequestID: "req-1", BrokerAuthorizationURL: "https://broker.example.com/connect/req-1"}
 	if got := credentialNoticeURL(broker); got != "http://127.0.0.1:9999/connect/onb-br?request=req-1" {
 		t.Fatalf("broker action link=%q", got)
@@ -145,8 +151,9 @@ func TestCredentialNoticeURLActionLinks(t *testing.T) {
 func TestCredentialNoticeURLPublicOrigin(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
 	t.Setenv("HUB_PUBLIC_ORIGIN", "https://hub.example.com")
-	onboarding := Onboarding{OnboardingID: "onb-pub", Phase: PhaseAwaitingConfirm,
-		ConfirmationNonce: "tok-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := Onboarding{OnboardingID: "onb-pub",
+		Stage: StagePending,
+		Gate:  &Gate{Kind: GateConfirmSetup, Nonce: "tok-1", Expires: time.Now().Add(time.Hour)}}
 	if got := credentialNoticeURL(onboarding); got != "https://hub.example.com/confirm/onb-pub?t=tok-1" {
 		t.Fatalf("public link=%q", got)
 	}

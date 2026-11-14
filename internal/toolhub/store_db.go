@@ -198,33 +198,33 @@ func strictDecode(body []byte, out any) error {
 
 // readDBSnapshot reassembles the snapshot from rows; undecodable or
 // unknown records are corrupt state and fail closed.
-func readDBSnapshot(db *sql.DB) (snapshot, error) {
+func readDBSnapshot(db *sql.DB) (snapshot, map[dbKey][32]byte, map[string]int, error) {
 	var state snapshot
 	meta := map[string]string{}
 	rows, err := db.Query(`SELECT k, v FROM meta`)
 	if err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
 			_ = rows.Close()
-			return state, err
+			return state, nil, nil, err
 		}
 		meta[k] = v
 	}
 	if err := rows.Close(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if err := rows.Err(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if meta["initialized"] != "1" {
-		return state, fmt.Errorf("%w: store not initialized", api.ErrInvalid)
+		return state, nil, nil, fmt.Errorf("%w: store not initialized", api.ErrInvalid)
 	}
 	schema, err := strconv.Atoi(meta["schema"])
 	if err != nil || schema != api.SchemaVersion {
-		return state, fmt.Errorf("%w: store schema", api.ErrInvalid)
+		return state, nil, nil, fmt.Errorf("%w: store schema", api.ErrInvalid)
 	}
 	state.Schema = schema
 	state.InstallationID = meta["installation_id"]
@@ -323,41 +323,49 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	}
 	ents, err := db.Query(`SELECT collection, id, seq, body FROM ent ORDER BY collection, seq`)
 	if err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
+	// rawIndex hashes the persisted row bytes — the same shape the stored
+	// rows-v1 digest covered. Decoded entities may migrate their marshaled
+	// form (a field fold changes body), so the foreign-commit fence must
+	// compare what the writer persisted, never a re-marshal.
+	rawIndex := map[dbKey][32]byte{}
+	listCounts := map[string]int{}
 	for ents.Next() {
 		var r dbRow
 		if err := ents.Scan(&r.collection, &r.id, &r.seq, &r.body); err != nil {
 			_ = ents.Close()
-			return state, err
+			return state, nil, nil, err
 		}
+		rawIndex[rowKey("ent", r)] = rowHash("ent", r)
 		if err := decode(r); err != nil {
 			_ = ents.Close()
-			return state, err
+			return state, nil, nil, err
 		}
 	}
 	if err := ents.Close(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if err := ents.Err(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	maps2, err := db.Query(`SELECT collection, k, v FROM kvmap ORDER BY collection, k`)
 	if err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	for maps2.Next() {
 		var collection, k, v string
 		if err := maps2.Scan(&collection, &k, &v); err != nil {
 			_ = maps2.Close()
-			return state, err
+			return state, nil, nil, err
 		}
+		rawIndex[rowKey("kvmap", dbRow{collection: collection, id: k})] = rowHash("kvmap", dbRow{body: []byte(v)})
 		switch collection {
 		case "projection_revision", "restart_applied", "broker_cursor":
 			n, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
 				_ = maps2.Close()
-				return state, fmt.Errorf("%w: store revision", api.ErrInvalid)
+				return state, nil, nil, fmt.Errorf("%w: store revision", api.ErrInvalid)
 			}
 			if collection == "broker_cursor" {
 				state.BrokerCursors[k] = n
@@ -370,23 +378,23 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 			var s string
 			if err := strictDecode([]byte(v), &s); err != nil {
 				_ = maps2.Close()
-				return state, fmt.Errorf("%w: restart digest", api.ErrInvalid)
+				return state, nil, nil, fmt.Errorf("%w: restart digest", api.ErrInvalid)
 			}
 			state.RestartDigests[k] = s
 		default:
 			_ = maps2.Close()
-			return state, fmt.Errorf("%w: store map collection", api.ErrInvalid)
+			return state, nil, nil, fmt.Errorf("%w: store map collection", api.ErrInvalid)
 		}
 	}
 	if err := maps2.Close(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if err := maps2.Err(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	lists, err := db.Query(`SELECT collection, seq, body FROM listrec ORDER BY collection, seq`)
 	if err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	for lists.Next() {
 		var collection string
@@ -394,59 +402,58 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 		var body []byte
 		if err := lists.Scan(&collection, &seq, &body); err != nil {
 			_ = lists.Close()
-			return state, err
+			return state, nil, nil, err
 		}
+		r := dbRow{collection: collection, seq: seq, body: body}
+		rawIndex[rowKey("listrec", r)] = rowHash("listrec", r)
+		listCounts[collection]++
 		switch collection {
 		case "capability_change":
 			var v api.CapabilityChange
 			if err := strictDecode(body, &v); err != nil {
 				_ = lists.Close()
-				return state, fmt.Errorf("%w: capability change", api.ErrInvalid)
+				return state, nil, nil, fmt.Errorf("%w: capability change", api.ErrInvalid)
 			}
 			state.CapabilityChanges = append(state.CapabilityChanges, v)
 		case "binding_change":
 			var v bindingChange
 			if err := strictDecode(body, &v); err != nil {
 				_ = lists.Close()
-				return state, fmt.Errorf("%w: binding change", api.ErrInvalid)
+				return state, nil, nil, fmt.Errorf("%w: binding change", api.ErrInvalid)
 			}
 			state.BindingChanges = append(state.BindingChanges, v)
 		default:
 			_ = lists.Close()
-			return state, fmt.Errorf("%w: store list collection", api.ErrInvalid)
+			return state, nil, nil, fmt.Errorf("%w: store list collection", api.ErrInvalid)
 		}
 	}
 	if err := lists.Close(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if err := lists.Err(); err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	if len(state.Recipes) == 0 {
 		state.Recipes = nil
 	}
 	storedDigest, err := hex.DecodeString(meta["digest"])
 	if err != nil {
-		return state, api.ErrConflict
+		return state, nil, nil, api.ErrConflict
 	}
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		return state, err
+		return state, nil, nil, err
 	}
 	digest := sha256.Sum256(body)
 	if meta["digest_format"] == "rows-v1" {
-		index, _, _, err := dbRowsFor(state, nil, nil)
-		if err != nil {
-			return state, err
-		}
-		digest = rowsDigest(index, state.InstallationID)
+		digest = rowsDigest(rawIndex, state.InstallationID)
 	} else if meta["digest_format"] != "" {
-		return state, api.ErrInvalid
+		return state, nil, nil, api.ErrInvalid
 	}
 	if !bytes.Equal(digest[:], storedDigest) {
-		return state, api.ErrConflict
+		return state, nil, nil, api.ErrConflict
 	}
-	return state, nil
+	return state, rawIndex, listCounts, nil
 }
 
 func loadDB(path string) (*Store, error) {
@@ -463,7 +470,7 @@ func loadDB(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	state, err := readDBSnapshot(db)
+	state, rawRows, listCounts, err := readDBSnapshot(db)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -486,15 +493,16 @@ func loadDB(path string) (*Store, error) {
 		return nil, err
 	}
 	store.path = path
+	// dbRows must mirror the persisted rows, not the migrated
+	// reserialization: it is both the incremental-write diff base and the
+	// foreign-commit fence digest. Seeding it from state would skip the
+	// migrated rows on the next save and would read the fence as a foreign
+	// commit on the very first write after a format migration.
 	store.savedPath, store.diskDigest = path, sha256.Sum256(body)
-	store.dbRows, _, store.dbListCounts, err = dbRowsFor(state, nil, nil)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
+	store.dbRows, store.dbListCounts = rawRows, listCounts
 	var format string
 	if err := db.QueryRow(`SELECT v FROM meta WHERE k = 'digest_format'`).Scan(&format); err == nil && format == "rows-v1" {
-		store.diskDigest = rowsDigest(store.dbRows, state.InstallationID)
+		store.diskDigest = rowsDigest(rawRows, state.InstallationID)
 	}
 	store.diskStamp = stamp
 	store.fileHash, _ = storeFileHash(path)

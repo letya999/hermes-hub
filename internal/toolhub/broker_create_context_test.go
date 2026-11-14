@@ -52,7 +52,7 @@ func TestBrokerRequestErrorNamesContract(t *testing.T) {
 	definition.CredentialContractID = "notion-token"
 	definition.CredentialContractRevision = 1
 	definition.CredentialContractEnv = map[string]string{"NOTION_TOKEN": "NOTION_TOKEN"}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-test", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-test", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 
 	err = control.ensureBrokerRequest(context.Background(), aliceAuth(), &onboarding, definition)
 	if err == nil || !strings.Contains(err.Error(), "notion-token") {
@@ -120,7 +120,7 @@ func TestBrokerRequestSharedCarriesContextManager(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	onboarding, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-test", definition, "", "")
+	onboarding, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-test", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,13 +235,14 @@ func TestBrokerRefreshSharedCredentialCheckCarriesContextManager(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	onboarding, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-refresh", definition, "", "")
+	onboarding, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-refresh", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	onboarding.BrokerRequestID = "r1"
 	onboarding.BrokerCredentialID = "credential_1"
-	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -365,7 +366,7 @@ func TestBrokerRevokeSharedCarriesContextManager(t *testing.T) {
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	onboarding, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-remove", definition, "", "")
+	onboarding, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "shared-remove", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -434,14 +434,17 @@ var argDocs = map[string]map[string]argDoc{
 	"connector_list": {},
 	"connector_status": {
 		"name":    {Desc: "Exact onboarding or operation ID for a pending install; connector name or connection ID otherwise."},
+		"id":      {Desc: "Alias of name — accepted when a returned record ID is addressed directly."},
 		"verbose": {Desc: "Include diagnostics in the report."},
 	},
 	"connector_install": {
 		"name":    {Desc: "Candidate id or name from connector_search."},
+		"id":      {Desc: "Alias of name — accepted when a search candidate ID is addressed directly."},
 		"version": {Desc: "Version or digest to pin, when the candidate offers choices."},
 	},
 	"connector_edit": {
 		"name":   {Desc: "Connector name or exact owned connection/onboarding ID; resend requires an exact onboarding or operation ID."},
+		"id":     {Desc: "Alias of name — accepted when a returned record ID is addressed directly."},
 		"action": {Desc: "disable stops use while retaining credentials; revoke cuts authorization; reauth opens protected credential entry including unfinished setups; resend repeats the current pending action, not credential entry after submission; remove requires protected owner confirmation. Secrets never enter chat.", Enum: []string{"enable", "disable", "revoke", "allow_writes", "reauth", "resend", "remove"}},
 	},
 
@@ -525,9 +528,10 @@ var argDocs = map[string]map[string]argDoc{
 		"period": {Desc: "Restrict the report to one quota window.", Enum: []string{"5h", "1d", "1w"}},
 	},
 	"tool_search": {
-		"query": {Desc: "Text matched against names, descriptions and parameters."},
-		"name":  {Desc: "Exact tool name to look up."},
-		"limit": {Desc: "Maximum entries to return."},
+		"query":   {Desc: "Text matched against names, descriptions and parameters."},
+		"name":    {Desc: "Exact tool name to look up."},
+		"toolset": {Desc: "Authored toolset name; restrict results to its members."},
+		"limit":   {Desc: "Maximum entries to return."},
 	},
 	"tool_call": {
 		"tool":      {Desc: "Extended tool name from tool_search."},

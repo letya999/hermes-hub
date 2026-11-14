@@ -509,7 +509,7 @@ func (r *recordingEnvBackend) CallEnv(ctx context.Context, effective api.Effecti
 
 func TestRecreateRetainsOnboardingAndBrokerReference(t *testing.T) {
 	store, definition, _ := teamBrokerFixture(t)
-	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-recreate", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now(), SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k-recreate"}
+	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-recreate", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, PreparingStub: true, Revision: 1, CreatedAt: time.Now(), SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k-recreate"}
 	if err := store.PutOnboarding(stub); err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestRecreateRetainsOnboardingAndBrokerReference(t *testing.T) {
 	if got, ok := loaded.BrokerGrantFor(bob.ToolBindingID, reference.CredentialRefID); !ok || got != grant {
 		t.Fatalf("restored broker reference mismatch: ok=%v", ok)
 	}
-	if restored, err := loaded.onboarding(stub.OnboardingID); err != nil || restored.Phase != api.PhasePreparing {
+	if restored, err := loaded.onboarding(stub.OnboardingID); err != nil || !restored.PreparingStub {
 		t.Fatal("restored onboarding missing", err)
 	}
 }

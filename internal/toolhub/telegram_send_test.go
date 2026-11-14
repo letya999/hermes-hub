@@ -124,12 +124,13 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		t.Fatal(err)
 	}
-	original, err := c.newOnboarding(auth, api.OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA)
+	original, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	original.BrokerCredentialID, original.Locator = "owner-session", "owner-session"
-	original.Phase = api.PhaseAwaitingConfirm
+	original.Stage = api.StagePending
+	original.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
@@ -138,7 +139,8 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original.BindingID, original.ConnectionID, original.Phase = bind.ToolBindingID, bind.ConnectionID, api.PhaseEnabled
+	original.BindingID, original.ConnectionID = bind.ToolBindingID, bind.ConnectionID
+	original.Stage = api.StageLive
 	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
@@ -185,7 +187,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if !ok || probes.Load() != 1 || upgrade.BrokerCredentialID != original.BrokerCredentialID || upgrade.BrokerRequestID != "" || upgrade.DefinitionVersion == original.DefinitionVersion {
 		t.Fatal("upgrade duplicated probe, login or session, or replaced immutable read version")
 	}
-	if _, err := c.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": upgrade.OnboardingID, "nonce": upgrade.ConfirmationNonce}); err != nil {
+	if _, err := c.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": upgrade.OnboardingID, "nonce": upgrade.GateNonce(api.GateConfirmSetup)}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := c.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": upgrade.OnboardingID})
@@ -229,7 +231,7 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil {
 		t.Fatal("missing onboarding accepted")
 	}
-	original := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
+	original := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
@@ -237,13 +239,15 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed session accepted: %v", err)
 	}
-	original.Phase, original.BrokerCredentialID = api.PhaseEnabled, "credential"
+	original.BrokerCredentialID = "credential"
+	original.Stage = api.StageLive
 	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
 	upgrade := original
-	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "upgrade:"+original.OnboardingID+":send", api.PhaseRemoved
+	upgrade.OnboardingID, upgrade.IdempotencyKey = "telegram-send-upgrade", "upgrade:"+original.OnboardingID+":send"
+	upgrade.Retire(api.TombstoneRemoved)
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}

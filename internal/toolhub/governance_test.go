@@ -299,7 +299,7 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 	if err != nil || len(filtered) != 0 {
 		t.Fatalf("owner=user deny not applied: %v %v", filtered, err)
 	}
-	exact, err := g.toolsList(auth, "", tools[0].Name, 0)
+	exact, err := g.toolsList(auth, "", tools[0].Name, "", 0)
 	if err != nil || exact["found"] != false {
 		t.Fatalf("exact lookup bypassed governance denial: %v %v", exact, err)
 	}

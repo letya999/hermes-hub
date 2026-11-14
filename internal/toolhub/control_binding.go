@@ -16,7 +16,15 @@ import (
 	"time"
 )
 
-func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey string, definition api.ToolDefinition, sourceURL, commit string) (api.Onboarding, error) {
+// newOnboarding mints the durable install record — or attaches to the one
+// already holding the owner's slot for this definition. attached=true means
+// an existing non-terminal record answered: callers resend its links instead
+// of overwriting anything. attached=false means the minted record was
+// committed (fresh create, a retry on the same deterministic id, or the
+// supersede of a failed holder under a different seed). A shared operator
+// install bypasses the slot — it deliberately provisions team scope even
+// when the operator already holds a personal connector.
+func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey string, definition api.ToolDefinition, sourceURL, commit string, shared bool) (api.Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
 		idSeed = mode + ":" + definition.DefinitionID + "@" + definition.Version + ":" + sourceURL + ":" + commit
@@ -28,35 +36,49 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 		Required: credentialHints(definition), Optional: optionalCredentialHints(definition), Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition),
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
+	onboarding.Stage = api.StagePending
 	if len(onboarding.Required) > 0 {
-		onboarding.Phase = api.PhaseAwaitingCreds
-		onboarding.FormNonce = api.RandomNonce()
-		onboarding.FormExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	} else {
-		onboarding.Phase = api.PhaseAwaitingConfirm
-		onboarding.ConfirmationNonce = api.RandomNonce()
-		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	}
 	c.Store.mu.Lock()
 	defer c.Store.mu.Unlock()
-	if previous, ok := c.Store.onboardings[onboarding.OnboardingID]; ok {
-		if auth.Validate(previous.PrincipalID, previous.ContextID, previous.RuntimeID, previous.PolicyVersion) != nil || previous.Mode != mode {
-			return api.Onboarding{}, api.ErrUnauthorized
+	previous, ok := c.Store.onboardings[onboarding.OnboardingID]
+	sameID := ok
+	// A shared operator install never attaches to a personal slot — and a
+	// personal slot holder never claims it. Upgrade records stay parallel.
+	if !ok && !shared && !strings.HasPrefix(requestKey, upgradeKeyPrefix) {
+		if holder, hit := c.Store.onboardingSlotLocked(auth, definition.DefinitionID); hit && !holder.PreparingStub {
+			previous, ok = holder, true
 		}
-		if previous.Phase == api.PhaseRemoved || previous.Phase == api.PhaseCleanupIncomplete {
-			return api.Onboarding{}, api.ErrRevoked
+	}
+	if ok {
+		if auth.Validate(previous.PrincipalID, previous.ContextID, previous.RuntimeID, previous.PolicyVersion) != nil || sameID && previous.Mode != mode {
+			return api.Onboarding{}, false, api.ErrUnauthorized
 		}
-		if previous.Phase != api.PhasePreparing && previous.Phase != api.PhaseReview && previous.Phase != api.PhaseFailed {
-			return cloneOnboarding(previous), nil
+		if previous.Removed() || previous.CleanupIncomplete() {
+			return api.Onboarding{}, false, api.ErrRevoked
 		}
-		onboarding.Revision = previous.Revision + 1
+		if previous.Stage != api.StageFailed && (sameID && !previous.PreparingStub || !sameID) {
+			return cloneOnboarding(previous), true, nil
+		}
+		if !sameID {
+			// A failed holder under a different seed: the retry minted here
+			// wins the slot and the corpse names its replacement.
+			if err := c.Store.supersedeOnboardingLocked(previous, onboarding.OnboardingID); err != nil {
+				return api.Onboarding{}, false, err
+			}
+		} else {
+			onboarding.Revision = previous.Revision + 1
+		}
 	}
 	if err := c.Store.putOnboardingLocked(onboarding); err != nil {
-		return api.Onboarding{}, err
+		return api.Onboarding{}, false, err
 	}
-	return cloneOnboarding(c.Store.onboardings[onboarding.OnboardingID]), nil
+	return cloneOnboarding(c.Store.onboardings[onboarding.OnboardingID]), false, nil
 }
 
 // bindReviewedContract attaches a reviewed credential-broker contract to a
@@ -305,7 +327,7 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 			}
 			return c.rotateLocal(auth, onboarding)
 		}
-		if onboarding.BrokerRotateCredentialID != "" && onboarding.Phase == api.PhaseAwaitingCreds {
+		if onboarding.BrokerRotateCredentialID != "" && onboarding.Awaiting(api.GateCredentials) {
 			return c.statusBody(onboarding, true), nil
 		}
 		definition, err := c.definitionOf(onboarding)
@@ -315,10 +337,10 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 		onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
 		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
 		onboarding.BrokerAttempts++
-		onboarding.Phase = api.PhaseAwaitingCreds
+		onboarding.Stage = api.StagePending
+		onboarding.ArmGate(api.GateCredentials, "", time.Time{})
 		onboarding.Error = ""
 		onboarding.ErrorCode = ""
-		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationUsed = false
 		onboarding.Revision++
 		if err := c.ensureBrokerRequest(context.Background(), auth, &onboarding, definition); err != nil {
@@ -358,7 +380,7 @@ func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboar
 		return nil, err
 	}
 	onboarding.CredentialRefID = next.CredentialRefID
-	onboarding.Phase = api.PhaseRevoked
+	onboarding.Retire(api.TombstoneRevoked)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -747,7 +769,7 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 		return err
 	}
 	auth := onboardingEnvelope(onboarding)
-	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce})
+	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.GateNonce(api.GateConfirmSetup)})
 	if err != nil {
 		return err
 	}
@@ -809,9 +831,8 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	}
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = auth.PrincipalID
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -829,9 +850,8 @@ func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.On
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = onboarding.PrincipalID
 	onboarding.DeviceCode, onboarding.DeviceUserCode, onboarding.DeviceVerification = "", "", ""
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -858,7 +878,7 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 		}
 		// Callers may hold a preparing stub that was superseded by the real
 		// record (patch bump or a reviewed definition id): follow the pointer.
-		if onboarding.Phase == api.PhaseRemoved && onboarding.SupersededBy != "" {
+		if onboarding.Stage == api.StageGone && onboarding.SupersededBy != "" {
 			if target, err := c.Store.OnboardingFor(auth, onboarding.SupersededBy); err == nil {
 				return target, nil
 			}
@@ -895,7 +915,7 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
 			continue
 		}
-		if onboarding.Phase == api.PhaseRemoved {
+		if onboarding.DeadEnd() {
 			if definitionID != "" && onboarding.DefinitionID == definitionID && (version == "" || onboarding.DefinitionVersion == version) || selector != "" && onboarding.DefinitionID == selector {
 				terminal = true
 			}

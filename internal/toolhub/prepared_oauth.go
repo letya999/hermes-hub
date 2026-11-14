@@ -65,7 +65,7 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	} else {
 		return nil, err
 	}
-	if onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseCleanupIncomplete {
+	if onboarding.DeadEnd() || onboarding.CleanupIncomplete() {
 		return nil, api.ErrRevoked
 	}
 	for state, flow := range c.oauthFlows.flows {
@@ -74,7 +74,8 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 			continue
 		}
 		if flow.onboardingID == onboarding.OnboardingID && !resend {
-			onboarding.Phase = api.PhaseAwaitingOAuth
+			onboarding.Stage = api.StagePending
+			onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 			onboarding.ProviderAuthorizationURL = flow.url
 			// The wizard link must outlive the flow it fronts: a status poll
 			// hitting a live flow renews the TTL instead of stranding the URL.
@@ -149,7 +150,8 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		c.oauthFlows.flows = make(map[string]*preparedOAuthFlow)
 	}
 	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
-	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
 	c.armWizard(&onboarding)
 	onboarding.Error, onboarding.ErrorCode = "", ""
@@ -223,7 +225,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 		return api.ErrUnauthorized
 	}
 	onboarding, err := c.Store.onboarding(flow.onboardingID)
-	if err != nil || onboarding.Phase != api.PhaseAwaitingOAuth {
+	if err != nil || !onboarding.Awaiting(api.GateOAuth) {
 		return api.ErrUnauthorized
 	}
 	if flow.remote {
@@ -299,11 +301,10 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err := injection.Checkpoint(); err != nil {
 		return err
 	}
-	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Stage = api.StagePending
 	onboarding.ProviderAuthorizationURL = ""
-	onboarding.ConfirmationNonce = ""
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	onboarding.ConfirmationUsed = false
-	onboarding.ConfirmationExpires = time.Time{}
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err

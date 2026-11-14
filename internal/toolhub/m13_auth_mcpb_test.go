@@ -299,8 +299,8 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 		t.Fatalf("callback: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationUsed {
-		t.Fatalf("remote OAuth bypassed verified human consent: phase=%s used=%v", onboarding.Phase, onboarding.ConfirmationUsed)
+	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.ConfirmationUsed {
+		t.Fatalf("remote OAuth bypassed verified human consent: phase=%s used=%v", onboarding.NoticePhase(), onboarding.ConfirmationUsed)
 	}
 	finishAsHuman(t, fix.control, onboardingID)
 	listed, err := alice.ListTools(context.Background(), nil)
@@ -1049,7 +1049,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 		t.Fatalf("bob prepare: %v", err)
 	}
 	bobOnb := mustOnboarding(t, fix.store, bprepared["onboarding_id"].(string))
-	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.FormNonce, map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
+	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.GateNonce(api.GateCredentials), map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
 		t.Fatalf("bob submit: %v", err)
 	}
 	if _, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {

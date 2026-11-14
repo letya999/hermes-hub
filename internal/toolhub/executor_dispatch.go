@@ -30,20 +30,17 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effect
 			return api.BackendResult{IsError: true, Text: tool.Name + " is unavailable: connector control is not configured"}, nil
 		}
 		result, err := g.Control.InvokeConnector(ctx, auth, tool.Name, arguments)
-		if tool.Name == "connector_status" && errors.Is(err, api.ErrNotFound) {
-			result, err = api.OperationResult{State: api.OpStateFailed, Summary: "connector not found"}, nil
-		}
-		var ambiguous *ErrAmbiguousTarget
-		if tool.Name == "connector_status" && errors.As(err, &ambiguous) {
-			result, err = api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Summary: "ambiguous connector", Candidates: ambiguous.Candidates}, nil
-		}
 		if err != nil {
-			return api.BackendResult{}, err
+			if domain, ok := connectorDomainResult(err); ok {
+				result, err = domain, nil
+			} else {
+				return api.BackendResult{}, err
+			}
 		}
 		structured, _ := json.Marshal(result)
 		var body map[string]any
 		_ = json.Unmarshal(structured, &body)
-		return api.BackendResult{Structured: body, Text: string(structured), IsError: result.State == api.OpStateFailed}, nil
+		return api.BackendResult{Structured: body, Text: string(structured), IsError: result.State == api.ModelStateBroken}, nil
 	}
 	if tool.Executor == "runtime:toolhub" {
 		return g.execPlatform(ctx, auth, effective, tool, arguments)
@@ -118,7 +115,7 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 	case "platform_usage":
 		return body(g.platformUsage(auth, api.ArgString(arguments, "period")))
 	case "tool_search":
-		return body(g.toolsList(auth, api.ArgString(arguments, "query"), strings.TrimPrefix(api.ArgString(arguments, "name"), toolhubNamePrefix), 0))
+		return body(g.toolsList(auth, api.ArgString(arguments, "query"), strings.TrimPrefix(api.ArgString(arguments, "name"), toolhubNamePrefix), api.ArgString(arguments, "toolset"), 0))
 	case "memory_search":
 		return body(g.memorySearch(ctx, auth, arguments))
 	case "memory_read":

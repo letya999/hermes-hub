@@ -73,7 +73,9 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 		}
 	}
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-control", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now()}
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

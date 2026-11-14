@@ -23,28 +23,30 @@ func (g *Gateway) addToolsListTool(server *mcp.Server, auth identity.Envelope) {
 	}
 	server.AddTool(&mcp.Tool{
 		Name:        "tool_search",
-		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. Pass name for one tool's full spec, or query to filter. A name listed here but missing from your visible tool list is extended inventory, callable through tool_call — the visible list is a bounded core projection, never a permission boundary. Call this before telling the user a capability is missing.",
+		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. The toolsets block is the authoritative answer to which tools.yaml toolsets are selected — pass toolset to list one set's members, name for one tool's full spec, or query to filter. A toolset row with state:pending is authored but not connected yet — read connector_status for its onboarding stage before telling the user anything is missing. A name listed here but missing from your visible tool list is extended inventory, callable through tool_call — the visible list is a bounded core projection, never a permission boundary. Call this before telling the user a capability is missing.",
 		InputSchema: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive substring over tool names, descriptions, parameter names and definition ids. Matching entries include description and input schema."},
-				"name":  map[string]any{"type": "string", "maxLength": 128, "description": "Exact projected tool name; returns its full spec."},
-				"limit": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum tools returned."},
+				"query":   map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive substring over tool names, descriptions, parameter names and definition ids. Matching entries include description and input schema."},
+				"name":    map[string]any{"type": "string", "maxLength": 128, "description": "Exact projected tool name; returns its full spec."},
+				"toolset": map[string]any{"type": "string", "maxLength": 128, "description": "Authored toolset name from the toolsets block; restricts results to that set's member tools."},
+				"limit":   map[string]any{"type": "integer", "minimum": 1, "description": "Maximum tools returned."},
 			},
 		},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arguments struct {
-			Query string `json:"query"`
-			Name  string `json:"name"`
-			Limit int    `json:"limit"`
+			Query   string `json:"query"`
+			Name    string `json:"name"`
+			Toolset string `json:"toolset"`
+			Limit   int    `json:"limit"`
 		}
 		if request != nil && len(request.Params.Arguments) > 0 {
 			if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
 				return nil, fmt.Errorf("%w: tools_list arguments: %v", api.ErrInvalid, err)
 			}
 		}
-		body, err := g.toolsList(auth, arguments.Query, arguments.Name, arguments.Limit)
+		body, err := g.toolsList(auth, arguments.Query, arguments.Name, arguments.Toolset, arguments.Limit)
 		if err != nil {
 			return nil, err
 		}
@@ -75,9 +77,14 @@ func toolQueryMatch(tool api.ProjectedTool, query string) bool {
 	return false
 }
 
-func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit int) (map[string]any, error) {
+func (g *Gateway) toolsList(auth identity.Envelope, query, name, toolset string, limit int) (map[string]any, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	name = strings.TrimPrefix(strings.TrimSpace(name), toolhubNamePrefix)
+	toolset = strings.TrimSpace(toolset)
+	sets, toolsetByName, err := g.Store.ProfileToolsets(auth)
+	if err != nil {
+		return nil, err
+	}
 	var projected []api.ProjectedTool
 	fastExact := false
 	if name != "" {
@@ -109,7 +116,14 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 	detailed := query != "" || name != ""
 	entries := make([]map[string]any, 0, len(projected))
 	matched := 0
+	admitted := make(map[string]bool, len(projected))
+	sourceCounts := map[string]int{}
 	for _, tool := range projected {
+		admitted[tool.Name] = true
+		sourceCounts[tool.DefinitionID]++
+		if toolset != "" && toolsetByName[tool.Name] != toolset {
+			continue
+		}
 		if name != "" && tool.Name != name {
 			continue
 		}
@@ -124,6 +138,9 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 			"name":       tool.Name,
 			"definition": tool.DefinitionID,
 			"effect":     string(tool.Tool.Effect),
+		}
+		if set := toolsetByName[tool.Name]; set != "" {
+			entry["toolset"] = set
 		}
 		if detailed {
 			entry["description"] = tool.Tool.Description
@@ -146,6 +163,50 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		"total":    matched,
 		"returned": len(entries),
 		"note":     "Admitted ToolHub tools, re-read on every call — including tools enabled during this or another session. A name listed here but missing from your visible tool list is callable through tool_call({tool, arguments}). Hub workspace tools (mcp__hub__*) and the skills inventory (skill_search) live on the hub server.",
+	}
+	// Inventory blocks answer "what is selected" from the same caller-scoped
+	// projection that authorizes calls — counts are live admitted tools, never
+	// name-prefix inference. Exact-name describes stay light: the blocks are
+	// list/search output, not part of one tool's spec.
+	if name == "" {
+		if len(sets) > 0 {
+			totals, live := map[string]int{}, map[string]int{}
+			for toolName, setName := range toolsetByName {
+				totals[setName]++
+				if admitted[toolName] {
+					live[setName]++
+				}
+			}
+			core, extended := make([]map[string]any, 0), make([]map[string]any, 0)
+			for _, set := range sets {
+				row := map[string]any{"name": set.Name, "via": set.Via, "tools_admitted": live[set.Name], "tools_total": totals[set.Name]}
+				// Pending: an authored connector toolset whose selections are
+				// not materialized yet — no active binding, or the connector is
+				// still onboarding. The set is real (tools.yaml), the tools are
+				// not callable yet; connector_status carries the lifecycle.
+				if strings.HasPrefix(set.Via, "mcp") && totals[set.Name] == 0 {
+					row["state"] = "pending"
+				}
+				if set.Placement == "core" {
+					core = append(core, row)
+				} else {
+					extended = append(extended, row)
+				}
+			}
+			body["toolsets"] = map[string]any{"core": core, "extended": extended}
+		}
+		if len(sourceCounts) > 0 {
+			sourceIDs := make([]string, 0, len(sourceCounts))
+			for id := range sourceCounts {
+				sourceIDs = append(sourceIDs, id)
+			}
+			sort.Strings(sourceIDs)
+			sources := make([]map[string]any, 0, len(sourceIDs))
+			for _, id := range sourceIDs {
+				sources = append(sources, map[string]any{"definition_id": id, "tool_count": sourceCounts[id]})
+			}
+			body["sources"] = sources
+		}
 	}
 	// Denied selections surface as unavailable: the agent learns the missing
 	// capability.operation or the capability_rules reason instead of guessing

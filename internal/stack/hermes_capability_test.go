@@ -1161,3 +1161,38 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 		t.Fatal("managed runtime env lost the ToolHub endpoint")
 	}
 }
+
+// The upstream deferred-tool bridge stays sealed by default in both render
+// paths; only an explicit `native:tool_search` pseudo-toolset re-enables it,
+// and it never lands in platform_toolsets as a bogus toolset name.
+func TestToolSearchBridgeOffUnlessCarvedOut(t *testing.T) {
+	base := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+		CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC"}
+	section := managedHermesConfig(base)["tools"].(M)["tool_search"].(M)
+	if section["enabled"] != "off" {
+		t.Fatalf("managed default bridge = %v", section["enabled"])
+	}
+	base.Tools = map[string]ToolEntry{"tool_search": {Via: ToolViaNative}}
+	section = managedHermesConfig(base)["tools"].(M)["tool_search"].(M)
+	if section["enabled"] != "on" {
+		t.Fatalf("managed carved-out bridge = %v", section["enabled"])
+	}
+
+	unmanaged := Settings{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC"}
+	cfg := Config(unmanaged)
+	if cfg["tools"].(M)["tool_search"].(M)["enabled"] != "off" {
+		t.Fatalf("unmanaged default bridge = %v", cfg["tools"])
+	}
+	unmanaged.Tools = map[string]ToolEntry{"tool_search": {Via: ToolViaNative}}
+	cfg = Config(unmanaged)
+	if cfg["tools"].(M)["tool_search"].(M)["enabled"] != "on" {
+		t.Fatalf("unmanaged carved-out bridge = %v", cfg["tools"])
+	}
+	for _, toolsets := range cfg["platform_toolsets"].(M) {
+		for _, name := range toolsets.([]string) {
+			if name == "tool_search" {
+				t.Fatal("pseudo-toolset leaked into platform_toolsets")
+			}
+		}
+	}
+}

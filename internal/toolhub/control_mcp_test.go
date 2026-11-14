@@ -172,7 +172,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || onboarding.Phase != api.PhaseAwaitingCreds {
+	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || !onboarding.Awaiting(api.GateCredentials) {
 		t.Fatalf("reused onboarding=%+v", onboarding)
 	}
 }
@@ -271,7 +271,7 @@ func callControl(t *testing.T, session *mcp.ClientSession, op string, args map[s
 func confirmViaTrustedChannel(t *testing.T, baseURL string, store *Store, id string) {
 	t.Helper()
 	onboarding := mustOnboarding(t, store, id)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.ConfirmationNonce, Revision: api.ConfirmationRevision(onboarding), ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(onboarding), ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
 	}

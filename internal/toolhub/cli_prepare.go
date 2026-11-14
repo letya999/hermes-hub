@@ -70,7 +70,7 @@ func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, r
 			return nil, err
 		}
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, definition, "", "")
+	onboarding, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, definition, "", "", shared)
 	if err != nil {
 		return nil, err
 	}

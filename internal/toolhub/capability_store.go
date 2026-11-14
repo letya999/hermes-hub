@@ -226,6 +226,14 @@ func (s *Store) putCapabilityProfile(profile api.CapabilityProfile, replay bool)
 	profile = owned
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.putCapabilityProfileLocked(profile, replay)
+}
+
+// putCapabilityProfileLocked is the journal+store tail of putCapabilityProfile
+// for callers already holding s.mu — the pending-selection materializer on
+// binding activation uses it so the new selections ride the same admission
+// check and journaled CapabilityChange as a published profile.
+func (s *Store) putCapabilityProfileLocked(profile api.CapabilityProfile, replay bool) error {
 	if _, err := s.validateProfileAdmissionLocked(profile, replay); err != nil {
 		return err
 	}
@@ -324,6 +332,32 @@ func (s *Store) CoreToolNames(auth identity.Envelope) (map[string]bool, error) {
 	return out, nil
 }
 
+// ProfileToolsets returns the authored tools.yaml sets pinned on the bound
+// profile plus the projected-name → toolset map the compiled selections
+// carry. A nil toolsets result means the profile has no published inventory —
+// unmanaged bindings and pre-publish profiles stay silent, like CoreToolNames.
+func (s *Store) ProfileToolsets(auth identity.Envelope) ([]api.ProfileToolset, map[string]string, error) {
+	if auth.CapabilityProfile == "" {
+		return nil, nil, nil
+	}
+	if err := s.Reload(); err != nil {
+		return nil, nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, _, err := s.capabilityProfileLocked(auth)
+	if err != nil {
+		return nil, nil, err
+	}
+	byName := make(map[string]string, len(profile.Selections))
+	for _, selection := range profile.Selections {
+		if selection.Toolset != "" {
+			byName[selection.Name] = selection.Toolset
+		}
+	}
+	return slices.Clone(profile.Toolsets), byName, nil
+}
+
 func (s *Store) managedToolsLocked(auth identity.Envelope) ([]api.ProjectedTool, error) {
 	profile, policy, err := s.capabilityProfileLocked(auth)
 	if err != nil {
@@ -377,14 +411,14 @@ func (s *Store) selfInstallOnboardingLocked(bindingID string) (api.Onboarding, b
 	var found bool
 	for _, onboarding := range s.onboardings {
 		if (onboarding.Mode != api.OnboardingSelfInstall && onboarding.Mode != api.OnboardingRemote) ||
-			(onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled) {
+			(onboarding.Stage != api.StageLive && !(onboarding.Stage == api.StagePending && onboarding.ConfirmationUsed)) {
 			continue
 		}
 		if onboarding.BindingID == bindingID {
 			return onboarding, true
 		}
 		old, ok := s.bindings[onboarding.BindingID]
-		if !ok || old.Status != api.RevokedStatus || onboarding.Phase == api.PhaseDisabled ||
+		if !ok || old.Status != api.RevokedStatus || s.connections[old.ConnectionID].Status == api.DisabledStatus ||
 			old.ConnectionID == "" || old.ConnectionID != binding.ConnectionID ||
 			old.DefinitionID != binding.DefinitionID || old.DefinitionVersion != binding.DefinitionVersion ||
 			old.PrincipalID != binding.PrincipalID || old.ContextID != binding.ContextID ||

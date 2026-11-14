@@ -116,8 +116,8 @@ func TestConnectorStatusObservesInstallPhase(t *testing.T) {
 	if err := c.Store.PutOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ phase, state string }{{api.PhasePreparing, api.OpStateRunning}, {api.PhaseAwaitingCreds, api.OpStateAwaitingUser}, {api.PhaseAwaitingOAuth, api.OpStateAwaitingUser}, {api.PhaseFailed, api.OpStateFailed}, {api.PhaseAwaitingConfirm, api.OpStateAwaitingConfirm}, {api.PhaseEnabled, api.OpStateDone}} {
-		onboarding.Phase = tc.phase
+	for _, tc := range []struct{ phase, state string }{{api.PhasePreparing, api.ModelStateWorking}, {api.PhaseAwaitingCreds, api.ModelStateWaitingYou}, {api.PhaseAwaitingOAuth, api.ModelStateWaitingYou}, {api.PhaseFailed, api.ModelStateBroken}, {api.PhaseAwaitingConfirm, api.ModelStateWaitingYou}, {api.PhaseEnabled, api.ModelStateReady}} {
+		applyOnboardingPhase(&onboarding, tc.phase)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
@@ -162,7 +162,7 @@ func TestConnectorInstallReportsAsynchronousFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := c.connectorInstall(t.Context(), auth, map[string]any{"target": "broken-mcp"})
-	if err != nil || got.State != api.OpStateFailed || got.Code != api.OpCodeProbeFailed || !strings.Contains(got.Summary, onboarding.Error) {
+	if err != nil || got.State != api.ModelStateBroken || got.Code != api.OpCodeProbeFailed || !strings.Contains(got.Summary, onboarding.Error) {
 		t.Fatalf("failed install stayed running or hid cause: %+v %v", got, err)
 	}
 	status, err := c.connectorStatus(t.Context(), auth, "", op.OperationID)
@@ -178,7 +178,7 @@ func TestConnectorInstallReportsImmediateFailure(t *testing.T) {
 	})
 	c.PrepareSyncWindow = -1
 	result, err := c.connectorInstall(t.Context(), aliceAuth(), map[string]any{"target": githubCommitURL()})
-	if err != nil || result.State != api.OpStateFailed || result.Code == "" || !strings.Contains(result.Summary, "upstream dependency unavailable") || strings.Contains(result.Summary, secret) {
+	if err != nil || result.State != api.ModelStateBroken || result.Code == "" || !strings.Contains(result.Summary, "upstream dependency unavailable") || strings.Contains(result.Summary, secret) {
 		t.Fatalf("failure concealed: %+v %v", result, err)
 	}
 }

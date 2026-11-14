@@ -92,7 +92,7 @@ func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now}
-	preparing, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "telegram-gate", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	preparing, _, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "telegram-gate", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		return definition, nil
 	}
 	auth := aliceAuth()
-	preparing, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	preparing, _, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if err != nil || stored.AdmissionPending || stored.BrokerCredentialID != "credential_1" || stored.Definition == nil || len(stored.Definition.Tools) != 1 {
 		t.Fatalf("confirmed tool contract missing: %+v %v", stored, err)
 	}
-	confirmed, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": preparing.OnboardingID, "nonce": stored.ConfirmationNonce})
+	confirmed, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": preparing.OnboardingID, "nonce": stored.GateNonce(api.GateConfirmSetup)})
 	if err != nil || confirmed["phase"] != api.PhaseConfirmed || grants.Load() != 2 || revocations.Load() != 1 {
 		t.Fatalf("owner binding did not mint a permanent grant: %+v %v (grant=%d revoke=%d)", confirmed, err, grants.Load(), revocations.Load())
 	}
@@ -317,7 +317,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		admitCalls++
 		return api.ToolDefinition{}, fmt.Errorf("%w: Telegram session rejected fake-session", api.ErrAuthBeforeEffect)
 	}
-	retry, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	retry, _, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotated, err = control.confirm(t.Context(), auth, map[string]any{"onboarding_id": retry.OnboardingID, "nonce": reauth.ConfirmationNonce})
+	rotated, err = control.confirm(t.Context(), auth, map[string]any{"onboarding_id": retry.OnboardingID, "nonce": reauth.GateNonce(api.GateConfirmSetup)})
 	if err != nil || rotated["phase"] != api.PhaseConfirmed || grants.Load() != 5 || revocations.Load() != 4 {
 		t.Fatalf("rotation did not replace the owner grant: %+v %v (grants=%d revoked=%d)", rotated, err, grants.Load(), revocations.Load())
 	}

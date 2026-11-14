@@ -102,7 +102,9 @@ func TestHumanConfirmationNoticeRefusesChannelWithoutCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := cfg.Users[0]
-	if err := g.spool.putPrepareOrigin("onboard-human", prepareOrigin{ConversationID: "slack-thread", Channel: "slack", ChatID: 11}); err != nil {
+	mapping := JobMapping{JobID: "job-slack", PrincipalID: "alice", Trigger: "message", Status: "running",
+		Channel: "slack_app", ConversationID: "slack-thread", ChatID: 11, CreatedAt: time.Now()}
+	if err := atomicJSON(filepath.Join(g.spool.root, "mappings", spoolFileID("job-slack")+".json"), mapping); err != nil {
 		t.Fatal(err)
 	}
 	proof := api.HumanConfirmation{OnboardingID: "onboard-human", Actor: user.Envelope(11), Nonce: "opaque", Revision: 1, ActionDigest: "sha256:" + strings.Repeat("a", 64), ExpiresAt: time.Now().Add(time.Minute)}

@@ -15,25 +15,31 @@ import (
 )
 
 func TestConnectorReauthRecovery(t *testing.T) {
-	for _, phase := range []string{api.PhaseEnabled, api.PhaseAwaitingConfirm, api.PhaseDisabled, api.PhaseRevoked, api.PhaseFailed, api.PhaseVerifying, api.PhaseRetryScheduled} {
+	for _, phase := range []string{api.PhaseEnabled, api.PhaseAwaitingConfirm, "disabled", api.PhaseRevoked, api.PhaseFailed, "verifying", "retry-scheduled"} {
 		t.Run(phase, func(t *testing.T) {
 			store, auth, _, _ := managedStore(t)
 			o := m13P3EnabledOnboarding(t, store, auth)
 			o.OnboardingID = api.DeterministicID("onboard", auth.PrincipalID, "recovery", phase)
-			o.Phase, o.BrokerCredentialID, o.Locator = phase, "credential-old", "credential-old"
-			o.ConfirmationNonce, o.ConfirmationUsed = "spent-confirm", true
-			o.WizardNonce, o.WizardExpires = "old-wizard", time.Now().Add(time.Hour)
+			applyOnboardingPhase(&o, phase)
+			o.BrokerCredentialID, o.Locator = "credential-old", "credential-old"
+			if o.Stage != api.StageGone {
+				// A spent setup confirmation is the tombstone the reauth
+				// replaces — but a gone record may not hold a setup gate.
+				o.ArmGate(api.GateConfirmSetup, "spent-confirm", time.Time{})
+				o.ConfirmationUsed = true
+				o.WizardNonce, o.WizardExpires = "old-wizard", time.Now().Add(time.Hour)
+			}
 			if err := store.PutOnboarding(o); err != nil {
 				t.Fatal(err)
 			}
 			c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
 			args := map[string]any{"target": o.OnboardingID}
 			result, err := c.connectorReauth(t.Context(), auth, args)
-			if err != nil || result.State != api.OpStateAwaitingUser {
+			if err != nil || result.State != api.ModelStateWaitingYou {
 				t.Fatalf("reauth state=%s err=%v", result.State, err)
 			}
 			fresh, err := store.OnboardingFor(auth, o.OnboardingID)
-			if err != nil || fresh.Phase != api.PhaseAwaitingCreds || fresh.FormNonce == "" || fresh.WizardNonce == "old-wizard" || fresh.ConfirmationNonce != "" || fresh.ConfirmationUsed || fresh.BrokerRotateCredentialID != "credential-old" {
+			if err != nil || !fresh.Awaiting(api.GateCredentials) || fresh.GateNonce(api.GateCredentials) == "" || fresh.WizardNonce == "old-wizard" || fresh.GateNonce(api.GateConfirmSetup) != "" || fresh.ConfirmationUsed || fresh.BrokerRotateCredentialID != "credential-old" {
 				t.Fatal("reauth did not replace the protected action")
 			}
 			if fresh.BindingID != o.BindingID || fresh.ConnectionID != o.ConnectionID {
@@ -41,7 +47,7 @@ func TestConnectorReauthRecovery(t *testing.T) {
 			}
 			retry, err := c.connectorReauth(t.Context(), auth, args)
 			again, _ := store.OnboardingFor(auth, o.OnboardingID)
-			if err != nil || retry.OperationID != result.OperationID || again.FormNonce != fresh.FormNonce {
+			if err != nil || retry.OperationID != result.OperationID || again.GateNonce(api.GateCredentials) != fresh.GateNonce(api.GateCredentials) {
 				t.Fatal("retry replaced live intake")
 			}
 			c.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
@@ -49,24 +55,27 @@ func TestConnectorReauthRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			renewed, _ := store.OnboardingFor(auth, o.OnboardingID)
-			if renewed.FormNonce == fresh.FormNonce || !renewed.FormExpires.After(c.now()) {
+			if renewed.GateNonce(api.GateCredentials) == fresh.GateNonce(api.GateCredentials) || !renewed.GateExpiry(api.GateCredentials).After(c.now()) {
 				t.Fatal("expired form was not renewed")
 			}
 			fresh = renewed
-			fresh.Phase, fresh.Revision = api.PhaseAwaitingConfirm, fresh.Revision+1
+			fresh.Revision = fresh.Revision + 1
+			fresh.Stage = api.StagePending
+			fresh.ArmGate(api.GateConfirmSetup, "", time.Time{})
 			if err := store.PutOnboarding(fresh); err != nil {
 				t.Fatal(err)
 			}
-			fresh.Phase, fresh.Revision = api.PhaseEnabled, fresh.Revision+1
+			fresh.Revision = fresh.Revision + 1
+			fresh.Stage = api.StageLive
 			if err := store.PutOnboarding(fresh); err != nil {
 				t.Fatal(err)
 			}
 			done, err := c.connectorStatus(t.Context(), auth, "", result.OperationID)
-			if err != nil || done.State != api.OpStateDone {
+			if err != nil || done.State != api.ModelStateReady {
 				t.Fatalf("completion=%s err=%v", done.State, err)
 			}
 			next, err := c.connectorReauth(t.Context(), auth, args)
-			if err != nil || next.State != api.OpStateAwaitingUser || next.OperationID == result.OperationID {
+			if err != nil || next.State != api.ModelStateWaitingYou || next.OperationID == result.OperationID {
 				t.Fatal("completed operation blocked a later reauth")
 			}
 		})
@@ -76,7 +85,8 @@ func TestConnectorReauthRecovery(t *testing.T) {
 func TestConnectorReauthCannotResurrectRemoved(t *testing.T) {
 	s, auth, _, _ := managedStore(t)
 	o := m13P3EnabledOnboarding(t, s, auth)
-	o.Phase, o.Revision = api.PhaseRemoved, o.Revision+1
+	o.Revision = o.Revision + 1
+	o.Retire(api.TombstoneRemoved)
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
@@ -119,21 +129,23 @@ func TestExplicitBrokerReauthWithInvisibleCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &ControlPlane{Store: s, Now: time.Now, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: staleBrokerKey(t), KeyID: "toolhub", Issuer: "hermes-toolhub"}}
-	o, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "replacement", d, "", "")
+	o, _, err := c.newOnboarding(aliceAuth(), api.OnboardingCatalog, "replacement", d, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.Phase, o.BrokerCredentialID, o.Locator = api.PhaseAwaitingConfirm, "credential_invisible", "credential_invisible"
+	o.BrokerCredentialID, o.Locator = "credential_invisible", "credential_invisible"
+	o.Stage = api.StagePending
+	o.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	o.Revision++
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
 	result, err := c.connectorReauth(t.Context(), aliceAuth(), map[string]any{"target": o.OnboardingID})
-	if err != nil || result.State != api.OpStateAwaitingUser || created != 1 {
+	if err != nil || result.State != api.ModelStateWaitingYou || created != 1 {
 		t.Fatalf("replacement state=%s requests=%d err=%v", result.State, created, err)
 	}
 	fresh, _ := s.OnboardingFor(aliceAuth(), o.OnboardingID)
-	if fresh.BrokerRotateCredentialID != "credential_invisible" || fresh.BrokerRequestID != "request_replacement" || fresh.FormNonce != "" {
+	if fresh.BrokerRotateCredentialID != "credential_invisible" || fresh.BrokerRequestID != "request_replacement" || fresh.GateNonce(api.GateCredentials) != "" {
 		t.Fatal("replacement lost audit reference or used a local form")
 	}
 }
@@ -155,7 +167,9 @@ func TestConnectorRevokePendingRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := m13P3EnabledOnboarding(t, s, auth)
-	o.Phase, o.BrokerRotateCredentialID, o.Revision = api.PhaseAwaitingCreds, "credential-old", o.Revision+1
+	o.BrokerRotateCredentialID, o.Revision = "credential-old", o.Revision+1
+	o.Stage = api.StagePending
+	o.ArmGate(api.GateCredentials, "", time.Time{})
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +179,12 @@ func TestConnectorRevokePendingRotation(t *testing.T) {
 		t.Fatal("foreign revocation reached Broker")
 	}
 	result, err := c.InvokeConnector(t.Context(), auth, "connector_edit", map[string]any{"name": o.OnboardingID, "action": "revoke"})
-	if err != nil || result.State != api.OpStateDone || revoked != 1 {
+	if err != nil || result.State != api.ModelStateDone || revoked != 1 {
 		t.Fatalf("revoke state=%s count=%d err=%v", result.State, revoked, err)
 	}
 	got, _ := s.OnboardingFor(auth, o.OnboardingID)
 	bound, _ := s.binding(o.BindingID)
-	if got.Phase != api.PhaseRevoked || bound.Status != api.RevokedStatus {
+	if !got.Revoked() || bound.Status != api.RevokedStatus {
 		t.Fatal("revoke left local access active")
 	}
 }

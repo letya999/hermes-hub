@@ -32,16 +32,17 @@ func writeRuntimeFailure(w http.ResponseWriter, status int, err error) {
 	stage := "other"
 	reason := "other"
 	if err != nil {
+		lowered := strings.ToLower(err.Error())
 		for _, candidate := range []string{"prepare runtime launch", "managed topology", "start runtime", "runtime readiness"} {
-			if strings.Contains(err.Error(), candidate) {
+			if strings.Contains(lowered, candidate) {
 				stage = strings.ReplaceAll(candidate, " ", "_")
 				break
 			}
 		}
 		for _, candidate := range []string{
-			"runtime is not registered", "runtime recovery backoff", "runtime state is not safely replaceable", "runtime start state unavailable", "restored runtime health unavailable", "runtime disappeared during restore", "runtime identity mismatch", "per-principal runtime ceiling reached", "context selected the legacy executor", "managed capability mode requires supervisor execution selection", "context settings unavailable", "context data directory unavailable", "runtime env file is unavailable", "runtime env file escapes context", "runtime input file unavailable", "runtime input file is not an owned regular file", "context path is unavailable", "context path escapes spaces root", "context path is not the bound context", "organization path is unavailable", "organization path escapes spaces root", "platform skills dir", "effective skills view", "materialize tool policy", "managed runtime passport activation changed during spawn", "managed agent network", "managed control network", "owned orphan runtimes", "invalid runtime binding", "invalid runtime mode", "readiness timeout", "permission denied", "operation not permitted", "read-only file system",
+			"unable to find image", "pull access denied", "manifest unknown", "start control relay", "attach control relay", "runtime is not registered", "runtime recovery backoff", "runtime state is not safely replaceable", "runtime start state unavailable", "restored runtime health unavailable", "runtime disappeared during restore", "runtime identity mismatch", "per-principal runtime ceiling reached", "context selected the legacy executor", "managed capability mode requires supervisor execution selection", "context settings unavailable", "context data directory unavailable", "runtime env file is unavailable", "runtime env file escapes context", "runtime input file unavailable", "runtime input file is not an owned regular file", "context path is unavailable", "context path escapes spaces root", "context path is not the bound context", "organization path is unavailable", "organization path escapes spaces root", "platform skills dir", "effective skills view", "materialize tool policy", "managed runtime passport activation changed during spawn", "managed agent network", "managed control network", "owned orphan runtimes", "invalid runtime binding", "invalid runtime mode", "readiness timeout", "permission denied", "operation not permitted", "read-only file system",
 		} {
-			if strings.Contains(err.Error(), candidate) {
+			if strings.Contains(lowered, candidate) {
 				reason = strings.ReplaceAll(candidate, " ", "_")
 				break
 			}

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -82,6 +83,8 @@ type Gateway struct {
 	// a restart forgives the budget, which matches the per-run contract.
 	runCalls map[string]int
 	runCap   int
+	// loadGate holds the overload state; built lazily by gate().
+	loadGate atomic.Pointer[loadGate]
 }
 
 type gatewayProjection struct {
@@ -136,21 +139,22 @@ func (g *Gateway) Handler() (http.Handler, error) {
 		}
 	}
 	mux := http.NewServeMux()
-	mux.Handle(DefaultEndpointPath, g.protect(DefaultEndpointPath))
-	mux.Handle(RunEndpointPath, g.protect(RunEndpointPath))
+	mux.Handle(DefaultEndpointPath, g.gate().interactive(g.protect(DefaultEndpointPath)))
+	mux.Handle(RunEndpointPath, g.gate().interactive(g.protect(RunEndpointPath)))
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/v1/connectors:install", http.HandlerFunc(g.serveConnectorInstall))
+	mux.Handle("/v1/connectors:invoke", http.HandlerFunc(g.serveConnectorInvoke))
 	mux.Handle("/v1/connectors/", http.HandlerFunc(g.serveConnectorVerb))
 	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
 	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
-	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
+	mux.Handle("/v1/tool-call", g.gate().interactive(http.HandlerFunc(g.serveToolCall)))
 	mux.Handle("/v1/inbound-fetch", http.HandlerFunc(g.serveInboundFetch))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
-	mux.Handle("/v1/memory-capture", http.HandlerFunc(g.serveMemoryCapture))
-	mux.Handle("/v1/memory-context", http.HandlerFunc(g.serveMemoryContext))
-	mux.Handle("/v1/rights/decide", http.HandlerFunc(g.serveRightsDecide))
+	mux.Handle("/v1/memory-capture", g.gate().background(http.HandlerFunc(g.serveMemoryCapture)))
+	mux.Handle("/v1/memory-context", g.gate().interactive(http.HandlerFunc(g.serveMemoryContext)))
+	mux.Handle("/v1/rights/decide", g.gate().interactive(http.HandlerFunc(g.serveRightsDecide)))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
-	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))
+	mux.Handle("/v1/admin/diagnose/", g.gate().background(http.HandlerFunc(g.serveAdminDiagnose)))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))
 	mux.Handle("/knowledge", http.HandlerFunc(g.serveKnowledge))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
@@ -291,6 +295,29 @@ func (g *Gateway) serveConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	g.connectorFacadeResult(w, r, "connector_install", args)
+}
+
+// serveConnectorInvoke is POST /v1/connectors:invoke — the generic facade
+// route every connector_* verb shares. Operator tooling (hubctl --service)
+// takes this path so it exercises the identical admission, journaling and
+// store locks the agent tools do, instead of writing the store file beside
+// the live container.
+func (g *Gateway) serveConnectorInvoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Tool string         `json:"tool"`
+		Args map[string]any `json:"args"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGatewayBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || body.Tool == "" {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	g.connectorFacadeResult(w, r, body.Tool, body.Args)
 }
 
 // serveConnectorVerb maps enable and disable HTTP actions onto the same

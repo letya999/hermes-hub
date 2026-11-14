@@ -20,14 +20,14 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := selectedHubTools(toolhub.NewStore(), []byte("core: {files: {via: toolhub}}\n"), docs, ""); err == nil {
+	if _, _, _, err := selectedHubTools(toolhub.NewStore(), []byte("core: {files: {via: toolhub}}\n"), docs, ""); err == nil {
 		t.Fatal("selected toolset accepted without its registered definition")
 	}
 	store := toolhub.NewStore()
 	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	selected, core, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\nextended:\n  memory: {via: toolhub, access: read}\n"), docs, "")
+	selected, core, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\nextended:\n  memory: {via: toolhub, access: read}\n"), docs, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,17 +38,17 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	if !slices.Equal(names, []string{"file_read", "memory_open", "memory_read", "memory_search"}) || len(core) != 1 || core[0] != "file_read" {
 		t.Fatalf("published selection/core mismatch: selections=%v core=%v", selected, core)
 	}
-	selected, _, err = selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/public]}}}}\n"), docs, "")
+	selected, _, _, err = selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/public]}}}}\n"), docs, "")
 	if err != nil || len(selected) != 1 || !slices.Equal(selected[0].PathScopes, []string{"/workspace/docs/public"}) {
 		t.Fatalf("selected path scope missing: %v %v", selected, err)
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [project_create]}, scope: {paths: [/workspace/docs]}}\n"), docs, ""); err == nil {
+	if _, _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [project_create]}, scope: {paths: [/workspace/docs]}}\n"), docs, ""); err == nil {
 		t.Fatal("path scope admitted a tool without a path argument")
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {hosts: [example.test]}}\n"), docs, ""); err == nil {
+	if _, _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {hosts: [example.test]}}\n"), docs, ""); err == nil {
 		t.Fatal("unsupported host scope admitted")
 	}
-	if _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, rules: {file_write: {scope: {hosts: [example.test]}}}}\n"), docs, ""); err == nil {
+	if _, _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, rules: {file_write: {scope: {hosts: [example.test]}}}}\n"), docs, ""); err == nil {
 		t.Fatal("unsupported rule for unselected tool admitted")
 	}
 }
@@ -96,7 +96,7 @@ func TestSelectedHubToolsPinsBoundDefinition(t *testing.T) {
 	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
-	selected, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\n"), docs, "alice-default")
+	selected, _, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\n"), docs, "alice-default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +133,15 @@ func TestConnectorRecoveryOmitsRevokedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := []byte("extended:\n  github: {via: mcp:github-mcp-server}\n")
-	if _, _, err := selectedConnectorTools(store, tools, docs, "alice-default", false); err == nil {
-		t.Fatal("publish accepted a connector without an active binding")
+	selected, core, toolsets, deferred, err := selectedConnectorTools(store, tools, docs, "alice-default")
+	if err != nil {
+		t.Fatalf("pending selection rejected as an authoring error: %v", err)
 	}
-	selected, core, err := selectedConnectorTools(store, tools, docs, "alice-default", true)
-	if err != nil || len(selected) != 0 || len(core) != 0 {
-		t.Fatalf("recovery resurrected revoked connector: selected=%v core=%v err=%v", selected, core, err)
+	if len(selected) != 0 || len(core) != 0 || len(deferred) != 1 || deferred[0] != "github" {
+		t.Fatalf("pending selection not deferred: selected=%v core=%v deferred=%v", selected, core, deferred)
+	}
+	if len(toolsets) != 1 || toolsets[0].Via != "mcp:github-mcp-server" {
+		t.Fatalf("pending toolset lost from the profile: %v", toolsets)
 	}
 }
 

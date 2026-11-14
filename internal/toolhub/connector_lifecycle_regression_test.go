@@ -30,7 +30,8 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Finalizers retain this tombstone after the resources are gone.
-	old.Phase, old.RemoveReceipt = api.PhaseRemoved, "verified 0 remaining"
+	old.RemoveReceipt = "verified 0 remaining"
+	old.Retire(api.TombstoneRemoved)
 	old.Revision++
 	if err := store.PutOnboarding(old); err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 	count := 0
 	for result := range results {
 		count++
-		if result.OperationID == first.OperationID || result.State != api.OpStateAwaitingUser {
+		if result.OperationID == first.OperationID || result.State != api.ModelStateWaitingYou {
 			t.Errorf("reinstall reused removed installation: %+v", result)
 		}
 		if next != "" && result.OperationID != next {
@@ -72,8 +73,8 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 		t.Error("removed onboarding reused")
 	}
 	preserved, err := store.OnboardingFor(auth, old.OnboardingID)
-	if err != nil || preserved.Phase != api.PhaseRemoved {
-		t.Errorf("removal tombstone overwritten: phase=%s error=%v", preserved.Phase, err)
+	if err != nil || !preserved.Removed() {
+		t.Errorf("removal tombstone overwritten: phase=%s error=%v", preserved.NoticePhase(), err)
 	}
 }
 
@@ -98,26 +99,26 @@ func TestConnectorInstallRetryPreservesActionUntilExplicitResend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = "expired"
-	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.ArmGate(api.GateConfirmSetup, "expired", time.Now().Add(-time.Minute))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	second, err := c.InvokeConnector(t.Context(), auth, "connector_install", args)
-	if err != nil || second.State != api.OpStateAwaitingConfirm || second.OperationID != first.OperationID {
+	if err != nil || second.State != api.ModelStateWaitingYou || second.OperationID != first.OperationID {
 		t.Fatalf("retry result=%+v err=%v", second, err)
 	}
 	updated, err := store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || updated.ConfirmationNonce != "expired" {
+	if err != nil || updated.GateNonce(api.GateConfirmSetup) != "expired" {
 		t.Fatal("install retry unexpectedly changed the action link")
 	}
 	if _, err := c.connectorResend(t.Context(), auth, map[string]any{"target": onboarding.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
 	updated, err = store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || updated.ConfirmationNonce == "expired" || !updated.ConfirmationExpires.After(time.Now()) {
+	if err != nil || updated.GateNonce(api.GateConfirmSetup) == "expired" || !updated.GateExpiry(api.GateConfirmSetup).After(time.Now()) {
 		t.Fatal("retry did not refresh expired confirmation")
 	}
 }
@@ -139,7 +140,7 @@ func TestConnectorRemoveAfterReinstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.remove(t.Context(), auth, map[string]any{"onboarding_id": old.OnboardingID, "remove_nonce": old.RemoveNonce}); err != nil {
+	if _, err := c.remove(t.Context(), auth, map[string]any{"onboarding_id": old.OnboardingID, "remove_nonce": old.GateNonce(api.GateRemove)}); err != nil {
 		t.Fatal(err)
 	}
 	definition, err := store.Definition("google-work", "2.0.0")
@@ -148,7 +149,7 @@ func TestConnectorRemoveAfterReinstall(t *testing.T) {
 	}
 	// Model a fresh admitted prepare; the fixture's old catalog grant was
 	// connection-bound and intentionally cannot authorize another install.
-	fresh, err := c.newOnboarding(auth, api.OnboardingCatalog, "fresh-install", definition, "", "")
+	fresh, _, err := c.newOnboarding(auth, api.OnboardingCatalog, "fresh-install", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestConnectorRemoveAfterReinstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.OperationID == first.OperationID || second.State != api.OpStateAwaitingConfirm {
+	if second.OperationID == first.OperationID || second.State != api.ModelStateWaitingYou {
 		t.Fatalf("new removal reused old receipt: %+v", second)
 	}
 	removal, err := store.OperationFor(auth, second.OperationID)

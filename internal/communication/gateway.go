@@ -30,9 +30,17 @@ import (
 )
 
 type Gateway struct {
-	watchHTTP    *http.Client
-	captureHTTP  *http.Client // capture-post transport; nil → default client
-	captureKick  chan struct{}
+	watchHTTP   *http.Client
+	captureHTTP *http.Client // capture-post transport; nil → default client
+	captureKick chan struct{}
+	// captureThrottle is the adaptive-throttle window: decayed request/accept
+	// counts plus last-sample time (SRE "Handling Overload" ch.21). Owned by
+	// the single pump goroutine — no lock.
+	captureThrottle struct {
+		requests float64
+		accepts  float64
+		last     time.Time
+	}
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User

@@ -337,6 +337,40 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 		}
 		store.onboardings[onboarding.OnboardingID] = onboarding
 	}
+	// Load-time quarantine: pre-slot stores can persist sibling live records
+	// for one (owner, definition). The deterministic holder keeps the slot —
+	// the same ranking onboardingSlotLocked applies — and every other record
+	// retires in place, naming its replacement, so no second lifecycle stays
+	// addressable. The fix is reapplied on every load until a write persists
+	// it, so a crash between load and next save loses nothing.
+	slots := map[string][]api.Onboarding{}
+	for _, o := range store.onboardings {
+		if o.DefinitionID == "" || !onboardingSlotEligible(o) {
+			continue
+		}
+		key := o.PrincipalID + "\x00" + o.ContextID + "\x00" + o.RuntimeID + "\x00" + o.PolicyVersion + "\x00" + o.DefinitionID
+		slots[key] = append(slots[key], o)
+	}
+	for _, group := range slots {
+		if len(group) < 2 {
+			continue
+		}
+		best := group[0]
+		for _, o := range group[1:] {
+			if onboardingSlotRank(o) > onboardingSlotRank(best) || onboardingSlotRank(o) == onboardingSlotRank(best) && o.CreatedAt.After(best.CreatedAt) {
+				best = o
+			}
+		}
+		for _, o := range group {
+			if o.OnboardingID == best.OnboardingID {
+				continue
+			}
+			o.Retire(api.TombstoneRemoved)
+			o.SupersededBy = best.OnboardingID
+			o.Revision++
+			store.onboardings[o.OnboardingID] = o
+		}
+	}
 	for _, op := range state.Operations {
 		if err := op.Validate(); err != nil {
 			return nil, err
@@ -488,7 +522,7 @@ func (s *Store) buildSnapshotLocked() (snapshot, error) {
 // must be held.
 func (s *Store) compactLocked(now time.Time) {
 	for id, onboarding := range s.onboardings {
-		if onboarding.Phase == api.PhaseRemoved && now.Sub(onboarding.CreatedAt) > 30*24*time.Hour {
+		if onboarding.DeadEnd() && now.Sub(onboarding.CreatedAt) > 30*24*time.Hour {
 			delete(s.onboardings, id)
 		}
 	}

@@ -48,7 +48,7 @@ func TestOAuthRerouteLogsMaterializeError(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar3", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar3", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce", Expires: time.Now().Add(time.Hour)}, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestOAuthRerouteLogsMaterializeError(t *testing.T) {
 	restore := log.Writer()
 	log.SetOutput(&buf)
 	defer log.SetOutput(restore)
-	if _, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce}); err != nil {
+	if _, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.GateNonce(api.GateConfirmSetup)}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 	if !strings.Contains(buf.String(), "oauth re-route") || !strings.Contains(buf.String(), "materialize: toolhub authorization denied") {

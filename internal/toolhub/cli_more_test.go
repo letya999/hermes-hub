@@ -120,7 +120,7 @@ func TestPrepareCLIArtifactFailurePaths(t *testing.T) {
 	}
 	var found bool
 	for _, record := range fix.store.onboardings {
-		if record.IdempotencyKey == "fail-1" && record.Phase == api.PhaseFailed && record.Error != "" {
+		if record.IdempotencyKey == "fail-1" && record.Stage == api.StageFailed && record.Error != "" {
 			found = true
 		}
 	}

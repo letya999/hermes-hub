@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -55,17 +56,12 @@ func TestPrepareOriginFollowsInitiatingJobNotNewest(t *testing.T) {
 	if delivery.ChatID != 11 || delivery.TopicID != 0 {
 		t.Fatalf("notice leaked to another session: chat=%d topic=%d", delivery.ChatID, delivery.TopicID)
 	}
-	origin, ok := spool.loadPrepareOrigin("onboard-route1")
-	if !ok || origin.ConversationID != "telegram-11-t-aaaa" {
-		t.Fatalf("persisted origin=%+v ok=%v", origin, ok)
-	}
 }
 
-// A persisted route written by the old newest-active heuristic can point at the
-// wrong session; a deterministic initiator match must override it so a retry
-// of the same onboarding id stops leaking (observed: gitlab bound to the
-// marketplace topic).
-func TestPrepareOriginInitiatorOverridesStalePersisted(t *testing.T) {
+// Leftover route records from builds that persisted origins are dead data:
+// nothing reads them, so they cannot steer a delivery even when a live
+// initiator exists.
+func TestPrepareOriginIgnoresLegacyRouteRecords(t *testing.T) {
 	cfg := testConfig(t)
 	gateway, err := New(cfg)
 	if err != nil {
@@ -82,7 +78,11 @@ func TestPrepareOriginInitiatorOverridesStalePersisted(t *testing.T) {
 	if err := atomicJSON(filepath.Join(spool.root, "mappings", spoolFileID("job-real")+".json"), mapping); err != nil {
 		t.Fatal(err)
 	}
-	if err := spool.putPrepareOrigin("onboard-route2", prepareOrigin{ConversationID: "telegram--99-t-bbbb", DeliveryTargetID: "telegram--99", ChatID: -99, TopicID: 42}); err != nil {
+	legacy := map[string]any{"conversation_id": "telegram--99-t-bbbb", "delivery_target_id": "telegram--99", "chat_id": -99, "topic_id": 42}
+	if err := os.MkdirAll(filepath.Join(spool.root, "prepares"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(filepath.Join(spool.root, "prepares", "dead-route.json"), legacy); err != nil {
 		t.Fatal(err)
 	}
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
@@ -99,11 +99,7 @@ func TestPrepareOriginInitiatorOverridesStalePersisted(t *testing.T) {
 		t.Fatalf("delivery=%v err=%v", delivery, err)
 	}
 	if delivery.ChatID != 11 {
-		t.Fatalf("stale origin not corrected: chat=%d topic=%d", delivery.ChatID, delivery.TopicID)
-	}
-	origin, _ := spool.loadPrepareOrigin("onboard-route2")
-	if origin.ConversationID != "telegram-11-t-aaaa" {
-		t.Fatalf("origin not rebound: %+v", origin)
+		t.Fatalf("legacy route steered the notice: chat=%d topic=%d", delivery.ChatID, delivery.TopicID)
 	}
 }
 

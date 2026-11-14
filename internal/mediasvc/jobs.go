@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+// safeJobError bounds the persisted, client-visible job error: provider
+// failures collapse to the same allowlisted reason tokens the sync API
+// returns, while internal errors (source fetch, decode, disk) keep their
+// bounded Go messages. Upstream bodies never reach the job record.
+func safeJobError(err error) string {
+	var use *upstreamStatusError
+	if errors.As(err, &use) {
+		return "provider call failed: " + upstreamReason(err)
+	}
+	return err.Error()
+}
+
 // Job is one durable async unit: a transcription (kind "" or "transcription")
 // or a media generation (kind "video"). Status transitions:
 // queued -> running -> done | failed.
@@ -154,7 +166,7 @@ func (s *service) runJob(ctx context.Context, id string) {
 	j.Status = "running"
 	_ = s.jobs.put(j)
 	fail := func(err error) {
-		j.Status, j.Error = "failed", err.Error()
+		j.Status, j.Error = "failed", safeJobError(err)
 		_ = s.jobs.put(j)
 	}
 	dir := s.jobs.dirOf(id)
@@ -200,7 +212,7 @@ func (s *service) runGenJob(ctx context.Context, j *Job) {
 		return
 	}
 	fail := func(err error) {
-		j.Status, j.Error = "failed", err.Error()
+		j.Status, j.Error = "failed", safeJobError(err)
 		if errors.Is(err, errSubmissionUncertain) {
 			j.Status = "uncertain"
 		}

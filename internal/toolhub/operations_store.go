@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -116,7 +117,7 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion {
 			continue
 		}
-		if o.Phase == api.PhaseRemoved || o.SupersededBy != "" || o.Phase == api.PhaseFailed && target != o.OnboardingID && target != o.ConnectionID {
+		if o.DeadEnd() || o.SupersededBy != "" || o.Stage == api.StageFailed && target != o.OnboardingID && target != o.ConnectionID {
 			continue
 		}
 		ids := map[string]bool{o.OnboardingID: true}
@@ -156,7 +157,7 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 			if len(matches) > 1 {
 				candidates := make([]api.OperationCandidate, 0, len(matches))
 				for _, o := range matches {
-					candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode, OnboardingPhase: o.Phase})
+					candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode, State: o.ModelState(false), YouMust: o.YouMust(time.Now())})
 				}
 				return ConnectorTarget{}, &ErrAmbiguousTarget{Candidates: candidates}
 			}
@@ -180,6 +181,35 @@ func (s *Store) ResolveConnectorTarget(auth identity.Envelope, target string) (C
 		}
 	}
 	return ConnectorTarget{}, fmt.Errorf("%w: connector %q", api.ErrNotFound, target)
+}
+
+// ownsConnectorTarget reports whether target names an owned onboarding or
+// connection across every policy epoch — it distinguishes a record that
+// merely predates the caller's epoch (cleanup through remove) from a true
+// not-found. Removed and superseded records are already dead ends.
+func (s *Store) ownsConnectorTarget(auth identity.Envelope, target string) bool {
+	if target == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, o := range s.onboardings {
+		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID {
+			continue
+		}
+		if o.DeadEnd() || o.SupersededBy != "" {
+			continue
+		}
+		if o.OnboardingID == target || o.ConnectionID == target || o.DefinitionID == target || o.SourceURL == target {
+			return true
+		}
+	}
+	for _, connection := range s.connections {
+		if connection.Owner.Matches(auth) && (connection.ConnectionID == target || connection.DefinitionID == target) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrTeamConnectionTarget marks a lifecycle target that resolved to a
@@ -236,10 +266,10 @@ func (s *Store) SweepConnectionOnboardings(connectionID, exceptOnboardingID stri
 		if o.ConnectionID != connectionID || o.OnboardingID == exceptOnboardingID {
 			continue
 		}
-		if o.Phase == api.PhaseRemoved || o.Phase == api.PhaseFailed || o.Phase == api.PhaseRevoked || o.SupersededBy != "" {
+		if o.Terminal() || o.Stage == api.StageFailed || o.SupersededBy != "" {
 			continue
 		}
-		o.Phase = api.PhaseRemoved
+		o.Retire(api.TombstoneRemoved)
 		o.Revision++
 		s.onboardings[id] = prepareOnboardingWrite(oldOnboardings[id], o)
 		for opID, op := range s.operations {

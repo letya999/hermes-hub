@@ -211,7 +211,7 @@ func TestToolsListReportsRuleDeniedSelection(t *testing.T) {
 	grantToolUse(t, s, auth)
 
 	g := &Gateway{Store: s}
-	listed, err := g.toolsList(auth, "", "", 0)
+	listed, err := g.toolsList(auth, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestToolsListReportsRuleDeniedSelection(t *testing.T) {
 	if len(unavailable) != 1 || unavailable[0]["name"] != "workspace_read" || unavailable[0]["reason"] != DenialCapabilityRules {
 		t.Fatalf("inventory must name the rule-denied selection: %+v", listed)
 	}
-	exact, err := g.toolsList(auth, "", "workspace_read", 0)
+	exact, err := g.toolsList(auth, "", "workspace_read", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

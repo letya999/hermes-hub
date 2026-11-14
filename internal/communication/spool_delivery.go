@@ -287,6 +287,107 @@ func (s *Spool) UncertainDelivery(id string) error {
 	return s.move("outbox/sending", "outbox/failed", id)
 }
 
+// PrepareRequeueMaxAttempts bounds total scheduled sends for one prepare
+// notice: the failed record requeues at most this many times, then stays
+// terminal. The prepare version fence supersedes stale notices instead of
+// consuming attempts.
+const PrepareRequeueMaxAttempts = 4
+
+// prepareRequeueHorizon bounds how long a failed notice may resurrect. The
+// retry ladder spends about 22 minutes; a record stranded longer than the
+// horizon belongs to a dead or superseded onboarding — especially when its
+// version fence is missing or behind, where the fence alone cannot prove
+// the notice stale.
+const prepareRequeueHorizon = time.Hour
+
+// prepareRetryBackoff spaces requeues so a flapping Telegram API does not
+// spin the outbox: 30s, 2m, then 10m for the later attempts.
+func prepareRetryBackoff(attempts int) time.Duration {
+	switch {
+	case attempts <= 1:
+		return 30 * time.Second
+	case attempts == 2:
+		return 2 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
+}
+
+// RequeueFailedPrepares sweeps outbox/failed for prepare notices: a Telegram
+// send failure settles them "uncertain" like unrecoverable deliveries, but
+// an onboarding link must not die on one transient error. The sweep is the
+// only exit from failed for these records — superseded by a newer prepare
+// version, requeued under the attempt budget with NotBefore backoff, or left
+// terminal once the budget is spent. Ordinary deliveries stay terminal:
+// their failure mode is not a transient link the user is waiting for.
+func (s *Spool) RequeueFailedPrepares(now time.Time, maxAttempts int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir := filepath.Join(s.root, "outbox", "failed")
+	entries, err := s.fsys.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	requeued := 0
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		from := filepath.Join(dir, name)
+		body, err := s.fsys.ReadFile(from)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return requeued, err
+		}
+		var d Delivery
+		if err := json.Unmarshal(body, &d); err != nil {
+			return requeued, err
+		}
+		if d.PrepareKey == "" {
+			continue
+		}
+		// The prepare fence settles stale versions terminally — a newer
+		// notice already carries the link the user needs. Superseding comes
+		// first so the final state names why the notice died.
+		if suppressed, err := s.suppressOldPrepareLocked(d, from); err != nil {
+			return requeued, err
+		} else if suppressed {
+			continue
+		}
+		// Age gate: a notice older than the retry horizon belongs to a dead
+		// or superseded onboarding and must not resurrect on deploy — the
+		// version fence can be missing or behind and then cannot prove the
+		// notice stale.
+		if info, err := s.fsys.Lstat(from); err == nil && info.ModTime().Before(now.Add(-prepareRequeueHorizon)) {
+			continue
+		}
+		if d.Attempts >= maxAttempts {
+			continue
+		}
+		d.Attempts++
+		d.NotBefore = now.Add(prepareRetryBackoff(d.Attempts))
+		// Persist the retry state before the move: a crash between write and
+		// rename leaves the attempt count durably incremented, so a restart
+		// can never restart the budget.
+		if err := s.writeJSON(from, d); err != nil {
+			return requeued, err
+		}
+		if err := s.renameOwned(from, filepath.Join(s.root, "outbox", "pending", name)); err != nil {
+			return requeued, err
+		}
+		requeued++
+	}
+	if requeued > 0 {
+		s.signal()
+	}
+	return requeued, nil
+}
+
 // RetryDelivery returns a claimed delivery to pending so a deferred send (for
 // example a rate-limited status edit) is retried on a later pass.
 func (s *Spool) RetryDelivery(id string) error {

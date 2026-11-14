@@ -90,7 +90,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	}
 
 	// Discovery still reports the whole admitted surface, live.
-	listed, err := g.toolsList(auth, "", "", 0)
+	listed, err := g.toolsList(auth, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

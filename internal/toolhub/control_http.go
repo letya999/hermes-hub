@@ -57,10 +57,14 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			}
 			result, err := g.Control.InvokeConnector(ctx, auth, name, arguments)
 			if err != nil {
-				return nil, err
+				if domain, ok := connectorDomainResult(err); ok {
+					result = domain
+				} else {
+					return nil, err
+				}
 			}
 			encoded, _ := json.Marshal(result)
-			return &mcp.CallToolResult{StructuredContent: result, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+			return &mcp.CallToolResult{IsError: result.State == api.ModelStateBroken, StructuredContent: result, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 		})
 	}
 	for _, op := range api.ControlOperations {
@@ -344,8 +348,10 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	nonce := linkToken(r)
 	if r.Method == http.MethodGet {
 		onboarding, err := g.Control.Store.onboarding(onboardingID)
-		if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if err != nil || !onboarding.Awaiting(api.GateCredentials) || onboarding.GateNonce(api.GateCredentials) == "" || nonce != onboarding.GateNonce(api.GateCredentials) || onboarding.GateExpiry(api.GateCredentials).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateCredentials)) {
+			// Stale or superseded link lands on the dead-link page, not a bare
+			// 401 — forged and rotated nonces get the same honest answer.
+			goneLinkPage(w, pageLang(r))
 			return
 		}
 		cspNonce := api.RandomNonce()
@@ -476,13 +482,13 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
-	if err == nil && onboarding.ConfirmationNonce != "" && nonce == onboarding.ConfirmationNonce && (onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires)) {
+	if err == nil && onboarding.GateNonce(api.GateConfirmSetup) != "" && nonce == onboarding.GateNonce(api.GateConfirmSetup) && (onboarding.ConfirmationUsed || onboarding.GateExpiry(api.GateConfirmSetup).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateConfirmSetup))) {
 		// The link was already spent: dead link, not a forged token.
 		goneLinkPage(w, pageLang(r))
 		return
 	}
-	if err != nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce || onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if err != nil || !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.GateNonce(api.GateConfirmSetup) == "" || nonce != onboarding.GateNonce(api.GateConfirmSetup) || onboarding.GateExpiry(api.GateConfirmSetup).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateConfirmSetup)) {
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -528,12 +534,12 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
-	if err == nil && onboarding.RemoveNonce != "" && nonce == onboarding.RemoveNonce && (onboarding.Phase == api.PhaseRemoved || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires)) {
+	if err == nil && onboarding.GateNonce(api.GateRemove) != "" && nonce == onboarding.GateNonce(api.GateRemove) && (onboarding.Removed() || onboarding.GateExpiry(api.GateRemove).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateRemove))) {
 		goneLinkPage(w, pageLang(r))
 		return
 	}
-	if err != nil || onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires) || onboarding.Phase == api.PhaseRemoved {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if err != nil || onboarding.GateNonce(api.GateRemove) == "" || nonce != onboarding.GateNonce(api.GateRemove) || onboarding.GateExpiry(api.GateRemove).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateRemove)) || onboarding.Removed() {
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -576,7 +582,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if key := r.URL.Query().Get("k"); key != "" {
@@ -672,7 +678,7 @@ func brokerHopPage(onboarding api.Onboarding, lang locale.Lang) string {
 // page shows whatever phase the onboarding is in.
 func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboardingID string, onboarding api.Onboarding, key string) {
 	if onboarding.WizardNonce == "" || key != onboarding.WizardNonce || !g.Control.now().Before(onboarding.WizardExpires) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	lang := pageLang(r)
@@ -680,7 +686,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 	// request forward so a submitted form flips the page to confirm without
 	// a second link or a chat round-trip. The gateway dedupes the notices
 	// refreshBrokerRequest posts while the invite is alive.
-	if r.Method == http.MethodGet && onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
+	if r.Method == http.MethodGet && onboarding.Awaiting(api.GateCredentials) && onboarding.BrokerRequestID != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		err := g.Control.reconcileBrokerReady(ctx, onboardingEnvelope(onboarding), &onboarding)
 		cancel()
@@ -691,7 +697,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			onboarding = current
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingConfirm {
+	if onboarding.Awaiting(api.GateConfirmSetup) {
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
@@ -703,7 +709,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth {
+	if onboarding.Awaiting(api.GateOAuth) {
 		storedState := ""
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
 			storedState = parsed.Query().Get("state")
@@ -721,7 +727,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 				if definition, derr := g.Control.definitionOf(onboarding); derr == nil {
 					if _, oerr := g.Control.ensurePreparedOAuth(r.Context(), onboardingEnvelope(onboarding), onboarding, definition, false); oerr != nil {
 						log.Printf("toolhub wizard %s: oauth re-arm: %v", onboardingID, oerr) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
-					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Phase == api.PhaseAwaitingOAuth {
+					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Awaiting(api.GateOAuth) {
 						onboarding = fresh
 						if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
 							storedState = parsed.Query().Get("state")
@@ -740,18 +746,18 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodPost {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodPost {
 		g.submitCredentialForm(w, r, onboardingID, "")
 		return
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet && onboarding.BrokerAuthorizationURL != "" {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodGet && onboarding.BrokerAuthorizationURL != "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 		_, _ = io.WriteString(w, brokerHopPage(onboarding, lang))
 		return
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodGet {
 		cspNonce := api.RandomNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -763,19 +769,21 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-		switch onboarding.Phase {
-		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed, api.PhaseVerifying, api.PhaseRetryScheduled:
+		switch onboarding.Stage {
+		case api.StagePending:
+			// Preparing, review, consumed confirmation and admission retry
+			// all render the same honest in-progress page that meta-refreshes.
 			_, _ = io.WriteString(w, wizardWaitPage(lang))
 			return
-		case api.PhaseEnabled:
+		case api.StageLive:
 			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.enabled-title"), locale.T(lang, "page.enabled-body"), lang))
 			return
-		case api.PhaseFailed:
+		case api.StageFailed:
 			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.failed-title"), locale.T(lang, "page.failed-body"), lang))
 			return
 		}
 	}
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	goneLinkPage(w, pageLang(r))
 }
 
 // wizardWaitPage renders the honest in-progress state: the backend is still
@@ -997,7 +1005,7 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 	token := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err != nil || !deviceTokenValid(onboarding, token) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if onboarding.OAuthProvider == "" {
@@ -1070,10 +1078,10 @@ func deviceTokenValid(onboarding api.Onboarding, token string) bool {
 	if token == "" {
 		return false
 	}
-	if onboarding.FormNonce != "" && token == onboarding.FormNonce && !onboarding.FormExpires.IsZero() {
+	if onboarding.GateNonce(api.GateCredentials) != "" && token == onboarding.GateNonce(api.GateCredentials) && !onboarding.GateExpiry(api.GateCredentials).IsZero() {
 		return true
 	}
-	if onboarding.ConfirmationNonce != "" && token == onboarding.ConfirmationNonce && !onboarding.ConfirmationUsed {
+	if onboarding.GateNonce(api.GateConfirmSetup) != "" && token == onboarding.GateNonce(api.GateConfirmSetup) && !onboarding.ConfirmationUsed {
 		return true
 	}
 	return false
@@ -1180,7 +1188,7 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 	separate := credentialHintsUseAlternatives(hints)
 	if !separate {
 		b.WriteString(`<form method="post" enctype="multipart/form-data">`)
-		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
+		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.GateNonce(api.GateCredentials)) + "\">")
 	}
 	var recipeFields map[string]api.ConnectionField
 	if recipe := g.Control.recipeOf(onboarding); recipe != nil {
@@ -1245,10 +1253,10 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 	// /device page reuses this link's token.
 	if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
 		if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
-			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.device-alt")) + "</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "&amp;lang=" + html.EscapeString(string(lang)) + "\">" + html.EscapeString(locale.T(lang, "page.device-open")) + "</a></details>")
+			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.device-alt")) + "</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.GateNonce(api.GateCredentials)) + "&amp;lang=" + html.EscapeString(string(lang)) + "\">" + html.EscapeString(locale.T(lang, "page.device-open")) + "</a></details>")
 		}
 	}
-	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields, prefill, lang)
+	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.GateNonce(api.GateCredentials), recipeFields, prefill, lang)
 	if !separate {
 		b.WriteString(`<button type="submit">` + html.EscapeString(locale.T(lang, "page.submit")) + `</button><button type="submit" formnovalidate>` + html.EscapeString(locale.T(lang, "page.submit-no-probe")) + `</button></form>`)
 	}

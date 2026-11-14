@@ -74,7 +74,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		if err != nil {
 			return api.OperationResult{}, err
 		}
-		if previous.Phase != api.PhaseRemoved {
+		if !previous.Removed() {
 			break
 		}
 		// A removal tombstone ends this generation, but remains addressable.
@@ -100,7 +100,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 			if persistErr := c.Store.PutOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
-			return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: "install " + target + ": " + api.PublicPrepareError(err)}, nil
+			return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: "install " + target + ": " + api.PublicPrepareError(err)}, nil
 		}
 		markStep(&op, api.OpStepResolve, api.OpStepDone)
 		op.OnboardingID = api.ArgString(body, "onboarding_id")
@@ -113,13 +113,15 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		return api.OperationResult{}, err
 	}
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "install " + op.Target}
-	if onboarding.Phase == api.PhaseAwaitingCreds {
+	if onboarding.Awaiting(api.GateCredentials) {
 		op.State = api.OpStateAwaitingUser
-		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
-	} else if onboarding.Phase == api.PhaseAwaitingConfirm {
+		result.Delivery = onboarding.RecordDelivery()
+		c.observeNoticeDelivery(ctx, auth, onboarding, &result)
+	} else if onboarding.Awaiting(api.GateConfirmSetup) {
 		op.State = api.OpStateAwaitingConfirm
-		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
-	} else if onboarding.Phase == api.PhaseEnabled {
+		result.Delivery = onboarding.RecordDelivery()
+		c.observeNoticeDelivery(ctx, auth, onboarding, &result)
+	} else if onboarding.Stage == api.StageLive {
 		// The human gates are past: bind and projection already happened on
 		// the primitive path; the journal records the remaining steps done.
 		markStep(&op, api.OpStepAdmitProbe, api.OpStepDone)
@@ -127,7 +129,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		markStep(&op, api.OpStepProject, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
 		op.State = api.OpStateDone
-	} else if onboarding.Phase == api.PhaseFailed {
+	} else if onboarding.Stage == api.StageFailed {
 		op.State, op.ErrorCode = api.OpStateFailed, api.OpCodeProbeFailed
 		if onboarding.ErrorCode == api.OpCodeUnsupportedAuth {
 			op.ErrorCode = api.OpCodeUnsupportedAuth
@@ -138,7 +140,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		op.State = api.OpStateRunning
 	}
 	op = installProgress(op, onboarding)
-	result.State = op.State
+	result.State = connectorModelStateFromOp(op.State)
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
@@ -156,7 +158,10 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	if !exists {
 		op = c.newConnectorOperation(auth, intent, target, []string{api.OpStepApply, api.OpStepNotify})
 	}
-	resolved, err := c.Store.ResolveConnectorTarget(auth, target)
+	resolved, stale, err := c.resolveLifecycleTarget(auth, target)
+	if stale != nil {
+		return *stale, nil
+	}
 	if err != nil {
 		return api.OperationResult{}, err
 	}
@@ -167,7 +172,7 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	} else if intent == api.OpIntentRevoke {
 		_, phaseErr = c.revoke(auth, map[string]any{"onboarding_id": resolved.OnboardingID})
 	} else {
-		_, phaseErr = c.setPhase(auth, map[string]any{"onboarding_id": resolved.OnboardingID}, api.DisabledStatus, api.PhaseDisabled)
+		_, phaseErr = c.setPhase(auth, map[string]any{"onboarding_id": resolved.OnboardingID}, api.DisabledStatus)
 	}
 	if phaseErr != nil {
 		op.State = api.OpStateFailed
@@ -175,7 +180,7 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 		if persistErr := c.Store.PutOperation(op); persistErr != nil {
 			return api.OperationResult{}, persistErr
 		}
-		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: intent + " " + target}, nil
+		return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: intent + " " + target}, nil
 	}
 	if intent == api.OpIntentEnable {
 		// connector_enable … toolsets=[issues] widens the projected surface
@@ -206,7 +211,7 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
-	return api.OperationResult{OperationID: op.OperationID, State: op.State, Summary: intent + " " + target}, nil
+	return api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Summary: intent + " " + target}, nil
 }
 
 // The remove ladder: one link-confirm gate, then the purge steps the
@@ -230,7 +235,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		if err != nil {
 			return api.OperationResult{}, err
 		}
-		if previous.Phase != api.PhaseRemoved {
+		if !previous.Removed() {
 			break
 		}
 		nextTarget := target + "#after=" + previous.OnboardingID
@@ -254,11 +259,11 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		}
 		if err != nil {
 			if errors.Is(err, api.ErrNotFound) {
-				return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "remove requires an owned connector or onboarding"}, nil
+				return api.OperationResult{State: api.ModelStateBroken, Code: api.OpCodeNotPermitted, Summary: "remove requires an owned connector or onboarding"}, nil
 			}
 			var ambiguous *ErrAmbiguousTarget
 			if errors.As(err, &ambiguous) {
-				return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeAmbiguousTarget, Candidates: ambiguous.Candidates, Summary: "choose an exact connector id"}, nil
+				return api.OperationResult{State: api.ModelStateBroken, Code: api.OpCodeAmbiguousTarget, Candidates: ambiguous.Candidates, Summary: "choose an exact connector id"}, nil
 			}
 			return api.OperationResult{}, fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
 		}
@@ -270,10 +275,10 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 	}
 	if onboarding.ConnectionID != "" {
 		if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && (connection.Owner.Type != api.PrincipalOwner || !connection.Owner.Matches(auth)) {
-			return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "remove requires a personally owned connection"}, nil
+			return api.OperationResult{State: api.ModelStateBroken, Code: api.OpCodeNotPermitted, Summary: "remove requires a personally owned connection"}, nil
 		}
 	}
-	if onboarding.Phase == api.PhaseRemoved {
+	if onboarding.Removed() {
 		for _, step := range connectorRemoveSteps {
 			markStep(&op, step, api.OpStepDone)
 		}
@@ -281,9 +286,9 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		if err := c.Store.PutOperation(op); err != nil {
 			return api.OperationResult{}, err
 		}
-		return api.OperationResult{OperationID: op.OperationID, State: api.OpStateDone, Summary: "remove " + op.Target + " — " + onboarding.RemoveReceipt}, nil
+		return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateDone, Summary: "remove " + op.Target + " — " + onboarding.RemoveReceipt}, nil
 	}
-	if onboarding.RemoveNonce == "" || onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
+	if onboarding.GateNonce(api.GateRemove) == "" || onboarding.GateExpiry(api.GateRemove).IsZero() || c.now().After(onboarding.GateExpiry(api.GateRemove)) {
 		// Bare remove mints the one-time link and halts for the human.
 		if _, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 			op.State = api.OpStateFailed
@@ -291,7 +296,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 			if persistErr := c.Store.PutOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
-			return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: "remove " + target}, nil
+			return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: "remove " + target}, nil
 		}
 	}
 	markStep(&op, api.OpStepConfirm, api.OpStepPending)
@@ -303,7 +308,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	return api.OperationResult{OperationID: op.OperationID, State: op.State, LinkSent: current.NoticeVersion > 0 && current.NoticeQueuedVersion == current.NoticeVersion, Summary: "remove " + op.Target}, nil
+	return api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Delivery: current.RecordDelivery(), Summary: "remove " + op.Target}, nil
 }
 
 // connectorReauth reopens credential collection on a live connector: a
@@ -325,7 +330,10 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 		op.Target = target
 	}
 	if op.OnboardingID == "" {
-		resolved, err := c.Store.ResolveConnectorTarget(auth, target)
+		resolved, stale, err := c.resolveLifecycleTarget(auth, target)
+		if stale != nil {
+			return *stale, nil
+		}
 		if err != nil {
 			return api.OperationResult{}, err
 		}
@@ -335,11 +343,11 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	if onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseCleanupIncomplete || len(onboarding.Finalizers) > 0 {
+	if onboarding.DeadEnd() || len(onboarding.Finalizers) > 0 {
 		return api.OperationResult{}, api.ErrRevoked
 	}
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "reauth " + op.Target}
-	if onboarding.Phase != api.PhaseAwaitingCreds {
+	if !onboarding.Awaiting(api.GateCredentials) {
 		// An explicit reauth replaces the pending action even before enablement.
 		expected := onboarding.Revision
 		if onboarding.BrokerCredentialID != "" {
@@ -348,10 +356,10 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 		}
 		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
 		onboarding.BrokerAttempts++
-		onboarding.Phase = api.PhaseAwaitingCreds
-		onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
+		onboarding.Stage = api.StagePending
+		onboarding.Tombstone = ""
+		onboarding.ArmGate(api.GateCredentials, "", time.Time{})
 		onboarding.WizardNonce, onboarding.WizardExpires = "", time.Time{}
-		onboarding.ConfirmationNonce, onboarding.ConfirmationExpires = "", time.Time{}
 		onboarding.ConfirmationUsed, onboarding.HumanConsent = false, nil
 		onboarding.Error, onboarding.ErrorCode = "", ""
 		onboarding.AdmissionLeaseUntil, onboarding.AdmissionNextAttempt = time.Time{}, time.Time{}
@@ -360,7 +368,7 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 			return api.OperationResult{}, err
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds {
+	if onboarding.Awaiting(api.GateCredentials) {
 		definition, err := c.definitionOf(onboarding)
 		if err != nil {
 			return api.OperationResult{}, err
@@ -372,16 +380,17 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 			return api.OperationResult{}, err
 		}
 		op.State = api.OpStateAwaitingUser
-		result.State = op.State
-		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
-	} else if onboarding.Phase == api.PhaseEnabled {
+		result.State = connectorModelStateFromOp(op.State)
+		result.Delivery = onboarding.RecordDelivery()
+		c.observeNoticeDelivery(ctx, auth, onboarding, &result)
+	} else if onboarding.Stage == api.StageLive {
 		markStep(&op, api.OpStepCollectCredentials, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
 		op.State = api.OpStateDone
-		result.State = op.State
+		result.State = connectorModelStateFromOp(op.State)
 	} else {
 		op.State = api.OpStateRunning
-		result.State = op.State
+		result.State = connectorModelStateFromOp(op.State)
 	}
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err
@@ -403,7 +412,10 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		op = c.newConnectorOperation(auth, api.OpIntentAllowWrites, target, []string{api.OpStepConfirm, api.OpStepApply, api.OpStepNotify})
 	}
 	if op.OnboardingID == "" {
-		resolved, err := c.Store.ResolveConnectorTarget(auth, target)
+		resolved, stale, err := c.resolveLifecycleTarget(auth, target)
+		if stale != nil {
+			return *stale, nil
+		}
 		if err != nil {
 			return api.OperationResult{}, err
 		}
@@ -419,7 +431,7 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		markStep(&op, api.OpStepApply, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
 		op.State = api.OpStateDone
-		result.State = api.OpStateDone
+		result.State = api.ModelStateDone
 	} else if !on {
 		onboarding.WritesEnabled = false
 		onboarding.PendingWrites = false
@@ -430,14 +442,15 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		markStep(&op, api.OpStepApply, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
 		op.State = api.OpStateDone
-		result.State = api.OpStateDone
+		result.State = api.ModelStateDone
 	} else {
 		// on: arm the same one-time /confirm link the enablement flow uses —
-		// the page branches on PendingWrites.
+		// the page branches on PendingWrites. The record re-enters pending
+		// while the owner decides (the live->pending edge exists for exactly
+		// this kind of gated action); the confirm step returns it to live.
 		onboarding.PendingWrites = true
-		onboarding.Phase = api.PhaseAwaitingConfirm
-		onboarding.ConfirmationNonce = api.RandomNonce()
-		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+		onboarding.Stage = api.StagePending
+		onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 		onboarding.ConfirmationUsed = false
 		c.armWizard(&onboarding)
 		onboarding.Revision++
@@ -447,8 +460,10 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		c.deliverOutcomeNotice(ctx, auth, &onboarding)
 		markStep(&op, api.OpStepConfirm, api.OpStepPending)
 		op.State = api.OpStateAwaitingConfirm
-		result.State = api.OpStateAwaitingConfirm
-		result.LinkSent = onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion
+		result.State = api.ModelStateWaitingYou
+		result.YouMust = api.YouMustClickLink
+		result.Delivery = onboarding.RecordDelivery()
+		c.observeNoticeDelivery(ctx, auth, onboarding, &result)
 	}
 	if err := c.Store.PutOperation(op); err != nil {
 		return api.OperationResult{}, err

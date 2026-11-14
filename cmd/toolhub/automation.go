@@ -29,8 +29,9 @@ func automationServiceToken() string {
 }
 
 // newAutomationHost checks every mounted owner before recovery can write a
-// class or the ToolHub listener can accept a control request.
-func newAutomationHost(ctx context.Context, projection automationProjection, store *toolhub.Store) (*automation.Host, error) {
+// class or the ToolHub listener can accept a control request. `overloaded`
+// is the serving plane's shed state — the tick defers while it holds.
+func newAutomationHost(ctx context.Context, projection automationProjection, store *toolhub.Store, overloaded func() bool) (*automation.Host, error) {
 	token := automationServiceToken()
 	jobURL := os.Getenv("HUB_AUTOMATION_JOB_URL")
 	communicationURL := os.Getenv("HUB_COMMUNICATION_CONTROL_URL")
@@ -96,6 +97,7 @@ func newAutomationHost(ctx context.Context, projection automationProjection, sto
 		},
 		DreamingPlan: dreamingPlan,
 		DreamingRun:  dreamingRun,
+		Overloaded:   overloaded,
 	})
 	if err != nil {
 		return nil, err

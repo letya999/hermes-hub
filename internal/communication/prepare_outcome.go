@@ -404,18 +404,17 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	}
 	// The initiating tool call runs inside its message job, so the job that
 	// existed — and most recently started — at the onboarding's creation
-	// instant is the initiator. It outranks a persisted route, which older
-	// builds may have bound through the unsafe newest-active heuristic.
+	// instant is the initiator. There is no stored route: a persisted
+	// conversation outlives the session it names and strands notices on a
+	// dead channel, so routing re-resolves from live evidence every time and
+	// falls back to the owner's canonical DM.
 	origin, found := prepareOrigin{}, false
-	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
+	// The initiator window is bounded by the onboarding's own age: a mapping
+	// from days ago describes a session that is gone, not evidence.
+	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() && created.After(now.Add(-prepareOriginMaxAge)) {
 		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
 			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
-		}
-	}
-	if !found {
-		if persisted, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
-			origin, found = persisted, true
 		}
 	}
 	if !found {
@@ -423,11 +422,6 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
-	}
-	if found {
-		// The origin job ends long before the build settles; persist the route
-		// so later outcomes still reach the same session.
-		_ = g.spool.putPrepareOrigin(request.OnboardingID, origin)
 	}
 	if found && origin.ConversationID != "" {
 		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)

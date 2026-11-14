@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -75,7 +76,55 @@ func LoadEffectiveGenerated(genDir string) (Effective, error) {
 	if err != nil {
 		return Effective{}, fmt.Errorf("load effective: %w", err)
 	}
-	return loadRevisionGenerated(genDir, rev)
+	slot, _ := effectiveSlots.LoadOrStore(genDir, &effectiveSlot{})
+	entry := slot.(*effectiveSlot)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	stamps, stampErr := revisionStamps(genDir, rev)
+	if entry.ok && stampErr == nil && entry.rev == rev && entry.stamps == stamps {
+		return entry.eff, nil
+	}
+	eff, err := loadRevisionGenerated(genDir, rev)
+	if err != nil {
+		return eff, err
+	}
+	entry.rev, entry.eff, entry.stamps, entry.ok = rev, eff, stamps, true
+	return eff, nil
+}
+
+// effectiveSlot memoizes the decoded bundle under the current pointer plus
+// per-document size/mtime stamps. Published revisions are immutable by
+// design, so a same-revision hit is byte-identical to a fresh load; any
+// in-place corruption that changes a document's size or mtime misses the
+// cache and re-validates. The accepted edge: a corruption that preserves
+// size and mtime on a coarse-grained filesystem clock stays cached, which
+// published-bundle integrity checks already exclude.
+type effectiveSlot struct {
+	mu     sync.Mutex
+	ok     bool
+	rev    string
+	eff    Effective
+	stamps [6]fileStamp
+}
+
+type fileStamp struct {
+	size  int64
+	mtime int64
+}
+
+var effectiveSlots sync.Map // genDir -> *effectiveSlot
+
+func revisionStamps(genDir, rev string) ([6]fileStamp, error) {
+	var stamps [6]fileStamp
+	revDir := filepath.Join(genDir, "passports", rev)
+	for i, name := range Names {
+		info, err := os.Stat(filepath.Join(revDir, name+".yaml"))
+		if err != nil {
+			return stamps, err
+		}
+		stamps[i] = fileStamp{size: info.Size(), mtime: info.ModTime().UnixNano()}
+	}
+	return stamps, nil
 }
 
 // LoadRevision reads a staged immutable bundle before its activation. Only

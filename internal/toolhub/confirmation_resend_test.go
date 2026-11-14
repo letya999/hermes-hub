@@ -20,6 +20,10 @@ import (
 func TestExplicitResendConfirmationPostsFreshLink(t *testing.T) {
 	var events []string
 	noticer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost { // delivery-status reads are not notices
+			_ = json.NewEncoder(w).Encode(map[string]string{"delivery_status": "queued", "channel": "telegram_bot"})
+			return
+		}
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		events = append(events, fmt.Sprint(payload["event"]))
@@ -31,7 +35,7 @@ func TestExplicitResendConfirmationPostsFreshLink(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
 	store := NewStore()
 	auth := aliceAuth()
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_confirm4", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: "stateful-mcp", DefinitionVersion: "2.1.0", Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_confirm4", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, DefinitionID: "stateful-mcp", DefinitionVersion: "2.1.0", Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +45,8 @@ func TestExplicitResendConfirmationPostsFreshLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || !body.LinkSent {
-		t.Fatalf("initial notice not queued: count=%d queued=%t", len(events), body.LinkSent)
+	if len(events) != 1 || !noticeDelivered(body) {
+		t.Fatalf("initial notice not queued: count=%d queued=%t", len(events), noticeDelivered(body))
 	}
 	body, err = c.connectorResend(context.Background(), auth, map[string]any{"target": on.OnboardingID})
 	if err != nil {
@@ -61,11 +65,11 @@ func TestExplicitResendConfirmationPostsFreshLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ConfirmationNonce == "" {
+	if stored.GateNonce(api.GateConfirmSetup) == "" {
 		t.Fatal("status left the onboarding without an armed confirmation nonce")
 	}
 	raw, _ := json.Marshal(body)
-	if strings.Contains(string(raw), stored.ConfirmationNonce) {
+	if strings.Contains(string(raw), stored.GateNonce(api.GateConfirmSetup)) {
 		t.Fatalf("confirmation nonce leaked into the tool result: %s", raw)
 	}
 }

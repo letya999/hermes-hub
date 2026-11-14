@@ -113,8 +113,10 @@ var mcpConnectors = map[string]bool{
 // pseudoToolsets are `via: native` entries that are not upstream toolsets but
 // native subsystems: meet maps to the google_meet plugin toolset (unmanaged
 // only — plugins stay sealed under managed), transcription is the stt flag,
-// deep_research is the bundled-skill gate.
-var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true, "memory_vault": true, "knowledge_ui": true, "memory_provider": true}
+// deep_research is the bundled-skill gate, tool_search is the upstream
+// deferred-tool bridge switch (tools.tool_search.enabled — off by default so
+// discovery stays on the ToolHub surface).
+var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true, "memory_vault": true, "knowledge_ui": true, "memory_provider": true, "tool_search": true}
 
 // ingressChannels are transport adapters that feed messages into the agent.
 // They are operator-owned ingress, never agent tools.

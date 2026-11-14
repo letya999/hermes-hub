@@ -77,7 +77,7 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce", Expires: time.Now().Add(time.Hour)}, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		}
 		return nil
 	}
-	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce})
+	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.GateNonce(api.GateConfirmSetup)})
 	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff: %v %v", body, err)
 	}
@@ -198,7 +198,7 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		t.Fatal("replayed callback accepted", err)
 	}
 	stored, _ := store.onboarding(on.OnboardingID)
-	if stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed || stored.ProviderAuthorizationURL != "" {
+	if !stored.Awaiting(api.GateConfirmSetup) || stored.ConfirmationUsed || stored.ProviderAuthorizationURL != "" {
 		t.Fatal("OAuth bypassed verified human consent")
 	}
 	finishAsHuman(t, c, stored.OnboardingID)

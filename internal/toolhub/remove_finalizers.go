@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -39,7 +40,12 @@ func newRemoveLadder() []api.Finalizer {
 }
 
 func (c *ControlPlane) confirmedRemoveInProgress(onboarding api.Onboarding) bool {
-	if onboarding.Phase == api.PhaseCleanupIncomplete {
+	if onboarding.CleanupIncomplete() {
+		return true
+	}
+	// A revoked record runs its removal ladder in place on gone — the stage
+	// never enters failed, so pending finalizers are the only in-flight mark.
+	if onboarding.Stage == api.StageGone && slices.ContainsFunc(onboarding.Finalizers, func(f api.Finalizer) bool { return f.State != api.FinalizerDone }) {
 		return true
 	}
 	connection, ok := c.Store.connectionFor(onboarding.ConnectionID)

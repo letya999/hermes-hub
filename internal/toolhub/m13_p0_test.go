@@ -178,15 +178,15 @@ func TestRemoveReportsCleanupIncompleteOnReleaseFailure(t *testing.T) {
 	if blocked["phase"] != "cleanup_incomplete" {
 		t.Fatalf("failed cleanup reported phase=%v", blocked["phase"])
 	}
-	if latest, lerr := store.onboarding(prepared["onboarding_id"].(string)); lerr != nil || latest.Phase == api.PhaseRemoved {
-		t.Fatalf("tombstone before converged cleanup: %+v", latest.Phase)
+	if latest, lerr := store.onboarding(prepared["onboarding_id"].(string)); lerr != nil || latest.Removed() {
+		t.Fatalf("tombstone before converged cleanup: %+v", latest.NoticePhase())
 	}
 	failRelease = false
 	resumed, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed["phase"] != api.PhaseRemoved {
+	if resumed["phase"] != "removed" {
 		t.Fatalf("retry did not converge: phase=%v", resumed["phase"])
 	}
 }
@@ -268,7 +268,7 @@ func TestRemoveToleratesMissingLocalCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finished["phase"] != api.PhaseRemoved {
+	if finished["phase"] != "removed" {
 		t.Fatalf("broker-held locator blocked purge: %+v", finished)
 	}
 }
@@ -323,7 +323,7 @@ func TestRemoveReportsCleanupIncompleteOnCredentialDeleteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed["phase"] != api.PhaseRemoved {
+	if resumed["phase"] != "removed" {
 		t.Fatalf("retry after credential delete did not converge: phase=%v", resumed["phase"])
 	}
 }
@@ -425,9 +425,10 @@ func TestAgentFacingResultsCarryNoSecrets(t *testing.T) {
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-			Mode: api.OnboardingCatalog, Phase: phase,
+			Mode:         api.OnboardingCatalog,
 			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		}
+		applyOnboardingPhase(&onboarding, phase)
 		if mutate != nil {
 			mutate(&onboarding)
 		}
@@ -444,17 +445,14 @@ func TestAgentFacingResultsCarryNoSecrets(t *testing.T) {
 	}{
 		{"status", map[string]any{"onboarding_id": seed("onb-creds", api.PhaseAwaitingCreds, func(o *api.Onboarding) {
 			o.AdmissionPending = true
-			o.FormNonce = secret
-			o.FormExpires = time.Now().Add(time.Hour)
+			o.ArmGate(api.GateCredentials, secret, time.Now().Add(time.Hour))
 		})}, secret},
 		{"required_credentials", map[string]any{"onboarding_id": seed("onb-creds2", api.PhaseAwaitingCreds, func(o *api.Onboarding) {
 			o.AdmissionPending = true
-			o.FormNonce = secret
-			o.FormExpires = time.Now().Add(time.Hour)
+			o.ArmGate(api.GateCredentials, secret, time.Now().Add(time.Hour))
 		})}, secret},
 		{"status", map[string]any{"onboarding_id": seed("onb-conf", api.PhaseAwaitingConfirm, func(o *api.Onboarding) {
-			o.ConfirmationNonce = secret
-			o.ConfirmationExpires = time.Now().Add(time.Hour)
+			o.ArmGate(api.GateConfirmSetup, secret, time.Now().Add(time.Hour))
 		})}, secret},
 		{"required_credentials", map[string]any{"onboarding_id": seed("onb-oauth", api.PhaseAwaitingOAuth, func(o *api.Onboarding) { o.ProviderAuthorizationURL = "https://as.example/authorize?state=" + secret })}, secret},
 	}
@@ -482,7 +480,7 @@ func TestAgentFacingResultsCarryNoSecrets(t *testing.T) {
 		t.Fatalf("remove preview leaked the nonce: %s", encoded)
 	}
 	latest, _ := store.onboarding("onb-conf")
-	if strings.Contains(string(encoded), latest.RemoveNonce) {
+	if strings.Contains(string(encoded), latest.GateNonce(api.GateRemove)) {
 		t.Fatalf("remove preview carried the minted nonce: %s", encoded)
 	}
 }
@@ -516,10 +514,10 @@ func TestRemovePreviewSendsConfirmationLink(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-remove-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		ConfirmationNonce: "c-nonce", ConfirmationExpires: time.Now().Add(time.Hour),
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "c-nonce", Expires: time.Now().Add(time.Hour)},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +536,7 @@ func TestRemovePreviewSendsConfirmationLink(t *testing.T) {
 		t.Fatalf("notice carried no remove link: %v", noticed[len(noticed)-1])
 	}
 	latest, _ := store.onboarding("onb-remove-link")
-	if !strings.Contains(link, "t="+latest.RemoveNonce) {
+	if !strings.Contains(link, "t="+latest.GateNonce(api.GateRemove)) {
 		t.Fatalf("notice link does not carry the minted nonce: %q", link)
 	}
 }
@@ -572,10 +570,10 @@ func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-expired-conf", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		ConfirmationNonce: "stale", ConfirmationExpires: time.Now().Add(-time.Hour),
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "stale", Expires: time.Now().Add(-time.Hour)},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +581,7 @@ func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	latest, err := store.onboarding("onb-expired-conf")
-	if err != nil || latest.ConfirmationNonce == "stale" || latest.ConfirmationNonce == "" {
+	if err != nil || latest.GateNonce(api.GateConfirmSetup) == "stale" || latest.GateNonce(api.GateConfirmSetup) == "" {
 		t.Fatalf("expired nonce was not renewed: %+v", latest)
 	}
 	if len(noticed) == 0 {
@@ -624,10 +622,10 @@ func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-expired-form", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		FormNonce: "stale", FormExpires: time.Now().Add(-time.Hour),
-	}
+		Mode:  api.OnboardingCatalog,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "stale", Expires: time.Now().Add(-time.Hour)}, AdmissionPending: true,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +633,7 @@ func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	latest, err := store.onboarding("onb-expired-form")
-	if err != nil || latest.FormNonce == "stale" || latest.FormNonce == "" {
+	if err != nil || latest.GateNonce(api.GateCredentials) == "stale" || latest.GateNonce(api.GateCredentials) == "" {
 		t.Fatalf("expired form nonce was not renewed: %+v", latest)
 	}
 	if len(noticed) == 0 {
@@ -663,10 +661,10 @@ func TestConfirmLinkPageDefersToVerifiedActor(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-confirm-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		ConfirmationNonce: nonce, ConfirmationExpires: time.Now().Add(time.Hour),
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: nonce, Expires: time.Now().Add(time.Hour)},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +680,7 @@ func TestConfirmLinkPageDefersToVerifiedActor(t *testing.T) {
 	badReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/confirm/onb-confirm-link?nonce=wrong", nil)
 	badReq.Host = "127.0.0.1"
 	gateway.serveConfirm(bad, badReq)
-	if bad.Code != http.StatusUnauthorized {
+	if bad.Code != http.StatusGone {
 		t.Fatalf("wrong nonce status=%d", bad.Code)
 	}
 	post := httptest.NewRecorder()
@@ -697,8 +695,8 @@ func TestConfirmLinkPageDefersToVerifiedActor(t *testing.T) {
 	}
 	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-confirm-link")
-	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
-		t.Fatalf("confirm link did not finish authorization: phase=%v err=%v", latest.Phase, err)
+	if err != nil || (!latest.ConfirmationUsed && latest.Stage != api.StageLive) {
+		t.Fatalf("confirm link did not finish authorization: phase=%v err=%v", latest.NoticePhase(), err)
 	}
 }
 
@@ -717,9 +715,9 @@ func TestRemoveLinkPageExecutesRemoval(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-remove-page", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StageLive,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -727,12 +725,12 @@ func TestRemoveLinkPageExecutesRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	armed, err := store.onboarding("onb-remove-page")
-	if err != nil || armed.RemoveNonce == "" {
+	if err != nil || armed.GateNonce(api.GateRemove) == "" {
 		t.Fatalf("preview did not arm the nonce: %+v", armed)
 	}
 	gateway := &Gateway{Control: control}
 	rec := httptest.NewRecorder()
-	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.RemoveNonce, nil)
+	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.GateNonce(api.GateRemove), nil)
 	get.Host = "127.0.0.1"
 	gateway.serveRemove(rec, get)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
@@ -742,19 +740,19 @@ func TestRemoveLinkPageExecutesRemoval(t *testing.T) {
 	badReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/remove/onb-remove-page?nonce=wrong", nil)
 	badReq.Host = "127.0.0.1"
 	gateway.serveRemove(bad, badReq)
-	if bad.Code != http.StatusUnauthorized {
+	if bad.Code != http.StatusGone {
 		t.Fatalf("wrong nonce status=%d", bad.Code)
 	}
 	post := httptest.NewRecorder()
-	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.RemoveNonce, nil)
+	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/remove/onb-remove-page?nonce="+armed.GateNonce(api.GateRemove), nil)
 	postReq.Host = "127.0.0.1"
 	gateway.serveRemove(post, postReq)
 	if post.Code != http.StatusOK {
 		t.Fatalf("remove post status=%d body=%s", post.Code, post.Body.String())
 	}
 	latest, err := store.onboarding("onb-remove-page")
-	if err != nil || latest.Phase != api.PhaseRemoved {
-		t.Fatalf("remove link did not finish removal: phase=%v err=%v", latest.Phase, err)
+	if err != nil || !latest.Removed() {
+		t.Fatalf("remove link did not finish removal: phase=%v err=%v", latest.NoticePhase(), err)
 	}
 }
 
@@ -816,15 +814,17 @@ func TestConnectLinkRedirectsToProviderURL(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-oauth-link", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingOAuth,
-		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c&response_type=code",
-	}
+		Mode:                     api.OnboardingRemote,
+		Stage:                    api.StagePending,
+		Gate:                     &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c&response_type=code"}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	brokerOn := onboarding
 	brokerOn.OnboardingID = "onb-broker-link"
-	brokerOn.Phase = api.PhaseAwaitingCreds
+	brokerOn.Stage = api.StagePending
+	brokerOn.ArmGate(api.GateCredentials, "", time.Time{})
 	brokerOn.ProviderAuthorizationURL = ""
 	brokerOn.BrokerRequestID = "req-777"
 	brokerOn.BrokerAuthorizationURL = "https://broker.example.com/connect/req-777"
@@ -912,11 +912,11 @@ func TestOAuthStartSendsConnectLink(t *testing.T) {
 func TestInstructionsNeverReferenceRemovedFields(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
 	cases := []api.Onboarding{
-		{OnboardingID: "o1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "n", ConfirmationExpires: time.Now().Add(time.Hour)},
-		{OnboardingID: "o2", Phase: api.PhaseAwaitingOAuth, ProviderAuthorizationURL: "https://accounts.example.com/a?state=s"},
-		{OnboardingID: "o3", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), AdmissionPending: true, BrokerContractID: "c1"},
-		{OnboardingID: "o4", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), Error: "Проверка не прошла: bad token", AdmissionPending: true},
-		{OnboardingID: "o5", Phase: api.PhaseAwaitingCreds, FormNonce: "f", FormExpires: time.Now().Add(time.Hour), Error: "Не заполнено: TOKEN", AdmissionPending: true},
+		{OnboardingID: "o1", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "n", Expires: time.Now().Add(time.Hour)}},
+		{OnboardingID: "o2", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}}, ProviderAuthorizationURL: "https://accounts.example.com/a?state=s"},
+		{OnboardingID: "o3", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "f", Expires: time.Now().Add(time.Hour)}, AdmissionPending: true, BrokerContractID: "c1"},
+		{OnboardingID: "o4", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "f", Expires: time.Now().Add(time.Hour)}, Error: "Проверка не прошла: bad token", AdmissionPending: true},
+		{OnboardingID: "o5", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "f", Expires: time.Now().Add(time.Hour)}, Error: "Не заполнено: TOKEN", AdmissionPending: true},
 	}
 	for _, on := range cases {
 		body := control.statusBody(on, false)
@@ -924,7 +924,7 @@ func TestInstructionsNeverReferenceRemovedFields(t *testing.T) {
 			lower := strings.ToLower(text)
 			for _, bad := range []string{"nonce from this response", "authorization_url", "from required_credentials", "send the form url", "send authorization"} {
 				if strings.Contains(lower, bad) {
-					t.Fatalf("%s instructions reference removed field %q: %q", on.Phase, bad, text)
+					t.Fatalf("%s instructions reference removed field %q: %q", on.NoticePhase(), bad, text)
 				}
 			}
 		}
@@ -985,17 +985,16 @@ func TestSubmitRejectsOptionalCredentialInjection(t *testing.T) {
 	control := &ControlPlane{Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour, FormOrigin: "http://127.0.0.1:8090"}
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-inj1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, SourceURL: "https://github.com/zereight/gitlab-mcp",
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: api.RandomNonce(), Expires: time.Now().Add(time.Hour)}, SourceURL: "https://github.com/zereight/gitlab-mcp",
 		DefinitionID: "gitlab", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
-		FormNonce:   api.RandomNonce(),
-		FormExpires: time.Now().Add(time.Hour),
-		Required:    []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
-		Optional:    []api.CredentialHint{{Name: "GITLAB_PROJECT_ID", Delivery: "env"}},
-	}
+		Required: []api.CredentialHint{{Name: "GITLAB_PERSONAL_ACCESS_TOKEN", Secret: true, Delivery: "env"}},
+		Optional: []api.CredentialHint{{Name: "GITLAB_PROJECT_ID", Delivery: "env"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	err = control.SubmitCredentials(onboarding.OnboardingID, onboarding.FormNonce, map[string]string{
+	err = control.SubmitCredentials(onboarding.OnboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{
 		"GITLAB_PERSONAL_ACCESS_TOKEN": "tok",
 		"GITLAB_PROJECT_ID":            "42\nINJECTED=evil",
 	})

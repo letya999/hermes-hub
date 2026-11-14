@@ -23,11 +23,14 @@ func TestOnboardingStateFencesLateAndForeignWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := o
-	o.Phase, o.Revision = api.PhaseRetryScheduled, o.Revision+1
+	o.Revision = o.Revision + 1
+	o.Stage = api.StagePending
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
-	stale.Phase, stale.Revision = api.PhaseAwaitingConfirm, stale.Revision+1
+	stale.Revision = stale.Revision + 1
+	stale.Stage = api.StagePending
+	stale.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	if err := s.PutOnboarding(stale); !errors.Is(err, api.ErrStale) {
 		t.Fatalf("late reply replaced winner: %v", err)
 	}
@@ -37,13 +40,14 @@ func TestOnboardingStateFencesLateAndForeignWrites(t *testing.T) {
 	if err := s.PutOnboarding(foreign); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("owner change: %v", err)
 	}
-	o.Phase, o.Revision = api.PhaseRemoved, o.Revision+1
+	o.Revision = o.Revision + 1
+	o.Retire(api.TombstoneRemoved)
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []string{api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, api.PhaseVerifying, api.PhaseEnabled, api.PhaseCleanupIncomplete} {
+	for _, phase := range []string{api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, "verifying", api.PhaseEnabled, api.PhaseCleanupIncomplete} {
 		next := o
-		next.Phase = phase
+		applyOnboardingPhase(&next, phase)
 		next.Revision++
 		if err := s.PutOnboarding(next); !errors.Is(err, api.ErrRevoked) {
 			t.Fatalf("removed -> %s accepted: %v", phase, err)
@@ -57,7 +61,8 @@ func TestOnboardingNoticeSurvivesCrashAndDoesNotInvalidateApproval(t *testing.T)
 	s := NewStore()
 	grantTestControlOperations(t, s, auth.PrincipalID, "confirm")
 	o := m13P3Onboarding(auth, "outbox", "github", "https://github.com/github/github-mcp-server", api.PhaseAwaitingConfirm)
-	o.Initiator, o.ConfirmationNonce, o.ConfirmationExpires = &auth, "test-proof", now.Add(time.Hour)
+	o.Initiator = &auth
+	o.ArmGate(api.GateConfirmSetup, "test-proof", now.Add(time.Hour))
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +143,8 @@ func TestPendingRemovalDoesNotStarveOtherOnboardings(t *testing.T) {
 	}
 	for _, id := range []string{"blocked", "ready"} {
 		o, err := s.OnboardingFor(auth, m13P3Onboarding(auth, id, "missing", "", api.PhaseCleanupIncomplete).OnboardingID)
-		if err != nil || (id == "ready" && o.Phase != api.PhaseRemoved) || (id == "blocked" && o.Phase != api.PhaseCleanupIncomplete) {
-			t.Fatalf("cleanup %s: phase=%s err=%v", id, o.Phase, err)
+		if err != nil || (id == "ready" && !o.Removed()) || (id == "blocked" && !o.CleanupIncomplete()) {
+			t.Fatalf("cleanup %s: phase=%s err=%v", id, o.NoticePhase(), err)
 		}
 	}
 }
@@ -156,7 +161,7 @@ func TestConnectorStatusIsReadOnlyWithoutProvider(t *testing.T) {
 	before, _ := s.OnboardingFor(auth, o.OnboardingID)
 	for range 100 {
 		result, err := c.connectorStatus(context.Background(), auth, o.OnboardingID, "")
-		if err != nil || result.State != api.OpStateAwaitingUser {
+		if err != nil || result.State != api.ModelStateWaitingYou {
 			t.Fatalf("saved status: %v %s", err, result.State)
 		}
 	}
@@ -187,13 +192,13 @@ func TestBrokerAdmissionRetriesPreserveAcceptedCredential(t *testing.T) {
 		if o.BrokerCredentialID != "accepted-credential" || o.Locator != "accepted-credential" || o.AdmissionAttempts != i+1 {
 			t.Fatal("transient backend error lost credential or retry count")
 		}
-		if i < 4 && o.Phase != api.PhaseRetryScheduled {
-			t.Fatalf("temporary error asked for credentials: %s", o.Phase)
+		if i < 4 && o.Stage != api.StagePending {
+			t.Fatalf("temporary error asked for credentials: %s", o.NoticePhase())
 		}
 		now = now.Add(2 * time.Minute)
 	}
-	if o.Phase != api.PhaseFailed {
-		t.Fatalf("retry budget never terminates: %s", o.Phase)
+	if o.Stage != api.StageFailed {
+		t.Fatalf("retry budget never terminates: %s", o.NoticePhase())
 	}
 	if err := c.completeBrokerAdmission(t.Context(), auth, &o, "accepted-credential"); err != nil {
 		t.Fatal(err)
@@ -207,13 +212,13 @@ func TestOnboardingIdentitySeparatesPolicyEpochs(t *testing.T) {
 	s, auth := NewStore(), aliceAuth()
 	d := catalogReadDefinition()
 	c := &ControlPlane{Store: s}
-	before, err := c.newOnboarding(auth, api.OnboardingCatalog, "same-request", d, "", "")
+	before, _, err := c.newOnboarding(auth, api.OnboardingCatalog, "same-request", d, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	next := auth
 	next.PolicyVersion = "policy-2"
-	after, err := c.newOnboarding(next, api.OnboardingCatalog, "same-request", d, "", "")
+	after, _, err := c.newOnboarding(next, api.OnboardingCatalog, "same-request", d, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

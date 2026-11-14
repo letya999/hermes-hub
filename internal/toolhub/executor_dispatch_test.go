@@ -154,11 +154,11 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 		t.Fatalf("connector_list did not reach the facade: %s", body)
 	}
 	var inventory api.OperationResult
-	if err := json.Unmarshal([]byte(text(res)), &inventory); err != nil || inventory.State != api.OpStateDone {
+	if err := json.Unmarshal([]byte(text(res)), &inventory); err != nil || inventory.State != api.ModelStateDone {
 		t.Fatalf("connector_list hid its structured inventory: %s: %v", text(res), err)
 	}
 	res, err = call("connector_status", map[string]any{"name": "missing-connector"})
-	if err != nil || !res.IsError || !strings.Contains(text(res), "connector not found") {
+	if err != nil || !res.IsError || !strings.Contains(text(res), `"code":"not_found"`) {
 		t.Fatalf("missing connector status must be a definitive result: %v %v", res, err)
 	}
 	res, err = call("model_list", map[string]any{})

@@ -172,7 +172,7 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 		if old := current.Load(); old != nil {
 			m32Require(t, old.Close())
 		}
-		host, err := newAutomationHost(ctx, projection, store)
+		host, err := newAutomationHost(ctx, projection, store, nil)
 		m32Require(t, err)
 		current.Store(host)
 		return host

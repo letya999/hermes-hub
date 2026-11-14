@@ -223,7 +223,7 @@ func TestConfirmationConsumedOnceConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := mustOnboarding(t, reloaded, id)
-	if !record.ConfirmationUsed || record.Phase != api.PhaseConfirmed {
+	if !record.ConfirmationUsed {
 		t.Fatalf("durable confirmation state=%+v", record)
 	}
 }
@@ -306,7 +306,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+	if err := control.SubmitCredentials(id, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
@@ -358,7 +358,7 @@ func TestConfirmProbeFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-probe-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GRAFANA_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-probe-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)}, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GRAFANA_TOKEN"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestConfirmProbeFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+	if !after.Awaiting(api.GateCredentials) || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("probe rejection did not reopen the credential form: %+v", after)
 	}
 	if after.Error == "" {
@@ -405,7 +405,7 @@ func TestConfirmDeliveryFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-delivery-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "MCP_HTTP_AUTH_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-delivery-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)}, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "MCP_HTTP_AUTH_TOKEN"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestConfirmDeliveryFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+	if !after.Awaiting(api.GateCredentials) || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("delivery failure did not reopen the credential form: %+v", after)
 	}
 	if after.Error == "" {
@@ -460,7 +460,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+	if err := control.SubmitCredentials(id, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
@@ -470,7 +470,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || !stored.ConfirmationUsed {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.GateKind() != api.GateConfirmSetup || !stored.ConfirmationUsed {
 		t.Fatalf("confirm failure not recorded: %+v", stored)
 	}
 	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
@@ -489,7 +489,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != api.PhaseEnabled {
+	if stored.Error != "" || stored.Stage != api.StageLive {
 		t.Fatalf("successful confirm kept stale error: %+v", stored)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "disable", map[string]any{"onboarding_id": id}); err != nil {
@@ -500,7 +500,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed re-enable was accepted")
 	}
 	stored, _ = store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseDisabled {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Stage != api.StageLive {
 		t.Fatalf("enable failure not recorded: %+v", stored)
 	}
 	admit = true
@@ -508,7 +508,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != api.PhaseEnabled {
+	if stored.Error != "" || stored.Stage != api.StageLive {
 		t.Fatalf("successful enable kept stale error: %+v", stored)
 	}
 }
@@ -548,7 +548,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": fmt.Sprintf("value-%02d", i)}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": fmt.Sprintf("value-%02d", i)}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
@@ -608,7 +608,7 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": "ignored-unique"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "ignored-unique"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {

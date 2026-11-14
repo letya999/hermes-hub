@@ -291,6 +291,9 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			}
 			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
 			result := s.bindings[existing.ToolBindingID]
+			if result.Status == api.ActiveStatus {
+				s.materializePendingSelectionsLocked(result)
+			}
 			s.mu.Unlock()
 			if err := s.persistAndNotify(); err != nil {
 				return api.ToolBinding{}, err
@@ -351,6 +354,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 	if binding.ProjectionRevision > s.projectionRevisions[key] {
 		s.projectionRevisions[key] = binding.ProjectionRevision
 	}
+	s.materializePendingSelectionsLocked(binding)
 	s.mu.Unlock()
 	if err := s.persistAndNotify(); err != nil {
 		return api.ToolBinding{}, err

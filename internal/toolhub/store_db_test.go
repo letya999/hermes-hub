@@ -102,7 +102,7 @@ func TestStoreDBPopulatedRoundTrip(t *testing.T) {
 	if err := store.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "ob-1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseFailed, Revision: 1, CreatedAt: now}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "ob-1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StageFailed, Revision: 1, CreatedAt: now}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

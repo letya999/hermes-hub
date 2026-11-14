@@ -27,7 +27,7 @@ func TestAdminAuditFailureDeniesDiagnostics(t *testing.T) {
 }
 
 func TestAdminOnboardingDoesNotEchoProviderText(t *testing.T) {
-	view := adminOnboardingOf(api.Onboarding{OnboardingID: "ob-1", PrincipalID: "alice", Phase: api.PhaseFailed, Error: "opaque-provider-bearer", ErrorCode: "opaque-code-bearer", Required: []api.CredentialHint{{Name: "API_TOKEN"}}, Finalizers: []api.Finalizer{{Name: api.FinalizerWorkloads, State: api.FinalizerFailed, Attempts: 2, Error: "opaque-finalizer-bearer"}}})
+	view := adminOnboardingOf(api.Onboarding{OnboardingID: "ob-1", PrincipalID: "alice", Stage: api.StageFailed, Error: "opaque-provider-bearer", ErrorCode: "opaque-code-bearer", Required: []api.CredentialHint{{Name: "API_TOKEN"}}, Finalizers: []api.Finalizer{{Name: api.FinalizerWorkloads, State: api.FinalizerFailed, Attempts: 2, Error: "opaque-finalizer-bearer"}}})
 	body, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)

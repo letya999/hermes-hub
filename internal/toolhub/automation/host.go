@@ -80,6 +80,10 @@ type Config struct {
 	ToolCall     func(context.Context, string, *commodel.WatchProbe) ([]byte, error)
 	DreamingPlan func(identity.Envelope) (night.Schedule, error)
 	DreamingRun  func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error)
+	// Overloaded reports that the serving plane's interactive path is hot;
+	// a true value defers the whole tick pass — due work keeps its catch-up
+	// window and the next tick settles it. Nil means never overloaded.
+	Overloaded func() bool
 }
 
 // Host owns the automation plane: per-principal engines and durable stores.
@@ -657,8 +661,12 @@ func (h *Host) flush(ctx context.Context) error {
 }
 
 // Tick drives one clock pass over every loaded engine, then reconciles
-// pending dispatch and delivery intents.
+// pending dispatch and delivery intents. Under overload the pass defers
+// wholesale — due work survives through its catch-up window.
 func (h *Host) Tick(ctx context.Context, now time.Time) error {
+	if h.cfg.Overloaded != nil && h.cfg.Overloaded() {
+		return nil
+	}
 	h.mu.Lock()
 	type ownerEngine struct {
 		principal string

@@ -121,13 +121,14 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-retry",
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
 		AdmissionPending: true, Definition: &draft, BrokerRequestID: "request_1",
 		Recipe: &api.RecipeResolution{
 			Source:     api.ArtifactSource{Repository: draft.Source.Repository, CommitSHA: draft.Source.CommitSHA},
 			Connection: api.ConnectionRecipe{AuthBeforeToolsList: true, Fields: []api.ConnectionField{{Name: "CUSTOM_TOKEN", Required: true, Delivery: "env"}}},
-		},
-	}
+		}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -158,8 +159,8 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.ErrorCode != api.OpCodeProbeFailed || failed.Phase != api.PhaseAwaitingCreds {
-		t.Fatalf("rejected credential did not reopen the form: phase=%q code=%q", failed.Phase, failed.ErrorCode)
+	if failed.ErrorCode != api.OpCodeProbeFailed || !failed.Awaiting(api.GateCredentials) {
+		t.Fatalf("rejected credential did not reopen the form: phase=%q code=%q", failed.NoticePhase(), failed.ErrorCode)
 	}
 	if reviews != 1 {
 		t.Fatalf("first admission reviewed %d times", reviews)
@@ -238,10 +239,11 @@ func TestAuthFirstDeferredReviewCannotMutateStoredRecipe(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-alias",
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
 		AdmissionPending: true, Definition: &draft, BrokerRequestID: "request_1",
-		Recipe: recipe, RecipeDigest: digest,
-	}
+		Recipe: recipe, RecipeDigest: digest}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -350,9 +352,10 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 		if err := store.PutOnboarding(api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: owner.onboardingID,
 			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-			Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
-			AdmissionPending: true, Definition: &draft,
-		}); err != nil {
+			Mode:  api.OnboardingSelfInstall,
+			Stage: api.StagePending,
+			Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
+			AdmissionPending: true, Definition: &draft}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -397,7 +400,7 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	if err := control.completeBrokerAdmission(t.Context(), auths["alice"], &duplicate, "credential_alice"); err != nil {
 		t.Fatal(err)
 	}
-	if duplicate.Phase != api.PhaseVerifying {
+	if duplicate.Stage != api.StagePending {
 		t.Fatal("duplicate did not observe existing admission lease")
 	}
 	unblock()
@@ -409,8 +412,8 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	for _, owner := range owners {
 		auth := auths[owner.name]
 		record, err := store.OnboardingFor(auth, owner.onboardingID)
-		if err != nil || record.Phase != api.PhaseAwaitingConfirm || record.AdmissionPending {
-			t.Fatalf("%s admission did not converge: phase=%q err=%v", owner.name, record.Phase, err)
+		if err != nil || !record.Awaiting(api.GateConfirmSetup) || record.AdmissionPending {
+			t.Fatalf("%s admission did not converge: phase=%q err=%v", owner.name, record.NoticePhase(), err)
 		}
 		if record.BrokerCredentialID != "credential_"+owner.name {
 			t.Fatalf("%s admission bound a foreign credential: %q", owner.name, record.BrokerCredentialID)

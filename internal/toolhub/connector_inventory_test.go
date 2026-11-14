@@ -66,7 +66,7 @@ func TestConnectorStatusReadsOwnedConnectionWithoutOnboarding(t *testing.T) {
 		t.Fatalf("inventory: %+v %v", listed, err)
 	}
 	status, err := c.connectorStatus(t.Context(), auth, listed.Candidates[0].ID, "")
-	if err != nil || status.State != api.OpStateDone || len(status.Candidates) != 1 {
+	if err != nil || status.State != api.ModelStateDone || len(status.Candidates) != 1 {
 		t.Fatalf("listed connection cannot be inspected: %+v %v", status, err)
 	}
 	if !reflect.DeepEqual(status.Candidates[0], listed.Candidates[0]) {
@@ -102,7 +102,7 @@ func TestConnectorListIncludesOwnedConnectionWithoutOnboarding(t *testing.T) {
 		t.Fatalf("existing connection hidden without onboarding: %+v %v", result, err)
 	}
 	got := result.Candidates[0]
-	if got.ID != connection.ConnectionID || got.ConnectionID != connection.ConnectionID || got.DefinitionID != connection.DefinitionID || got.ConnectionStatus != api.DegradedStatus || got.OnboardingPhase != "" {
+	if got.ID != connection.ConnectionID || got.ConnectionID != connection.ConnectionID || got.DefinitionID != connection.DefinitionID || got.ConnectionStatus != api.DegradedStatus || got.State != "" {
 		t.Fatalf("connection-only facts incorrect: %+v", got)
 	}
 	definition, err := store.definitionForConnection(connection)
@@ -269,7 +269,7 @@ func TestConnectorListReportsTeamConnectionStateWithoutPersonalOnboarding(t *tes
 		t.Fatalf("team inventory: %+v %v", result, err)
 	}
 	got := result.Candidates[0]
-	if got.ConnectionID != connection.ConnectionID || got.DefinitionID != definition.DefinitionID || got.ConnectionStatus != api.DegradedStatus || got.Badge != "team" || got.OnboardingPhase != "" {
+	if got.ConnectionID != connection.ConnectionID || got.DefinitionID != definition.DefinitionID || got.ConnectionStatus != api.DegradedStatus || got.Badge != "team" || got.State != "" {
 		t.Fatalf("team connection state omitted or invented: %+v", got)
 	}
 }
@@ -304,7 +304,7 @@ func TestConnectorListSeparatesTransportConnectionAndOnboardingState(t *testing.
 		"definition_id":     onboarding.DefinitionID,
 		"transport":         string(definition.Transport),
 		"connection_status": string(api.DegradedStatus),
-		"onboarding_phase":  api.PhaseEnabled,
+		"state":             api.ModelStateReady,
 	} {
 		if fields[key] != want {
 			t.Errorf("%s = %v; want %q", key, fields[key], want)
@@ -316,7 +316,7 @@ func TestConnectorListExcludesTerminalAndSupersededOnboarding(t *testing.T) {
 	store := NewStore()
 	auth := aliceAuth()
 	current := m13P3Onboarding(auth, "current", "github", "", api.PhaseAwaitingCreds)
-	removed := m13P3Onboarding(auth, "removed", "github", "", api.PhaseRemoved)
+	removed := m13P3Onboarding(auth, "removed", "github", "", "removed")
 	revoked := m13P3Onboarding(auth, "revoked", "github", "", api.PhaseRevoked)
 	superseded := m13P3Onboarding(auth, "superseded", "github", "", api.PhaseEnabled)
 	superseded.SupersededBy = current.OnboardingID

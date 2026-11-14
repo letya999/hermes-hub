@@ -19,17 +19,19 @@ func prepareDeliveryIdentity(caller identity.Envelope, onboardingID string) stri
 	return hex.EncodeToString(digest[:])
 }
 
-// prepareDeliveryStatus reads the durable outbox for one owner's exact notice version.
-func (s *Spool) prepareDeliveryStatus(caller identity.Envelope, onboardingID string, version uint64) (string, error) {
+// prepareDeliveryStatus reads the durable outbox for one owner's exact notice
+// version and reports which channel holds the delivery, so a status answer
+// names the surface the notice actually went through.
+func (s *Spool) prepareDeliveryStatus(caller identity.Envelope, onboardingID string, version uint64) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := prepareDeliveryIdentity(caller, onboardingID)
 	prefix := "prepare-" + onboardingID + "-"
-	state := api.PrepareDeliveryUnknown
+	state, channel := api.PrepareDeliveryUnknown, ""
 	for _, dir := range []string{"pending", "sending", "failed", "done"} {
 		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", dir))
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, name := range entries {
 			if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
@@ -40,26 +42,27 @@ func (s *Spool) prepareDeliveryStatus(caller identity.Envelope, onboardingID str
 				if os.IsNotExist(err) { // A delivery can move while the read is in flight.
 					continue
 				}
-				return "", err
+				return "", "", err
 			}
 			var delivery Delivery
 			if err := json.Unmarshal(body, &delivery); err != nil {
-				return "", err
+				return "", "", err
 			}
 			if delivery.PrepareKey != key || delivery.PrepareVersion != version {
 				continue
 			}
+			channel = delivery.Channel
 			switch dir {
 			case "pending", "sending":
 				state = api.PrepareDeliveryQueued
 			case "failed":
 				state = api.PrepareDeliveryUncertain
 			case "done":
-				return api.PrepareDeliveryDelivered, nil
+				return api.PrepareDeliveryDelivered, channel, nil
 			}
 		}
 	}
-	return state, nil
+	return state, channel, nil
 }
 
 func (g *Gateway) handlePrepareDeliveryStatus(w http.ResponseWriter, r *http.Request) {
@@ -78,11 +81,11 @@ func (g *Gateway) handlePrepareDeliveryStatus(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid prepare delivery status request", http.StatusBadRequest)
 		return
 	}
-	status, err := g.spool.prepareDeliveryStatus(caller, id, version)
+	status, channel, err := g.spool.prepareDeliveryStatus(caller, id, version)
 	if err != nil {
 		http.Error(w, "prepare delivery status unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"delivery_status": status})
+	_ = json.NewEncoder(w).Encode(map[string]string{"delivery_status": status, "channel": channel})
 }

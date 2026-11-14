@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -135,7 +136,8 @@ func (s *service) transcriptions(w http.ResponseWriter, r *http.Request) {
 	opts := TranscribeOpts{Language: r.FormValue("language"), Model: r.FormValue("model")}
 	segments, err := s.transcribeWav(r.Context(), wav, opts)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		log.Printf("hub-media transcribe failed: %v", err)
+		writeErrorReason(w, http.StatusBadGateway, "transcription failed", upstreamReason(err))
 		return
 	}
 	format := r.FormValue("response_format")
@@ -174,7 +176,7 @@ func (s *service) speech(w http.ResponseWriter, r *http.Request) {
 	}
 	audio, err := s.tts.Synthesize(r.Context(), req.Input, req.Voice)
 	if err != nil || len(audio) == 0 {
-		writeError(w, http.StatusBadGateway, "synthesis failed")
+		writeErrorReason(w, http.StatusBadGateway, "synthesis failed", upstreamReason(err))
 		return
 	}
 	if req.Format == "opus" || req.Format == "ogg" {
@@ -308,7 +310,7 @@ func (s *service) imagesGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.gen.Generate(r.Context(), GenRequest{Kind: "image", Model: model, Prompt: req.Prompt, Size: req.Size})
 	if err != nil || len(out.Data) == 0 {
-		writeError(w, http.StatusBadGateway, "image generation failed")
+		writeErrorReason(w, http.StatusBadGateway, "image generation failed", upstreamReason(err))
 		return
 	}
 	s.writeMedia(w, out)
@@ -356,7 +358,7 @@ func (s *service) imagesEdits(w http.ResponseWriter, r *http.Request) {
 		Source: source, SourceName: filepath.Base(header.Filename), SourceMime: mime,
 	})
 	if err != nil || len(out.Data) == 0 {
-		writeError(w, http.StatusBadGateway, "image edit failed")
+		writeErrorReason(w, http.StatusBadGateway, "image edit failed", upstreamReason(err))
 		return
 	}
 	s.writeMedia(w, out)
@@ -578,4 +580,29 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": map[string]string{"message": msg}})
+}
+
+// writeErrorReason is the provider-failure variant: the message stays a
+// fixed string while the classified reason token tells the caller whether
+// the provider denied, throttled or was unreachable — never upstream text.
+func writeErrorReason(w http.ResponseWriter, code int, msg, reason string) {
+	writeJSON(w, code, map[string]any{"error": map[string]string{"message": msg, "reason": reason}})
+}
+
+// upstreamReason maps provider failures to the bounded reason tokens the API
+// contract exposes. Engines already log the raw upstream error; the response
+// carries only the class.
+func upstreamReason(err error) string {
+	var use *upstreamStatusError
+	if errors.As(err, &use) {
+		switch {
+		case use.status == http.StatusUnauthorized || use.status == http.StatusForbidden:
+			return "provider_denied"
+		case use.status == http.StatusTooManyRequests:
+			return "provider_rate_limited"
+		case use.status >= 400 && use.status < 500:
+			return "provider_rejected"
+		}
+	}
+	return "upstream_unavailable"
 }

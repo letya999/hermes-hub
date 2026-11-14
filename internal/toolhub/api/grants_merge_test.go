@@ -61,16 +61,16 @@ func TestGrantValidateContract(t *testing.T) {
 func TestOnboardingAndPolicyValidation(t *testing.T) {
 	onboarding := Onboarding{
 		Schema: SchemaVersion, OnboardingID: "onb-1", PrincipalID: "p1", ContextID: "ctx-1",
-		RuntimeID: "rt-1", PolicyVersion: "pol-1", Mode: OnboardingCatalog, Phase: PhaseReview,
-		DefinitionID: "def-1", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now(),
-	}
+		RuntimeID: "rt-1", PolicyVersion: "pol-1", Mode: OnboardingCatalog,
+		Stage:        StagePending,
+		DefinitionID: "def-1", DefinitionVersion: "1.0.0", Revision: 1, CreatedAt: time.Now()}
 	if err := onboarding.Validate(); err != nil {
 		t.Fatalf("onboarding: %v", err)
 	}
 	for name, mutate := range map[string]func(*Onboarding){
 		"identity": func(o *Onboarding) { o.RuntimeID = "" },
 		"mode":     func(o *Onboarding) { o.Mode = "yolo" },
-		"phase":    func(o *Onboarding) { o.Phase = "halfway" },
+		"stage":    func(o *Onboarding) { o.Stage = "halfway" },
 		"defid":    func(o *Onboarding) { o.DefinitionID = " " },
 		"defver":   func(o *Onboarding) { o.DefinitionVersion = "x" },
 	} {

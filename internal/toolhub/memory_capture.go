@@ -168,9 +168,6 @@ func (g *Gateway) memoryCapture(r *http.Request, auth identity.Envelope, ev *api
 		Body: ev.Body, ObservedAt: ev.ObservedAt,
 	}
 	if err := u.Locked(func(root string) error {
-		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
-			return err
-		}
 		decision, err := g.Store.Decide(auth, "memory", "remember", "", time.Now())
 		if err != nil {
 			return err
@@ -178,6 +175,9 @@ func (g *Gateway) memoryCapture(r *http.Request, auth identity.Envelope, ev *api
 		if !decision.Allow {
 			return api.ErrUnauthorized
 		}
+		// Enrollment is re-read after the right check, adjacent to the
+		// write — a passport disabling memory between admission and commit
+		// must still land on a closed door.
 		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
 			return err
 		}

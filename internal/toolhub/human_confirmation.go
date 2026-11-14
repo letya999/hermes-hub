@@ -86,7 +86,7 @@ func (s *Store) ConsumeHumanConfirmation(proof api.HumanConfirmation, now time.T
 	defer s.mu.Unlock()
 	o, ok := s.onboardings[proof.OnboardingID]
 	a := proof.Actor
-	if !ok || a.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil || o.Phase != api.PhaseAwaitingConfirm || o.ConfirmationUsed || proof.Revision != api.ConfirmationRevision(o) || proof.Nonce == "" || proof.Nonce != o.ConfirmationNonce || !now.Before(o.ConfirmationExpires) || !proof.ExpiresAt.Equal(o.ConfirmationExpires) || proof.ActionDigest != api.ConfirmationActionDigest(o) {
+	if !ok || a.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil || !o.Awaiting(api.GateConfirmSetup) || proof.Revision != api.ConfirmationRevision(o) || proof.Nonce == "" || proof.Nonce != o.GateNonce(api.GateConfirmSetup) || !now.Before(o.GateExpiry(api.GateConfirmSetup)) || !proof.ExpiresAt.Equal(o.GateExpiry(api.GateConfirmSetup)) || proof.ActionDigest != api.ConfirmationActionDigest(o) {
 		return api.Onboarding{}, api.ErrUnauthorized
 	}
 	if a.CapabilityProfile != "" {

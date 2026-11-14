@@ -121,8 +121,12 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("space apply: %w", err)
 	}
-	if err := migration.ValidateSelectedConnectors(abs, rev.Docs["tools"], docs); err != nil {
+	deferred, err := migration.ValidateSelectedConnectors(abs, rev.Docs["tools"], docs)
+	if err != nil {
 		return fmt.Errorf("space apply: connector selection: %w", err)
+	}
+	for _, name := range deferred {
+		fmt.Fprintf(os.Stderr, "space apply: connector %q deferred — no active binding; selections materialize when the connector goes live\n", name)
 	}
 	if next.Stack.Identity.Organization != "" {
 		lang := locale.LangOf(filepath.Join(abs, "workspace"))

@@ -21,14 +21,14 @@ import (
 func humanConsentContext(t *testing.T, control *ControlPlane, id string) context.Context {
 	t.Helper()
 	o := mustOnboarding(t, control.Store, id)
-	proof := api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.ConfirmationNonce, Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.ConfirmationExpires}
+	proof := api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.GateExpiry(api.GateConfirmSetup)}
 	return context.WithValue(t.Context(), humanConfirmationKey{}, proof)
 }
 
 func finishAsHuman(t *testing.T, control *ControlPlane, id string) {
 	t.Helper()
 	o := mustOnboarding(t, control.Store, id)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.ConfirmationNonce, Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +61,9 @@ func TestEnableResumesConsumedHumanConfirmationAfterAdmissionFailure(t *testing.
 	}
 	grantTestControlOperations(t, store, auth.PrincipalID, "confirm", "enable")
 	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-resume-consent", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingCatalog, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm,
-		ConfirmationNonce: "synthetic-nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1}
+		Mode: api.OnboardingCatalog, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "synthetic-nonce", Expires: time.Now().Add(time.Hour)}, Revision: 1}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
@@ -70,20 +71,20 @@ func TestEnableResumesConsumedHumanConfirmationAfterAdmissionFailure(t *testing.
 	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err == nil {
 		t.Fatal("unconfirmed onboarding enabled")
 	}
-	proof := api.HumanConfirmation{OnboardingID: on.OnboardingID, Actor: auth, Nonce: on.ConfirmationNonce, Revision: api.ConfirmationRevision(on), ActionDigest: api.ConfirmationActionDigest(on), ExpiresAt: on.ConfirmationExpires}
+	proof := api.HumanConfirmation{OnboardingID: on.OnboardingID, Actor: auth, Nonce: on.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(on), ActionDigest: api.ConfirmationActionDigest(on), ExpiresAt: on.GateExpiry(api.GateConfirmSetup)}
 	if _, err := store.ConsumeHumanConfirmation(proof, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	status, err := control.connectorStatus(t.Context(), auth, on.OnboardingID, "")
-	if err != nil || status.NextAction != "enable" {
+	if err != nil || status.YouMust != api.YouMustEnable {
 		t.Fatalf("consumed consent has no resumable action: %+v %v", status, err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err != nil {
 		t.Fatalf("verified consent could not resume: %v", err)
 	}
 	after, err := store.onboarding(on.OnboardingID)
-	if err != nil || after.Phase != api.PhaseEnabled || after.BindingID == "" {
-		t.Fatalf("resumed state phase=%s bound=%t err=%v", after.Phase, after.BindingID != "", err)
+	if err != nil || after.Stage != api.StageLive || after.BindingID == "" {
+		t.Fatalf("resumed state phase=%s bound=%t err=%v", after.NoticePhase(), after.BindingID != "", err)
 	}
 }
 
@@ -93,7 +94,7 @@ func TestManagedRevocationWinsHumanConfirmation(t *testing.T) {
 			store, auth, policy, profile := managedStore(t)
 			profile.Connectors, profile.SelfInstall = api.ConnectorsPersonal, true
 			selection := profile.Selections[0]
-			record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-managed-human", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, DefinitionID: selection.DefinitionID, DefinitionVersion: selection.DefinitionVersion, PendingWrites: true, ConfirmationNonce: "managed-nonce", ConfirmationExpires: time.Now().Add(time.Minute)}
+			record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-managed-human", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "managed-nonce", Expires: time.Now().Add(time.Minute)}, Revision: 1, DefinitionID: selection.DefinitionID, DefinitionVersion: selection.DefinitionVersion, PendingWrites: true}
 			if err := store.PutOnboarding(record); err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +112,7 @@ func TestManagedRevocationWinsHumanConfirmation(t *testing.T) {
 			}
 			store.capabilityProfiles[profile.ProfileID], store.capabilityPolicies[policy.PolicyID] = profile, policy
 			g := &Gateway{Store: store, Control: &ControlPlane{Store: store}, ControlToken: testHumanControlToken, Tokens: map[string]identity.Envelope{aliceToken: auth}}
-			body, _ := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: onboardingEnvelope(record), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+			body, _ := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: onboardingEnvelope(record), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 			req := httptest.NewRequest(http.MethodPost, "/v1/confirmations", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+testHumanControlToken)
 			rec := httptest.NewRecorder()
@@ -139,7 +140,7 @@ func TestManagedRevocationWinsHumanConfirmation(t *testing.T) {
 
 func TestHumanConsentDoesNotAliasStoreCallers(t *testing.T) {
 	store := NewStore()
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-copy", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseConfirmed, Revision: 1, HumanConsent: &api.HumanConsent{ActorID: "telegram-7", ActionDigest: "sha256:" + strings.Repeat("a", 64), Revision: 1, ConfirmedAt: time.Now()}}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-copy", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StagePending, ConfirmationUsed: true, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, HumanConsent: &api.HumanConsent{ActorID: "telegram-7", ActionDigest: "sha256:" + strings.Repeat("a", 64), Revision: 1, ConfirmedAt: time.Now()}}
 	if err := store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestHumanActorConsentIsDurableBeforeMaterialization(t *testing.T) {
 		t.Error("onboarding disappeared before effect")
 		return nil
 	}
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: aliceAuth(), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +237,7 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 			}
 			record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 			actor := aliceAuth()
-			proof := map[string]any{"onboarding_id": record.OnboardingID, "nonce": record.ConfirmationNonce, "revision": record.Revision, "action_digest": api.ConfirmationActionDigest(record), "expires_at": record.ConfirmationExpires, "actor": actor}
+			proof := map[string]any{"onboarding_id": record.OnboardingID, "nonce": record.GateNonce(api.GateConfirmSetup), "revision": record.Revision, "action_digest": api.ConfirmationActionDigest(record), "expires_at": record.GateExpiry(api.GateConfirmSetup), "actor": actor}
 			token, origin, method := fix.gateway.ControlToken, "", http.MethodPost
 			switch name {
 			case "unenrolled":
@@ -255,7 +256,7 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 			case "agent":
 				token = aliceToken
 			case "phase":
-				record.Phase = api.PhaseDisabled
+				record.Stage = api.StageLive
 				record.Revision++
 				if err := fix.store.PutOnboarding(record); err != nil {
 					t.Fatal(err)
@@ -287,9 +288,9 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 			case "revision":
 				proof["revision"] = record.Revision + 1
 			case "expiry":
-				fix.control.Now = func() time.Time { return record.ConfirmationExpires.Add(time.Second) }
+				fix.control.Now = func() time.Time { return record.GateExpiry(api.GateConfirmSetup).Add(time.Second) }
 			case "proof-expiry":
-				proof["expires_at"] = record.ConfirmationExpires.Add(time.Minute)
+				proof["expires_at"] = record.GateExpiry(api.GateConfirmSetup).Add(time.Minute)
 			case "nonce":
 				proof["nonce"] = "wrong"
 			case "unknown-field":
@@ -323,8 +324,8 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 			}
 			latest := mustOnboarding(t, fix.store, record.OnboardingID)
 			if want == http.StatusOK {
-				if latest.Phase != api.PhaseEnabled || !latest.ConfirmationUsed {
-					t.Errorf("exact human confirmation did not enable once: phase=%s used=%v", latest.Phase, latest.ConfirmationUsed)
+				if latest.Stage != api.StageLive || !latest.ConfirmationUsed {
+					t.Errorf("exact human confirmation did not enable once: phase=%s used=%v", latest.NoticePhase(), latest.ConfirmationUsed)
 				}
 				if name == "replay" && post() != http.StatusForbidden {
 					t.Error("spent proof replay accepted")
@@ -351,7 +352,7 @@ func TestBearerConfirmationPagesCannotGrantHumanConsent(t *testing.T) {
 			t.Fatal(err)
 		}
 		record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-		path := "http://127.0.0.1/confirm/" + record.OnboardingID + "?t=" + record.ConfirmationNonce
+		path := "http://127.0.0.1/confirm/" + record.OnboardingID + "?t=" + record.GateNonce(api.GateConfirmSetup)
 		if wizard {
 			path = "http://127.0.0.1/connect/" + record.OnboardingID + "?k=" + record.WizardNonce
 		}
@@ -386,7 +387,7 @@ func TestBearerConfirmationPagesCannotGrantHumanConsent(t *testing.T) {
 // problem that needs a different response.
 func TestHumanConfirmationStorageFailureIsNotAuthorizationDenial(t *testing.T) {
 	fix := newControlFixture(t, fixtureReviewer(userMCPDefinition()))
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-storage-fail", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, DefinitionID: "user-mcp", DefinitionVersion: "1.0.0", PendingWrites: true, ConfirmationNonce: "storage-nonce", ConfirmationExpires: time.Now().Add(time.Minute)}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-storage-fail", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "storage-nonce", Expires: time.Now().Add(time.Minute)}, Revision: 1, DefinitionID: "user-mcp", DefinitionVersion: "1.0.0", PendingWrites: true}
 	if err := fix.store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +406,7 @@ func TestHumanConfirmationStorageFailureIsNotAuthorizationDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	record = mustOnboarding(t, fix.store, record.OnboardingID)
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +439,7 @@ func TestConfirmPageShowsGrantedPermissionsAndEffects(t *testing.T) {
 // later review can prove who confirmed what.
 func TestHumanConfirmationWritesControlAudit(t *testing.T) {
 	fix := newControlFixture(t, fixtureReviewer(userMCPDefinition()))
-	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-audit", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, DefinitionID: "user-mcp", DefinitionVersion: "1.0.0", PendingWrites: true, ConfirmationNonce: "audit-nonce", ConfirmationExpires: time.Now().Add(time.Minute)}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-audit", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "audit-nonce", Expires: time.Now().Add(time.Minute)}, Revision: 1, DefinitionID: "user-mcp", DefinitionVersion: "1.0.0", PendingWrites: true}
 	if err := fix.store.PutOnboarding(record); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +451,7 @@ func TestHumanConfirmationWritesControlAudit(t *testing.T) {
 		fields = f
 		return nil
 	}
-	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +483,7 @@ func TestHumanConfirmationRejectsOversizedAndTrailingJSON(t *testing.T) {
 			t.Fatal(err)
 		}
 		record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-		body, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.ConfirmationNonce, Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.ConfirmationExpires})
+		body, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 		if err != nil {
 			t.Fatal(err)
 		}

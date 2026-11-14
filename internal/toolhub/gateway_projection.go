@@ -264,7 +264,7 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	data, err := json.Marshal(map[string]any{
 		"event":         "toolhub.prepare_done",
 		"onboarding_id": onboarding.OnboardingID,
-		"phase":         onboarding.Phase,
+		"phase":         onboarding.NoticePhase(),
 		"definition_id": onboarding.DefinitionID,
 		"repository":    onboarding.SourceURL,
 	})

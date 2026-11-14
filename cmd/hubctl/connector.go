@@ -23,6 +23,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -171,6 +172,9 @@ func runConnector(ctx context.Context, args []string) error {
 	operationID := f.String("operation", "", "operation ID for connector status")
 	query := f.String("query", "", "connector search query")
 	writesOn := f.Bool("on", false, "allow-writes: enable write tools (omit to disable)")
+	service := f.Bool("service", false, "route facade verbs through the live ToolHub control listener")
+	toolhubURL := f.String("toolhub-url", os.Getenv("HUB_TOOLHUB_URL"), "ToolHub control URL (default http://127.0.0.1:8090)")
+	serviceToken := f.String("token", os.Getenv("HUB_TOOLHUB_TOKEN"), "service bearer (default: matching principal in toolhub-tokens.json)")
 
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -193,6 +197,50 @@ func runConnector(ctx context.Context, args []string) error {
 	}
 	if err := auth.Validate(*user, *contextID, *runtimeID, *policy); err != nil {
 		return err
+	}
+	if *service {
+		// The live listener writes and fences the store itself — service mode
+		// asks it through the same connector facade the agent tools reach, so
+		// no local store load and no save-side stale fence.
+		facadeTool := map[string]string{
+			"list": "connector_list", "disable": "connector_disable", "enable": "connector_enable",
+			"search": "connector_search", "reauth": "connector_reauth", "remove": "connector_remove",
+			"install": "connector_install", "allow-writes": "connector_allow_writes", "resend": "connector_edit",
+		}[args[0]]
+		if args[0] == "status" && (*target != "" || *operationID != "") {
+			facadeTool = "connector_status"
+		}
+		if facadeTool == "" && args[0] != "status" {
+			return fmt.Errorf("connector %s is not available in --service mode (link/confirm stay file-mode)", args[0])
+		}
+		token, err := connectorServiceToken(*serviceToken, *registryPath, *user)
+		if err != nil {
+			return err
+		}
+		if facadeTool == "" {
+			return connectorServiceList(ctx, *toolhubURL, token)
+		}
+		facadeArgs := map[string]any{}
+		if *target != "" {
+			facadeArgs["target"] = *target
+		}
+		if *operationID != "" {
+			facadeArgs["operation_id"] = *operationID
+		}
+		if *query != "" {
+			facadeArgs["query"] = *query
+		}
+		if args[0] == "resend" {
+			facadeArgs["action"] = "resend"
+		}
+		if args[0] == "allow-writes" {
+			facadeArgs["on"] = *writesOn
+		}
+		result, err := connectorServiceCall(ctx, *toolhubURL, token, facadeTool, facadeArgs)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	if !filepath.IsAbs(*registryPath) || !filepath.IsAbs(*secretPath) || !filepath.IsAbs(*keyPath) {
 		return fmt.Errorf("connector requires absolute --toolhub-store, --store and --key-file")
@@ -251,7 +299,7 @@ func runConnector(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		if onboarding.Phase == api.PhaseAwaitingConfirm && (onboarding.ConfirmationUsed || !time.Now().Before(onboarding.ConfirmationExpires)) {
+		if onboarding.GateKind() == api.GateConfirmSetup && (onboarding.ConfirmationUsed || !time.Now().Before(onboarding.GateExpiry(api.GateConfirmSetup))) {
 			return api.ErrLinkGone
 		}
 		// The link is the whole payload — scripts read it raw. No pending
@@ -259,9 +307,9 @@ func runConnector(ctx context.Context, args []string) error {
 		if link := api.ActionURL(connectorActionOrigin(*origin), onboarding); link != "" {
 			fmt.Println(link)
 		} else {
-			fmt.Println(onboarding.Phase)
+			fmt.Println(onboarding.NoticePhase())
 		}
-		if !*confirm || onboarding.Phase != api.PhaseAwaitingConfirm {
+		if !*confirm || !onboarding.Awaiting(api.GateConfirmSetup) {
 			return nil
 		}
 		return connectorConfirm(ctx, registry, auth, onboarding)
@@ -600,7 +648,7 @@ func connectorConfirm(ctx context.Context, registry *toolhub.Store, auth identit
 	}
 	body, err := control.Invoke(ctx, auth, "confirm", map[string]any{
 		"onboarding_id": onboarding.OnboardingID,
-		"nonce":         onboarding.ConfirmationNonce,
+		"nonce":         onboarding.GateNonce(api.GateConfirmSetup),
 	})
 	if err != nil {
 		return err
@@ -819,4 +867,112 @@ func bindSlack(ctx context.Context, registry *toolhub.Store, backend credstore.B
 	}
 	cleanup = false
 	return nil
+}
+
+// connectorServiceToken resolves the bearer for --service: an explicit
+// --token/HUB_TOOLHUB_TOKEN wins; otherwise the toolhub-tokens.json enrolled
+// for the same space supplies the token whose envelope carries the selected
+// principal — the same token the managed runtime presents to the listener.
+func connectorServiceToken(flagValue, storePath, principal string) (string, error) {
+	if flagValue != "" {
+		return flagValue, nil
+	}
+	if storePath == "" {
+		return "", fmt.Errorf("--service requires --token or a toolhub-tokens.json reachable from --toolhub-store")
+	}
+	dir := filepath.Dir(storePath)
+	for i := 0; i < 5; i++ {
+		candidate := filepath.Join(dir, "toolhub-tokens.json")
+		entries, err := serviceauth.ReadTokenEnvelopes(candidate)
+		if err == nil {
+			matched := ""
+			for token, env := range entries {
+				if env.PrincipalID == principal {
+					if matched != "" && matched != token {
+						return "", fmt.Errorf("toolhub-tokens.json enrolls %s more than once — pass --token", principal)
+					}
+					matched = token
+				}
+			}
+			if matched == "" {
+				return "", fmt.Errorf("toolhub-tokens.json at %s enrolls no token for principal %q — pass --token", candidate, principal)
+			}
+			return matched, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("--service found no toolhub-tokens.json walking up from %s — pass --token", storePath)
+}
+
+// connectorServiceBase normalizes the control URL: --toolhub-url,
+// HUB_TOOLHUB_URL or the default loopback listener.
+func connectorServiceBase(flagValue string) string {
+	if flagValue != "" {
+		return strings.TrimRight(flagValue, "/")
+	}
+	return "http://127.0.0.1:8090"
+}
+
+// connectorServiceCall POSTs one facade verb through /v1/connectors:invoke —
+// the identical InvokeConnector path the agent connector_* tools use.
+func connectorServiceCall(ctx context.Context, base, token, tool string, args map[string]any) (json.RawMessage, error) {
+	body, err := json.Marshal(map[string]any{"tool": tool, "args": args})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, connectorServiceBase(base)+"/v1/connectors:invoke", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connector service call: %w", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("connector service: %s (%d)", strings.TrimSpace(string(payload)), resp.StatusCode)
+	}
+	return json.RawMessage(payload), nil
+}
+
+// connectorServiceList answers bare `connector status --service` with the
+// listener's own connector view — projected surfaces plus the onboarding
+// inventory — read straight off GET /v1/connectors.
+func connectorServiceList(ctx context.Context, base, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, connectorServiceBase(base)+"/v1/connectors", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connector service list: %w", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("connector service: %s (%d)", strings.TrimSpace(string(payload)), resp.StatusCode)
+	}
+	var pretty map[string]any
+	if err := json.Unmarshal(payload, &pretty); err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(pretty)
 }

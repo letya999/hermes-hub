@@ -16,6 +16,9 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0306](in-progress/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
+| [CHG-0305](in-progress/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
+| [CHG-0304](in-progress/CHG-0304-connector-slot-fsm/plan.md) | Onboarding lifecycle collapsed to Stage{pending,live,failed,gone}+Gate slot per ADR-0099: production + test migration done, single-link semantics and model contract pending |
 | [CHG-0303](in-progress/CHG-0303-space-hygiene-retention/plan.md) | Bounded passport revisions (pointer chain + slack sweep under apply lock), generated-only renders, retired space leftovers removed |
 | [CHG-0302](in-progress/CHG-0302-capability-digest-split/plan.md) | Digest-split wedge closed: publish binds to the bound catalog revision, write gate refuses uncovered selections, capability-rule denials surface in tool_search, doctor warns — incident telegram-837846104 |
 | [CHG-0300](in-progress/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |

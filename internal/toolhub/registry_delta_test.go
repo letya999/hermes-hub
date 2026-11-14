@@ -94,7 +94,7 @@ func TestStoreDBLegacyDigestMigratesWithoutHistoryRewrite(t *testing.T) {
 	if _, err := loaded.OnboardingFor(aliceAuth(), o.OnboardingID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`UPDATE ent SET body=replace(CAST(body AS TEXT), 'awaiting-credentials', 'awaiting-confirm') WHERE collection='onboarding'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE ent SET body=replace(CAST(body AS TEXT), 'github', 'gitlab') WHERE collection='onboarding'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); !errors.Is(err, api.ErrConflict) {
@@ -124,13 +124,14 @@ func TestOnboardingAndJournalRollbackTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Revision++
-	o.Phase = api.PhaseAwaitingConfirm
+	o.Stage = api.StagePending
+	o.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	if err := s.PutOnboarding(o); err == nil {
 		t.Fatal("injected transaction failure disappeared")
 	}
 	current, _ := s.OnboardingFor(auth, o.OnboardingID)
 	journal, _ := s.OperationFor(auth, op.OperationID)
-	if current.Phase != api.PhaseAwaitingCreds || journal.State != api.OpStateAwaitingUser {
+	if !current.Awaiting(api.GateCredentials) || journal.State != api.OpStateAwaitingUser {
 		t.Fatal("failed transaction leaked next state into memory")
 	}
 	loaded, err := Load(path)
@@ -140,7 +141,7 @@ func TestOnboardingAndJournalRollbackTogether(t *testing.T) {
 	t.Cleanup(func() { _ = loaded.CloseDB() })
 	current, _ = loaded.OnboardingFor(auth, o.OnboardingID)
 	journal, _ = loaded.OperationFor(auth, op.OperationID)
-	if current.Phase != api.PhaseAwaitingCreds || journal.State != api.OpStateAwaitingUser {
+	if !current.Awaiting(api.GateCredentials) || journal.State != api.OpStateAwaitingUser {
 		t.Fatal("state and journal did not roll back together")
 	}
 }
@@ -172,7 +173,7 @@ func TestStoreDBSmallMutationPreservesLargeHistory(t *testing.T) {
 	}
 	t.Setenv("HUB_TOOLHUB_STATE_MAX_NEXT_WRITE_BYTES", "131072")
 	s.storage = nil
-	o := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "ob-small", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingSelfInstall, Phase: api.PhaseFailed, Revision: 1, CreatedAt: time.Now().UTC()}
+	o := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "ob-small", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingSelfInstall, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := s.PutOnboarding(o); err != nil {
 		t.Fatalf("small mutation charged for history: %v", err)
 	}

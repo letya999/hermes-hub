@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestConfirmationActionDigestBindsReviewedAction(t *testing.T) {
 	record := Onboarding{OnboardingID: "onboard-1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", DefinitionID: "connector", DefinitionVersion: "1.0.0", ReviewDigest: "review-1", ConnectionID: "conn-1", CredentialRefID: "ref-1", Permissions: []string{"search"}, Effects: []string{"read"}}
@@ -36,7 +39,7 @@ func TestConfirmationActionDigestBindsReviewedAction(t *testing.T) {
 	}
 	record.Error = "incidental observation"
 	record.Revision++
-	record.ConfirmationNonce = "opaque-link-token"
+	record.ArmGate(GateConfirmSetup, "opaque-link-token", time.Time{})
 	if got := ConfirmationActionDigest(record); got != before {
 		t.Error("incidental metadata changed action digest")
 	}

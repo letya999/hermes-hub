@@ -105,7 +105,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 		t.Fatal("chat KEY=value credential argument accepted")
 	}
 	formOn := mustOnboarding(t, store, prepared["onboarding_id"].(string))
-	formPath := "/credentials/" + formOn.OnboardingID + "?nonce=" + formOn.FormNonce
+	formPath := "/credentials/" + formOn.OnboardingID + "?nonce=" + formOn.GateNonce(api.GateCredentials)
 	get, err := http.Get(server.URL + formPath)
 	if err != nil {
 		t.Fatal(err)
@@ -221,8 +221,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if strings.Contains(string(cbBody), testSecret) {
 		t.Fatal("oauth callback leaked test secret")
 	}
-	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || latest.Phase != api.PhaseAwaitingConfirm || latest.ConfirmationUsed || !pendingHumanNotice.Load() {
-		t.Fatalf("OAuth must wait for verified actor: status=%d phase=%s used=%v notice=%v", cb.StatusCode, latest.Phase, latest.ConfirmationUsed, pendingHumanNotice.Load())
+	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || !latest.Awaiting(api.GateConfirmSetup) || latest.ConfirmationUsed || !pendingHumanNotice.Load() {
+		t.Fatalf("OAuth must wait for verified actor: status=%d phase=%s used=%v notice=%v", cb.StatusCode, latest.NoticePhase(), latest.ConfirmationUsed, pendingHumanNotice.Load())
 	}
 }
 
@@ -245,14 +245,14 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	}
 	id := prepared["onboarding_id"].(string)
 	first := mustOnboarding(t, store, id)
-	oldNonce := first.FormNonce
+	oldNonce := first.GateNonce(api.GateCredentials)
 	now = now.Add(2 * time.Minute)
 	if _, err := control.Invoke(context.Background(), auth, "prepare_source", args); err != nil {
 		t.Fatal(err)
 	}
 	resumed := mustOnboarding(t, store, id)
-	if resumed.FormNonce == oldNonce || !now.Before(resumed.FormExpires) {
-		t.Fatalf("expired form was not renewed: old=%q new=%q expires=%s", oldNonce, resumed.FormNonce, resumed.FormExpires)
+	if resumed.GateNonce(api.GateCredentials) == oldNonce || !now.Before(resumed.GateExpiry(api.GateCredentials)) {
+		t.Fatalf("expired form was not renewed: old=%q new=%q expires=%s", oldNonce, resumed.GateNonce(api.GateCredentials), resumed.GateExpiry(api.GateCredentials))
 	}
 	now = now.Add(2 * time.Minute)
 	required, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": id})
@@ -264,8 +264,8 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 		t.Fatalf("required_credentials exposed the form link: %v", required)
 	}
 	renewed := mustOnboarding(t, store, id)
-	if renewed.FormNonce == resumed.FormNonce {
-		t.Fatalf("required_credentials kept the stale nonce: %q", renewed.FormNonce)
+	if renewed.GateNonce(api.GateCredentials) == resumed.GateNonce(api.GateCredentials) {
+		t.Fatalf("required_credentials kept the stale nonce: %q", renewed.GateNonce(api.GateCredentials))
 	}
 }
 
@@ -292,7 +292,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if _, leaked := status["nonce"]; leaked {
 		t.Fatal("status exposed the confirmation nonce")
 	}
-	nonce := mustOnboarding(t, store, prepared["onboarding_id"].(string)).ConfirmationNonce
+	nonce := mustOnboarding(t, store, prepared["onboarding_id"].(string)).GateNonce(api.GateConfirmSetup)
 	if nonce == "" {
 		t.Fatal("missing confirmation nonce")
 	}
@@ -361,13 +361,13 @@ func mustOnboarding(t *testing.T, store *Store, id string) api.Onboarding {
 func confirmNonceOf(t *testing.T, store *Store, id any) string {
 	t.Helper()
 	s, _ := id.(string)
-	return mustOnboarding(t, store, s).ConfirmationNonce
+	return mustOnboarding(t, store, s).GateNonce(api.GateConfirmSetup)
 }
 
 func removeNonceOf(t *testing.T, store *Store, id any) string {
 	t.Helper()
 	s, _ := id.(string)
-	return mustOnboarding(t, store, s).RemoveNonce
+	return mustOnboarding(t, store, s).GateNonce(api.GateRemove)
 }
 
 func providerAuthURLOf(t *testing.T, store *Store, id any) string {
@@ -396,7 +396,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Stage: api.StageLive, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

@@ -154,9 +154,9 @@ func TestConnectorResendMintsViewerWhileStatusIsReadOnly(t *testing.T) {
 	if err := store.PutOnboarding(api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-browser", PrincipalID: "alice",
 		ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled,
-		DefinitionID: "browser", DefinitionVersion: "1.0.0", ConnectionID: "conn-browser",
-	}); err != nil {
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StageLive,
+		DefinitionID: "browser", DefinitionVersion: "1.0.0", ConnectionID: "conn-browser"}); err != nil {
 		t.Fatal(err)
 	}
 	var posted map[string]any
@@ -348,7 +348,7 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", "alice", "browser"),
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
+		Stage: api.StageLive, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

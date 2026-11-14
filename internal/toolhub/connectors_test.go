@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -735,5 +736,52 @@ func TestSemanticDigestTracksStaleFences(t *testing.T) {
 				t.Fatalf("stale fence did not change digest: %v %v", targets, err)
 			}
 		})
+	}
+}
+
+// The generic invoke route carries every connector_* facade verb through the
+// same InvokeConnector the agent tools reach — hubctl --service lives here.
+func TestConnectorInvokeRoutesFacadeVerbs(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{
+		Store:   store,
+		Control: &ControlPlane{Store: store, Now: time.Now},
+		Backend: api.RoutingBackend{},
+		Tokens:  map[string]identity.Envelope{"svc-token-00000000000000000000000": auth},
+	}
+	attachGatewayAudit(t, g)
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(token string, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/connectors:invoke", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := invoke("svc-token-00000000000000000000000", `{"tool":"connector_list","args":{}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connector_list: %d %s", rec.Code, rec.Body.String())
+	}
+	var result api.OperationResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || result.Summary == "" {
+		t.Fatalf("invoke must return the OperationResult: %v %s", err, rec.Body.String())
+	}
+	// Unknown and dead tokens are refused before the facade runs.
+	if rec := invoke("mallory-token-0000000000000000000000", `{"tool":"connector_list","args":{}}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown token status=%d", rec.Code)
+	}
+	// Non-connector tools are rejected by the facade, not silently run.
+	if rec := invoke("svc-token-00000000000000000000000", `{"tool":"settings_edit","args":{}}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("non-connector tool must be refused: %d %s", rec.Code, rec.Body.String())
 	}
 }

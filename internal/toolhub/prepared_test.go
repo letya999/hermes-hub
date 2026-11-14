@@ -219,7 +219,7 @@ func TestPreparedOverlayOverridesStaleAlias(t *testing.T) {
 
 func TestDiscoverySelectionIsBoundedReadOnlyAndOwnerScoped(t *testing.T) {
 	now := time.Now()
-	c := &ControlPlane{Now: func() time.Time { return now }}
+	c := &ControlPlane{Now: func() time.Time { return now }, ConfirmationTTL: 10 * time.Minute}
 	body, err := c.discover(t.Context(), aliceAuth(), "notion")
 	if err != nil {
 		t.Fatal(err)

@@ -109,7 +109,10 @@ func (c *ControlPlane) ttl() time.Duration {
 	if c != nil && c.ConfirmationTTL > 0 {
 		return c.ConfirmationTTL
 	}
-	return 10 * time.Minute
+	// Protected links are loopback-only and travel through chat: ten minutes
+	// expired before the owner could read, click and return — a removal
+	// nonce is consent, not a credential form.
+	return time.Hour
 }
 
 func (c *ControlPlane) origin() string {
@@ -154,7 +157,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "rotate":
 		return c.Rotate(auth, args)
 	case "disable":
-		return c.setPhase(auth, args, api.DisabledStatus, api.PhaseDisabled)
+		return c.setPhase(auth, args, api.DisabledStatus)
 	case "revoke":
 		return c.revoke(auth, args)
 	case "remove":
@@ -173,7 +176,7 @@ func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args 
 		c.Store.mu.RLock()
 		var latest api.Onboarding
 		for _, candidate := range c.Store.onboardings {
-			if candidate.PrincipalID == auth.PrincipalID && candidate.ContextID == auth.ContextID && candidate.RuntimeID == auth.RuntimeID && candidate.PolicyVersion == auth.PolicyVersion && candidate.Phase != api.PhaseRemoved && (latest.OnboardingID == "" || candidate.CreatedAt.After(latest.CreatedAt)) {
+			if candidate.PrincipalID == auth.PrincipalID && candidate.ContextID == auth.ContextID && candidate.RuntimeID == auth.RuntimeID && candidate.PolicyVersion == auth.PolicyVersion && !candidate.DeadEnd() && (latest.OnboardingID == "" || candidate.CreatedAt.After(latest.CreatedAt)) {
 				latest = candidate
 			}
 		}
@@ -206,7 +209,7 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if err := api.RejectEscalation(definition, args); err != nil {
 		return nil, err
 	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth {
+	if onboarding.Awaiting(api.GateOAuth) {
 		resend, _ := args["resend"].(bool)
 		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition, resend)
 	}
@@ -214,10 +217,10 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if onboarding.ConfirmationUsed {
 		return nil, fmt.Errorf("%w: replayed nonce", api.ErrUnauthorized)
 	}
-	if onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce {
+	if onboarding.GateNonce(api.GateConfirmSetup) == "" || nonce != onboarding.GateNonce(api.GateConfirmSetup) {
 		return nil, fmt.Errorf("%w: confirmation nonce", api.ErrUnauthorized)
 	}
-	if onboarding.ConfirmationExpires.IsZero() || c.now().After(onboarding.ConfirmationExpires) {
+	if onboarding.GateExpiry(api.GateConfirmSetup).IsZero() || c.now().After(onboarding.GateExpiry(api.GateConfirmSetup)) {
 		return nil, fmt.Errorf("%w: expired confirmation", api.ErrUnauthorized)
 	}
 	if len(onboarding.Required) > 0 && onboarding.Locator == "" {
@@ -252,7 +255,7 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	onboarding.BrokerRotateCredentialID = ""
 	onboarding.Error = ""
 	onboarding.ErrorCode = ""
-	onboarding.Phase = api.PhaseConfirmed
+	onboarding.Stage = api.StagePending
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -300,8 +303,8 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		return nil, err
 	}
 	if onboarding.BindingID == "" {
-		consentedRetry := onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationUsed && onboarding.HumanConsent != nil && onboarding.HumanConsent.ActionDigest == api.ConfirmationActionDigest(onboarding)
-		if !consentedRetry && onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled {
+		consentedRetry := onboarding.Stage == api.StagePending && onboarding.ConfirmationUsed && onboarding.HumanConsent != nil && onboarding.HumanConsent.ActionDigest == api.ConfirmationActionDigest(onboarding)
+		if !consentedRetry && !(onboarding.Stage == api.StagePending && onboarding.ConfirmationUsed) && onboarding.Stage != api.StageLive {
 			return nil, fmt.Errorf("%w: confirm required", api.ErrUnauthorized)
 		}
 		binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
@@ -339,7 +342,7 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 	}
 	onboarding.Error = ""
 	onboarding.ErrorCode = ""
-	onboarding.Phase = api.PhaseEnabled
+	onboarding.Stage = api.StageLive
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -347,7 +350,10 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) setPhase(auth identity.Envelope, args map[string]any, status api.Status, phase string) (map[string]any, error) {
+// setPhase flips the reversible binding switch. Enabled/disabled lives on
+// the binding alone — the onboarding stage stays live; the revision bump
+// only journals the lifecycle event on the owning record.
+func (c *ControlPlane) setPhase(auth identity.Envelope, args map[string]any, status api.Status) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -358,7 +364,6 @@ func (c *ControlPlane) setPhase(auth identity.Envelope, args map[string]any, sta
 	if err := c.Store.SetBindingStatus(onboarding.BindingID, status); err != nil {
 		return nil, err
 	}
-	onboarding.Phase = phase
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -374,7 +379,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	if err := c.cutAuthorization(onboarding, false); err != nil {
 		return nil, err
 	}
-	onboarding.Phase = api.PhaseRevoked
+	onboarding.Retire(api.TombstoneRevoked)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -387,7 +392,7 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	if err != nil {
 		return nil, err
 	}
-	if onboarding.Phase == api.PhaseRemoved {
+	if onboarding.Removed() {
 		return c.statusBody(onboarding, false), nil
 	}
 	if !c.confirmedRemoveInProgress(onboarding) {
@@ -395,12 +400,11 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 		// nonce; only the nonce-carrying follow-up deletes credentials and
 		// state. A cleanup_incomplete retry already passed that gate once.
 		nonce := api.ArgString(args, "remove_nonce")
-		if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
+		if onboarding.GateNonce(api.GateRemove) == "" || nonce != onboarding.GateNonce(api.GateRemove) {
 			if nonce != "" {
 				return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
 			}
-			onboarding.RemoveNonce = api.RandomNonce()
-			onboarding.RemoveExpires = c.now().Add(c.ttl())
+			onboarding.ArmGate(api.GateRemove, api.RandomNonce(), c.now().Add(c.ttl()))
 			onboarding.Revision++
 			if err := c.Store.PutOnboarding(onboarding); err != nil {
 				return nil, err
@@ -412,24 +416,28 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 			body["next_action"] = "confirm_remove"
 			return body, nil
 		}
-		if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
+		if onboarding.GateExpiry(api.GateRemove).IsZero() || c.now().After(onboarding.GateExpiry(api.GateRemove)) {
 			return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
 		}
 	}
 	// Keep the spent nonce as a tombstone: a replayed link matches it and gets
 	// a 410 "fresh link" page instead of an opaque 401.
-	if len(onboarding.Finalizers) > 0 && onboarding.Phase != api.PhaseCleanupIncomplete {
+	if len(onboarding.Finalizers) > 0 && !onboarding.CleanupIncomplete() && onboarding.Stage != api.StageGone {
 		// Earlier versions marked the connection deleting before recording the
 		// cleanup phase. Resume those durable ladders through the same fence.
-		onboarding.Phase = api.PhaseCleanupIncomplete
+		onboarding.Stage = api.StageFailed
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
 	}
 	if len(onboarding.Finalizers) == 0 {
-		// Fence late callbacks durably before external cleanup starts.
-		onboarding.Phase = api.PhaseCleanupIncomplete
+		// Fence late callbacks durably before external cleanup starts. A gone
+		// (revoked) record is already terminal — the ladder runs in place on
+		// it; bouncing it through failed would violate the absorbing edge.
+		if onboarding.Stage != api.StageGone {
+			onboarding.Stage = api.StageFailed
+		}
 		onboarding.Finalizers = newRemoveLadder()
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -465,7 +473,7 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 		if err := c.runRemoveFinalizer(ctx, onboarding, step.Name); err != nil {
 			step.State = api.FinalizerFailed
 			step.Error = api.PublicPrepareError(err)
-			onboarding.Phase = api.PhaseCleanupIncomplete
+			onboarding.Stage = api.StageFailed
 			onboarding.ErrorCode = "cleanup_incomplete"
 			onboarding.Revision++
 			if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -489,7 +497,7 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 		// the resource they provisioned is gone, so they retire with it.
 		_ = c.Store.SweepConnectionOnboardings(onboarding.ConnectionID, onboarding.OnboardingID)
 	}
-	onboarding.Phase = api.PhaseRemoved
+	onboarding.Retire(api.TombstoneRemoved)
 	onboarding.RemoveReceipt = removeReceipt(onboarding.RemoveFootprint)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -505,10 +513,15 @@ func parrotInstructions(field string) string {
 }
 
 func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map[string]any {
+	phase := onboarding.NoticePhase()
+	disabled := c.Store.bindingStatus(onboarding.BindingID) == api.DisabledStatus
+	if disabled && onboarding.Stage == api.StageLive {
+		phase = api.PhaseDisabled
+	}
 	body := map[string]any{
 		"onboarding_id":   onboarding.OnboardingID,
-		"phase":           onboarding.Phase,
-		"status":          onboarding.Phase,
+		"phase":           phase,
+		"status":          phase,
 		"mode":            onboarding.Mode,
 		"definition_id":   onboarding.DefinitionID,
 		"version":         onboarding.DefinitionVersion,
@@ -519,7 +532,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		"permissions":     onboarding.Permissions,
 		"effects":         onboarding.Effects,
 		"principal_from":  "request",
-		"form_ready":      onboarding.Phase == api.PhaseAwaitingCreds && (onboarding.BrokerAuthorizationURL != "" || onboarding.ChannelAuthURL != "" || onboarding.FormNonce != ""),
+		"form_ready":      onboarding.Awaiting(api.GateCredentials) && (onboarding.BrokerAuthorizationURL != "" || onboarding.ChannelAuthURL != "" || onboarding.GateNonce(api.GateCredentials) != ""),
 		"artifact_ready":  false,
 		"tools_confirmed": false,
 	}
@@ -561,12 +574,8 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		}
 		body["credentials"] = hints
 	}
-	switch onboarding.Phase {
-	case api.PhasePreparing, api.PhaseVerifying, api.PhaseRetryScheduled:
-		body["next_action"] = "poll_status"
-	case api.PhaseFailed:
-		body["next_action"] = "retry"
-	case api.PhaseAwaitingCreds:
+	switch {
+	case onboarding.Awaiting(api.GateCredentials):
 		body["next_action"] = "submit_credentials"
 		if onboarding.AdmissionPending {
 			body["tools_confirmed"] = false
@@ -589,16 +598,17 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			body["signin_url"] = onboarding.ChannelAuthURL
 			body["instructions"] = parrotInstructions("signin_url")
 		}
-	case api.PhaseAwaitingConfirm:
+	case onboarding.Awaiting(api.GateConfirmSetup):
 		body["next_action"] = "await_user_confirmation"
-		if onboarding.ConfirmationUsed && onboarding.HumanConsent != nil && onboarding.HumanConsent.ActionDigest == api.ConfirmationActionDigest(onboarding) {
-			body["next_action"] = "enable"
-		}
-	case api.PhaseAwaitingOAuth:
+	case onboarding.Awaiting(api.GateOAuth):
 		body["next_action"] = "authorize"
-	case api.PhaseConfirmed:
+	case onboarding.Stage == api.StagePending && onboarding.ConfirmationUsed:
 		body["next_action"] = "enable"
-	case api.PhaseEnabled:
+	case onboarding.Stage == api.StageFailed && !onboarding.CleanupIncomplete():
+		body["next_action"] = "retry"
+	case onboarding.Stage == api.StagePending:
+		body["next_action"] = "poll_status"
+	case onboarding.Stage == api.StageLive && !disabled:
 		body["next_action"] = "diagnostics"
 	}
 	if onboarding.Error != "" {
@@ -607,10 +617,10 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	if onboarding.ErrorCode != "" {
 		body["error_code"] = onboarding.ErrorCode
 	}
-	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion && !onboarding.ConfirmationUsed {
+	if onboarding.Awaiting(api.GateConfirmSetup) && onboarding.NoticeVersion > 0 && onboarding.NoticeQueuedVersion == onboarding.NoticeVersion {
 		body["confirmation_sent"] = true
 	}
-	if onboarding.Phase == api.PhaseEnabled {
+	if onboarding.Stage == api.StageLive && !disabled {
 		if definition, err := c.definitionOf(onboarding); err == nil {
 			tools := make([]string, 0, len(definition.Tools))
 			for _, tool := range definition.Tools {

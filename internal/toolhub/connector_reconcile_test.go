@@ -94,7 +94,7 @@ func TestBrokerEventsReconcileSubmissionAndResendExactLink(t *testing.T) {
 		go func() {
 			defer polls.Done()
 			result, err := c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"name": onboarding.OnboardingID})
-			if err != nil || result.State != api.OpStateAwaitingConfirm {
+			if err != nil || result.State != api.ModelStateWaitingYou {
 				t.Errorf("concurrent status: result=%+v err=%v", result, err)
 			}
 		}()
@@ -107,7 +107,7 @@ func TestBrokerEventsReconcileSubmissionAndResendExactLink(t *testing.T) {
 	mu.Unlock()
 	for i := 0; i < 2; i++ {
 		result, err := c.InvokeConnector(context.Background(), auth, "connector_edit", map[string]any{"name": onboarding.OnboardingID, "action": "resend"})
-		if err != nil || !result.LinkSent || result.State != api.OpStateAwaitingConfirm {
+		if err != nil || !noticeDelivered(result) || result.State != api.ModelStateWaitingYou {
 			t.Fatalf("resend %d: result=%+v err=%v", i, result, err)
 		}
 	}
@@ -149,7 +149,7 @@ func TestConnectorStatusAmbiguousPendingNamesGiveExactPhases(t *testing.T) {
 		t.Fatalf("ambiguous pending name: result=%+v err=%v", result, err)
 	}
 	for _, candidate := range result.Candidates {
-		if candidate.ID == "" || candidate.OnboardingPhase != api.PhaseAwaitingConfirm {
+		if candidate.ID == "" || candidate.State != api.ModelStateWaitingYou {
 			t.Fatalf("candidate missing exact id/phase: %+v", candidate)
 		}
 	}
@@ -171,8 +171,7 @@ func TestConcurrentExpiredConfirmationIssuesOneProof(t *testing.T) {
 	store := NewStore()
 	auth := aliceAuth()
 	onboarding := m13P3Onboarding(auth, "expired-proof", "test", "", api.PhaseAwaitingConfirm)
-	onboarding.ConfirmationNonce = "expired"
-	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	onboarding.ArmGate(api.GateConfirmSetup, "expired", time.Now().Add(-time.Minute))
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -262,11 +261,11 @@ func TestBrokerEventGapKeepsCursorUntilOwnedStateCommits(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = loaded.CloseDB() })
 	current, _ := loaded.OnboardingFor(auth, o.OnboardingID)
-	if current.Phase != api.PhaseAwaitingConfirm || current.BrokerCredentialID != "credential_gap" || loaded.brokerCursors[cursor] != 49 {
+	if !current.Awaiting(api.GateConfirmSetup) || current.BrokerCredentialID != "credential_gap" || loaded.brokerCursors[cursor] != 49 {
 		t.Fatal("gap repair/cursor did not survive reload")
 	}
 	other, _ := loaded.OnboardingFor(bobAuth(), foreign.OnboardingID)
-	if other.Phase != api.PhaseAwaitingCreds {
+	if !other.Awaiting(api.GateCredentials) {
 		t.Fatal("gap repair changed another owner")
 	}
 }

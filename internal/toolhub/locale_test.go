@@ -137,9 +137,10 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		},
 	}
 	seed(api.Onboarding{
-		OnboardingID: "onb-creds", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-creds",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fn1", Expires: time.Now().Add(hour)},
 		DefinitionID: "form-def", DefinitionVersion: "1.0.0",
-		FormNonce: "fn1", FormExpires: time.Now().Add(hour),
 		OAuthProvider: "fixture", Recipe: recipe,
 		Required: []api.CredentialHint{
 			{Name: "API_TOKEN", Type: "secret", Secret: true},
@@ -147,8 +148,7 @@ func TestToolHubPagesLocalized(t *testing.T) {
 			{Name: "ALT_SECRET", Type: "secret", Secret: true, AlternativeGroup: 1},
 			{Name: "ALT_CERT", Type: "secret", Secret: true, AlternativeGroup: 2},
 		},
-		Optional: []api.CredentialHint{{Name: "PROJECT_ID", Type: "string"}},
-	})
+		Optional: []api.CredentialHint{{Name: "PROJECT_ID", Type: "string"}}})
 
 	rec := get(g.serveCredentials, "/credentials/onb-creds?t=fn1&lang=es", "")
 	assertPage("creds-form", rec, "es",
@@ -190,11 +190,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 
 	// A missing plain required field is the single-field rejection.
 	seed(api.Onboarding{
-		OnboardingID: "onb-miss", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-miss",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fn4", Expires: time.Now().Add(hour)},
 		DefinitionID: "form-def", DefinitionVersion: "1.0.0",
-		FormNonce: "fn4", FormExpires: time.Now().Add(hour),
-		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-	})
+		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}}})
 	rec = post(g.serveCredentials, "/credentials/onb-miss?lang=es", url.Values{"nonce": {"fn4"}})
 	assertPage("creds-missing", rec, "es", page("page.invalid-title"), page("cred.missing"))
 	if got := credentialFormRejection(errors.New("unrecognized credential alternative"), locale.LangES); got != locale.T(locale.LangES, "cred.alt-unknown") {
@@ -204,11 +204,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	// A successful submit arms the wizard and redirects onto the stable link —
 	// the redirect must carry the request's language.
 	seed(api.Onboarding{
-		OnboardingID: "onb-ok", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-ok",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fn2", Expires: time.Now().Add(hour)},
 		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0",
-		FormNonce: "fn2", FormExpires: time.Now().Add(hour),
-		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-	})
+		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}}})
 	rec = post(g.serveCredentials, "/credentials/onb-ok?t=fn2&lang=es", url.Values{"nonce": {"fn2"}, "API_TOKEN": {"tok"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("submit redirect: %d %s", rec.Code, rec.Body.String())
@@ -218,12 +218,12 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	}
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-wiz-sub", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-wiz-sub",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fn3", Expires: time.Now().Add(hour)},
 		DefinitionID: "form-def", DefinitionVersion: "1.0.0",
-		FormNonce: "fn3", FormExpires: time.Now().Add(hour),
 		WizardNonce: "wk3", WizardExpires: time.Now().Add(hour),
-		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-	})
+		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}}})
 	rec = post(g.serveConnect, "/connect/onb-wiz-sub?k=wk3&lang=es", url.Values{"nonce": {"fn3"}, "API_TOKEN": {"tok"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("wizard submit redirect: %d %s", rec.Code, rec.Body.String())
@@ -236,10 +236,10 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	// --- /confirm: GET renders status, POST cannot supply human consent; a
 	// spent nonce is the 410 gone page.
 	seed(api.Onboarding{
-		OnboardingID: "onb-conf", Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0",
-		ConfirmationNonce: "cn1", ConfirmationExpires: time.Now().Add(hour),
-	})
+		OnboardingID: "onb-conf",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "cn1", Expires: time.Now().Add(hour)},
+		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0"})
 	rec = get(g.serveConfirm, "/confirm/onb-conf?t=cn1&lang=es", "")
 	assertPage("confirm-get", rec, "es",
 		page("page.confirm-title"), page("page.confirm-in-chat-for", "catalog-read"))
@@ -249,28 +249,28 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	}
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-conf-fail", Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: "missing-def", DefinitionVersion: "1.0.0",
-		ConfirmationNonce: "cn2", ConfirmationExpires: time.Now().Add(hour),
-	})
+		OnboardingID: "onb-conf-fail",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "cn2", Expires: time.Now().Add(hour)},
+		DefinitionID: "missing-def", DefinitionVersion: "1.0.0"})
 	rec = post(g.serveConfirm, "/confirm/onb-conf-fail?t=cn2&lang=es", nil)
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), locale.T(locale.LangES, "page.confirm-in-chat")) {
 		t.Errorf("confirm-fail: expected localized refusal, got %d", rec.Code)
 	}
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-conf-gone", Phase: api.PhaseAwaitingConfirm,
-		ConfirmationNonce: "cn3", ConfirmationExpires: time.Now().Add(hour), ConfirmationUsed: true,
-	})
+		OnboardingID: "onb-conf-gone",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: "cn3", Expires: time.Now().Add(hour)}, ConfirmationUsed: true})
 	rec = get(g.serveConfirm, "/confirm/onb-conf-gone?t=cn3&lang=es", "")
 	assertPage("confirm-gone", rec, "es", page("page.gone-title"), page("page.gone-body"))
 
 	// --- /remove: prompt, terminal result, spent tombstone.
 	seed(api.Onboarding{
-		OnboardingID: "onb-rem", Phase: api.PhaseEnabled,
-		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0",
-		RemoveNonce: "rn1", RemoveExpires: time.Now().Add(hour),
-	})
+		OnboardingID: "onb-rem",
+		Stage:        api.StageLive,
+		Gate:         &api.Gate{Kind: api.GateRemove, Nonce: "rn1", Expires: time.Now().Add(hour)},
+		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0"})
 	rec = get(g.serveRemove, "/remove/onb-rem?t=rn1&lang=es", "")
 	assertPage("remove-get", rec, "es",
 		page("page.remove-title"), page("page.remove-h1"),
@@ -280,33 +280,35 @@ func TestToolHubPagesLocalized(t *testing.T) {
 
 	// --- /connect?k= wizard: one URL, every phase.
 	seed(api.Onboarding{
-		OnboardingID: "onb-wait", Phase: api.PhasePreparing,
-		WizardNonce: "wk4", WizardExpires: time.Now().Add(hour),
-	})
+		OnboardingID:  "onb-wait",
+		Stage:         api.StagePending,
+		PreparingStub: true,
+		WizardNonce:   "wk4", WizardExpires: time.Now().Add(hour)})
 	rec = get(g.serveConnect, "/connect/onb-wait?k=wk4&lang=es", "")
 	assertPage("wizard-wait", rec, "es",
 		page("page.wait-title"), page("page.wait-h1"), page("page.wait-body"), `aria-live="polite"`)
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-enabled", Phase: api.PhaseEnabled,
-		WizardNonce: "wk5", WizardExpires: time.Now().Add(hour),
-	})
+		OnboardingID: "onb-enabled",
+		Stage:        api.StageLive,
+		WizardNonce:  "wk5", WizardExpires: time.Now().Add(hour)})
 	rec = get(g.serveConnect, "/connect/onb-enabled?k=wk5&lang=es", "")
 	assertPage("wizard-enabled", rec, "es", page("page.enabled-title"), page("page.enabled-body"))
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-failed", Phase: api.PhaseFailed,
-		WizardNonce: "wk6", WizardExpires: time.Now().Add(hour),
-	})
+		OnboardingID: "onb-failed",
+		Stage:        api.StageFailed,
+		WizardNonce:  "wk6", WizardExpires: time.Now().Add(hour)})
 	rec = get(g.serveConnect, "/connect/onb-failed?k=wk6&lang=es", "")
 	assertPage("wizard-failed", rec, "es", page("page.failed-title"), page("page.failed-body"))
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-hop", Phase: api.PhaseAwaitingCreds,
+		OnboardingID:           "onb-hop",
+		Stage:                  api.StagePending,
+		Gate:                   &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		BrokerRequestID:        "r1",
 		BrokerAuthorizationURL: "https://broker.example.com/connect/r1",
-		WizardNonce:            "wk7", WizardExpires: time.Now().Add(hour),
-	})
+		WizardNonce:            "wk7", WizardExpires: time.Now().Add(hour)})
 	rec = get(g.serveConnect, "/connect/onb-hop?k=wk7&lang=es", "")
 	assertPage("wizard-broker-hop", rec, "es",
 		page("page.connect-title"), page("page.broker-h1"), page("page.broker-body"), page("page.broker-btn"))
@@ -324,10 +326,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	// --- OAuth: the provider-hop interstitial under the stable link and via
 	// the ?state= hop; a dead flow redirects back to the wizard with lang kept.
 	seed(api.Onboarding{
-		OnboardingID: "onb-oauth", Phase: api.PhaseAwaitingOAuth,
+		OnboardingID:             "onb-oauth",
+		Stage:                    api.StagePending,
+		Gate:                     &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-live&client_id=c",
-		WizardNonce:              "wk8", WizardExpires: time.Now().Add(hour),
-	})
+		WizardNonce:              "wk8", WizardExpires: time.Now().Add(hour)})
 	control.oauthFlows.flows = map[string]*preparedOAuthFlow{
 		"flow-live": {onboardingID: "onb-oauth", url: "https://accounts.example.com/authorize?state=flow-live&client_id=c", expires: time.Now().Add(hour)},
 	}
@@ -345,10 +348,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	assertPage("oauth-denied", rec, "es", page("page.login-failed-title"), page("page.oauth-denied-body"))
 
 	seed(api.Onboarding{
-		OnboardingID: "onb-oauth-dead", Phase: api.PhaseAwaitingOAuth,
+		OnboardingID:             "onb-oauth-dead",
+		Stage:                    api.StagePending,
+		Gate:                     &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}},
 		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-dead&client_id=c",
-		WizardNonce:              "wk9", WizardExpires: time.Now().Add(hour),
-	})
+		WizardNonce:              "wk9", WizardExpires: time.Now().Add(hour)})
 	rec = get(g.serveConnect, "/connect/onb-oauth-dead?state=flow-dead&lang=es", "")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("dead-state redirect: %d", rec.Code)
@@ -359,11 +363,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 
 	// --- /device: code page, pending poll, terminal result, reused-link error.
 	seed(api.Onboarding{
-		OnboardingID: "onb-dev", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-dev",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fd1", Expires: time.Now().Add(hour)},
 		DefinitionID: "device-def", DefinitionVersion: "1.0.0",
-		OAuthProvider: "fixture",
-		FormNonce:     "fd1", FormExpires: time.Now().Add(hour),
-	})
+		OAuthProvider: "fixture"})
 	rec = get(g.serveDevice, "/device/onb-dev?t=fd1&lang=es", "")
 	assertPage("device-get", rec, "es",
 		page("page.device-title"), page("page.device-h1"), page("page.device-btn"), "dev-")
@@ -376,12 +380,12 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	rec = post(g.serveDevice, "/device/onb-dev?t=fd1&lang=es", url.Values{"device_code": {"dev-code"}})
 	assertPage("device-ok", rec, "es", page("page.done-title"))
 	seed(api.Onboarding{
-		OnboardingID: "onb-dev-denied", Phase: api.PhaseAwaitingCreds,
+		OnboardingID: "onb-dev-denied",
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "fd2", Expires: time.Now().Add(hour)},
 		DefinitionID: "device-def", DefinitionVersion: "1.0.0",
 		OAuthProvider: "ghost",
-		FormNonce:     "fd2", FormExpires: time.Now().Add(hour),
-		DeviceCode: "bogus-code",
-	})
+		DeviceCode:    "bogus-code"})
 	rec = post(g.serveDevice, "/device/onb-dev-denied?t=fd2&lang=es", url.Values{"device_code": {"bogus-code"}})
 	assertPage("device-denied", rec, "es", page("page.login-failed-title"))
 
@@ -435,12 +439,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: "onb-admit",
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
 		Mode: api.OnboardingCatalog, Revision: 1,
-		Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "fn9", Expires: time.Now().Add(hour)}, AdmissionPending: true,
 		DefinitionID: "form-def", DefinitionVersion: "1.0.0",
 		Definition: &formDef,
-		FormNonce:  "fn9", FormExpires: time.Now().Add(hour),
-		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}},
-	}
+		Required:   []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}}}
 	if err := probeControl.Store.PutOnboarding(probeOnboarding); err != nil {
 		t.Fatal(err)
 	}

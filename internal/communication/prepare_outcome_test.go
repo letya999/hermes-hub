@@ -45,7 +45,9 @@ func TestPrepareOutcomeLinkPaths(t *testing.T) {
 // CHG-0129 S2.7: an onboarding initiated on the mock channel receives its
 // action link back on the mock channel — the notice follows the origin job's
 // channel instead of assuming Telegram. The link itself stays plain text, so
-// a channel with Caps().Actions == false delivers it unchanged.
+// a channel with Caps().Actions == false delivers it unchanged. The route
+// only holds inside the onboarding's active window — see
+// TestPrepareOutcomeStaleOriginFallsBackToTelegram.
 func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
@@ -110,6 +112,65 @@ func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 	}
 	if job, err := gateway.spool.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("credential wait launched a redundant model turn: job=%v err=%v", job, err)
+	}
+}
+
+// An onboarding created days ago has no live evidence: a leftover route file
+// from builds that persisted origins is dead data, and the notice falls back
+// to the owner's canonical channel instead of the long-dead conversation.
+func TestPrepareOutcomeStaleOnboardingFallsBackToTelegram(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-2 * prepareOriginMaxAge)
+	legacy := map[string]any{"conversation_id": "mock-conv-9", "delivery_target_id": "mock-conv-9", "channel": "mock", "chat_id": 42}
+	if err := os.MkdirAll(filepath.Join(gateway.spool.root, "prepares"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(filepath.Join(gateway.spool.root, "prepares", "dead-route.json"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"onboarding_id": "onboard-old", "phase": "awaiting-confirm",
+		"definition_id": "user-mcp", "repository": "https://github.com/example/mcp",
+		"form_url":   "http://127.0.0.1:8090/remove/onboard-old?t=tok1",
+		"created_at": stale.Format(time.RFC3339Nano),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "alice")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawTelegram := false
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var delivery Delivery
+		if json.Unmarshal(raw, &delivery) != nil {
+			t.Fatalf("outbox record %s", raw)
+		}
+		if delivery.Channel != "telegram_bot" || delivery.ChatID != 11 {
+			continue
+		}
+		if !strings.Contains(delivery.Text, "http://127.0.0.1:8090/remove/onboard-old?t=tok1") {
+			t.Fatalf("telegram notice lost the action link: %q", delivery.Text)
+		}
+		sawTelegram = true
+	}
+	if !sawTelegram {
+		t.Fatal("no telegram notice spooled — the stale origin stole the route")
 	}
 }
 

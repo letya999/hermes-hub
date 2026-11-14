@@ -57,7 +57,7 @@ func TestPreparedOAuthResendPostsFreshLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldURL := "https://accounts.google.com/o/oauth2/v2/auth?client_id=x.apps.googleusercontent.com&code_challenge=zz&state=st-old"
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar4", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingOAuth, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ProviderAuthorizationURL: oldURL, Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar4", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}}, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ProviderAuthorizationURL: oldURL, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}

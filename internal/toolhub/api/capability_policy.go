@@ -85,6 +85,25 @@ type CapabilitySelection struct {
 	Name                 string   `json:"name"`
 	ConnectionID         string   `json:"connection_id,omitempty"`
 	PathScopes           []string `json:"path_scopes,omitempty"`
+	// Toolset is the authored tools.yaml set the selection came from
+	// (`browser`, `github`, …) — the operator vocabulary, not a capability
+	// axis. Empty for selections appended outside a passport apply.
+	Toolset string `json:"toolset,omitempty"`
+}
+
+// ProfileToolset is one authored tools.yaml set carried on the published
+// profile so the inventory can answer "which toolsets are selected" with
+// live admitted counts instead of inferred name-prefix groups.
+type ProfileToolset struct {
+	Name      string `json:"name"`
+	Placement string `json:"placement"` // "core" | "extended"
+	Via       string `json:"via"`
+	// Access/Include/Exclude carry the authored connector filter so a pending
+	// (unbound) selection can be materialized when a binding activates —
+	// without re-reading the passport. Empty means unfiltered.
+	Access  string   `json:"access,omitempty"`
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // A profile is published by the host control path for an exact runtime
@@ -133,9 +152,13 @@ type CapabilityProfile struct {
 	// D6, R6.1): only these selected names get a projected MCP schema; the
 	// rest of the admitted surface stays callable through tools_list/invoke.
 	// Empty keeps the legacy all-projected posture for unmanaged bindings.
-	CoreBound    bool          `json:"core_bound,omitempty"`
-	CoreTools    []string      `json:"core_tools,omitempty"`
-	Confirmation *Confirmation `json:"confirmation,omitempty"`
+	CoreBound bool     `json:"core_bound,omitempty"`
+	CoreTools []string `json:"core_tools,omitempty"`
+	// Toolsets is the authored selection the published revision compiled:
+	// placement and via per set, membership resolved through
+	// Selection.Toolset. Recomputed per call by the inventory.
+	Toolsets     []ProfileToolset `json:"toolsets,omitempty"`
+	Confirmation *Confirmation    `json:"confirmation,omitempty"`
 }
 
 // Connector capability bundle values for CapabilityProfile.Connectors.

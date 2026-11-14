@@ -1343,7 +1343,7 @@ func TestSelfInstallProvenanceFollowsOnlyCredentialRotation(t *testing.T) {
 	next := old
 	next.ToolBindingID, next.CredentialRevision, next.Status = "bind-next", 2, api.ActiveStatus
 	s.bindings[old.ToolBindingID], s.bindings[next.ToolBindingID] = old, next
-	s.onboardings["onboard-telegram"] = api.Onboarding{OnboardingID: "onboard-telegram", Mode: api.OnboardingSelfInstall, Phase: api.PhaseEnabled, BindingID: old.ToolBindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, WritesEnabled: true}
+	s.onboardings["onboard-telegram"] = api.Onboarding{OnboardingID: "onboard-telegram", Mode: api.OnboardingSelfInstall, Stage: api.StageLive, BindingID: old.ToolBindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, WritesEnabled: true}
 	if !s.managedSelfInstallsLocked(auth, profile)[next.ToolBindingID] || !s.selfInstallWritesLocked(next.ToolBindingID) {
 		t.Fatal("rotated binding lost confirmed self-install authority")
 	}
@@ -1422,7 +1422,8 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	}
 	bindingID := api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
-		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode, Phase: api.PhaseEnabled,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode,
+		Stage:        api.StageLive,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, BindingID: bindingID,
 		SourceURL: "https://github.com/example/repo", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := s.PutOnboarding(onboarding); err != nil {

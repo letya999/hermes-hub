@@ -74,7 +74,7 @@ func TestConnectionsHTTPShowsDegradedConnectionWithoutProjection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"connectors": []any{},
-			"inventory":  []map[string]any{{"id": "conn-1", "connection_id": "conn-1", "definition_id": "notion-mcp", "transport": "container-mcp", "connection_status": "degraded", "credential_visibility": "unknown", "credential_checked_at": "2026-10-23T12:00:00Z", "health_cause": "credential_visibility_unknown", "onboarding_phase": "enabled"}},
+			"inventory":  []map[string]any{{"id": "conn-1", "connection_id": "conn-1", "definition_id": "notion-mcp", "transport": "container-mcp", "connection_status": "degraded", "credential_visibility": "unknown", "credential_checked_at": "2026-10-23T12:00:00Z", "health_cause": "credential_visibility_unknown", "state": "ready"}},
 		})
 	}))
 	defer server.Close()

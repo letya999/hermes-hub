@@ -1,8 +1,6 @@
 package communication
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"path"
 	"path/filepath"
@@ -10,42 +8,20 @@ import (
 	"time"
 )
 
-// prepareOrigin remembers which channel conversation initiated an onboarding:
-// the outcome callback authenticates by principal alone, so the origin is
-// captured from the active message job while it still runs and reused once
-// that job has finished.
+// prepareOrigin is the resolved channel conversation a notice returns to. It
+// is derived fresh on every send — never stored: a persisted route outlives
+// the session it names and strands notices on a dead channel.
 type prepareOrigin struct {
-	ConversationID   string `json:"conversation_id"`
-	DeliveryTargetID string `json:"delivery_target_id,omitempty"`
-	Channel          string `json:"channel,omitempty"`
-	ChatID           int64  `json:"chat_id"`
-	TopicID          int64  `json:"topic_id,omitempty"`
+	ConversationID   string
+	DeliveryTargetID string
+	Channel          string
+	ChatID           int64
+	TopicID          int64
 }
 
-func (s *Spool) prepareOriginPath(onboardingID string) string {
-	h := sha256.Sum256([]byte("prepare-origin\x00" + onboardingID))
-	return filepath.Join(s.root, "prepares", hex.EncodeToString(h[:])+".json")
-}
-
-func (s *Spool) putPrepareOrigin(onboardingID string, origin prepareOrigin) error {
-	path := s.prepareOriginPath(onboardingID)
-	if err := s.mkdirOwned(filepath.Dir(path)); err != nil {
-		return err
-	}
-	return s.writeJSON(path, origin)
-}
-
-func (s *Spool) loadPrepareOrigin(onboardingID string) (prepareOrigin, bool) {
-	body, err := s.fsys.ReadFile(s.prepareOriginPath(onboardingID))
-	if err != nil {
-		return prepareOrigin{}, false
-	}
-	var origin prepareOrigin
-	if err := json.Unmarshal(body, &origin); err != nil || origin.ConversationID == "" {
-		return prepareOrigin{}, false
-	}
-	return origin, true
-}
+// prepareOriginMaxAge bounds how far back an initiator may be trusted: an
+// onboarding created days ago cannot prove which session is live today.
+const prepareOriginMaxAge = 24 * time.Hour
 
 // prepareMessageID returns the Telegram message that already carries this
 // onboarding's status, so later notices edit it instead of stacking new
