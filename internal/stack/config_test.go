@@ -949,7 +949,7 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	if i := strings.Index(controlStage, "\nFROM "); i >= 0 {
 		controlStage = controlStage[:i]
 	}
-	if !found || strings.Contains(controlStage, "COPY --from=python_build") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.3-bookworm AS cliproxy_build") {
+	if !found || strings.Contains(controlStage, "COPY --from=python_build") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.4-bookworm AS cliproxy_build") {
 		t.Fatal("Docker CLI or Python payload leaked across role boundary")
 	}
 }

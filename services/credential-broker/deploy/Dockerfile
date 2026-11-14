@@ -1,5 +1,5 @@
 # Production should supply a reviewed digest, not a floating toolchain.
-ARG GO_IMAGE=golang:1.27.3-bookworm
+ARG GO_IMAGE=golang:1.27.4-bookworm
 FROM ${GO_IMAGE} AS build
 # ADR-0087: the durable store is SQLCipher. mattn/go-sqlite3 links -lsqlite3,
 # so the pinned engine is built once and shadowed through a libsqlite3 shim.

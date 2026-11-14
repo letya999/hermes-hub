@@ -1,6 +1,6 @@
 # Contributing
 
-Toolchain: Go 1.27.3, just 1.57+ and Docker Compose 2.30+ for container contracts.
+Toolchain: Go 1.27.4, just 1.57+ and Docker Compose 2.30+ for container contracts.
 
 Local feedback:
 

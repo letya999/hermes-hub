@@ -48,10 +48,17 @@ func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 	if services["toolhub"].(M)["user"] != fmt.Sprintf("10001:%d", max(0, os.Getgid())) {
 		t.Fatal("operator uid leaked to ToolHub")
 	}
-	for _, name := range []string{"toolhub", "workload-controller"} {
-		if !reflect.DeepEqual(services[name].(M)["group_add"], []string{dockerGroup}) {
-			t.Fatalf("%s lacks Docker socket group", name)
-		}
+	// ToolHub always joins the operator file group; the socket group is added
+	// only when it differs — the controller runs socket-group only.
+	wantToolhub := []string{fmt.Sprint(max(0, os.Getgid()))}
+	if dockerGroup != wantToolhub[0] {
+		wantToolhub = append(wantToolhub, dockerGroup)
+	}
+	if !reflect.DeepEqual(services["toolhub"].(M)["group_add"], wantToolhub) {
+		t.Fatalf("toolhub group_add = %v, want %v", services["toolhub"].(M)["group_add"], wantToolhub)
+	}
+	if !reflect.DeepEqual(services["workload-controller"].(M)["group_add"], []string{dockerGroup}) {
+		t.Fatalf("workload-controller lacks Docker socket group: %v", services["workload-controller"].(M)["group_add"])
 	}
 	if !reflect.DeepEqual(svc["networks"], []string{"default", sharedNetworkName, "supervisor-control"}) {
 		t.Fatal(svc["networks"])

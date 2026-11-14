@@ -27,6 +27,14 @@ func writeSSHConfig(t *testing.T, dir string) {
 	if err = os.MkdirAll(filepath.Join(sshDir, "keys"), 0750); err != nil {
 		t.Fatal(err)
 	}
+	// Init scaffolds connections/ssh owner-only; the managed runtime reads the
+	// mount as uid 10001 through the operator group, so the fixture carries
+	// the reviewed perms a working deployment needs.
+	for _, p := range []string{sshDir, filepath.Join(sshDir, "keys")} {
+		if err = os.Chmod(p, 0750); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err = os.WriteFile(filepath.Join(sshDir, "keys", "id"), []byte("x"), 0640); err != nil {
 		t.Fatal(err)
 	}

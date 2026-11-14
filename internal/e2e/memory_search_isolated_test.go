@@ -307,13 +307,14 @@ func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	}
 
 	// Rebind check: the projected surface a managed space binds after the
-	// catalog bump carries the new contract — version 18.5.0 and the
-	// runtime:toolhub executor that keeps memory tools out of the runtime.
+	// catalog bump carries the reviewed contract — the definition version the
+	// fixture bound and the runtime:toolhub executor that keeps memory tools
+	// out of the runtime.
 	projected, _, err := store.ResolveProjectedTool(users["alice"], "memory_search")
 	if err != nil {
 		t.Fatalf("memory_search not projected for alice: %v", err)
 	}
-	if projected.Version != "18.5.0" || projected.Tool.Executor != "runtime:toolhub" {
+	if projected.Version != definition.Version || projected.Tool.Executor != "runtime:toolhub" {
 		t.Fatalf("stale contract projected: version=%s executor=%s", projected.Version, projected.Tool.Executor)
 	}
 

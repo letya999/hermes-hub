@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Pinned upstream code. Hermes MCP lives here; Telegram/Google/Atlassian Python
 # MCP trees are dedicated images, not copies inside every hub service.
-FROM golang:1.27.3-bookworm AS go_build
+FROM golang:1.27.4-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker/go.mod ./services/credential-broker/
@@ -20,7 +20,7 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
 # Broker's activated store requires SQLCipher; a non-CGO binary refuses it.
-FROM golang:1.27.3-bookworm AS broker_build
+FROM golang:1.27.4-bookworm AS broker_build
 RUN apt-get update -qq && apt-get install -y -qq gcc make libssl-dev tcl curl ca-certificates >/dev/null 2>&1
 RUN curl -fsSL --retry 3 -o /tmp/sqlcipher.tar.gz https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v4.6.1.tar.gz \
     && cd /tmp && tar xzf sqlcipher.tar.gz && cd sqlcipher-4.6.1 \
@@ -35,7 +35,7 @@ RUN --mount=type=cache,id=hermes-broker-go-build,target=/root/.cache/go-build \
     CGO_ENABLED=1 CGO_CFLAGS="-I/usr/local/include/sqlcipher" CGO_LDFLAGS="-L/opt/sqlcipher-shim -static -lsqlcipher -lcrypto -lssl -lpthread -lm -ldl" \
     go build -tags libsqlite3 -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
 
-FROM golang:1.27.3-bookworm AS cliproxy_build
+FROM golang:1.27.4-bookworm AS cliproxy_build
 RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin c5251b57b3fa5dcbc689f514f4aa166daacb4481; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build

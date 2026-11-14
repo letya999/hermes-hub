@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: "2026-11-14"
+last_verified: "2026-11-15"
 ---
 
 # toolhub
