@@ -317,6 +317,30 @@ func TestPinnedToolCallNormalizesQualifiedName(t *testing.T) {
 	if err == nil {
 		t.Fatalf("unknown name must be rejected, got: %v", res)
 	}
+
+	// The controls inventory names grants ("invoke") alongside this tool's own
+	// surface name; a model that nests the {tool, arguments} contract under
+	// either one must still reach the admitted inner call — a bare
+	// record-not-found teaches the model the connector's tools do not exist.
+	for _, alias := range []string{"invoke", "tool_call", "mcp__toolhub__tool_call"} {
+		res, err = client.CallTool(t.Context(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{
+			"tool":      alias,
+			"arguments": map[string]any{"tool": "platform_status", "arguments": map[string]any{}},
+		}})
+		if err != nil {
+			t.Fatalf("nested tool_call under %q: %v", alias, err)
+		}
+		if body := text(res); !strings.Contains(body, "tools_admitted") {
+			t.Fatalf("nested tool_call under %q dead-ended: %s", alias, body)
+		}
+	}
+	res, err = client.CallTool(t.Context(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{
+		"tool":      "invoke",
+		"arguments": map[string]any{"tool": "no_such_tool", "arguments": map[string]any{}},
+	}})
+	if err == nil {
+		t.Fatalf("unknown nested name must be rejected, got: %v", res)
+	}
 }
 
 // TestPlatformStatusAllowlist (M31.8/#445): platform_status may only ever
