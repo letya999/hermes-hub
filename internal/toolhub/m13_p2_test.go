@@ -266,7 +266,7 @@ func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
 	humanNotices := make(chan bool, 8)
 	notices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseAwaitingConfirm && body["confirmation"] != nil {
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseEnabled {
 			humanNotices <- true
 		}
 		w.WriteHeader(http.StatusOK)
@@ -331,15 +331,17 @@ func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
 		t.Fatalf("device poll status=%d body=%s", post.Code, post.Body.String())
 	}
 	latest, err := store.onboarding(onboardingID)
-	if err != nil || !latest.Awaiting(api.GateConfirmSetup) || latest.ConfirmationUsed {
-		t.Errorf("device flow bypassed human consent: phase=%v used=%v err=%v", latest.NoticePhase(), latest.ConfirmationUsed, err)
+	// The device-flow credential submit is itself the consent: the record
+	// completes inline with an implicit-consent marker, no second click.
+	if err != nil || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source == "" {
+		t.Errorf("device flow did not record implicit consent: phase=%v used=%v err=%v", latest.NoticePhase(), latest.ConfirmationUsed, err)
 	}
 	select {
 	case <-humanNotices:
 	default:
-		t.Error("device flow did not send trusted human confirmation")
+		t.Error("device flow did not send completion notice")
 	}
-	if !latest.Awaiting(api.GateConfirmSetup) {
+	if latest.Stage == api.StageLive {
 		return
 	}
 	finishAsHuman(t, control, onboardingID)
@@ -612,8 +614,8 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 		t.Fatalf("paste status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	latest, err := store.onboarding(on.OnboardingID)
-	if err != nil || !latest.Awaiting(api.GateConfirmSetup) || latest.ConfirmationUsed {
-		t.Fatalf("OAuth paste bypassed human consent: phase=%v err=%v", latest.NoticePhase(), err)
+	if err != nil || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("OAuth paste did not record implicit consent: phase=%v err=%v", latest.NoticePhase(), err)
 	}
 	finishAsHuman(t, c, on.OnboardingID)
 }

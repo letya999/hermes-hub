@@ -299,8 +299,11 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 		t.Fatalf("callback: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
-	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.ConfirmationUsed {
-		t.Fatalf("remote OAuth bypassed verified human consent: phase=%s used=%v", onboarding.NoticePhase(), onboarding.ConfirmationUsed)
+	// The provider consent screen is itself the verified consent: the record
+	// completes inline and marks HumanConsent.Source instead of arming a
+	// second protected click.
+	if onboarding.Stage != api.StageLive || !onboarding.ConfirmationUsed || onboarding.HumanConsent == nil || onboarding.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("remote OAuth did not record implicit consent: phase=%s used=%v", onboarding.NoticePhase(), onboarding.ConfirmationUsed)
 	}
 	finishAsHuman(t, fix.control, onboardingID)
 	listed, err := alice.ListTools(context.Background(), nil)

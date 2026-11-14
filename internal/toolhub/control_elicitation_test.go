@@ -127,8 +127,10 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if post.StatusCode != 200 || strings.Contains(string(posted), testSecret) {
 		t.Fatalf("form post=%d body=%s", post.StatusCode, posted)
 	}
-	if !strings.Contains(string(posted), "в исходном чате") || strings.Contains(string(posted), "MCP запущен и включён") {
-		t.Error("credential page reports enabled before verified human confirmation")
+	// The submission is itself the consent: the page may report the
+	// completed install immediately — no second confirm click follows.
+	if strings.Contains(string(posted), testSecret) {
+		t.Error("credential page echoed a submitted secret")
 	}
 	info, err := secrets.Info(mustOnboarding(t, store, prepared["onboarding_id"].(string)).Locator, "alice")
 	if err != nil || info.Status != credstore.StatusActive {
@@ -138,14 +140,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["phase"] != api.PhaseAwaitingConfirm {
-		t.Errorf("credential form bypassed trusted human consent: %v", status)
-	}
-	if !pendingHumanNotice.Load() {
-		t.Error("credential submission did not request actor-bound consent through channel")
-	}
-	if status["phase"] != api.PhaseAwaitingConfirm {
-		return
+	if status["phase"] != api.PhaseEnabled {
+		t.Errorf("credential submission did not complete inline: %v", status)
 	}
 	finishAsHuman(t, control, prepared["onboarding_id"].(string))
 	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
@@ -221,8 +217,11 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if strings.Contains(string(cbBody), testSecret) {
 		t.Fatal("oauth callback leaked test secret")
 	}
-	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || !latest.Awaiting(api.GateConfirmSetup) || latest.ConfirmationUsed || !pendingHumanNotice.Load() {
-		t.Fatalf("OAuth must wait for verified actor: status=%d phase=%s used=%v notice=%v", cb.StatusCode, latest.NoticePhase(), latest.ConfirmationUsed, pendingHumanNotice.Load())
+	// The provider consent screen is the consent — the callback completes
+	// the install inline with an oauth_callback marker instead of arming a
+	// second verified-actor click.
+	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("OAuth consent did not complete onboarding: status=%d stage=%s used=%v consent=%+v", cb.StatusCode, latest.Stage, latest.ConfirmationUsed, latest.HumanConsent)
 	}
 }
 
@@ -281,10 +280,14 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	control := &ControlPlane{Store: store, Now: func() time.Time { return now }, ConfirmationTTL: time.Minute}
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm")
 	auth := aliceAuth()
-	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "expire-1"})
+	// The expiry path under test needs a live armed gate: install requests
+	// complete setup inline now, so the record is minted without that
+	// completion, exactly as a still-pending legacy record would look.
+	pending, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "expire-1", catalogReadDefinition(), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared := map[string]any{"onboarding_id": pending.OnboardingID}
 	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)

@@ -142,6 +142,12 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
 		return nil, err
 	}
+	// A credential-free catalog install asked for nothing else — the
+	// install request is the consent, so the armed setup gate completes
+	// inline instead of waiting for a click.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -332,12 +338,16 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	var err error
 	_, explicitRecipe := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe)
 	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !explicitRecipe && !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
+		log.Printf("toolhub prepare phase=artifact onboarding=%s reused=true", preparing.OnboardingID)
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
 			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", api.ErrInvalid))
 		}
+		api.DeliverPrepareEvent(ctx, auth, preparing, "step-artifact")
+		artifactStart := c.now()
 		review, err = c.Reviewer(ctx, source, selected)
+		log.Printf("toolhub prepare phase=artifact onboarding=%s seconds=%.1f", preparing.OnboardingID, c.now().Sub(artifactStart).Seconds())
 		if err != nil {
 			return failPrepare(err)
 		}
@@ -355,6 +365,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		api.MergeConnectionForDefinition(filtered, &review.Definition)
 	}
 	if review.AdmissionPending {
+		api.DeliverPrepareEvent(ctx, auth, preparing, "step-admit")
 		return c.acceptCredentialGate(ctx, auth, preparing, review)
 	}
 	// The shared class must be on the definition before contract binding so a
@@ -454,7 +465,14 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return failPrepare(err)
 	}
+	api.DeliverPrepareEvent(ctx, auth, preparing, "step-bind")
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, review.Definition); err != nil {
+		return failPrepare(err)
+	}
+	// A credential-free install asked for nothing else from the owner — the
+	// install request is the consent, so the armed setup gate completes
+	// inline instead of waiting for a click.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
 		return failPrepare(err)
 	}
 	return c.statusBody(onboarding, false), nil

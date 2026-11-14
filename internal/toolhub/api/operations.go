@@ -103,6 +103,16 @@ type OperationResult struct {
 	Receipt         string               `json:"receipt,omitempty"`
 	ObservedAt      time.Time            `json:"observed_at,omitzero"`
 	ObservationCode string               `json:"observation_code,omitempty"`
+	// Progress projects the journal steps for the agent: the first pending
+	// step is the current one. ElapsedSeconds covers the whole operation;
+	// StepStartedAt is the last journal transition — how long the current
+	// step has been running.
+	CurrentStep    string    `json:"current_step,omitempty"`
+	StepIndex      int       `json:"step_index,omitempty"`
+	StepTotal      int       `json:"step_total,omitempty"`
+	StartedAt      time.Time `json:"started_at,omitzero"`
+	ElapsedSeconds int64     `json:"elapsed_seconds,omitempty"`
+	StepStartedAt  time.Time `json:"step_started_at,omitzero"`
 }
 
 // OperationCandidate is one selector match shown on ambiguity.
@@ -192,6 +202,30 @@ func (o Operation) Validate() error {
 		return fmt.Errorf("%w: operation error code", ErrInvalid)
 	}
 	return nil
+}
+
+// OperationProgress projects journal steps into the result fields. The first
+// pending step is current; a fully-done operation reports the last step.
+// StepStartedAt uses UpdatedAt — the timestamp of the last journal write,
+// which is the current step's start.
+func (r *OperationResult) OperationProgress(op Operation, now time.Time) {
+	if len(op.Steps) == 0 {
+		return
+	}
+	r.StepTotal = len(op.Steps)
+	r.StepIndex = r.StepTotal
+	r.CurrentStep = op.Steps[r.StepTotal-1].Name
+	for i, step := range op.Steps {
+		if step.State == OpStepPending {
+			r.StepIndex, r.CurrentStep = i+1, step.Name
+			break
+		}
+	}
+	r.StartedAt = op.CreatedAt
+	if !op.CreatedAt.IsZero() {
+		r.ElapsedSeconds = int64(now.Sub(op.CreatedAt).Seconds())
+	}
+	r.StepStartedAt = op.UpdatedAt
 }
 
 // OperationRequestKey derives the durable idempotency key from

@@ -594,11 +594,18 @@ func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[
 	onboarding.Locator = locator
 	onboarding.CredentialOwner = owner
 	onboarding.Stage = api.StagePending
-	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
-	onboarding.ConfirmationUsed = false
-	c.armWizard(&onboarding)
+	onboarding.ClearGate()
 	onboarding.Revision++
-	return c.Store.PutOnboarding(onboarding)
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return err
+	}
+	// The form submission is itself the consent — bind straight through to
+	// live instead of arming a second confirm click. A bind failure persists
+	// its own failure state; the saved credential stays for the next retry.
+	if err := c.completeSetup(context.Background(), authEnv, &onboarding, "credential_submission"); err != nil {
+		log.Printf("toolhub onboarding %s: complete setup after credential submit: %v", onboarding.OnboardingID, err)
+	}
+	return nil
 }
 
 // errCredentialSaved marks a failure after the loopback secret is already stored.

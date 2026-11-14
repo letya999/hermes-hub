@@ -101,11 +101,10 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stored.Awaiting(api.GateConfirmSetup) || stored.Locator != "credential_1" {
-		t.Fatalf("broker request did not become ready: %+v", stored)
-	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.GateNonce(api.GateConfirmSetup)}); err != nil {
-		t.Fatal(err)
+	// The submitted credential is the consent — the record binds straight
+	// through to live with the consent marker instead of arming a click.
+	if stored.Stage != api.StageLive || !stored.ConfirmationUsed || stored.HumanConsent == nil || stored.Locator != "credential_1" {
+		t.Fatalf("broker request did not complete to live: %+v", stored)
 	}
 	stored, err = store.OnboardingFor(auth, stored.OnboardingID)
 	if err != nil {
@@ -148,12 +147,11 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if requests != 2 {
 		t.Fatal("rotation did not request Broker form")
 	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": confirmNonceOf(t, store, reinstall.OnboardingID)}); err != nil {
-		t.Fatal(err)
-	}
+	// The rotated request is already ready — the broker grant is the consent,
+	// so rotation binds inline without a confirm click.
 	reinstalled, _ = store.OnboardingFor(auth, reinstall.OnboardingID)
 	if grantRevocations != 1 || len(store.connections) != 1 || reinstalled.ConnectionID != stored.ConnectionID || reinstalled.CredentialRefID == stored.CredentialRefID {
-		t.Fatal("rotation did not replace same connection revision")
+		t.Fatalf("rotation did not replace same connection revision: revocations=%d connections=%d stage=%s gate=%v conn=%s want=%s ref=%s want!=%s err=%q", grantRevocations, len(store.connections), reinstalled.Stage, reinstalled.Gate, reinstalled.ConnectionID, stored.ConnectionID, reinstalled.CredentialRefID, stored.CredentialRefID, reinstalled.Error)
 	}
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
@@ -1287,7 +1285,9 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "active" {
-				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || !onboarding.Awaiting(api.GateConfirmSetup) {
+				// Reuse binds straight through — the install request is the
+				// consent; no second confirm step is armed.
+				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Awaiting(api.GateConfirmSetup) || onboarding.Awaiting(api.GateCredentials) {
 					t.Fatalf("live credential was not reused: requests=%d onboarding=%+v", requests, onboarding)
 				}
 				return

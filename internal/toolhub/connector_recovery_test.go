@@ -15,7 +15,9 @@ import (
 )
 
 func TestConnectorReauthRecovery(t *testing.T) {
-	for _, phase := range []string{api.PhaseEnabled, api.PhaseAwaitingConfirm, "disabled", api.PhaseRevoked, api.PhaseFailed, "verifying", "retry-scheduled"} {
+	// Failed records are absent: reauth is not a resurrection path — a dead
+	// record exits through retry (fresh install generation) or remove.
+	for _, phase := range []string{api.PhaseEnabled, api.PhaseAwaitingConfirm, "disabled", api.PhaseRevoked, "verifying", "retry-scheduled"} {
 		t.Run(phase, func(t *testing.T) {
 			store, auth, _, _ := managedStore(t)
 			o := m13P3EnabledOnboarding(t, store, auth)

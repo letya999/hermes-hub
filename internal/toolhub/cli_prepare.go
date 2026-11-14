@@ -77,6 +77,11 @@ func (c *ControlPlane) prepareCLI(ctx context.Context, auth identity.Envelope, r
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
 		return nil, err
 	}
+	// A credential-free install asked for nothing else — the install
+	// request is the consent, so the armed setup gate completes inline.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 

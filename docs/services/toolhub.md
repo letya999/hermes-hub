@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: "2026-11-13"
+last_verified: "2026-11-14"
 ---
 
 # toolhub
@@ -29,8 +29,11 @@ and before service effects complete.
   logs admit/allow/deny with the full identity tuple.
 - **Connector lifecycle** (`api/`): the nine `connector_*` tools drive
   onboarding records through `preparing → review → awaiting-credentials →
-  awaiting-confirm → confirmed → enabled`, then `disabled`/`revoked`/`removed`
-  with the finalizer ladder (ADR-0056).
+  enabled` — credential submission, OAuth provider consent or an explicit
+  credential-free install request counts as consent, so no post-credential
+  confirm click exists on the install path; `awaiting-confirm` survives only
+  for `allow_writes`, `remove` and drift gates — then
+  `disabled`/`revoked`/`removed` with the finalizer ladder (ADR-0056).
 - **Shared connector consumers**: stateless `shared` workloads track every
   active binding as a consumer; release stops the process only when the last
   consumer leaves, and the reconciler never purges one with live consumers.

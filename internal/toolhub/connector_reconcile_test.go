@@ -34,9 +34,9 @@ func TestBrokerEventsReconcileSubmissionAndResendExactLink(t *testing.T) {
 		case "/v1/events":
 			_ = json.NewEncoder(w).Encode(brokerv1.Events{NextCursor: 1, Events: []brokerv1.Event{{Sequence: 1, Kind: "credential.ready", PrincipalID: "alice", ContextID: "alice", RequestID: "request_live"}}})
 		case "/v1/requests/request_live":
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", Status: "ready", CredentialID: "credential_live", ContractID: "github-pat", ContractRevision: 1, AuthorizationURL: "https://broker.example/connect/request_live"})
-		case "/v1/credentials/credential_live":
-			_ = json.NewEncoder(w).Encode(brokerv1.Credential{Status: "active"})
+			// The request stays pending: the credential gate remains armed so
+			// resend exercises the durable notice path the test names.
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", Status: "pending", ContractID: "github-pat", ContractRevision: 1, AuthorizationURL: "https://broker.example/connect/request_live", ExpiresAt: time.Now().Add(time.Hour)})
 		default:
 			http.NotFound(w, r)
 		}
@@ -101,8 +101,8 @@ func TestBrokerEventsReconcileSubmissionAndResendExactLink(t *testing.T) {
 	}
 	polls.Wait()
 	mu.Lock()
-	if len(notices) != 1 || notices[0]["phase"] != api.PhaseAwaitingConfirm {
-		t.Fatalf("confirmation notice count=%d", len(notices))
+	if len(notices) != 1 || notices[0]["phase"] != api.PhaseAwaitingCreds {
+		t.Fatalf("credential notice count=%d", len(notices))
 	}
 	mu.Unlock()
 	for i := 0; i < 2; i++ {
@@ -261,7 +261,9 @@ func TestBrokerEventGapKeepsCursorUntilOwnedStateCommits(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = loaded.CloseDB() })
 	current, _ := loaded.OnboardingFor(auth, o.OnboardingID)
-	if !current.Awaiting(api.GateConfirmSetup) || current.BrokerCredentialID != "credential_gap" || loaded.brokerCursors[cursor] != 49 {
+	// The ready credential is the consent: the credential gate clears and the
+	// credential id commits before the cursor may advance.
+	if current.Awaiting(api.GateCredentials) || current.BrokerCredentialID != "credential_gap" || loaded.brokerCursors[cursor] != 49 {
 		t.Fatal("gap repair/cursor did not survive reload")
 	}
 	other, _ := loaded.OnboardingFor(bobAuth(), foreign.OnboardingID)

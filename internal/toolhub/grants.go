@@ -551,7 +551,20 @@ func onboardingSlotEligible(o api.Onboarding) bool {
 	if o.Definition != nil && o.Definition.Workload.Class == api.Shared {
 		return false
 	}
+	if credentialGateDeadEnd(o) {
+		// A credentials wait with no redeemable channel is a wedge, not a
+		// holder — the next prepare overwrites the record and retries.
+		return false
+	}
 	return true
+}
+
+// credentialGateDeadEnd reports a record that claims to await credentials but
+// can never accept them: the form nonce is empty and no Broker request carries
+// the intake. A broker-gate arm interrupted before the request was minted
+// leaves exactly this — never a healthy flow.
+func credentialGateDeadEnd(o api.Onboarding) bool {
+	return o.Awaiting(api.GateCredentials) && o.GateNonce(api.GateCredentials) == "" && o.BrokerRequestID == ""
 }
 
 // onboardingSlotRank picks the deterministic slot holder: non-stub over stub,

@@ -24,6 +24,11 @@ type HumanConsent struct {
 	ActionDigest string    `json:"action_digest"`
 	Revision     uint64    `json:"revision"`
 	ConfirmedAt  time.Time `json:"confirmed_at"`
+	// Source names which owner signal counted as consent: a protected-link
+	// click ("confirmation"), a credential submission, an OAuth grant at the
+	// provider, or a credential-free install request. Empty predates the
+	// split and means a clicked confirmation.
+	Source string `json:"source,omitempty"`
 }
 
 // ConfirmationActionDigest binds consent to the reviewed action, excluding link

@@ -91,14 +91,16 @@ func TestPrepareSelfInstallAsyncReturnsPreparingThenCompletes(t *testing.T) {
 	close(release)
 	select {
 	case onboarding := <-notified:
-		if !onboarding.Awaiting(api.GateConfirmSetup) {
+		// A credential-free install completes inline: the setup gate no
+		// longer waits for a click once consent arrived with the request.
+		if onboarding.Stage != api.StageLive {
 			t.Fatalf("wake phase=%s", onboarding.NoticePhase())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("PrepareDone never fired")
 	}
 	st, err = control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": id})
-	if err != nil || st["phase"] != api.PhaseAwaitingConfirm {
+	if err != nil || st["phase"] != api.PhaseEnabled {
 		t.Fatalf("final status=%v err=%v", st, err)
 	}
 }
@@ -182,7 +184,7 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "intact" {
-				if calls.Load() != 0 || body["phase"] != api.PhaseAwaitingConfirm {
+				if calls.Load() != 0 || body["phase"] != api.PhaseEnabled {
 					t.Fatalf("intact contract not reused: calls=%d phase=%v", calls.Load(), body["phase"])
 				}
 				return
@@ -479,18 +481,18 @@ func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st["phase"] == api.PhaseAwaitingConfirm || time.Now().After(deadline) {
+		if st["phase"] == api.PhaseEnabled || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if st["phase"] != api.PhaseAwaitingConfirm {
+	if st["phase"] != api.PhaseEnabled {
 		t.Fatalf("stub did not resolve to finished record: status=%v", st)
 	}
 	if st["onboarding_id"] == second["onboarding_id"] && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("status kept the superseded stub instead of the finished record: status=%v", st)
 	}
-	if a["phase"] == api.PhaseAwaitingConfirm && st["onboarding_id"] != a["onboarding_id"] {
+	if a["phase"] == api.PhaseEnabled && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("concurrent callers disagree on the finished record: first=%v status=%v", a, st)
 	}
 }

@@ -364,13 +364,25 @@ func (s *Store) managedToolsLocked(auth identity.Envelope) ([]api.ProjectedTool,
 		return nil, err
 	}
 	result := []api.ProjectedTool{}
+	seen := map[string]bool{}
 	for _, selection := range profile.Selections {
 		projected, _, err := s.managedSelectionLocked(auth, profile, policy, selection, nil, true)
 		if err == nil {
 			result = append(result, projected)
+			seen[projected.Name] = true
 		} else if err != api.ErrUnauthorized {
 			return nil, err
 		}
+	}
+	// Self-installed connectors never reach profile.Selections — they carry no
+	// authored toolset. Project them under the same provenance/rights gate as
+	// dispatch; an authored selection wins any name collision.
+	for _, tool := range s.managedSelfInstallToolsLocked(auth, profile) {
+		if seen[tool.Name] {
+			continue
+		}
+		seen[tool.Name] = true
+		result = append(result, tool)
 	}
 	slices.SortFunc(result, func(a, b api.ProjectedTool) int { return strings.Compare(a.Name, b.Name) })
 	return result, nil
@@ -746,6 +758,10 @@ func (s *Store) managedToolLocked(auth identity.Envelope, name string, arguments
 		// binding — not missing. Masking it as record-not-found sends the model
 		// back into tool_search for a name it can already see in its inventory.
 		return api.ProjectedTool{}, api.EffectiveBinding{}, fmt.Errorf("%w: %s is denied for this call — run tool_search for its admitted shape and missing right", api.ErrUnauthorized, name)
+	}
+	// No authored selection carries this name — a self-install binding may.
+	if tool, effective, err := s.managedSelfInstallToolLocked(auth, profile, name); err == nil {
+		return tool, effective, nil
 	}
 	return api.ProjectedTool{}, api.EffectiveBinding{}, api.ErrNotFound
 }

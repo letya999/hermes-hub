@@ -302,7 +302,9 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["onboarding_id"] == "" {
+	// A credential-free install request is itself the consent — the record
+	// lands enabled straight off prepare, no confirm step.
+	if prepared["phase"] != api.PhaseEnabled || prepared["onboarding_id"] == "" {
 		t.Fatalf("prepare=%v", prepared)
 	}
 	// Idempotent: the same prepare resolves to the same onboarding.
@@ -412,7 +414,8 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding = mustOnboarding(t, fix.store, onboardingID)
-	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.AdmissionPending {
+	// The submit is the consent — the record binds inline to live.
+	if onboarding.Stage != api.StageLive || onboarding.Awaiting(api.GateConfirmSetup) || onboarding.AdmissionPending {
 		t.Fatalf("post-submit=%+v", onboarding)
 	}
 	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboardingID)

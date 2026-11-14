@@ -184,7 +184,7 @@ func knownPreparePhase(phase string) bool {
 // phase the form link already used).
 func knownPrepareEvent(event string) bool {
 	switch event {
-	case "prepare-started", "credentials-check", "credentials-rejected", "binding-failed", "link-resent":
+	case "prepare-started", "step-artifact", "step-admit", "step-bind", "credentials-check", "credentials-rejected", "binding-failed", "link-resent":
 		return true
 	default:
 		return false
@@ -205,6 +205,12 @@ func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, login
 	switch request.Event {
 	case "prepare-started":
 		return locale.T(lang, "prepare.started", repo)
+	case "step-artifact":
+		return locale.T(lang, "prepare.step-artifact", repo)
+	case "step-admit":
+		return locale.T(lang, "prepare.step-admit", repo)
+	case "step-bind":
+		return locale.T(lang, "prepare.step-bind", repo)
 	case "credentials-check":
 		return locale.T(lang, "prepare.creds-check")
 	case "credentials-rejected":

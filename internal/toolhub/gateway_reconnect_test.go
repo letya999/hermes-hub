@@ -161,3 +161,71 @@ func TestGatewayRefreshesProjectionWrittenByAnotherStore(t *testing.T) {
 		t.Fatalf("external projection change was missed: listed=%v err=%v", listed, err)
 	}
 }
+
+// An install completing inline (a brand-new active binding, not a status
+// flip on an existing one) must surface its tools in the MCP session that is
+// already open — RefreshProjection diffs the store and the SDK emits
+// tools/list_changed; the session id stays put.
+func TestGatewayProjectsNewBindingIntoOpenSession(t *testing.T) {
+	store, aliceAuth, binding := seededStore(t)
+	const aliceToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// Start from the pre-install state: the definition and credential exist
+	// (install created them), but the binding is not materialized yet.
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
+		t.Fatal(err)
+	}
+	var backendCalls atomic.Int32
+	gateway := &Gateway{
+		Store: store, Tokens: map[string]identity.Envelope{aliceToken: aliceAuth},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			backendCalls.Add(1)
+			return api.BackendResult{Text: "ok"}, nil
+		}),
+	}
+	attachGatewayAudit(t, gateway)
+	handler, err := gateway.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	changed := make(chan struct{}, 4)
+	client := mcp.NewClient(&mcp.Implementation{Name: "alice", Version: "1"}, &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) { changed <- struct{}{} },
+	})
+	alice, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:   server.URL + DefaultEndpointPath,
+		HTTPClient: &http.Client{Transport: testBearerTransport{base: http.DefaultTransport, token: aliceToken}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.Close()
+	name := api.ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
+	if listed, err := alice.ListTools(context.Background(), nil); err != nil || toolListed(listed, name) {
+		t.Fatalf("pre-install tool visible: listed=%v err=%v", listed, err)
+	}
+	initialSession := alice.ID()
+	// completeSetup materializes the binding as active — the store write is
+	// all the projection refresh needs.
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.ActiveStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.RefreshProjection(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("open MCP session received no tools/list_changed for the new binding")
+	}
+	if listed, err := alice.ListTools(context.Background(), nil); err != nil || !toolListed(listed, name) {
+		t.Fatalf("installed tool unavailable in original session: listed=%v err=%v", listed, err)
+	}
+	if alice.ID() != initialSession {
+		t.Fatal("install refresh replaced the MCP session")
+	}
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"query": "fresh"}}); err != nil || backendCalls.Load() != 1 {
+		t.Fatalf("installed tool not callable in same session: err=%v calls=%d", err, backendCalls.Load())
+	}
+}

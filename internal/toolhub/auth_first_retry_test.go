@@ -169,8 +169,8 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	if body["phase"] != api.PhaseAwaitingConfirm {
-		t.Fatalf("retry did not reach confirmation: %v", body)
+	if body["phase"] != api.PhaseEnabled {
+		t.Fatalf("retry did not complete to enabled: %v", body)
 	}
 	if reviews != 1 {
 		t.Fatalf("retry rebuilt the unchanged artifact: %d reviews", reviews)
@@ -412,7 +412,9 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	for _, owner := range owners {
 		auth := auths[owner.name]
 		record, err := store.OnboardingFor(auth, owner.onboardingID)
-		if err != nil || !record.Awaiting(api.GateConfirmSetup) || record.AdmissionPending {
+		// Admission is the consent: the record completes straight to live
+		// instead of arming a second confirm click.
+		if err != nil || record.Stage != api.StageLive || record.AdmissionPending {
 			t.Fatalf("%s admission did not converge: phase=%q err=%v", owner.name, record.NoticePhase(), err)
 		}
 		if record.BrokerCredentialID != "credential_"+owner.name {

@@ -278,6 +278,7 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 			return api.OperationResult{}, err
 		}
 		result := api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Code: op.ErrorCode, Summary: op.Intent + " " + op.Target}
+		result.OperationProgress(op, c.now())
 		if op.OnboardingID != "" {
 			onboarding, err := c.reconcileConnectorOnboarding(ctx, auth, op.OnboardingID)
 			if err != nil && !errors.Is(err, api.ErrNotFound) {
@@ -510,6 +511,19 @@ func (c *ControlPlane) connectorResend(ctx context.Context, auth identity.Envelo
 	}
 	if onboarding.ConfirmationUsed {
 		return api.OperationResult{}, api.ErrConflict
+	}
+	if onboarding.Stage == api.StageFailed || credentialGateDeadEnd(onboarding) {
+		// A dead record has no pending setup link to resend; a wedged
+		// credentials wait could mint a form no submission can satisfy.
+		// The retry path is a fresh install generation.
+		result := api.OperationResult{State: api.ModelStateBroken, Code: onboarding.ErrorCode, YouMust: api.YouMustRetry, Summary: "no pending setup link"}
+		if result.Code == "" {
+			result.Code = api.OpCodeNotPermitted
+		}
+		if onboarding.CleanupIncomplete() {
+			result.YouMust = api.YouMustRemove
+		}
+		return result, nil
 	}
 	if onboarding.Awaiting(api.GateCredentials) && onboarding.BrokerRequestID != "" {
 		if err := c.reconcileBrokerReady(ctx, auth, &onboarding); err != nil {

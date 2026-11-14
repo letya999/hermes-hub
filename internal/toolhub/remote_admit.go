@@ -149,6 +149,11 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
 	}
+	// A credential-free endpoint asked for nothing else — the install
+	// request is the consent, so the armed setup gate completes inline.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 

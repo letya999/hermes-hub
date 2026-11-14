@@ -272,7 +272,9 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)
 	admitted, err := store.Definition("slack-mcp-server", "0.0.2")
-	if err != nil || !stored.Awaiting(api.GateConfirmSetup) || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
+	// The submit is the consent: the record advances past the credential
+	// gate without arming a second confirm click.
+	if err != nil || stored.Awaiting(api.GateConfirmSetup) || stored.Awaiting(api.GateCredentials) || stored.AdmissionPending || stored.Error != "" || len(admitted.Tools) != 1 || admitted.Tools[0].Name != "search" {
 		t.Fatalf("admitted=%+v stored=%+v err=%v", admitted.Tools, stored, err)
 	}
 }
@@ -374,8 +376,10 @@ func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.GateNonce(api.GateCredentials), map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}, locale.LangRU); err != nil {
 		t.Fatal(err)
 	}
-	if pending := mustOnboarding(t, store, preparing.OnboardingID); !pending.Awaiting(api.GateConfirmSetup) || pending.ConfirmationUsed {
-		t.Fatal("credential intake bypassed human consent")
+	// The submit is itself the consent: the record completes inline and
+	// records HumanConsent.Source=credential_submission, no second click.
+	if pending := mustOnboarding(t, store, preparing.OnboardingID); pending.Stage != api.StageLive || !pending.ConfirmationUsed || pending.HumanConsent == nil || pending.HumanConsent.Source != "credential_submission" {
+		t.Fatal("credential intake did not record implicit consent")
 	}
 	finishAsHuman(t, control, preparing.OnboardingID)
 	stored, _ = store.onboarding(preparing.OnboardingID)
@@ -452,7 +456,7 @@ func TestCredentialAdmitAssignsNextPatchForAnotherUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobStored, _ = store.onboarding(bob.OnboardingID)
-	if bobStored.DefinitionVersion != "0.0.3" || !bobStored.Awaiting(api.GateConfirmSetup) {
+	if bobStored.DefinitionVersion != "0.0.3" || bobStored.Awaiting(api.GateConfirmSetup) || bobStored.Awaiting(api.GateCredentials) {
 		t.Fatalf("bob onboarding=%+v", bobStored.DefinitionVersion)
 	}
 	owner, userOwned = store.userPublicationOwner("slack-mcp-server", "0.0.2")

@@ -301,10 +301,14 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	}
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: time.Minute}
 	auth := aliceAuth()
-	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "enable-1"})
+	// "enable before confirm" needs a gate that actually survives prepare:
+	// install requests complete setup inline now, so the pending record is
+	// minted without that completion, like a legacy mid-flight record.
+	pending, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "enable-1", catalogReadDefinition(), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared := map[string]any{"onboarding_id": pending.OnboardingID}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("enable before confirm: %v", err)
 	}
@@ -378,9 +382,7 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": credOn.OnboardingID, "nonce": confirmNonceOf(t, store, credOn.OnboardingID)}); err != nil {
-		t.Fatal(err)
-	}
+	// The submit is the consent — `enable` re-drives inline, no click.
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}

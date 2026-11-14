@@ -31,7 +31,14 @@ func prepareOnboardingWrite(before, after api.Onboarding) api.Onboarding {
 	if after.NoticeVersion == before.NoticeVersion && after.NoticeQueuedVersion < after.NoticeVersion && after.NoticeNextAttempt.Before(before.NoticeNextAttempt) {
 		after.NoticeNextAttempt = before.NoticeNextAttempt
 	}
-	if after.Initiator != nil && noticeRequired(after) && (before.Initiator == nil || gateSignature(before) != gateSignature(after) || before.Stage != after.Stage || before.BrokerAuthorizationURL != after.BrokerAuthorizationURL) {
+	// A human-action notice fires only once its link exists: posting earlier
+	// produced "the form link arrives in the next message" texts whose follow-up
+	// could be lost downstream. Terminal stages always notify — they carry a
+	// result, not a link. An action URL appearing under an unchanged gate
+	// signature (wizard mint, broker URL) is itself a bump-worthy change.
+	actionURL := api.NoticeActionURL(after)
+	actionable := after.Stage == api.StageLive || after.Stage == api.StageFailed || actionURL != ""
+	if after.Initiator != nil && noticeRequired(after) && actionable && (before.Initiator == nil || gateSignature(before) != gateSignature(after) || before.Stage != after.Stage || api.NoticeActionURL(before) != actionURL) {
 		after.NoticeVersion++
 		after.NoticeEvent, after.NoticeEventID = "", ""
 		after.NoticeNextAttempt = time.Time{}

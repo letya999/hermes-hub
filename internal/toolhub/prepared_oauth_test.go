@@ -198,8 +198,10 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		t.Fatal("replayed callback accepted", err)
 	}
 	stored, _ := store.onboarding(on.OnboardingID)
-	if !stored.Awaiting(api.GateConfirmSetup) || stored.ConfirmationUsed || stored.ProviderAuthorizationURL != "" {
-		t.Fatal("OAuth bypassed verified human consent")
+	// The provider consent screen is the verified consent — the record
+	// completes inline with HumanConsent.Source=oauth_callback.
+	if stored.Stage != api.StageLive || !stored.ConfirmationUsed || stored.HumanConsent == nil || stored.HumanConsent.Source != "oauth_callback" || stored.ProviderAuthorizationURL != "" {
+		t.Fatal("OAuth did not record implicit consent")
 	}
 	finishAsHuman(t, c, stored.OnboardingID)
 	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d, false); err == nil || !strings.Contains(err.Error(), "existing token state") {

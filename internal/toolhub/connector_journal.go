@@ -21,6 +21,15 @@ var connectorInstallSteps = []string{
 	api.OpStepAdmitProbe, api.OpStepBind, api.OpStepProject, api.OpStepNotify,
 }
 
+// putOperation stamps the journal transition time before the durable write:
+// every verb-side PutOperation is a step transition, so UpdatedAt marks when
+// the current step started. Direct Store.PutOperation calls (tests seeding
+// history, maintenance backfills) keep caller-supplied timestamps.
+func (c *ControlPlane) putOperation(op api.Operation) error {
+	op.UpdatedAt = c.now()
+	return c.Store.PutOperation(op)
+}
+
 func connectorSteps(names []string) []api.OperationStep {
 	steps := make([]api.OperationStep, len(names))
 	for i, name := range names {
@@ -74,10 +83,12 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		if err != nil {
 			return api.OperationResult{}, err
 		}
-		if !previous.Removed() {
+		// A removal tombstone or a clean failure ends this generation but
+		// remains addressable; a failed record with pending cleanup only
+		// exits through remove.
+		if !previous.Removed() && (previous.Stage != api.StageFailed || previous.CleanupIncomplete()) {
 			break
 		}
-		// A removal tombstone ends this generation, but remains addressable.
 		requestTarget = target + "#after=" + previous.OnboardingID
 		key = api.OperationRequestKey(auth, api.OpIntentInstall, requestTarget)
 		op, exists = c.Store.OperationForRequestKey(auth, api.OpIntentInstall, requestTarget)
@@ -97,7 +108,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 			if errors.Is(err, api.ErrUnsupportedAuth) {
 				op.ErrorCode = api.OpCodeUnsupportedAuth
 			}
-			if persistErr := c.Store.PutOperation(op); persistErr != nil {
+			if persistErr := c.putOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
 			return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: "install " + target + ": " + api.PublicPrepareError(err)}, nil
@@ -135,13 +146,15 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 			op.ErrorCode = api.OpCodeUnsupportedAuth
 		}
 		result.Code = op.ErrorCode
+		result.YouMust = onboarding.YouMust(c.now())
 		result.Summary += ": " + onboarding.Error
 	} else {
 		op.State = api.OpStateRunning
 	}
 	op = installProgress(op, onboarding)
 	result.State = connectorModelStateFromOp(op.State)
-	if err := c.Store.PutOperation(op); err != nil {
+	result.OperationProgress(op, c.now())
+	if err := c.putOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
 	return result, nil
@@ -177,7 +190,7 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	if phaseErr != nil {
 		op.State = api.OpStateFailed
 		op.ErrorCode = api.OpCodeNotPermitted
-		if persistErr := c.Store.PutOperation(op); persistErr != nil {
+		if persistErr := c.putOperation(op); persistErr != nil {
 			return api.OperationResult{}, persistErr
 		}
 		return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: intent + " " + target}, nil
@@ -208,10 +221,12 @@ func (c *ControlPlane) connectorPhase(ctx context.Context, auth identity.Envelop
 	markStep(&op, api.OpStepApply, api.OpStepDone)
 	markStep(&op, api.OpStepNotify, api.OpStepDone)
 	op.State = api.OpStateDone
-	if err := c.Store.PutOperation(op); err != nil {
+	if err := c.putOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
-	return api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Summary: intent + " " + target}, nil
+	result := api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Summary: intent + " " + target}
+	result.OperationProgress(op, c.now())
+	return result, nil
 }
 
 // The remove ladder: one link-confirm gate, then the purge steps the
@@ -283,7 +298,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 			markStep(&op, step, api.OpStepDone)
 		}
 		op.State = api.OpStateDone
-		if err := c.Store.PutOperation(op); err != nil {
+		if err := c.putOperation(op); err != nil {
 			return api.OperationResult{}, err
 		}
 		return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateDone, Summary: "remove " + op.Target + " — " + onboarding.RemoveReceipt}, nil
@@ -293,7 +308,7 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		if _, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 			op.State = api.OpStateFailed
 			op.ErrorCode = api.OpCodeNotPermitted
-			if persistErr := c.Store.PutOperation(op); persistErr != nil {
+			if persistErr := c.putOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
 			return api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: op.ErrorCode, Summary: "remove " + target}, nil
@@ -301,14 +316,16 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 	}
 	markStep(&op, api.OpStepConfirm, api.OpStepPending)
 	op.State = api.OpStateAwaitingConfirm
-	if err := c.Store.PutOperation(op); err != nil {
+	if err := c.putOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
 	current, err := c.Store.OnboardingFor(auth, op.OnboardingID)
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	return api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Delivery: current.RecordDelivery(), Summary: "remove " + op.Target}, nil
+	result := api.OperationResult{OperationID: op.OperationID, State: connectorModelStateFromOp(op.State), Delivery: current.RecordDelivery(), Summary: "remove " + op.Target}
+	result.OperationProgress(installProgress(op, current), c.now())
+	return result, nil
 }
 
 // connectorReauth reopens credential collection on a live connector: a
@@ -346,9 +363,27 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 	if onboarding.DeadEnd() || len(onboarding.Finalizers) > 0 {
 		return api.OperationResult{}, api.ErrRevoked
 	}
+	if onboarding.Stage == api.StageFailed || credentialGateDeadEnd(onboarding) {
+		// Reauth rotates credentials on a live record — it is not a resurrection
+		// path. Mutating a dead record would mint a credentials wait with no
+		// redeemable channel; the retry path is a fresh install generation.
+		result := api.OperationResult{OperationID: op.OperationID, State: api.ModelStateBroken, Code: onboarding.ErrorCode, YouMust: api.YouMustRetry, Summary: "reauth " + op.Target}
+		if result.Code == "" {
+			result.Code = api.OpCodeProbeFailed
+		}
+		if onboarding.CleanupIncomplete() {
+			result.YouMust = api.YouMustRemove
+		}
+		return result, nil
+	}
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "reauth " + op.Target}
 	if !onboarding.Awaiting(api.GateCredentials) {
 		// An explicit reauth replaces the pending action even before enablement.
+		// The definition resolves before the record mutates — a record that
+		// cannot collect credentials is never half-reopened into a dead wait.
+		if _, err := c.definitionOf(onboarding); err != nil {
+			return api.OperationResult{}, err
+		}
 		expected := onboarding.Revision
 		if onboarding.BrokerCredentialID != "" {
 			onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
@@ -392,7 +427,8 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 		op.State = api.OpStateRunning
 		result.State = connectorModelStateFromOp(op.State)
 	}
-	if err := c.Store.PutOperation(op); err != nil {
+	result.OperationProgress(installProgress(op, onboarding), c.now())
+	if err := c.putOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
 	return result, nil
@@ -465,7 +501,8 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		result.Delivery = onboarding.RecordDelivery()
 		c.observeNoticeDelivery(ctx, auth, onboarding, &result)
 	}
-	if err := c.Store.PutOperation(op); err != nil {
+	result.OperationProgress(installProgress(op, onboarding), c.now())
+	if err := c.putOperation(op); err != nil {
 		return api.OperationResult{}, err
 	}
 	return result, nil

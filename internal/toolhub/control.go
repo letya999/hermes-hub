@@ -350,6 +350,132 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 	return c.statusBody(onboarding, false), nil
 }
 
+// completeSetup runs the bind+enable tail a protected confirm click used to
+// drive. The consent it stood for already arrived — as a credential
+// submission, an OAuth grant at the provider, or the bare install request —
+// so the setup gate no longer stops the flow. HumanConsent keeps the audit
+// shape the consumed gate recorded; Source names which signal counted.
+// allow_writes keeps its own protected gate (PendingWrites): enabling writes
+// is a separate privilege escalation, not install ceremony.
+func (c *ControlPlane) completeSetup(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, consentSource string) error {
+	// markConsent records the already-received consent on a failed bind:
+	// without it the owner would need a second ceremony just to retry
+	// `enable`. A credential form re-armed by resetSubmittedCredential is
+	// left unmarked — the fresh submission is the next consent.
+	markConsent := func() {
+		if onboarding.Awaiting(api.GateCredentials) {
+			return
+		}
+		onboarding.ConfirmationUsed = true
+		onboarding.HumanConsent = &api.HumanConsent{ActorID: auth.PrincipalID, ActionDigest: api.ConfirmationActionDigest(*onboarding), Revision: onboarding.Revision, ConfirmedAt: c.now(), Source: consentSource}
+	}
+	definition, err := c.definitionOf(*onboarding)
+	if err != nil {
+		return err
+	}
+	// Materialize unconditionally — same rule the confirm handler followed:
+	// a kept BindingID still needs re-materialization when a rotation or a
+	// fresh credential must replace the referenced credential revision.
+	binding, err := c.materializeBinding(ctx, auth, *onboarding, definition)
+	if err != nil {
+		if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrCredentialDelivery) {
+			// Same re-route rule as the confirm handler: a missing token
+			// may fall back to the reviewed OAuth handoff; a delivered
+			// bundle missing inputs reopens the credential step.
+			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); !errors.Is(err, api.ErrCredentialDelivery) && (definition.OAuth != nil || lookupErr == nil && matched && entry.OAuth != nil) {
+				log.Printf("toolhub oauth re-route onboarding=%s materialize: %v", onboarding.OnboardingID, err)
+				_, rerouteErr := c.ensurePreparedOAuth(ctx, auth, *onboarding, definition, false)
+				return rerouteErr
+			}
+			if onboarding.Locator == "" && onboarding.BrokerCredentialID == "" && len(definition.Credentials) > 0 {
+				// Stored inputs were declared but nothing collected — the
+				// credential form is where the owner fills or skips them;
+				// failing here would dead-end a connector that may still
+				// install through a submitted (or empty) form.
+				onboarding.Stage = api.StagePending
+				if c.brokerCredentialRequired(definition, *onboarding) {
+					onboarding.ArmGate(api.GateCredentials, "", time.Time{})
+				} else {
+					onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
+					c.armWizard(onboarding)
+				}
+				onboarding.Error, onboarding.ErrorCode = "", ""
+				onboarding.Revision++
+				if putErr := c.Store.PutOnboarding(*onboarding); putErr != nil {
+					return putErr
+				}
+				if c.brokerCredentialRequired(definition, *onboarding) {
+					if berr := c.ensureBrokerRequest(ctx, auth, onboarding, definition); berr != nil {
+						return berr
+					}
+				}
+				c.deliverOutcomeNotice(ctx, auth, onboarding)
+				return nil
+			}
+			c.resetSubmittedCredential(onboarding)
+		}
+		markConsent()
+		return c.persistFailure(*onboarding, api.PublicPrepareError(err), err)
+	}
+	onboarding.BindingID = binding.ToolBindingID
+	onboarding.ConnectionID = binding.ConnectionID
+	onboarding.CredentialRefID = binding.CredentialRefID
+	onboarding.BrokerRotateCredentialID = ""
+	onboarding.BrokerRequestID = ""
+	onboarding.BrokerAuthorizationURL = ""
+	onboarding.Error, onboarding.ErrorCode = "", ""
+	existing, err := c.Store.binding(onboarding.BindingID)
+	if err != nil {
+		return err
+	}
+	if existing.Status == api.RevokedStatus {
+		return api.ErrRevoked
+	}
+	if existing.Status != api.ActiveStatus {
+		var binding api.ToolBinding
+		if c.Ready != nil {
+			binding, err = c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
+		} else {
+			binding, err = c.Store.Enable(auth, definition.DefinitionID, definition.Version)
+		}
+		if err != nil {
+			markConsent()
+			return c.persistFailure(*onboarding, api.PublicPrepareError(err), err)
+		}
+		onboarding.BindingID = binding.ToolBindingID
+		onboarding.ConnectionID = binding.ConnectionID
+		onboarding.CredentialRefID = binding.CredentialRefID
+	} else if err := c.Store.SupersedeSiblings(auth, existing.DefinitionID, existing.ToolBindingID); err != nil {
+		return err
+	}
+	onboarding.ClearGate()
+	onboarding.ConfirmationUsed = true
+	onboarding.HumanConsent = &api.HumanConsent{ActorID: auth.PrincipalID, ActionDigest: api.ConfirmationActionDigest(*onboarding), Revision: onboarding.Revision, ConfirmedAt: c.now(), Source: consentSource}
+	onboarding.Stage = api.StageLive
+	onboarding.Revision++
+	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+		return err
+	}
+	c.deliverOutcomeNotice(ctx, auth, onboarding)
+	return nil
+}
+
+// autoCompleteSetup finishes a setup that needs no further owner action. It
+// fires only on an armed setup gate with everything required already
+// collected — the credential submit, OAuth callback, or a credential-free
+// install reached this point — and never consumes the allow_writes gate:
+// PendingWrites records stay for the explicit protected confirmation.
+func (c *ControlPlane) autoCompleteSetup(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding, consentSource string) error {
+	o := *onboarding
+	if o.Stage != api.StagePending || o.BindingID != "" || !o.Awaiting(api.GateConfirmSetup) || o.PendingWrites || o.WritesEnabled {
+		return nil
+	}
+	if len(o.Required) > 0 && o.Locator == "" && o.BrokerCredentialID == "" {
+		return nil
+	}
+	return c.completeSetup(ctx, auth, onboarding, consentSource)
+}
+
 // setPhase flips the reversible binding switch. Enabled/disabled lives on
 // the binding alone — the onboarding stage stays live; the revision bump
 // only journals the lifecycle event on the owning record.

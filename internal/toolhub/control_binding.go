@@ -319,6 +319,11 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 			return nil, err
 		}
 		if onboarding.BrokerCredentialID == "" {
+			if onboarding.BrokerRequestID != "" {
+				// Reauth on a record already waiting on a Broker request is a
+				// no-op — the pending request is the credential step.
+				return c.statusBody(onboarding, true), nil
+			}
 			// A remote-mcp onboarding stores its credential in the local
 			// encrypted backend, never the Broker; fall through to the local
 			// rotation path instead of deadlocking on a missing record.
@@ -832,33 +837,33 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = auth.PrincipalID
 	onboarding.Stage = api.StagePending
-	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
+	onboarding.ClearGate()
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	c.deliverOutcomeNotice(context.Background(), auth, &onboarding)
-	return nil
+	// The provider's consent screen is the consent — bind straight through.
+	return c.completeSetup(context.Background(), auth, &onboarding, "oauth_callback")
 }
 
 // completeDeviceAuth finishes an onboarding whose user authorized through
 // RFC 8628 device flow: PollDevice already persisted the token, so the tail
 // matches the authorization-code callback — locator on the onboarding, then
-// the shared finishAuthorization path.
+// the shared completeSetup path.
 func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.Onboarding, meta oauth.TokenMeta) error {
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = onboarding.PrincipalID
 	onboarding.DeviceCode, onboarding.DeviceUserCode, onboarding.DeviceVerification = "", "", ""
 	onboarding.Stage = api.StagePending
-	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
+	onboarding.ClearGate()
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	c.deliverOutcomeNotice(ctx, onboardingEnvelope(onboarding), &onboarding)
-	return nil
+	// Approving the device code on the provider page is the consent.
+	return c.completeSetup(ctx, onboardingEnvelope(onboarding), &onboarding, "oauth_callback")
 }
 
 type onboardingLookupError string

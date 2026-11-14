@@ -112,6 +112,13 @@ func (c *ControlPlane) reconcileBrokerReady(ctx context.Context, auth identity.E
 	// Background observation never renews an expired form or asks for a new
 	// credential. Only the owner's explicit resend/reauth may do that.
 	if request.Status != "ready" || request.CredentialID == "" {
+		// A still-pending request keeps its live connect link, so the armed
+		// credential notice must reach the channel — the record cannot say a
+		// link was sent while no message ever left. Dead links stay silent
+		// until the owner's resend re-mints the request.
+		if o.Awaiting(api.GateCredentials) && !c.brokerRequestDead(request) {
+			c.deliverOutcomeNotice(ctx, auth, o)
+		}
 		return nil
 	}
 	if o.AdmissionPending {

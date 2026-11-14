@@ -383,7 +383,7 @@ func TestPrepareCLIShellAllowlisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowlisted bash spec rejected: %v", err)
 	}
-	if phase, _ := body["phase"].(string); phase != "awaiting-confirm" {
+	if phase, _ := body["phase"].(string); phase != "enabled" {
 		t.Fatalf("shell spec phase %q", phase)
 	}
 	// Artifact guest paths named like shells stay denied: no allowlist can
@@ -463,13 +463,14 @@ func TestPrepareCLISpecStrictness(t *testing.T) {
 		t.Fatalf("invalid credential name admitted: %v", err)
 	}
 	// A valid rg spec registers the immutable definition, publishes it to the
-	// owner only, and lands in awaiting-confirm.
+	// owner only, and completes setup inline — the install request itself is
+	// the consent for a credential-free connector.
 	body, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"cli": base(), "request_key": "owner-cli-1"})
 	if err != nil {
 		t.Fatalf("owner rg spec denied: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.Mode != api.OnboardingSelfInstall {
+	if onboarding.Stage != api.StageLive || onboarding.Mode != api.OnboardingSelfInstall {
 		t.Fatalf("onboarding=%+v", onboarding)
 	}
 	definition, err := fix.store.Definition("owner-search", "1.0.0")
@@ -578,7 +579,7 @@ func TestPrepareCLIArtifactHappyPath(t *testing.T) {
 	if pub.Visibility != api.PublicationUser || pub.OwnerPrincipalID != "alice" {
 		t.Fatalf("publication=%+v", pub)
 	}
-	if !onboarding.Awaiting(api.GateConfirmSetup) && !onboarding.Awaiting(api.GateCredentials) {
+	if onboarding.Stage != api.StageLive && !onboarding.Awaiting(api.GateCredentials) {
 		t.Fatalf("onboarding phase=%s", onboarding.NoticePhase())
 	}
 }
@@ -731,7 +732,7 @@ func TestPrepareCLIArtifactSyncAndInFlight(t *testing.T) {
 		t.Fatalf("builds=%d", builds)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if !onboarding.Awaiting(api.GateConfirmSetup) {
+	if onboarding.Stage != api.StageLive {
 		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 	// A fresh preparing stub for the slot dedups a repeat call without a

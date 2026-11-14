@@ -28,6 +28,11 @@ func humanConsentContext(t *testing.T, control *ControlPlane, id string) context
 func finishAsHuman(t *testing.T, control *ControlPlane, id string) {
 	t.Helper()
 	o := mustOnboarding(t, control.Store, id)
+	if !o.Awaiting(api.GateConfirmSetup) {
+		// Consent arrived upstream (credential submit, OAuth grant, install
+		// request): the record already completed without a second click.
+		return
+	}
 	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(o), Nonce: o.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(o), ActionDigest: api.ConfirmationActionDigest(o), ExpiresAt: o.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
@@ -165,11 +170,14 @@ func TestHumanActorConsentIsDurableBeforeMaterialization(t *testing.T) {
 	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "durable-human"})
+	// The confirmation endpoint is exercised on a live armed gate: install
+	// requests complete setup inline now, so the pending record is minted
+	// without that completion, like a legacy mid-flight record.
+	pending, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "durable-human", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := prepared["onboarding_id"].(string)
+	id := pending.OnboardingID
 	record := mustOnboarding(t, fix.store, id)
 	path := filepath.Join(t.TempDir(), "toolhub.json")
 	if err := fix.store.Save(path); err != nil {
@@ -231,11 +239,13 @@ func TestTrustedHumanConfirmationBindsActorActionRevisionAndExpiry(t *testing.T)
 			if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 				t.Fatal(err)
 			}
-			prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "human-proof"})
+			// Same as above: the confirmation endpoint needs a live armed
+			// gate, so the pending record is minted without the install
+			// request's inline completion.
+			record, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "human-proof", definition, "", "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 			actor := aliceAuth()
 			proof := map[string]any{"onboarding_id": record.OnboardingID, "nonce": record.GateNonce(api.GateConfirmSetup), "revision": record.Revision, "action_digest": api.ConfirmationActionDigest(record), "expires_at": record.GateExpiry(api.GateConfirmSetup), "actor": actor}
 			token, origin, method := fix.gateway.ControlToken, "", http.MethodPost
@@ -347,11 +357,13 @@ func TestBearerConfirmationPagesCannotGrantHumanConsent(t *testing.T) {
 		if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 			t.Fatal(err)
 		}
-		prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "bearer-page"})
+		// The consent pages need a live armed gate: install requests complete
+		// setup inline now, so the pending record is minted without that
+		// completion, like a legacy mid-flight record.
+		record, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "bearer-page", definition, "", "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 		path := "http://127.0.0.1/confirm/" + record.OnboardingID + "?t=" + record.GateNonce(api.GateConfirmSetup)
 		if wizard {
 			path = "http://127.0.0.1/connect/" + record.OnboardingID + "?k=" + record.WizardNonce
@@ -478,11 +490,12 @@ func TestHumanConfirmationRejectsOversizedAndTrailingJSON(t *testing.T) {
 		if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 			t.Fatal(err)
 		}
-		prepared, err := fix.control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "bounded-human-proof"})
+		// Same: the confirmation endpoint needs a live armed gate, so the
+		// pending record is minted without the install's inline completion.
+		record, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "bounded-human-proof", definition, "", "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		record := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 		body, err := json.Marshal(api.HumanConfirmation{OnboardingID: record.OnboardingID, Actor: aliceAuth(), Nonce: record.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(record), ActionDigest: api.ConfirmationActionDigest(record), ExpiresAt: record.GateExpiry(api.GateConfirmSetup)})
 		if err != nil {
 			t.Fatal(err)

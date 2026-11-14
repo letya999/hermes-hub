@@ -857,11 +857,10 @@ func TestBrokerConfirmAllOptionalCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stored.Awaiting(api.GateConfirmSetup) {
+	// The reused credential binds straight through — the install request is
+	// the consent, no second click is armed.
+	if stored.Stage != api.StageLive || stored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("unexpected phase: %+v", stored)
-	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.GateNonce(api.GateConfirmSetup)}); err != nil {
-		t.Fatalf("confirm rejected all-optional credential reference: %v", err)
 	}
 	effective, err := store.Resolve(auth, stored.OnboardingID)
 	if err == nil {

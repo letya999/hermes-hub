@@ -119,6 +119,11 @@ func (c *ControlPlane) prepareConnectorUpgrade(ctx context.Context, auth identit
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
 	}
+	// The upgrade request itself is the consent — the credential is
+	// already collected, so the armed setup gate completes inline.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
+		return nil, err
+	}
 	return c.statusBody(onboarding, false), nil
 }
 

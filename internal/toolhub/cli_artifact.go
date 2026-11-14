@@ -412,7 +412,10 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 		}
 		return nil, err
 	}
+	api.DeliverPrepareEvent(ctx, auth, preparing, "step-artifact")
+	artifactStart := c.now()
 	imported, err := c.CLIArtifacts.Build(ctx, source, config)
+	log.Printf("toolhub prepare phase=artifact onboarding=%s seconds=%.1f", preparing.OnboardingID, c.now().Sub(artifactStart).Seconds())
 	if err != nil {
 		return failPrepare(err)
 	}
@@ -496,7 +499,13 @@ func (c *ControlPlane) finishCLIArtifact(ctx context.Context, auth identity.Enve
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return failPrepare(err)
 	}
+	api.DeliverPrepareEvent(ctx, auth, preparing, "step-bind")
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
+		return failPrepare(err)
+	}
+	// A credential-free install asked for nothing else — the install
+	// request is the consent, so the armed setup gate completes inline.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
 		return failPrepare(err)
 	}
 	return c.statusBody(onboarding, false), nil

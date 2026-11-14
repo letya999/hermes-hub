@@ -221,6 +221,14 @@ func credentialNoticeURL(onboarding Onboarding) string {
 	return ActionURL(FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")), onboarding)
 }
 
+// NoticeActionURL resolves the user-facing action link a pending notice would
+// carry. Empty means the armed human step has no usable URL yet — a notice
+// posted now would tell the owner a link "arrives next message" that may never
+// land, so callers must wait for a non-empty result before announcing a step.
+func NoticeActionURL(onboarding Onboarding) string {
+	return credentialNoticeURL(onboarding)
+}
+
 // ActionURL resolves the user-facing link for the onboarding's pending action
 // against an explicit form origin. Selection order matches the channel notice
 // so elicitation and notices never disagree about which link is live.

@@ -41,9 +41,8 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	// The credential-free install completed setup inline — the record is
+	// already live; enable stays the idempotent bind entry point.
 	first, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +125,6 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if _, err := control2.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared2["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control2.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared2["onboarding_id"], "nonce": confirmNonceOf(t, store2, prepared2["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
 	args := map[string]any{"onboarding_id": prepared2["onboarding_id"]}
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -165,11 +161,14 @@ func TestConfirmationConsumedOnceConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
-	prepared, err := control.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "concurrent-human"})
+	// An armed setup gate must outlive prepare: the concurrent-consumption
+	// guarantee under test lives in the confirm path itself, so the record
+	// is minted without the install request's inline completion.
+	pending, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "concurrent-human", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := prepared["onboarding_id"].(string)
+	id := pending.OnboardingID
 	nonce := confirmNonceOf(t, store, id)
 	path := filepath.Join(t.TempDir(), "store.json")
 	if err := store.Save(path); err != nil {
@@ -253,11 +252,10 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	// The credential-free install completed inline: the readiness probe ran
+	// once during prepare's setup completion.
 	if admissions != 1 {
-		t.Fatalf("initial confirm admissions=%d", admissions)
+		t.Fatalf("initial setup admissions=%d", admissions)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "disable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
@@ -470,8 +468,10 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.GateKind() != api.GateConfirmSetup || !stored.ConfirmationUsed {
-		t.Fatalf("confirm failure not recorded: %+v", stored)
+	// The submit was the consent — a failed bind keeps its marker so
+	// `enable` retries without a second ceremony, no gate re-arms.
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.HumanConsent == nil || stored.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("bind failure not recorded with consent: %+v", stored)
 	}
 	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
 	if err != nil {
@@ -554,9 +554,8 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — the record already bound inline;
+		// `enable` is an idempotent re-drive, not a consent step.
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
 		if err != nil {
 			t.Fatal(err)
@@ -614,9 +613,6 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
 		if err != nil {
 			t.Fatal(err)
@@ -672,9 +668,6 @@ func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})

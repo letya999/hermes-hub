@@ -388,6 +388,68 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	}
 }
 
+// A managed caller's self-install reached stage=live with an active binding,
+// but tools/list and tools/call iterated profile.Selections only — the
+// provenance-gated self-install helpers were dead code and the connector
+// stayed invisible ("tools not projected"). The public entry points must fall
+// through to the self-install projection.
+func TestManagedSelfInstallProjectsThroughPublicEntryPoints(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	definition := remoteDefinition()
+	definition.DefinitionID = "notion-mcp-server"
+	definition.Credentials = nil
+	definition.Tools = []api.ToolSpec{{Name: "API-get-self", Effect: api.ReadEffect}, {Name: "API-post-search", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	profile.SelfInstall = true
+	profile.Revision++
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	wanted := api.ProjectedToolName(definition.DefinitionID, definition.Version, "API-post-search")
+	listed, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed {
+		if tool.Name == wanted {
+			t.Fatal("self-install tool must not project before its live onboarding exists")
+		}
+	}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", "alice", "notion"),
+		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Stage: api.StageLive, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range listed {
+		if tool.Name == wanted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tools/list must include the self-installed connector tool %s", wanted)
+	}
+	if _, _, err := store.ResolveProjectedTool(auth, wanted); err != nil {
+		t.Fatalf("tools/call resolution must find the self-install tool: %v", err)
+	}
+	if err := store.AuthorizeProjected(auth, wanted, func(api.ProjectedTool, api.EffectiveBinding) error { return nil }); err != nil {
+		t.Fatalf("dispatch authorization must admit the self-install tool: %v", err)
+	}
+}
+
 // A capability selection names an exact tool, but the binding's staged
 // toolsets still bound what a grant can reach: a selection for an excluded
 // tool stays hidden until its toolset is enabled, and a write-effect tool on

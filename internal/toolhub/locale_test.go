@@ -201,8 +201,8 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		t.Errorf("alt-unknown rejection = %q", got)
 	}
 
-	// A successful submit arms the wizard and redirects onto the stable link —
-	// the redirect must carry the request's language.
+	// A successful submit is the consent — the install completes inline and
+	// the page reports the finished connection in the request's language.
 	seed(api.Onboarding{
 		OnboardingID: "onb-ok",
 		Stage:        api.StagePending,
@@ -210,12 +210,7 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		DefinitionID: "catalog-read", DefinitionVersion: "1.0.0",
 		Required: []api.CredentialHint{{Name: "API_TOKEN", Type: "secret", Secret: true}}})
 	rec = post(g.serveCredentials, "/credentials/onb-ok?t=fn2&lang=es", url.Values{"nonce": {"fn2"}, "API_TOKEN": {"tok"}})
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("submit redirect: %d %s", rec.Code, rec.Body.String())
-	}
-	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "/connect/onb-ok?k=") || !strings.Contains(loc, "lang=es") {
-		t.Errorf("submit redirect lost lang: %q", loc)
-	}
+	assertPage("submit-done", rec, "es", page("page.done-title"), page("page.done-creds-body"))
 
 	seed(api.Onboarding{
 		OnboardingID: "onb-wiz-sub",

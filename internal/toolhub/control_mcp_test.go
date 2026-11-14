@@ -51,11 +51,14 @@ func TestAgentCannotConfirmItsOwnConsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	alice := fix.session(t, aliceToken)
-	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "agent-consent"})
+	// An agent-side confirm needs a gate that survives the install request —
+	// prepare_source completes setup inline now, so the pending record is
+	// minted without that completion, like a legacy mid-flight record.
+	pending, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "agent-consent", catalogReadDefinition(), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := prepared["onboarding_id"].(string)
+	id := pending.OnboardingID
 	status, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, fix.store, id)})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +274,11 @@ func callControl(t *testing.T, session *mcp.ClientSession, op string, args map[s
 func confirmViaTrustedChannel(t *testing.T, baseURL string, store *Store, id string) {
 	t.Helper()
 	onboarding := mustOnboarding(t, store, id)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		// Consent arrived upstream (credential submit, OAuth grant, install
+		// request): the record already completed without a second click.
+		return
+	}
 	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(onboarding), ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.GateExpiry(api.GateConfirmSetup)})
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +331,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["binding_id"] != "" {
+	if prepared["phase"] != api.PhaseEnabled || prepared["binding_id"] == "" {
 		t.Fatalf("prepare catalog=%v", prepared)
 	}
 	if _, err := callControl(t, alice, "prepare_source", map[string]any{"user_id": "bob", "definition_id": "catalog-read", "version": "1.0.0"}); err == nil {
@@ -340,7 +348,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		}
 	}
 	status, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || status["phase"] != api.PhaseAwaitingConfirm {
+	if err != nil || status["phase"] != api.PhaseEnabled {
 		t.Fatalf("status=%v err=%v", status, err)
 	}
 	creds, err := callControl(t, alice, "required_credentials", map[string]any{"onboarding_id": prepared["onboarding_id"]})

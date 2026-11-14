@@ -205,13 +205,14 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 	onboarding.ProviderAuthorizationURL = ""
 	onboarding.Error = ""
 	onboarding.ErrorCode = ""
-	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
-	onboarding.ConfirmationUsed = false
+	onboarding.ClearGate()
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	return c.refreshConfirmation(ctx, auth, &onboarding)
+	// The provider consent screen already carried the owner's approval —
+	// bind straight through rather than asking for a second confirmation.
+	return c.completeSetup(ctx, auth, &onboarding, "oauth_callback")
 }
 
 // remoteOAuthRefresh mints a fresh access token for an OAuth-managed remote

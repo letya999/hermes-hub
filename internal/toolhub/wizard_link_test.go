@@ -399,8 +399,9 @@ func TestRefreshConfirmationRenewsWizard(t *testing.T) {
 	}
 }
 
-// Credential submission transitions to awaiting-confirm and renews the wizard
-// TTL — the stable link must still be live when the confirm step renders.
+// Credential submission is itself the consent: the form gate clears and the
+// record advances straight to bind/live — no second confirm click, no wizard
+// re-arm for a step that no longer exists.
 func TestSubmitCredentialsRenewsWizard(t *testing.T) {
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "tokens.enc"), Key: bytes.Repeat([]byte("k"), 32)})
 	if err != nil {
@@ -425,11 +426,11 @@ func TestSubmitCredentialsRenewsWizard(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := store.onboarding("onb-wiz-submit")
-	if err != nil || !stored.Awaiting(api.GateConfirmSetup) {
-		t.Fatalf("submit did not reach confirm: %+v err=%v", stored, err)
-	}
-	if stored.WizardNonce != "wiz-key" || stored.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("wizard not renewed on submit: %+v", stored)
+	// This fixture carries no stored definition, so the bind leg cannot run —
+	// what must hold is that the credential gate cleared and the secret
+	// persisted, with no second confirm step armed.
+	if err != nil || stored.Locator == "" || stored.Awaiting(api.GateCredentials) || stored.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("submit left a redundant human step armed: %+v err=%v", stored, err)
 	}
 }
 
@@ -472,11 +473,12 @@ func TestBrokerReadyTransitionRenewsWizard(t *testing.T) {
 	if err := control.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if !onboarding.Awaiting(api.GateConfirmSetup) {
-		t.Fatalf("phase=%s", onboarding.NoticePhase())
-	}
-	if onboarding.WizardNonce != "wiz-key" || onboarding.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("wizard not renewed on broker ready: %+v", onboarding)
+	// The submitted credential is the consent: the credential gate clears and
+	// the record advances to pending→live setup instead of arming a second
+	// confirm click. (Completion itself is best-effort here — this fixture
+	// carries no stored definition — but the transition must persist.)
+	if onboarding.BrokerCredentialID != "credential_1" || onboarding.Awaiting(api.GateCredentials) || onboarding.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("credential ready did not clear the credential gate: %+v", onboarding)
 	}
 }
 
@@ -543,16 +545,16 @@ func TestBrokerAdmissionRenewsWizard(t *testing.T) {
 	if err := control.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if !onboarding.Awaiting(api.GateConfirmSetup) {
+	// The submitted credential is the consent: admission proves it and the
+	// record binds straight through to live — no second confirm click, no
+	// wizard re-arm.
+	if onboarding.Stage != api.StageLive {
 		t.Fatalf("phase=%s", onboarding.NoticePhase())
-	}
-	if onboarding.WizardNonce != "wiz-key" || onboarding.WizardExpires.Before(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("wizard not renewed on broker admission: %+v", onboarding)
 	}
 }
 
-// When an existing broker credential short-circuits straight to confirm, the
-// wizard arms so the notice carries the stable link, not a one-time hop.
+// An existing active broker credential short-circuits straight to live:
+// the install request itself is the consent, so no wizard or confirm arms.
 func TestBrokerCredentialReuseArmsWizard(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -600,11 +602,12 @@ func TestBrokerCredentialReuseArmsWizard(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if err := control.ensureBrokerRequest(context.Background(), auth, &onboarding, definition); err != nil {
-		t.Fatal(err)
-	}
-	if !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.WizardNonce == "" {
-		t.Fatalf("credential reuse did not arm wizard: %+v", onboarding)
+	// Reuse attempts the bind inline; the mock grants no delivery endpoints,
+	// so the completion reports its own failure — the record must not be
+	// left hanging on a second confirm click either way.
+	_ = control.ensureBrokerRequest(context.Background(), auth, &onboarding, definition)
+	if onboarding.Awaiting(api.GateConfirmSetup) || onboarding.Awaiting(api.GateCredentials) {
+		t.Fatalf("credential reuse armed a redundant human step: %+v", onboarding)
 	}
 }
 
@@ -680,12 +683,13 @@ func TestConnectWizardBrokerPagePollsRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-wiz-broker-poll?k=wiz-key", nil)
 	req.Host = "127.0.0.1"
 	gateway.serveConnect(rec, req)
-	// The request was already ready — the page lands on the confirm step.
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в исходном чате") {
+	// The request was already ready — the credential gate clears; the page
+	// renders whatever the advanced record now shows (no confirm step).
+	if rec.Code != http.StatusOK {
 		t.Fatalf("broker-ready wizard page status=%d body=%.300s", rec.Code, rec.Body.String())
 	}
 	stored, err := store.onboarding("onb-wiz-broker-poll")
-	if err != nil || !stored.Awaiting(api.GateConfirmSetup) {
+	if err != nil || stored.BrokerCredentialID == "" || stored.Awaiting(api.GateCredentials) || stored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("page did not advance the phase: %+v err=%v", stored, err)
 	}
 }

@@ -234,10 +234,8 @@ func TestLifecycleResolvesFriendlySelector(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	// Drive it to enabled so disable exercises a real binding.
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.GateNonce(api.GateConfirmSetup)}); err != nil {
-		t.Fatal(err)
-	}
+	// Prepare already drove it to enabled — the install request was the
+	// consent; enable stays as the idempotent entry exercising the binding.
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -443,9 +441,7 @@ func TestSharedConnectorResolvesOneWorkload(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatalf("%s confirm: %v", principal, err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
 		if err != nil {
 			t.Fatalf("%s enable: %v", principal, err)
@@ -528,9 +524,7 @@ func TestSharedConnectorMemberLifecycleIsScoped(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -625,9 +619,7 @@ func TestSharedWorkloadSurvivesMemberDisable(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -721,9 +713,7 @@ func TestSharedMemberRemoveKeepsSharedRecords(t *testing.T) {
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -827,9 +817,6 @@ func TestRemoveDeletesCredentialCiphertext(t *testing.T) {
 		owner = auth.PrincipalID
 	}
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {

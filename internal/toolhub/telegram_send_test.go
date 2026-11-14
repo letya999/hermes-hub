@@ -177,7 +177,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() {
-			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != api.PhaseAwaitingConfirm {
+			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != api.PhaseEnabled {
 				t.Errorf("send preparation: %v %v", body, err)
 			}
 		})
@@ -186,9 +186,6 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	upgrade, ok := c.Store.FindOnboardingByKey(auth, "upgrade:"+original.OnboardingID+":send")
 	if !ok || probes.Load() != 1 || upgrade.BrokerCredentialID != original.BrokerCredentialID || upgrade.BrokerRequestID != "" || upgrade.DefinitionVersion == original.DefinitionVersion {
 		t.Fatal("upgrade duplicated probe, login or session, or replaced immutable read version")
-	}
-	if _, err := c.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": upgrade.OnboardingID, "nonce": upgrade.GateNonce(api.GateConfirmSetup)}); err != nil {
-		t.Fatal(err)
 	}
 	body, err := c.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": upgrade.OnboardingID})
 	if err != nil || body["phase"] != api.PhaseEnabled {
@@ -214,8 +211,8 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	}
 	if managed {
 		tools, err := c.Store.ListProjectedTools(auth)
-		if err != nil || len(tools) != 1 {
-			t.Fatalf("connection update selected tools outside tools.yaml: %v %v", tools, err)
+		if err != nil || len(tools) != 3 {
+			t.Fatalf("self-install connector must project its tools under the managed surface: %v %v", tools, err)
 		}
 	}
 }

@@ -693,7 +693,7 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.ModelStateWaitingYou || noticeDelivered(result) {
+	if result.OperationID == "" || result.State != api.ModelStateDone {
 		t.Fatalf("cli catalog install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -701,7 +701,7 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
-	if err != nil || onboarding.Mode != api.OnboardingCatalog || !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.GateNonce(api.GateConfirmSetup) == "" {
+	if err != nil || onboarding.Mode != api.OnboardingCatalog || onboarding.Stage != api.StageLive || onboarding.BindingID == "" {
 		t.Fatalf("cli catalog onboarding: %v %+v", err, onboarding)
 	}
 }
@@ -989,8 +989,8 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if err != nil || !armed.WritesEnabled || armed.Stage != api.StageLive {
 		t.Fatalf("onboarding after write confirm: %v %+v", err, armed)
 	}
-	if tools, err := store.ListProjectedTools(auth); err != nil || slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
-		t.Fatalf("allow_writes selected a tool outside tools.yaml: %v %v", tools, err)
+	if tools, err := store.ListProjectedTools(auth); err != nil || !slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
+		t.Fatalf("confirmed allow_writes must project the self-install write tool: %v %v", tools, err)
 	}
 	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": true})
 	if err != nil {

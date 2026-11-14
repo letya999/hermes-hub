@@ -610,3 +610,56 @@ func TestConnectorVerbDomainErrorsAreToolResults(t *testing.T) {
 		}
 	}
 }
+
+// The journal ladder projects into the operation result: current step,
+// 1-based index over the frozen total, elapsed seconds and the last
+// transition timestamp. PutOperation stamps UpdatedAt so step_started_at
+// survives a restart.
+func TestOperationResultProjectsStepProgress(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Now().Add(-5 * time.Minute)
+	c := &ControlPlane{Store: store, Now: time.Now}
+	op := c.newConnectorOperation(auth, api.OpIntentInstall, "example", connectorInstallSteps)
+	op.CreatedAt = created
+	if err := c.putOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.OperationFor(auth, op.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.UpdatedAt.IsZero() {
+		t.Fatal("journal write did not stamp UpdatedAt")
+	}
+	result, err := c.InvokeConnector(t.Context(), auth, "connector_status", map[string]any{"operation_id": op.OperationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StepTotal != len(connectorInstallSteps) || result.StepIndex != 1 || result.CurrentStep != api.OpStepResolve {
+		t.Fatalf("progress=%s %d/%d want %s 1/%d", result.CurrentStep, result.StepIndex, result.StepTotal, api.OpStepResolve, len(connectorInstallSteps))
+	}
+	if result.ElapsedSeconds < 299 || result.StartedAt.IsZero() || result.StepStartedAt.IsZero() {
+		t.Fatalf("timing fields missing: %+v", result)
+	}
+}
+
+// A finished ladder reports the final step as current — progress stays
+// monotone and never rewinds to a phantom pending step.
+func TestOperationProgressReportsLastStepWhenDone(t *testing.T) {
+	result := api.OperationResult{}
+	op := api.Operation{
+		OperationID: "op-1",
+		Steps:       []api.OperationStep{{Name: "a", State: api.OpStepDone}, {Name: "b", State: api.OpStepDone}},
+		CreatedAt:   time.Now().Add(-time.Minute),
+		UpdatedAt:   time.Now(),
+	}
+	result.OperationProgress(op, time.Now())
+	if result.StepIndex != 2 || result.StepTotal != 2 || result.CurrentStep != "b" {
+		t.Fatalf("done op progress=%s %d/%d", result.CurrentStep, result.StepIndex, result.StepTotal)
+	}
+}
