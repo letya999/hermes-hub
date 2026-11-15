@@ -427,7 +427,22 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 			return nil
 		}
-		return execute(projected, effective)
+		// Every remaining executor runs the backend after admission returns:
+		// the registry fence is never held across a provider call, so a slow
+		// tool cannot starve revocations or other principals' admissions. A
+		// stale decision between admission and dispatch fails closed on the
+		// same recheck the special branches already use.
+		afterAdmission = func() error {
+			authorized = true
+			if err := g.Store.Reload(); err != nil {
+				return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+			}
+			if err := g.Store.ReverifyEffective(effective); err != nil {
+				return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+			}
+			return execute(projected, effective)
+		}
+		return nil
 	})
 	if err == nil && afterAdmission != nil {
 		err = afterAdmission()

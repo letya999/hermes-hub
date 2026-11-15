@@ -29,12 +29,37 @@ implemented:
     TestBudgetUnknownTokensHoldDailyCapacity.
   - internal/runtime/model_meter_test.go — admit atomicity, per-attempt
     charging, fail-closed load/save.
+  - internal/toolhub/api/run_status.go, memory_run.go, gateway_call.go,
+    gateway.go — every non-empty job/run claim verified against
+    SupervisorRunAuthority; /mcp-run requires both ids; absent authority
+    fails closed; typed-nil seam safe.
+  - internal/runtime/mcp_proxy_lineage_test.go — real carrier e2e.
+  - internal/toolhub/write_correlation_test.go — stable write correlation
+    fences replay, survives reopen, parallel identical calls admit once,
+    read retries never fenced, cleanup-error preserves provider result.
+  - internal/toolhub/gateway_call.go, audit_ledger.go — write calls carry a
+    stable correlation digest (no argument values); cleanup-error outcome.
+  - internal/toolhub/api/backend.go, backend_remote.go — BackendResult.
+    CleanupError; CallRemoteMCP preserves a known result on close failure.
+  - internal/audit/operation.go — Ledger.Resolve: explicit outcome + bounded
+    verified evidence, scoped to the owning principal.
+  - cmd/hubctl/audit.go — hubctl audit pending|resolve operator egress.
+  - internal/toolhub/gateway_call.go — default executor path runs post-
+    admission (Reload + ReverifyEffective) instead of holding s.mu.RLock
+    through the backend.
+  - internal/supervisor/reconcile.go, supervisor.go — recoverySem bounds
+    detached observation + missing-work workers (4); RecoverMissingWork fans
+    out per runtime key, keeps per-key serialization, joins spawned workers.
+  - internal/toolhub/post_admission_test.go — in-flight backend starves
+    neither revocation nor a second owner's call; stale effective denied.
+  - internal/supervisor/recovery_bound_test.go — stuck key does not starve
+    another owner; pool bound + lock hygiene on starvation.
 
 slices:
   S1-budgets: green
-  S2-run-correlation: in-progress
-  S3-operation-fence: pending
-  S4-lock-separation: pending
+  S2-run-correlation: green
+  S3-operation-fence: green
+  S4-lock-separation: green
 
 validation:
   documents: pending

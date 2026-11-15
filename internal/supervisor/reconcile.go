@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -220,6 +221,23 @@ func (m *Manager) sampleStats(ctx context.Context) {
 	}
 }
 
+// recoveryWorkers bounds detached observation and missing-work workers. A
+// stuck runtime holds at most one slot; jobs that miss the pool re-present on
+// the next sweep because the durable record is the queue.
+const recoveryWorkers = 4
+
+func (m *Manager) tryRecoveryWorker() bool {
+	if m.recoverySem == nil {
+		return true // managers built outside New keep their previous bound-free path
+	}
+	select {
+	case m.recoverySem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 // reconcileUnconfirmed retries observation for jobs whose outcome was never
 // confirmed. A run-bound job is re-observed through the runtime's stream so a
 // late or replayed terminal event settles the record once.
@@ -258,11 +276,18 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 		if !lock.TryLock() {
 			continue
 		}
+		if !m.tryRecoveryWorker() {
+			// Pool exhausted: the record stays unconfirmed and re-presents
+			// next sweep instead of queueing an unbounded worker.
+			lock.Unlock()
+			continue
+		}
 		record := record
 		// Reconciliation outlives the sweep tick that scheduled it; the
 		// stream client's own deadlines bound each observe/readmit call.
 		go func() { // #nosec G118 -- detached reconcile worker
 			defer lock.Unlock()
+			defer func() { <-m.recoverySem }()
 			m.reconcileJob(context.Background(), record)
 		}()
 	}
@@ -372,36 +397,24 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 		}
 	}
 	m.mu.Unlock()
+	// Different runtime keys recover in parallel under a bounded worker pool;
+	// the same key still serializes on its recovery lock. A request that
+	// misses the pool stays durable and is collected again next sweep.
+	var workers sync.WaitGroup
 	for _, record := range requests {
 		binding, err := m.bindingFor(record.Request)
 		if err != nil {
 			continue
 		}
-		key := runtimeKey(binding)
-		recoveryLock := m.lockFor("recovery:" + key)
-		recoveryLock.Lock()
-		lock := m.lockFor(key)
-		lock.Lock()
-		m.mu.Lock()
-		entry := m.items[key]
-		latest := m.jobs[executeJobKey(record.Request)]
-		if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) || !m.operationallyCurrentLocked(latest) {
-			m.mu.Unlock()
-			lock.Unlock()
-			recoveryLock.Unlock()
+		if !m.tryRecoveryWorker() {
 			continue
 		}
-		entry.restored = true
-		m.mu.Unlock()
-		lock.Unlock()
-		callCtx, cancel := context.WithTimeout(ctx, 130*time.Second)
-		lease, _, err := m.Acquire(callCtx, binding, LeaseUncertain)
-		if err == nil {
-			// Keep the hold even when ownership persistence fails.
-			_ = m.attachJobLease(lease.ID, executeJobKey(record.Request))
-		}
-		cancel()
-		recoveryLock.Unlock()
+		workers.Add(1)
+		go func(record jobRecord, binding Binding) {
+			defer workers.Done()
+			defer func() { <-m.recoverySem }()
+			m.recoverJobRuntime(ctx, record, binding)
+		}(record, binding)
 	}
 	// Lifecycle operations own no Hermes prompt. Persisted binding and opaque
 	// lease IDs let infrastructure recover while the caller retains its hold.
@@ -419,35 +432,75 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, binding := range bindings {
-		key := runtimeKey(binding)
-		coordinator := m.lockFor("recovery:" + key)
-		coordinator.Lock()
-		lock := m.lockFor(key)
-		lock.Lock()
-		m.mu.Lock()
-		entry := m.items[key]
-		needed := false
-		if entry != nil && recoverableRuntime(entry.Runtime) {
-			for _, lease := range entry.leases {
-				if lease.Kind == LeaseLifecycle {
-					needed = true
-					break
-				}
-			}
-			if needed {
-				entry.restored = true
-			}
+		if !m.tryRecoveryWorker() {
+			continue
 		}
+		workers.Add(1)
+		go func(binding Binding) {
+			defer workers.Done()
+			defer func() { <-m.recoverySem }()
+			m.recoverLifecycleRuntime(ctx, binding)
+		}(binding)
+	}
+	workers.Wait()
+}
+
+func (m *Manager) recoverJobRuntime(ctx context.Context, record jobRecord, binding Binding) {
+	key := runtimeKey(binding)
+	recoveryLock := m.lockFor("recovery:" + key)
+	recoveryLock.Lock()
+	defer recoveryLock.Unlock()
+	lock := m.lockFor(key)
+	lock.Lock()
+	m.mu.Lock()
+	entry := m.items[key]
+	latest := m.jobs[executeJobKey(record.Request)]
+	if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) || !m.operationallyCurrentLocked(latest) {
 		m.mu.Unlock()
 		lock.Unlock()
-		if needed {
-			callCtx, cancel := context.WithTimeout(ctx, 130*time.Second)
-			if _, err := m.Ensure(callCtx, binding); err == nil {
-				_ = m.ReleaseBinding(binding)
+		return
+	}
+	entry.restored = true
+	m.mu.Unlock()
+	lock.Unlock()
+	callCtx, cancel := context.WithTimeout(ctx, 130*time.Second)
+	lease, _, err := m.Acquire(callCtx, binding, LeaseUncertain)
+	if err == nil {
+		// Keep the hold even when ownership persistence fails.
+		_ = m.attachJobLease(lease.ID, executeJobKey(record.Request))
+	}
+	cancel()
+}
+
+func (m *Manager) recoverLifecycleRuntime(ctx context.Context, binding Binding) {
+	key := runtimeKey(binding)
+	coordinator := m.lockFor("recovery:" + key)
+	coordinator.Lock()
+	defer coordinator.Unlock()
+	lock := m.lockFor(key)
+	lock.Lock()
+	m.mu.Lock()
+	entry := m.items[key]
+	needed := false
+	if entry != nil && recoverableRuntime(entry.Runtime) {
+		for _, lease := range entry.leases {
+			if lease.Kind == LeaseLifecycle {
+				needed = true
+				break
 			}
-			cancel()
 		}
-		coordinator.Unlock()
+		if needed {
+			entry.restored = true
+		}
+	}
+	m.mu.Unlock()
+	lock.Unlock()
+	if needed {
+		callCtx, cancel := context.WithTimeout(ctx, 130*time.Second)
+		if _, err := m.Ensure(callCtx, binding); err == nil {
+			_ = m.ReleaseBinding(binding)
+		}
+		cancel()
 	}
 }
 
