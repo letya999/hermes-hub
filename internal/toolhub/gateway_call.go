@@ -108,6 +108,18 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 		}
 		fields := mergeAudit(auditFields(auth, projected, effective, "admit"), corr)
+		if projected.Tool.Effect == api.WriteEffect {
+			// Write calls carry a stable logical correlation derived from the
+			// admitted arguments: a retry after a lost response replays the
+			// same operation and the audit fence holds it, while a changed
+			// argument list is a different operation. ToolCallID stays the
+			// unique per-attempt identity.
+			canonical, err := json.Marshal(arguments)
+			if err != nil {
+				return fmt.Errorf("%w: canonical arguments", api.ErrInvalid)
+			}
+			fields["correlation_id"] = writeCorrelationID(auth, corr, effective, projected, canonical)
+		}
 		if err := g.audit("admit", fields); err != nil {
 			return err
 		}
@@ -259,6 +271,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		outcome = "ok"
 		if result.IsError {
 			outcome = "backend-error"
+		}
+		if result.CleanupError != "" {
+			outcome = "cleanup-error"
 		}
 		if receipt := api.SafeReceipt(result.Receipt); receipt != "" {
 			fields["receipt"] = receipt
