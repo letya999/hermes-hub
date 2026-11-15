@@ -1,11 +1,13 @@
 ---
 description: "Подтверждение браузера через Communication Hub."
-last_verified: "2026-09-18"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0061 (imported from services/credential-broker ADR-0002): Подтверждение браузера через Communication Hub
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0064](../../specs/active/SPEC-0064-credential-broker-v1.md), broker module `services/credential-broker`.
 
 ## Контекст
 

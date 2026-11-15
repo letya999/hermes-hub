@@ -4,6 +4,8 @@ last_verified: 2026-09-11
 ---
 # ADR-0012: Validate the pinned Hermes API contract
 
+Status: accepted.
+
 Accepted 2026-09-11.
 
 ## Decision

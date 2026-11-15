@@ -1,6 +1,6 @@
 ---
 description: Frozen requirements for the M20 memory vault (provenance-aware leaves, provider seam, audience-scoped CORE, pre-turn recall, gated rollup, search, write contract, soft forget) and the opt-in OpenKnowledge UI surface.
-last_verified: 2026-11-08
+last_verified: "2026-11-15"
 ---
 # SPEC-0085: Memory vault and OpenKnowledge knowledge surface
 

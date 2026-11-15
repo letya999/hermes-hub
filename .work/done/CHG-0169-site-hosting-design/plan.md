@@ -38,11 +38,11 @@ or runtime changes belong to this design CHG.
 
 ## Subsequent implementation sequence (allocated, not started)
 
-Detailed plans and states: [CHG-0170](../../in-progress/CHG-0170-hosting-store/plan.md),
-[CHG-0171](../../in-progress/CHG-0171-hosting-web-access/plan.md),
-[CHG-0172](../../in-progress/CHG-0172-hosting-static-delivery/plan.md),
-[CHG-0173](../../in-progress/CHG-0173-hosting-dynamic/plan.md),
-[CHG-0174](../../in-progress/CHG-0174-hosting-acceptance/plan.md).
+Detailed plans and states: [CHG-0170](../../done/CHG-0170-hosting-store/plan.md),
+[CHG-0171](../../done/CHG-0171-hosting-web-access/plan.md),
+[CHG-0172](../../done/CHG-0172-hosting-static-delivery/plan.md),
+[CHG-0173](../../done/CHG-0173-hosting-dynamic/plan.md),
+[CHG-0174](../../done/CHG-0174-hosting-acceptance/plan.md).
 
 Each slice is a separate commit; add red regression cases before behavior.
 

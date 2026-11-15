@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0299
+title: Standalone shared project and multi-session per-user cliproxy
+status: done
+branch: feat/m32-integration
+updated: "2026-11-15"
+phase: done
+validation:
+  unit: named regressions for split naming and two-session materialization pass; go test -short green for cmd/hubctl, internal/runtime, internal/stack, internal/credentialbroker; go vet -p=2 clean
+  shared_project: hermes-hub-shared-dev runs cliproxy, communication-hub, credential-broker, hub-media, hub-stt, hub-tts, supervisor, toolhub, workload-controller; shared volumes reattached under pre-split names
+  apply: space apply --dir spaces/artem_two --env dev --confirm published r-6a619113d16486c3; runtime recreate, cliproxy-google removal and model-relay live actions all applied
+  multi_session: cliproxy-artem_two-1 loads 2 auth files (cliproxy-artem_two.json + google-antigravity.json) plus two broker-materialized api-keys; one instance, zero duplicate containers
+  cleanup: cliproxy-google and cliproxy-google-2 bind dirs removed; orphan session/cfg volumes removed; retired cliproxy-google containers removed by apply
+  grants: cliproxy-google re-enrolled under slot bindings cliproxy-artem_two-google-antigravity / cliproxy-artem_two-key-cliproxy-google; relay grant reissued
+  toolhub: catalog 18.3.18 binding remains active for artem_two
+limitations:
+  - Docker Desktop port publishing is broken in this environment; supervisor was reached via a WSL docker-exec TCP relay on 127.0.0.1:8876 during apply
+  - Linux-side hubctl apply cannot run inside containers: drvfs bind mounts reject chown, which RenderEnvironment requires
+  - hermes-runtime spawns on demand per supervisor lifecycle; no persistent runtime container expected
+source:
+  base_sha: a328b8d7
+  remote_acceptance: unpublished dirty source; no CI run URL
+remaining:
+  - stale hermes-hub-artem_two-dev-cliproxy-google-* grant slots in Broker ledger can be revoked in a later housekeeping pass
+  - docker-compose.yml/.devin docs refresh for the shared-project contract
+  - full just check before delivery

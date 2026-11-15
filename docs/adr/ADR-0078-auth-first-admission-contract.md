@@ -4,7 +4,7 @@ last_verified: 2026-10-25
 ---
 # ADR-0078: Auth-first admission contract completion
 
-Status: Proposed — implementation in CHG-0176 (issue #293).
+Status: accepted — implemented in CHG-0176 (issue #293), verified 2026-11-15.
 
 ## Context
 

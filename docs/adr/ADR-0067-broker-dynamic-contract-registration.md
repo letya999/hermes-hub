@@ -1,11 +1,13 @@
 ---
 description: "Динамическая регистрация collect-and-deliver контрактов через control API."
-last_verified: "2026-10-16"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0067 (imported from services/credential-broker ADR-0008): динамическая регистрация контрактов через control API
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0067](../../specs/active/SPEC-0067-recipe-oauth.md), broker module `services/credential-broker`.
 
 ## Контекст
 

@@ -8,8 +8,8 @@ Status: accepted, 2026-10-13, by the owner's explicit instruction to implement
 the reviewed design. Implementation and live acceptance are recorded separately.
 
 Requirements: [SPEC-0052](../../specs/active/SPEC-0052-telegram-operation-contracts.md).
-Execution: [CHG-0091](../../.work/in-progress/CHG-0091-telegram-operation-contracts/plan.md).
-Evidence and alternatives: [research](../../.work/in-progress/CHG-0091-telegram-operation-contracts/research.md).
+Execution: [CHG-0091](../../.work/done/CHG-0091-telegram-operation-contracts/plan.md).
+Evidence and alternatives: [research](../../.work/done/CHG-0091-telegram-operation-contracts/research.md).
 
 ## Context
 

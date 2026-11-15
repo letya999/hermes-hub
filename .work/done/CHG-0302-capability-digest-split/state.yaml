@@ -1,0 +1,24 @@
+change: CHG-0302-capability-digest-split
+status: done
+updated: "2026-11-15"
+created: 2026-11-13
+branch: fix/toolhub-capability-digest-split
+incident:
+  job: telegram-837846104
+  window: "2026-11-12 21:39-21:41 UTC"
+  symptom: "media tools absent from projection; only media_speak survived"
+  root_cause: "selections repinned to 18.3.19 digest while allows/ceiling stayed on 18.3.18 — handler tools with Uses dropped silently"
+gates:
+  toolhub_tests: passed
+  toolhub_api_tests: passed
+  toolhub_automation_tests: passed
+  migration_tests: passed
+  hubctl_tests: passed
+  stack_tests: passed
+  locale_tests: passed
+  gofmt: passed
+  go_vet: passed
+  just_check: "blocked by base commit: 3 pre-existing stale last_verified files (api-contract, supervisor, testing) fail on clean 251402db too; tools.md and CHG index sync pass"
+notes:
+  - "catalog_enable/enable path untouched: it already extends ceiling+allows under the new digest before validating candidates"
+  - "operator repair (catalog-enable repin both profiles + respawn + real media rerun) intentionally not part of this code-only changeset"

@@ -1,8 +1,12 @@
 ---
 description: Persist job and runtime mappings without a database dependency.
-last_verified: 2026-09-12
+last_verified: "2026-11-15"
 ---
 # ADR-0015: Durable job/runtime mappings
+
+Status: accepted.
+
+**Amended by:** [ADR-0091](ADR-0091-root-services-sqlite-storage.md) — part of the durable state moved to per-space SQLite stores (`internal/sqlitedb`); atomic JSON files remain for the spool legs the migration contract does not cover.
 
 Accepted 2026-09-12.
 

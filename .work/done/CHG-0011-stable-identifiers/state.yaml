@@ -1,5 +1,5 @@
 change: CHG-0011
-status: complete
+status: done
 completed:
   - stable identifier ADR and specification added
   - current single-user layout and v1 job fields mapped without data migration

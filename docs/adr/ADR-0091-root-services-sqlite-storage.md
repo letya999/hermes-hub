@@ -5,13 +5,13 @@ last_verified: "2026-10-31"
 
 # ADR-0091: SQLite-хранилище ToolHub и Communication
 
-Status: accepted direction; implementation and migration gate not started.
+Status: accepted — SQLite stores delivered (CHG-0215–0226), verified 2026-11-15.
 Дата решения: 2026-10-31.
 
 Связи: [SPEC-0090](../../specs/active/SPEC-0090-root-services-sqlite.md),
 [ADR-0087](ADR-0087-broker-bounded-sqlcipher-store.md),
 [ADR-0088](ADR-0088-bounded-control-journals.md),
-[порядок реализации](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md).
+[порядок реализации](../../.work/done/CHG-0215-broker-recovery-head/README.md).
 Дополняет ADR-0087/0088 и SPEC-0087/0088; тексты принятых ADR и frozen SPEC
 не редактируются — это решение изменяет отдельные пункты явно.
 

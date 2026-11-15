@@ -4,7 +4,9 @@ last_verified: 2026-11-06
 ---
 # ADR-0086: Memory vault and OpenKnowledge knowledge surface
 
-Status: Proposed 2026-10-24. Milestone M20.
+Status: accepted — delivered M20, verified 2026-11-15. Proposed 2026-10-24. Milestone M20.
+
+Amended by [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md): vault ownership and automation moved from runtime to ToolHub (M32).
 Amended 2026-10-31 (M20.0, issue #418): D6/D10 revised, D11–D19 added from
 the post-research redesign; spike evidence in
 `.work/in-progress/CHG-0204-vault-layout/spike-m20.md`.

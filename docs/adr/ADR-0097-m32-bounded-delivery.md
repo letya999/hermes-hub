@@ -4,7 +4,7 @@ last_verified: 2026-11-05
 ---
 # ADR-0097: Bounded M32 delivery
 
-Status: accepted delivery direction, implementation pending. Date: 2026-11-05.
+Status: accepted — delivered M32, verified 2026-11-15.
 Refines delivery of ADR-0095/0096; their security and ownership decisions remain.
 User request: make foundation smaller and give each worker a bounded assignment.
 

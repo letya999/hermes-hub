@@ -1,6 +1,6 @@
 change: CHG-0021
 title: ToolHub stage 3 migration and enforcement foundation
-status: done-control-plane
+status: done
 issues: [20, 21, 22, 23, 24, 25, 26, 47]
 follow_ups: [73, 74]
 started: 2026-09-13

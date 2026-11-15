@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0282
+title: "Stale-receipt wedge + managed media admission: telegram-837845960 live incident repair"
+status: done
+branch: chore/merge-m31-m20-into-dev
+updated: "2026-11-15"
+phase: done
+adr: ADR-0025
+spec: SPEC-0053
+requirements: []
+depends_on: [CHG-0275]
+github_milestone: ""
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: "devcheck docs leg green inside just check"
+  just_check: "test leg exit 1 on 3 flakes — TestRunWiresDurableRestartState (cmd/toolhub), TestSurfaceProbeHubChildDiesOnInit (internal/runtime), TestDockerScratchExecDurableLease (internal/toolhub); each passes isolated AND on full-package rerun (60.5s/43.2s/1.0s). vet + staticcheck + actionlint + mod tidy + docs legs ran green; covergo verdict not reached. Touched packages: internal/communication ok 179s, internal/stack ok 20s."
+  docker_check: "not required — dev-rebuild path used per AGENTS.md"
+  security: "no dependency changes"
+  live_acceptance: |
+    done 2026-11-04 on spaces/local + spaces/artem_two dev stack:
+    - toolhub /mcp initialize 200 + tools/list = 94 tools for artem_two
+    - telegram-837845960 finalized failed/ + uncertain notice delivered (text_len=96)
+    - telegram-837845961 executed (run_c12e69ad30dc, gen-520) + answer delivered (text_len=43)
+    - spool drained: pending/ and running/ empty; PDF inbound preserved
+    - communication-hub + supervisor dev images rebuilt and verified on new code

@@ -1,6 +1,6 @@
 change: CHG-0014
 title: Threat-model personal deployment and future company boundary
-status: complete
+status: done
 completed:
   - trust boundaries and data flow documented
   - abuse cases mapped to controls, audit evidence and regression owners

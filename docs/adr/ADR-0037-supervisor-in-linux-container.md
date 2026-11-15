@@ -4,7 +4,7 @@ last_verified: 2026-10-20
 ---
 # ADR-0037: Supervisor in a Linux container (D12a)
 
-Status: proposed, 2026-10-14. No implementation before owner acceptance.
+Status: superseded by ADR-0040 (simpler accepted direction), record kept for history.
 Answered by [ADR-0040](ADR-0040-single-stack-supervisor.md): the owner accepted
 the simpler direction — supervisor in the existing control image without the
 HTTP socket adapter or proxy allowlist this record proposes. Kept as reference

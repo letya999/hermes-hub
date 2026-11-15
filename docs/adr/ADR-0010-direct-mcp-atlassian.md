@@ -5,6 +5,8 @@ last_verified: 2026-09-11
 ---
 # ADR-0010: Direct mcp-atlassian server
 
+Status: accepted.
+
 ## Decision
 
 Install the pinned upstream [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)

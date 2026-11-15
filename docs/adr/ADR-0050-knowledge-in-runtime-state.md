@@ -5,6 +5,8 @@ last_verified: 2026-10-18
 # ADR-0050: Knowledge in runtime state + spool migration
 
 Status: Accepted 2026-10-18. Implemented as CHG-0121 (relocation) and
+
+Amended by [ADR-0086](ADR-0086-memory-vault-openknowledge.md) (memory vault replaces runtime-state knowledge) and [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md) (ToolHub ownership).
 CHG-0126 (offline migration). Planned as ADR-0048 in the phase plan,
 renumbered (that number went to the routines package).
 

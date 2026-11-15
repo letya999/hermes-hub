@@ -4,6 +4,8 @@ last_verified: 2026-09-15
 ---
 # ADR-0018: Stateless personal provider HTTPS calls behind ToolHub
 
+Status: accepted.
+
 Accepted 2026-09-15.
 
 Calendar's narrow official REST surface does not need an additional SDK or

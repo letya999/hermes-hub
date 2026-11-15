@@ -1,6 +1,6 @@
 ---
 description: "M31: frozen requirements for catalog release 5 — toolset dictionary, via/executor routing, audiences, fail-closed rights, envelope and verification suite."
-last_verified: "2026-11-03"
+last_verified: "2026-11-15"
 frozen: "2026-11-03"
 ---
 

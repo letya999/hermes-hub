@@ -4,7 +4,7 @@ last_verified: 2026-11-08
 ---
 # ADR-0095: ToolHub owns memory and automation
 
-Status: accepted direction, implementation in progress. Decision: 2026-11-04.
+Status: accepted — delivered M32, verified 2026-11-15.
 Requirements: [SPEC-0094](../../specs/active/SPEC-0094-toolhub-memory-automation.md).
 Amends ADR-0082, ADR-0086 and the ownership clauses of earlier routine ADRs.
 

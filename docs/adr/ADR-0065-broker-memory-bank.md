@@ -1,11 +1,13 @@
 ---
 description: "Адаптация medium memory bank."
-last_verified: "2026-09-18"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0065 (imported from services/credential-broker ADR-0006): Адаптация medium memory bank
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0068](../../specs/active/SPEC-0068-dynamic-session-contract.md), broker module `services/credential-broker`.
 
 ## Контекст
 
