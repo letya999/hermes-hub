@@ -56,7 +56,14 @@ func runAudit(_ context.Context, args []string) error {
 	if *dir == "" {
 		*dir = filepath.Join("spaces", *profile)
 	}
-	ledger, err := audit.Open(filepath.Join(*dir, "state", "audit.jsonl"))
+	dirAbs, err := filepath.Abs(*dir)
+	if err != nil {
+		return err
+	}
+	// The ToolHub container mounts the space's runtime/ tree at /state and
+	// appends to /state/toolhub/audit.jsonl (HUB_AUDIT_LEDGER), so the host
+	// path is <space>/runtime/toolhub/audit.jsonl.
+	ledger, err := audit.Open(filepath.Join(dirAbs, "runtime", "toolhub", "audit.jsonl"))
 	if err != nil {
 		return err
 	}

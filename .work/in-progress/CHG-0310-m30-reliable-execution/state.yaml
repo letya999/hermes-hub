@@ -74,5 +74,18 @@ validation:
                    # re-verified against cd963583 and last_verified bumped
   scoped_tests: pass  # affected packages green: communication, runtime,
                       # audit, toolhub, supervisor, cmd/hubctl, locale
-  live_acceptance: pending  # no dev-stack rebuild performed; requires
-                            # hubctl dev-rebuild on a real space per AGENTS
+  live_acceptance: pass  # artem_main dev stack, 2026-11-16: dev-rebuild
+    # toolhub/supervisor/communication-hub/model-relay/toolhub-relay/
+    # hermes-runtime, all containers healthy on hermes-hub-dev-artem_main-*.
+    # #397: /mcp-run tools/call denied without claims ("run correlation
+    # required"), denied with forged job/run ("run context"), denied on a
+    # completed run replay ("run context"); real run mock-8a18215 /
+    # run_eb66e2d admitted and files.list completed ok (audit.jsonl.v1-000002
+    # admitted→completed pair, tool_call call-083ea268). #400: model attempts
+    # flowed model-relay→cliproxy 2×200 through the atomic admit path.
+    # #398: hubctl audit pending reads the live segmented ledger; operator
+    # egress verified on real unsettled operations. #399: rebuilt ToolHub
+    # served interleaved rights/memory/tool traffic with post-admission
+    # dispatch; owner answer delivered via mock channel. Remaining unproven
+    # live: write-replay fencing, bounded recovery fan-out, unknown-token
+    # budget path (e2e/unit coverage only).
