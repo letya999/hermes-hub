@@ -207,14 +207,14 @@ docs/tools.md; they are not shared personal-memory stores.
   `memory_leaf_retention_days` (≥2) expires leaves past the window once
   their rollup + daily summary provably exist — kept days and actions
   journal to `REVIEW.md` and the morning digest (SPEC-0085 R7.5). With
-  `knowledge_ui` on renders no `open-knowledge` container (M32/#520):
-  ToolHub owns the vault, the upstream editor cannot act as a
-  governed-API client, so the feature is explicitly unavailable —
-  `ui_port`/`ui_bind` stay valid but publish nothing. There is no
-  `mcp__open_knowledge__*` surface; edits outside the governed writer
-  are impossible, and `memory_card op=propose` plus owner confirmation
-  is the only edit path (SPEC-0098). Vault content and `.ok/` state
-  are never deleted — the surface is suspended, not removed.
+  `knowledge_ui` on renders one `open-knowledge` container mounting the
+  vault at `/data` — the human OpenKnowledge editor, reachable only on
+  the `ui_port`/`ui_bind` loopback publish. There is no
+  `mcp__open_knowledge__*` surface (M32/#520 route stays retired): agent
+  edits still go through `memory_card op=propose` plus owner confirmation
+  (SPEC-0098), while owner UI edits land in the working tree and are
+  committed as `hermes-owner` by the next `CommitExternalEdits` sweep.
+  Vault content and `.ok/` state are never deleted on feature-off.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`

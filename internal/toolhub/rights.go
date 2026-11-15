@@ -194,6 +194,9 @@ func (s *Store) loadRightsLedgerLocked() (*api.Governance, error) {
 	if s.RightsLedger == nil {
 		return nil, nil
 	}
+	if memo := s.ledgerMemo.Load(); memo != nil {
+		return memo.doc, memo.err
+	}
 	return s.RightsLedger()
 }
 

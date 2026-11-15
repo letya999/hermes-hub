@@ -1,7 +1,7 @@
 schema: 1
 id: CHG-0068-usage-report
 title: Real task/session usage report (issue 169)
-status: complete
+status: done
 phase: closed
 started_at: 2026-10-04
 updated_at: 2026-10-06

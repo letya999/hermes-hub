@@ -4,6 +4,8 @@ last_verified: 2026-09-17
 ---
 # ADR-0021: Control MCP owns install, grants and elicitation
 
+Status: accepted.
+
 Accepted 2026-09-17.
 
 ## Decision

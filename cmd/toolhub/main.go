@@ -174,7 +174,11 @@ func runWithContext(ctx context.Context) error {
 	runBackground(func() { removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile) })
 	lifecycle := handler.(interface{ ReconcileOnboardings(context.Context) })
 	runBackground(func() {
-		ticker := time.NewTicker(time.Second)
+		// Every lifecycle predicate works at >=30s granularity
+		// (ObservedAt age, AdmissionNextAttempt, NoticeNextAttempt), so a
+		// 1s tick only manufactured broker-cursor churn — CHG-0308 moved the
+		// cursor itself to the sidecar; this tick only schedules passes.
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			lifecycle.ReconcileOnboardings(ctx)

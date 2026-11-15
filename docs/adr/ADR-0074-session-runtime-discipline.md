@@ -4,7 +4,7 @@ last_verified: 2026-10-24
 ---
 # ADR-0074: Session and runtime discipline
 
-Status: Accepted for isolated implementation; deployment acceptance pending.
+Status: accepted — session/runtime discipline delivered (M16/M17), verified 2026-11-15.
 
 ## Context
 Milestone 17 (M16), issues #151/#183/#184/#196/#207/#213/#214/#249.

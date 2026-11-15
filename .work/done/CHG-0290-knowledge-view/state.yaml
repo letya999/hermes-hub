@@ -1,0 +1,18 @@
+schema: 1
+change: CHG-0290
+title: Temporary ToolHub knowledge view
+status: done
+updated: "2026-11-15"
+branch: feat/m32-integration
+implementation_status: local_verified_read_only_view
+validation:
+  named_security_tests: pass
+  just_check: pass
+  affected_tests: pass
+  dev_toolhub_image: sha256:83abaff7c5b20027e04a0990885acc3a6dd435d23d2c78c501a94c4ae89d45da
+  managed_rebind_respawn: pass_both_dev_spaces
+  live_agent_link: pass_artem_two_mock_model_toolhub
+remaining:
+  - Confirm whether the requested UI means the upstream OpenKnowledge editor; this change provides a separate read-only ToolHub view.
+  - Provide an operator-owned HTTPS public origin if the one-hour link must open on another device; the current dev ToolHub publishes only on host loopback.
+  - Remote CI requires separate publication authorization.

@@ -1,6 +1,6 @@
 ---
 description: Frozen requirements for the M20 memory vault (provenance-aware leaves, provider seam, audience-scoped CORE, pre-turn recall, gated rollup, search, write contract, soft forget) and the opt-in OpenKnowledge UI surface.
-last_verified: 2026-11-08
+last_verified: "2026-11-15"
 ---
 # SPEC-0085: Memory vault and OpenKnowledge knowledge surface
 
@@ -259,11 +259,21 @@ vault owner. `memory_open` now opens a separate read-only ToolHub view with
 a one-hour private link and live read-right checks. The upstream editor and
 write UI remain unavailable until they can use the governed API.
 
+2026-11-15 amendment (human-UI restore, ADR-0095 amendment): R8/R10 are
+reinstated — the `open-knowledge` service renders again as the owner-facing
+editor under the scoped D2 exception, with the runtime MCP route (R9)
+permanently retired: owner edits enter via `CommitExternalEdits` as
+`hermes-owner`, agent reads/writes stay governed-only, and `memory_open`
+remains the separate read-only view.
+
 - R8.1 Feature `knowledge_ui` renders one `open-knowledge` compose
   service per space: image built via the hubctl BuildKit path with a
   pinned `@inkeep/open-knowledge` version, volume =
   `spaces/<id>/vault`, `ok init --no-mcp --no-skills` first boot,
   `replicas: 1`, private network only, no published ports by default.
+  A managed `ui_port` publish additionally joins a dedicated
+  non-internal `knowledge-publish` network (internal agent nets drop
+  published ports).
 - R8.2 `.okignore` at the vault root excludes `.git/`, `.graph/`,
   `.ok/`, `runtime/` sidecars; the vault root contains no secrets by
   layout.

@@ -14,25 +14,42 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 ## In progress
 
+| Change | Summary |
+|---|---|
+| [CHG-0308](in-progress/CHG-0308-hot-ledger-sidecar/plan.md) | Hot ledger off the registry commit channel: broker cursors move to a CursorStore sidecar (JSON temp+rename, 60s flush), heartbeats persist on transition only, lifecycle tick 1s→15s — fixes /v1/rights/decide starvation → agent 403s (repeat of the CHG-0305 class) |
+
+## Done — pre-release bookkeeping sweep (2026-11-15)
+
 | Change | State |
 |---|---|
-| [CHG-0306](in-progress/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
-| [CHG-0305](in-progress/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
-| [CHG-0304](in-progress/CHG-0304-connector-slot-fsm/plan.md) | Onboarding lifecycle collapsed to Stage{pending,live,failed,gone}+Gate slot per ADR-0099: production + test migration done, single-link semantics and model contract pending |
-| [CHG-0303](in-progress/CHG-0303-space-hygiene-retention/plan.md) | Bounded passport revisions (pointer chain + slack sweep under apply lock), generated-only renders, retired space leftovers removed |
-| [CHG-0302](in-progress/CHG-0302-capability-digest-split/plan.md) | Digest-split wedge closed: publish binds to the bound catalog revision, write gate refuses uncovered selections, capability-rule denials surface in tool_search, doctor warns — incident telegram-837846104 |
-| [CHG-0300](in-progress/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |
-| [CHG-0301](in-progress/CHG-0301-store-reload-foreign-commit/plan.md) | Store reload falls back to db+WAL file stamps when data_version cannot see a foreign-process commit (Docker Desktop bind mounts) — host-side apply no longer wedges rights decide at 503 until restart |
-| [CHG-0299](in-progress/CHG-0299-shared-project-and-multisession-cliproxy/plan.md) | Standalone hermes-hub-shared Compose project and one multi-session cliproxy per space; dev topology and artem_two apply verified |
-| [CHG-0298](in-progress/CHG-0298-connector-onboarding-reconciliation/plan.md) | Durable connector FSM and incremental registry deployed and live verified; protected owner/provider acceptance pending |
-| [CHG-0297](in-progress/CHG-0297-owner-connector-cleanup/plan.md) | Owner connector cleanup across policy epochs, orphan onboarding and missing credential state; implementation in progress |
-| [CHG-0296](in-progress/CHG-0296-managed-exposure-config/plan.md) | Supervisor-spawned exposure config and safe declared-endpoint listing; live dev verification in progress |
-| [CHG-0295](in-progress/CHG-0295-response-fanout-safety/plan.md) | Telegram response fan-out cap (5 parts + answer.md) and context-echo/tool_call contract clauses after incident telegram-837846020; live rerun pending |
-| [CHG-0294](in-progress/CHG-0294-telegram-admission-sqlite/plan.md) | Telegram queued progress, SQLite startup and ToolHub projection latency; local verification in progress |
-| [CHG-0293](in-progress/CHG-0293-toolhub-primary-toolsets/plan.md) | Select and verify primary ToolHub toolsets in platform defaults and both Artem passports; live acceptance on artem_two in progress |
-| [CHG-0292](in-progress/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
-| [CHG-0289](in-progress/CHG-0289-fast-local-verification/plan.md) | Fast local checks, exact-source prebuilt Docker verification, CI cache repairs and Devin handoff; local check/tests/actionlint passed, remote acceptance and host diagnosis pending |
-| [CHG-0290](in-progress/CHG-0290-knowledge-view/plan.md) | One-hour ToolHub knowledge link and read-only owner memory view; implementation and dev acceptance in progress |
+| [CHG-0292](done/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
+| [CHG-0238](done/CHG-0238-storage-cleanup/plan.md) | Local spool and audit cleaned; deletion of 101 older ignored host files blocked by automatic approval review |
+| [CHG-0226](done/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
+| [CHG-0225](done/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; implementation imported, validation in progress |
+| [CHG-0224](done/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; implementation imported, validation in progress |
+| [CHG-0223](done/CHG-0223-storage-budget-maintenance/plan.md) | Storage reliability MVP: Полный учёт объёма и безопасное операторское обслуживание; implementation imported, validation in progress |
+| [CHG-0222](done/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; implementation imported, validation in progress |
+| [CHG-0221](done/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; implementation imported, validation in progress |
+| [CHG-0218](done/CHG-0218-broker-sqlcipher-proof/plan.md) | Storage reliability MVP: Gate сборки и аварийной атомарности SQLCipher; design accepted, implementation not started |
+| [CHG-0217](done/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; implementation imported, validation in progress |
+| [CHG-0216](done/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; implementation imported, validation in progress |
+| [CHG-0215](done/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; implementation imported, validation in progress |
+| [CHG-0306](done/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
+| [CHG-0305](done/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
+| [CHG-0304](done/CHG-0304-connector-slot-fsm/plan.md) | Onboarding lifecycle collapsed to Stage{pending,live,failed,gone}+Gate slot per ADR-0099: production + test migration done, single-link semantics and model contract pending |
+| [CHG-0303](done/CHG-0303-space-hygiene-retention/plan.md) | Bounded passport revisions (pointer chain + slack sweep under apply lock), generated-only renders, retired space leftovers removed |
+| [CHG-0302](done/CHG-0302-capability-digest-split/plan.md) | Digest-split wedge closed: publish binds to the bound catalog revision, write gate refuses uncovered selections, capability-rule denials surface in tool_search, doctor warns — incident telegram-837846104 |
+| [CHG-0300](done/CHG-0300-denial-not-found-split/plan.md) | Declared-tool denials report as denials (not record-not-found), bounded audit reason class, terminal authoritative-inventory answers and catalog 18.3.19/Release 37 — incident telegram-837846090; live rerun pending |
+| [CHG-0301](done/CHG-0301-store-reload-foreign-commit/plan.md) | Store reload falls back to db+WAL file stamps when data_version cannot see a foreign-process commit (Docker Desktop bind mounts) — host-side apply no longer wedges rights decide at 503 until restart |
+| [CHG-0299](done/CHG-0299-shared-project-and-multisession-cliproxy/plan.md) | Standalone hermes-hub-shared Compose project and one multi-session cliproxy per space; dev topology and artem_two apply verified |
+| [CHG-0298](done/CHG-0298-connector-onboarding-reconciliation/plan.md) | Durable connector FSM and incremental registry deployed and live verified; protected owner/provider acceptance pending |
+| [CHG-0297](done/CHG-0297-owner-connector-cleanup/plan.md) | Owner connector cleanup across policy epochs, orphan onboarding and missing credential state; implementation in progress |
+| [CHG-0296](done/CHG-0296-managed-exposure-config/plan.md) | Supervisor-spawned exposure config and safe declared-endpoint listing; live dev verification in progress |
+| [CHG-0295](done/CHG-0295-response-fanout-safety/plan.md) | Telegram response fan-out cap (5 parts + answer.md) and context-echo/tool_call contract clauses after incident telegram-837846020; live rerun pending |
+| [CHG-0294](done/CHG-0294-telegram-admission-sqlite/plan.md) | Telegram queued progress, SQLite startup and ToolHub projection latency; local verification in progress |
+| [CHG-0293](done/CHG-0293-toolhub-primary-toolsets/plan.md) | Select and verify primary ToolHub toolsets in platform defaults and both Artem passports; live acceptance on artem_two in progress |
+| [CHG-0289](done/CHG-0289-fast-local-verification/plan.md) | Fast local checks, exact-source prebuilt Docker verification, CI cache repairs and Devin handoff; local check/tests/actionlint passed, remote acceptance and host diagnosis pending |
+| [CHG-0290](done/CHG-0290-knowledge-view/plan.md) | One-hour ToolHub knowledge link and read-only owner memory view; implementation and dev acceptance in progress |
 | [CHG-0307](done/CHG-0307-connector-install-ux/plan.md) | Install-UX done: credential/action notices only with a usable URL, install-path confirm removed (credential submit/OAuth/explicit install = consent), journaled step progress in operation results + one live status message, prepare phase timing, same-session tools/list_changed — catalog 18.7.0/Release 41 |
 | [CHG-0274](done/CHG-0274-verification-suite/plan.md) | M31.11 charter verification suite: lints, parity tests and intent evals (#448); done: vocabulary/requires/description lints, direct↔tool_call admission parity, annotation parity, 40-intent eval baseline 1.000, Appendix D rule→test table |
 | [CHG-0273](done/CHG-0273-docs-migration-release/plan.md) | M31.10 documentation, tools.yaml migration and catalog r5 release (#447); done: tool-design appendices A–D, docs sweep to r5, r4→r5 migration rename hints, immutable catalog release 6 emitted |
@@ -46,72 +63,65 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0265](done/CHG-0265-schemas-annotations-envelope/plan.md) | M31.2 typed schemas, contract descriptions, MCP annotations, result envelope (#439); done |
 | [CHG-0264](done/CHG-0264-rights-domains-requires/plan.md) | M31.1 rights.yaml domains and member requires, fail closed (#438); done |
 | [CHG-0263](done/CHG-0263-catalog-r5-vocabulary/plan.md) | M31.0 catalog r5 vocabulary, via/executor model, tool audiences (#437); done |
-
 | [CHG-0249](done/CHG-0249-model-routing/plan.md) | M29.8 Route by model service, enforce quotas, and fail over safely; done: in-service model retry, durable quota windows, reasoning/sharing contract (live gate pending M29.12) |
 | [CHG-0250](done/CHG-0250-prompt-context/plan.md) | M29.9 One read-only system prompt + Hub rules per managed turn; done: skip_context_files fence, HERMES_IGNORE_RULES, revision pointer (live gate pending M29.12) |
 | [CHG-0251](done/CHG-0251-skills-connectors/plan.md) | M29.10 Skills/connectors/raw-MCP/packs under passports; done: mcp-raw catalog surfaces, narrow-bound enforcement (live gate pending M29.12) |
 | [CHG-0252](done/CHG-0252-migration-docs/plan.md) | M29.11 Migrate legacy config safely and document the six-passport operating model; done: space-migrate/space-audit shipped, two-user live migration verified |
 | [CHG-0253](done/CHG-0253-acceptance-ci/plan.md) | M29.12 Multi-user live acceptance, CI gates, and milestone closeout; done: two-user isolation golden, docker-check green on branch code |
-| [CHG-0240](in-progress/CHG-0240-legacy-data-retirement/plan.md) | Local cleanup and all-space external connector retirement: 109 unused Docker volumes, 16.46 GB connector artifacts, 1.17 GB browser profiles, 23 artifact images, external env and all CLI/MCP definitions removed; six active system bindings retained |
+| [CHG-0240](done/CHG-0240-legacy-data-retirement/plan.md) | Local cleanup and all-space external connector retirement: 109 unused Docker volumes, 16.46 GB connector artifacts, 1.17 GB browser profiles, 23 artifact images, external env and all CLI/MCP definitions removed; six active system bindings retained |
 | [CHG-0279](done/CHG-0279-m31-m20-merge-live-acceptance/plan.md) | M31+M20 merge live acceptance done: dev images, managed m29-acc-03 on shared cliproxy, catalog r10 tool surface verified live with real model turns |
 | [CHG-0280](done/CHG-0280-m20-memory-vault-live-acceptance/plan.md) | M20 memory vault live acceptance done on spaces/local: real model turns write+recall cards, real nightly rollup via relay (summary+2 fact cards+REVIEW), OpenKnowledge opened on the real vault, deny matrix + sibling isolation proven; live defects fixed (git-in-core, safe.directory, pydantic schemas, HUB_VAULT env, fenced-JSON proposals); covergo 86.13% |
-| [CHG-0281](in-progress/CHG-0281-m32-per-space-memory-plane/plan.md) | [M32 MVP milestone 43](https://github.com/letya999/hermes-hub/milestone/43): three existing worktrees; committed snapshot config 4, memory 4, automation 2 issues; continue #508/#517/#523 via Devin; [issue contracts and prompts](in-progress/CHG-0281-m32-per-space-memory-plane/parallel-work.md); implementation incomplete |
-| [CHG-0283](in-progress/CHG-0283-authored-passports/plan.md) | M32 stage 2: six authored passports, independent tool/grant rights and removal of legacy configuration paths |
-| [CHG-0284](in-progress/CHG-0284-toolhub-automation-owner/plan.md) | M32 stage 3: ToolHub automation state, clock and dispatch |
-| [CHG-0285](in-progress/CHG-0285-toolhub-vault-events/plan.md) | M32 stage 4: per-user ToolHub vaults, trusted events and exact-run memory |
-| [CHG-0286](in-progress/CHG-0286-toolhub-memory-tools/plan.md) | M32 stage 5: governed memory tools, confirmed edits and OpenKnowledge writes |
-| [CHG-0287](in-progress/CHG-0287-toolhub-dreaming/plan.md) | M32 stage 6: per-user system dreaming with idempotent day keys |
-| [CHG-0288](in-progress/CHG-0288-m32-cutover-acceptance/plan.md) | M32 stage 7: legacy removal, contract projection and two-user acceptance |
-| [CHG-0282](in-progress/CHG-0282-uncertain-receipt-reassert/plan.md) | Stale-receipt wedge + managed media admission: telegram-837845960 lane deadlock fixed live; re-admitted mapping re-asserts finished receipt; r5 media toolset admits managed image_gen; regression tests added |
-| [CHG-0238](in-progress/CHG-0238-storage-cleanup/plan.md) | Local spool and audit cleaned; deletion of 101 older ignored host files blocked by automatic approval review |
-| [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
-| [CHG-0235](in-progress/CHG-0235-localized-user-strings/plan.md) | Localize last hardcoded user-facing strings: grant page, viewer title, /usage placeholder, hosting bootstrap + AGENTS.md rule; validating |
-| [CHG-0231](in-progress/CHG-0231-mcp-onboarding-repair/plan.md) | MCP onboarding: immutable reviewed contract revisions, digest gate, failed form cleanup and explicit bind conflicts; validating |
-| [CHG-0232](in-progress/CHG-0232-runtime-credential-diagnostics/plan.md) | Caller runtime skill ref leases and allowlisted spawn diagnostics; validating |
-| [CHG-0229](in-progress/CHG-0229-i18n-gap-fixes/plan.md) | i18n follow-up to CHG-0191: model lang pin per run, localized skill-draft card + assignment replies, Slack slash-command dispatch, stale catalog keys; implemented, validating |
-| [CHG-0226](in-progress/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
-| [CHG-0225](in-progress/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; implementation imported, validation in progress |
-| [CHG-0224](in-progress/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; implementation imported, validation in progress |
-| [CHG-0223](in-progress/CHG-0223-storage-budget-maintenance/plan.md) | Storage reliability MVP: Полный учёт объёма и безопасное операторское обслуживание; implementation imported, validation in progress |
-| [CHG-0222](in-progress/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; implementation imported, validation in progress |
-| [CHG-0221](in-progress/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; implementation imported, validation in progress |
-| [CHG-0218](in-progress/CHG-0218-broker-sqlcipher-proof/plan.md) | Storage reliability MVP: Gate сборки и аварийной атомарности SQLCipher; design accepted, implementation not started |
-| [CHG-0217](in-progress/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; implementation imported, validation in progress |
-| [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; implementation imported, validation in progress |
-| [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; implementation imported, validation in progress |
-| [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
-| [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | Deferred — Backlog Organization Knowledge milestone #308 (out of M20 scope): org shared brain |
+| [CHG-0281](done/CHG-0281-m32-per-space-memory-plane/plan.md) | [M32 MVP milestone 43](https://github.com/letya999/hermes-hub/milestone/43): three existing worktrees; committed snapshot config 4, memory 4, automation 2 issues; continue #508/#517/#523 via Devin; [issue contracts and prompts](done/CHG-0281-m32-per-space-memory-plane/parallel-work.md); implementation incomplete |
+| [CHG-0283](done/CHG-0283-authored-passports/plan.md) | M32 stage 2: six authored passports, independent tool/grant rights and removal of legacy configuration paths |
+| [CHG-0284](done/CHG-0284-toolhub-automation-owner/plan.md) | M32 stage 3: ToolHub automation state, clock and dispatch |
+| [CHG-0285](done/CHG-0285-toolhub-vault-events/plan.md) | M32 stage 4: per-user ToolHub vaults, trusted events and exact-run memory |
+| [CHG-0286](done/CHG-0286-toolhub-memory-tools/plan.md) | M32 stage 5: governed memory tools, confirmed edits and OpenKnowledge writes |
+| [CHG-0287](done/CHG-0287-toolhub-dreaming/plan.md) | M32 stage 6: per-user system dreaming with idempotent day keys |
+| [CHG-0288](done/CHG-0288-m32-cutover-acceptance/plan.md) | M32 stage 7: legacy removal, contract projection and two-user acceptance |
+| [CHG-0282](done/CHG-0282-uncertain-receipt-reassert/plan.md) | Stale-receipt wedge + managed media admission: telegram-837845960 lane deadlock fixed live; re-admitted mapping re-asserts finished receipt; r5 media toolset admits managed image_gen; regression tests added |
+| [CHG-0234](done/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
+| [CHG-0235](done/CHG-0235-localized-user-strings/plan.md) | Localize last hardcoded user-facing strings: grant page, viewer title, /usage placeholder, hosting bootstrap + AGENTS.md rule; validating |
+| [CHG-0231](done/CHG-0231-mcp-onboarding-repair/plan.md) | MCP onboarding: immutable reviewed contract revisions, digest gate, failed form cleanup and explicit bind conflicts; validating |
+| [CHG-0232](done/CHG-0232-runtime-credential-diagnostics/plan.md) | Caller runtime skill ref leases and allowlisted spawn diagnostics; validating |
+| [CHG-0229](done/CHG-0229-i18n-gap-fixes/plan.md) | i18n follow-up to CHG-0191: model lang pin per run, localized skill-draft card + assignment replies, Slack slash-command dispatch, stale catalog keys; implemented, validating |
+| [CHG-0214](done/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
+| [CHG-0189](done/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
+| [CHG-0174](done/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
+| [CHG-0173](done/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
+| [CHG-0172](done/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
+| [CHG-0171](done/CHG-0171-hosting-web-access/plan.md) | M18 #147 H2: static serving, artifact bootstrap/session gate, HTTP bounds/audit; implemented, offline gates green, native acceptance pending |
+| [CHG-0170](done/CHG-0170-hosting-store/plan.md) | M18 #147 H1: owner-bound slots, confined immutable snapshots, quota and crash recovery; implemented, offline gates green, native acceptance pending |
+| [CHG-0168](done/CHG-0168-dns-tls-impl/plan.md) | M18 #146: SPEC-0078 implementation — dns contract, regru/DO/GCP clients, ACME DNS-01 issuer + sish push, hubctl/doctor |
+| [CHG-0167](done/CHG-0167-dns-tls-addressing/plan.md) | M18 #146: per-user subdomains design pass — research + ADR-0080 accepted (provider-neutral DNS, per-user wildcard via DNS-01 to sish) |
+| [CHG-0166](done/CHG-0166-outbound-exposure-impl/plan.md) | M18 #145: SPEC-0077 implementation — reviewed config, sish provider, manager, agenttools/stack wiring |
+| [CHG-0177](done/CHG-0177-exposure-primitive/plan.md) | M18 #145: outbound exposure design pass — research + ADR-0079 accepted (sish reference, cloudflared alternate) |
+| [CHG-0176](done/CHG-0176-auth-first-onboarding/plan.md) | M18 #293: auth-first onboarding completion — retry without rebuild, interactive marker |
+| [CHG-0162](done/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
+| [CHG-0156](done/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
+| [CHG-0151](done/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
+| [CHG-0147](done/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
+| [CHG-0144](done/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
+| [CHG-0143](done/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
+| [CHG-0141](done/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection — implemented; module `just check` on a Linux runner is the remaining gate |
+| [CHG-0140](done/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration — hub integration done as CHG-0107; module `just check` gate remains |
+| [CHG-0139](done/CHG-0139-m15-model-provider-layer/plan.md) | M15 model & provider layer (renumbered from a duplicate CHG-0105) |
+| [CHG-0136](done/CHG-0136-docs-restructure/plan.md) | Documentation restructure and enforcement (this change) |
+| [CHG-0117](done/CHG-0117-probe-source-spectrum/plan.md) | Probe source spectrum and delivery modes; validation phase |
+| [CHG-0110](done/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; live acceptance pending |
+| [CHG-0101](done/CHG-0101-tool-call-probes/plan.md) | M12 stage 3: ToolHub /v1/tool-call + mcp_tool probes |
+| [CHG-0100](done/CHG-0100-watcher-policy/plan.md) | M12 stage 2: quiet window, daily cap, agent escalation |
+| [CHG-0099](done/CHG-0099-followup-hardening/plan.md) | M12 stage 1: bounded check retry, verdict text, task: probe, reminder evidence |
+| [CHG-0098](done/CHG-0098-forum-topic-sessions/plan.md) | Issue #220: /new mints a bot-owned forum topic per session; Docker + live pending |
+| [CHG-0091](done/CHG-0091-telegram-operation-contracts/plan.md) | Telegram operation contracts repair (draft SPEC-0052, proposed ADR-0035) |
+| [CHG-0065](done/CHG-0065-capability-enforcement/plan.md) | Issue 122: default-deny capability enforcement (SPEC-0041/0042, ADR-0031/0032) |
 
-| [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
-| [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
-| [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
-| [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
-| [CHG-0171](in-progress/CHG-0171-hosting-web-access/plan.md) | M18 #147 H2: static serving, artifact bootstrap/session gate, HTTP bounds/audit; implemented, offline gates green, native acceptance pending |
-| [CHG-0170](in-progress/CHG-0170-hosting-store/plan.md) | M18 #147 H1: owner-bound slots, confined immutable snapshots, quota and crash recovery; implemented, offline gates green, native acceptance pending |
-| [CHG-0168](in-progress/CHG-0168-dns-tls-impl/plan.md) | M18 #146: SPEC-0078 implementation — dns contract, regru/DO/GCP clients, ACME DNS-01 issuer + sish push, hubctl/doctor |
-| [CHG-0167](in-progress/CHG-0167-dns-tls-addressing/plan.md) | M18 #146: per-user subdomains design pass — research + ADR-0080 accepted (provider-neutral DNS, per-user wildcard via DNS-01 to sish) |
-| [CHG-0166](in-progress/CHG-0166-outbound-exposure-impl/plan.md) | M18 #145: SPEC-0077 implementation — reviewed config, sish provider, manager, agenttools/stack wiring |
-| [CHG-0177](in-progress/CHG-0177-exposure-primitive/plan.md) | M18 #145: outbound exposure design pass — research + ADR-0079 accepted (sish reference, cloudflared alternate) |
-| [CHG-0176](in-progress/CHG-0176-auth-first-onboarding/plan.md) | M18 #293: auth-first onboarding completion — retry without rebuild, interactive marker |
-| [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
-| [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
-| [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
+## Deferred / parked (pre-release sweep 2026-11-15)
 
-| [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
-| [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
-| [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
-| [CHG-0141](in-progress/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection — implemented; module `just check` on a Linux runner is the remaining gate |
-| [CHG-0140](in-progress/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration — hub integration done as CHG-0107; module `just check` gate remains |
-| [CHG-0139](in-progress/CHG-0139-m15-model-provider-layer/plan.md) | M15 model & provider layer (renumbered from a duplicate CHG-0105) |
-| [CHG-0136](in-progress/CHG-0136-docs-restructure/plan.md) | Documentation restructure and enforcement (this change) |
-| [CHG-0117](in-progress/CHG-0117-probe-source-spectrum/plan.md) | Probe source spectrum and delivery modes; validation phase |
-| [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; live acceptance pending |
-| [CHG-0101](in-progress/CHG-0101-tool-call-probes/plan.md) | M12 stage 3: ToolHub /v1/tool-call + mcp_tool probes |
-| [CHG-0100](in-progress/CHG-0100-watcher-policy/plan.md) | M12 stage 2: quiet window, daily cap, agent escalation |
-| [CHG-0099](in-progress/CHG-0099-followup-hardening/plan.md) | M12 stage 1: bounded check retry, verdict text, task: probe, reminder evidence |
-| [CHG-0098](in-progress/CHG-0098-forum-topic-sessions/plan.md) | Issue #220: /new mints a bot-owned forum topic per session; Docker + live pending |
-| [CHG-0091](in-progress/CHG-0091-telegram-operation-contracts/plan.md) | Telegram operation contracts repair (draft SPEC-0052, proposed ADR-0035) |
-| [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: default-deny capability enforcement (SPEC-0041/0042, ADR-0031/0032) |
+Implementation incomplete, blocked or deferred to a backlog milestone; records parked under `done/` to keep in-progress honest. Reopen by moving the folder back and restoring `status: in_progress`.
+
+| Change | State |
+|---|---|
+| [CHG-0213](done/CHG-0213-org-knowledge-brain/plan.md) | Deferred — Backlog Organization Knowledge milestone #308 (out of M20 scope): org shared brain |
 
 ## Abandoned / superseded
 
@@ -167,6 +177,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | Change | State |
 |---|---|
 | [CHG-0204](done/CHG-0204-vault-layout/plan.md) | Done 2026-10-31: M20.1 #299 vault substrate + provider seam + audience-scoped CORE — `memory_vault` deny-default feature (org-rejected), git-backed scaffold via `vault.Ensure`, card schema contract, `memory.Provider` seam + `memorytest.Conformance` on vault/fake/null, governed writer (hash-check, actor commits, zones, `truth_pending`), private-only pinned CORE injection ≤4096 B, `/vault` rw runtime + ro gateway mounts, native `memory` toolset evicted; offline tests green, live acceptance deferred (no-docker scope) |
+| [CHG-0309](done/CHG-0309-knowledge-ui-restore/plan.md) | Done 2026-11-15: per-space OpenKnowledge editor restored as human UI — `knowledge_ui` renders one `open-knowledge` replica over `spaces/<id>/vault` (rw → /data, pinned 0.88.2 role image, replicas 1, `ok init --no-mcp --no-skills` first boot) under the ADR-0095 D2 human-surface exception — owner edits swept as `hermes-owner` by CommitExternalEdits; runtime MCP route + attestation vocabulary stay retired (#422); managed `ui_port` publish joins dedicated `knowledge-publish` net (internal agent nets drop published ports — browser-publish pattern); `git safe.directory /data` in command (host-uid vault); live-verified on artem_two dev: container healthy, vault-only rw mount, 127.0.0.1:18443 → HTTP 200 (OK 0.88.2 serving), doctor "listening"; stack/knowledge suites + just check green |
 
 ## Done — M26 Lean Role Images
 

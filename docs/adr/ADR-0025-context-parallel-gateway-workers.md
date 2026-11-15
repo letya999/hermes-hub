@@ -1,8 +1,12 @@
 ---
 description: Gateway executes jobs with a bounded worker pool; ordering is serialized per context key, never globally.
-last_verified: 2026-09-24
+last_verified: "2026-11-15"
 ---
 # ADR-0025: Per-context parallel gateway workers
+
+Status: accepted.
+
+**Amended by:** [ADR-0090](ADR-0090-conversation-parallel-lanes.md) — serial-per-context relaxed to parallel conversation lanes (principal, context, conversation) with per-context fairness.
 
 Accepted 2026-09-24.
 

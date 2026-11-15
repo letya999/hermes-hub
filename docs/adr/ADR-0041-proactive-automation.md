@@ -8,9 +8,9 @@ Status: accepted, 2026-10-14, by the owner's instruction to implement GitHub
 milestone 13 (issues #247, #248, #250, #251, #257).
 
 Requirements: [SPEC-0054](../../specs/active/SPEC-0054-proactive-automation.md).
-Execution: [CHG-0099](../../.work/in-progress/CHG-0099-followup-hardening/plan.md),
-[CHG-0100](../../.work/in-progress/CHG-0100-watcher-policy/plan.md),
-[CHG-0101](../../.work/in-progress/CHG-0101-tool-call-probes/plan.md),
+Execution: [CHG-0099](../../.work/done/CHG-0099-followup-hardening/plan.md),
+[CHG-0100](../../.work/done/CHG-0100-watcher-policy/plan.md),
+[CHG-0101](../../.work/done/CHG-0101-tool-call-probes/plan.md),
 [CHG-0102](../../.work/done/CHG-0102-owner-brief/plan.md),
 [CHG-0103](../../.work/done/CHG-0103-event-subscriptions/plan.md).
 

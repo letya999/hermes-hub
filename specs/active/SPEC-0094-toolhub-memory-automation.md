@@ -1,6 +1,6 @@
 ---
 description: Frozen M32 requirements for ToolHub-owned per-user memory, automation and night processing.
-last_verified: 2026-11-07
+last_verified: "2026-11-15"
 ---
 # SPEC-0094: ToolHub memory and automation
 

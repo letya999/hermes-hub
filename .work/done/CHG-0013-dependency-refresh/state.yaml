@@ -1,6 +1,6 @@
 change: CHG-0013
 title: Apply reviewed GitHub Actions and Docker dependency updates
-status: complete
+status: done
 completed:
   - pull requests 1 through 7 reviewed and relevant patches applied locally
   - just check passed with 85.03 percent Go statement coverage

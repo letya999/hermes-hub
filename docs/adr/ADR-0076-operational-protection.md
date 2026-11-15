@@ -4,7 +4,7 @@ last_verified: 2026-10-25
 ---
 # ADR-0076: Operational protection and M17 closeout
 
-Status: Proposed. Supplements ADR-0077; its accepted text remains immutable.
+Status: accepted — M17 hardening delivered, verified 2026-11-15. Supplements ADR-0077; its accepted text remains immutable.
 
 ## Context
 

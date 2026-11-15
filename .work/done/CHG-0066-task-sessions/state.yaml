@@ -1,7 +1,7 @@
 schema: 1
 id: CHG-0066-task-sessions
 title: Task sessions and Telegram DM topics (issue 167)
-status: complete
+status: done
 phase: closed
 started_at: 2026-10-04
 updated_at: 2026-10-06

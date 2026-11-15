@@ -1,11 +1,13 @@
 ---
 description: "Динамические контракты могут быть allow_shared для Sharable shared-определений."
-last_verified: "2026-10-16"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0068 (imported from services/credential-broker ADR-0009): allow_shared в динамических контрактах
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0067](../../specs/active/SPEC-0067-recipe-oauth.md), broker module `services/credential-broker`.
 
 ## Контекст
 

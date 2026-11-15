@@ -1,0 +1,18 @@
+change: CHG-0305-connector-selection-pending
+status: done
+updated: "2026-11-15"
+created: 2026-11-14
+log:
+  - "2026-11-14: Plan accepted — pending selection as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service."
+  - "2026-11-14: Steps 0-2 done — ProfileToolset carries Access/Include/Exclude; api.DeriveConnectorSelections shared by apply + materialize; selectedConnectorTools defers missing bindings (warning in space apply, structural errors still fatal); PutBinding materializes pending toolsets via putCapabilityProfileLocked (journaled, idempotent, supersedes stale connID); tools_list emits state:pending; catalog release 40 / hub-agent-tools 18.6.0; regression tests: materialize, idempotency, conn swap, pending marker — toolhub + migration green."
+  - "2026-11-14: Steps 3-4 done — goneLinkPage (410 localized) on all user-facing action-link gates (credentials/confirm/remove/connect/wizard/device); POST /v1/connectors:invoke generic facade route + hubctl connector --service with token walk-up to toolhub-tokens.json; docs/operations.md; fixed pre-existing TestConnectorLinkAndConfirm slot-dedup collision; just check + toolhub + hubctl + migration green."
+  - "2026-11-14: Live verification green — space apply --confirm published r-8c048aaef2845f8f with deferred warning for github (was fatal before); shared toolhub + artem_two relay rebuilt/recreated on :local image; live MCP tools/call tool_search on /mcp as principal artem_two returns github {state:pending, tools 0/0, via mcp:github-mcp-server}; connector list --service works via /v1/connectors:invoke (earlier EOF was container restart window); onboarding onboard-c28e204c reports waiting_you/click_link."
+gates:
+  step0_pending_visibility: done
+  step1_deferred_apply: done
+  step2_materialize: done
+  step3_dead_link: done
+  step4_hubctl_service: done
+  step5_tests_live: done
+log_later:
+  - "2026-11-14: Post-live incident — memory-capture backlog storm on toolhub restart starved /v1/rights/decide (60-187s) → model-relay denied runs. Root fix: passportview.LoadEffectiveGenerated memoized by (current pointer + per-doc size/mtime) — immutable revisions make the stamp honest; mutation/republish bust cache. passportview + toolhub green; shared toolhub rebuilt (Docker Desktop had also died mid-rebuild, restarted); live: decide 1-3ms, github pending row intact."

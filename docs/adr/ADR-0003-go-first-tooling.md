@@ -4,6 +4,8 @@ last_verified: 2026-09-08
 ---
 # ADR-0003: Go-first project tooling
 
+Status: accepted.
+
 Accepted 2026-09-08. Supersedes ADR-0002 only for its CI-orchestrator decision.
 
 ## Decision

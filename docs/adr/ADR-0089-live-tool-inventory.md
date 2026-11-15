@@ -5,7 +5,7 @@ last_verified: "2026-10-30"
 
 # ADR-0089: Живой инвентарь инструментов в сессии
 
-Status: accepted; implementation in CHG-0233.
+Status: accepted — live tool inventory delivered (CHG-0233), verified 2026-11-15.
 Дата решения: 2026-10-30.
 
 Связи: [SPEC-0023](../../specs/active/SPEC-0023-toolhub-control-plane.md),

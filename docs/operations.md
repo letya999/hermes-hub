@@ -773,27 +773,46 @@ a Honcho conclusions export (the list Page or the piped array) into
 adapter reports degradation honestly (capture/search/export and health are
 the only lanes — recall and governed write are `unsupported`).
 
-With `knowledge_ui` on (requires `memory_vault`) no `open-knowledge`
-container renders (M32/#520): ToolHub owns the vault, so the feature can
-mount nothing — the upstream editor cannot act as a governed-API client,
-and its editor stays explicitly unavailable. The separate `memory_open`
-agent tool opens a read-only ToolHub memory view in the owner's private
-channel. Its bearer link lasts one hour and is rechecked against the
-published memory switch, current selection and `memory.search` grant on
-every request; it has no edit endpoint. `hubctl doctor` reports the upstream
-editor limitation; a space whose
-published `stack.yaml` still declares `open-knowledge` fails the
-declared-but-unrendered check until republished without it (the vault
-itself, `.ok/` state and history are untouched — nothing is deleted).
-`ui_port`/`ui_bind` validation is unchanged (loopback-only, port range,
-no collisions, requires `knowledge_ui`) but publishes nothing while no
-service renders; `ui_expose` stays the reserved M18 hook and setting it
-still fails honestly. Knowledge reads and edits go through the governed
-ToolHub tools: `memory_search` reads memory content and `memory_card
-op=propose` plus the owner's verified confirmation is the only edit path —
-an editor write that bypassed ToolHub admission is impossible by
-construction. `knowledge_ui_write` stays deferred (#422) until a
-governed-API knowledge surface exists. Honcho is
+With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
+container serves the OpenKnowledge editor over the vault — the space-private
+network only by default, no host reachability at all. On a published
+passport the stack doc must also declare `open-knowledge: {mode:
+per-space}`; a declaration without the feature fails the
+declared-but-unrendered check (the vault itself, `.ok/` state and history
+are never deleted). Setting `ui_port` in `agent.yaml` opts into exactly one
+host publish, `127.0.0.1:<ui_port>` → the container's 8080 (the editor is
+unauthenticated, so loopback is the only safe edge). Reach it from another
+machine by tunneling in: `ssh -L <ui_port>:localhost:<ui_port> <host>`, then
+open `http://localhost:<ui_port>` in a browser. `ui_bind` pins the publish
+address and is loopback-only (`127.0.0.1` or `::1`); a wider bind is a hard
+validation error, never a warning — there is no public exposure path.
+`ui_port` joins the other host ports in validation (1024–65535, no collision
+with browser/oauth/slack events ports) and requires `knowledge_ui`;
+`hubctl doctor` reports the edge, the tunnel hint and whether something is
+already listening. `ui_expose` is the reserved M18 hook: setting it fails
+honestly until the M18 edge service lands, which is where a shareable
+one-time `?t=` UI link (auth + expiry decided there) would hang off — never
+a silent partial exposure.
+Coexistence contract with hub writes: when the governed writer or rollup
+lands a commit while a document is open in the editor, OpenKnowledge keeps
+both versions — a stale save is *rejected* and retained under
+`.ok/local/stale-external-writes.json`, and the conflict surfaces via
+`.ok/local/conflicts.json` (shadow versions live under `.git/ok/`). There is
+never a silent overwrite in either direction. Owner UI edits stay as
+working-tree changes until the next `vault.CommitExternalEdits` sweep (the
+nightly rollup path) commits them as `hermes-owner` and wins the next
+rollup (`truth_pending` flow). OpenKnowledge's own state (`.ok/`,
+`.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
+editor indexes knowledge only. If the container is down, vault capture,
+recall and search are unaffected — nothing else depends on it.
+The editor is a human surface only: no `mcp_servers.open_knowledge` entry
+renders on either render path, so the agent never dials it (M32/#520 route
+stays retired). Agent knowledge reads and edits go through the governed
+ToolHub tools — `memory_search` reads and `memory_card op=propose` plus the
+owner's verified confirmation is the only agent edit path;
+`knowledge_ui_write` stays deferred (#422). The separate `memory_open` agent
+tool still opens the read-only ToolHub memory view (one-hour bearer link,
+rights rechecked per request). Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only

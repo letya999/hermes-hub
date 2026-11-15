@@ -4,6 +4,8 @@ last_verified: 2026-09-10
 ---
 # ADR-0008: Telegram connector self-service
 
+Status: accepted.
+
 Accepted 2026-09-10.
 
 ## Decision

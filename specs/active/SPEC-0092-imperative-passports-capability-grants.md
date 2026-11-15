@@ -1,6 +1,6 @@
 ---
 description: "Frozen M30 requirements: six passports as the imperative render/spawn/admission input, normative body schemas, agent capability grants (PDP/PEP), effect classes and live acceptance."
-last_verified: "2026-11-08"
+last_verified: "2026-11-15"
 ---
 
 # SPEC-0092: Imperative passports and agent capability grants

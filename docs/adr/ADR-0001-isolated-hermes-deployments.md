@@ -1,8 +1,12 @@
 ---
 description: Use isolated Hermes deployments and MCP boundaries.
-last_verified: 2026-09-07
+last_verified: "2026-11-15"
 ---
 # ADR-0001: Use one isolated Hermes deployment per person
+
+Status: accepted.
+
+**Scope note (2026-11-15 audit):** historical initial design — partly superseded by ADR-0002. The bundled career-service/role-profiles clause is additionally dead: AGENTS.md forbids embedding business services.
 
 Accepted 2026-09-07. Supersedes: none.
 

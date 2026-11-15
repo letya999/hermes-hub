@@ -4,6 +4,8 @@ last_verified: 2026-09-15
 ---
 # ADR-0020: Local account preparation on the owner's PC
 
+Status: accepted.
+
 - Status: accepted
 - Date: 2026-09-15
 - Supersedes: no accepted record is rewritten

@@ -1,6 +1,6 @@
 ---
 description: Frozen acceptance contract for the M18 outbound exposure primitive (named public endpoints over tunnel workloads).
-last_verified: 2026-10-25
+last_verified: "2026-11-15"
 ---
 # SPEC-0077: Outbound exposure primitive
 

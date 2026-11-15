@@ -4,6 +4,8 @@ last_verified: "2026-09-18"
 ---
 # ADR-0022: Credential Broker boundary
 
+Status: accepted.
+
 Accepted 2026-09-18.
 
 ## Decision

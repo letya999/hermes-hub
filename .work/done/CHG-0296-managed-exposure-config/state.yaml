@@ -1,0 +1,19 @@
+schema: 1
+change: CHG-0296
+title: Managed exposure configuration
+status: done
+updated: "2026-11-15"
+phase: done
+validation:
+  regression: passed
+  local: passed
+  live_exposure_list: passed
+  model_count_followup: passed
+  release_barrier: local_managed_canary_passed
+  remote_ci: pending_unpublished_changes
+  sish_proxy_regression: passed
+  private_static_site: passed_http_200_and_removed
+  cloudflare_quick_smoke: passed_https_200_and_removed
+  native_sish_toolhub_cycle: passed_open_list_remove
+  public_tunnel: passed_temporary_cloudflare_fronted_sish
+  stable_native_public_name: pending_public_dns_and_relay

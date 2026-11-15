@@ -30,7 +30,7 @@ evidence:
   - "S4: playwright-mcp T0 — digest-pinned MCR image sha256:690763…, pinned commit ab6d67c, --caps vision,pdf, browser profile on connection-state, read-only default projection, act/eval/network toolsets; agent-browser stays in blocked.json (no reviewed runnable image); browser-session Broker contract imports storage-state file + origin lists"
   - "S8.5: ExecutionPolicy.ShmSizeMiB bounded (cap + <= workload memory), in execution equality; Docker fallback adds --shm-size to workload only; ToolHive gate probes --shm-size — fails closed or falls back"
   - "Projection fix: managedSelfInstall list/dispatch and projectedToolLocked now iterate ProjectedToolSpecs(binding) — toolset gating uniform (regression: browser_evaluate projected without its toolset)"
-  - "ADR-0052 appended; prepared-connectors.md browser section; SPEC-0023 delta"
+  - "browser-connectors ADR appended (number renumbered in the duplicate cleanup; contract now in ADR-0059); prepared-connectors.md browser section; SPEC-0023 delta"
 notes:
   - "Live gates deferred honestly: two principals with separate browser workloads on one stack, noVNC/CDP rendering, real site login through viewer"
   - "Hub-owned browser/browser_guest runtime unchanged — separate feature"

@@ -5,11 +5,11 @@ last_verified: "2026-10-28"
 
 # ADR-0088: Ограниченные управляющие журналы MVP
 
-Status: accepted; implementation not started.
+Status: accepted — bounded control journals delivered (CHG-0215–0226), verified 2026-11-15. Live-acceptance legs recorded in CHG state.
 Дата решения: 2026-10-28.
 
 Связи: [SPEC-0088](../../specs/active/SPEC-0088-bounded-control-journals.md),
-[порядок реализации](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md),
+[порядок реализации](../../.work/done/CHG-0215-broker-recovery-head/README.md),
 ADR-0015/0036/0048/0051/0055/0056/0082 и SPEC-0053/0081/0083.
 Broker SQLCipher ограничен [ADR-0087](ADR-0087-broker-bounded-sqlcipher-store.md).
 
