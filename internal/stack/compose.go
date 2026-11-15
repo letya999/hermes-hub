@@ -464,10 +464,69 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
-	// M32/#520: the open-knowledge data plane is retired — ToolHub owns the
-	// vault, so no service may mount it and upstream OK cannot act as a
-	// governed client. knowledge_ui stays a valid feature but renders
-	// nothing until an adapted governed-API surface exists (ADR-0095 D2).
+	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
+	// space over the vault — the human editing surface (ADR-0095 D2
+	// amendment): owner edits land as working-tree changes the next
+	// vault.CommitExternalEdits sweep commits as hermes-owner. The runtime
+	// MCP route stays retired (#422): nothing dials the service by name, so
+	// it joins only the space-private net and publishes at most one loopback
+	// port. First boot inits the project; later boots find .ok/ and start.
+	if s.Has("knowledge_ui") {
+		okService := cloneMap(common)
+		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
+		okService["build"] = imageBuild(s.Environment + "-knowledge")
+		okService["deploy"] = M{"replicas": 1}
+		// The bind-mounted vault keeps the host uid — git refuses repo ops on
+		// a foreign-owned tree ("dubious ownership"), which blanks OK's
+		// history/sync views. The container's git config lives on the /tmp
+		// tmpfs under HOME, so marking /data safe per boot is free.
+		okService["command"] = "sh -c 'git config --global --add safe.directory /data; [ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
+		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
+		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
+		okService["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
+		}
+		// OK binds its container interface only so the loopback publish can
+		// reach it: a non-loopback bind needs the allowExternal consent
+		// interlock (upstream boot refuses it otherwise), and PORT pins the
+		// listener the published edge points at. HOME lands on tmpfs: the
+		// image's /state/home sits on the read-only rootfs, while every
+		// durable OK path is project-local .ok/ under /data.
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://open-knowledge:8080"}
+		// ok resolves its server-authority registry through the passwd home
+		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
+		// the disposable home gets its own tmpfs alongside /tmp.
+		okService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)), "/state/home:uid=10001,gid=10001,mode=0700")
+		// R10.1: ui_port opts into one loopback publish — the only host
+		// reachability the unauthenticated editor ever gets; the owner
+		// tunnels in over ssh -L and opens http://localhost:<ui_port>. The
+		// browser origin becomes the canonical external URL now that no
+		// in-network peer dials the service.
+		if s.UIPort > 0 {
+			bind := s.UIBind
+			if bind == "" {
+				bind = "127.0.0.1"
+			}
+			if strings.Contains(bind, ":") {
+				bind = "[" + bind + "]"
+			}
+			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
+			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
+		}
+		if s.CapabilityMode == "managed" {
+			nets := M{managedAgentNetwork(s): M{}}
+			// Internal networks silently drop published ports — like the
+			// browser sidecar, the loopback edge needs a dedicated
+			// publishable network that nothing else attaches to.
+			if s.UIPort > 0 {
+				nets["knowledge-publish"] = M{}
+			}
+			okService["networks"] = nets
+		} else {
+			okService["networks"] = M{"default": M{}}
+		}
+		services["open-knowledge"] = okService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
@@ -1251,6 +1310,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
 		if s.Has("browser") || s.Has("meet") {
 			result["networks"].(M)["browser-publish"] = M{}
+		}
+		if s.Has("knowledge_ui") && s.UIPort > 0 {
+			result["networks"].(M)["knowledge-publish"] = M{}
 		}
 	}
 	return result

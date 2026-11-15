@@ -177,6 +177,7 @@ Implementation incomplete, blocked or deferred to a backlog milestone; records p
 | Change | State |
 |---|---|
 | [CHG-0204](done/CHG-0204-vault-layout/plan.md) | Done 2026-10-31: M20.1 #299 vault substrate + provider seam + audience-scoped CORE — `memory_vault` deny-default feature (org-rejected), git-backed scaffold via `vault.Ensure`, card schema contract, `memory.Provider` seam + `memorytest.Conformance` on vault/fake/null, governed writer (hash-check, actor commits, zones, `truth_pending`), private-only pinned CORE injection ≤4096 B, `/vault` rw runtime + ro gateway mounts, native `memory` toolset evicted; offline tests green, live acceptance deferred (no-docker scope) |
+| [CHG-0309](done/CHG-0309-knowledge-ui-restore/plan.md) | Done 2026-11-15: per-space OpenKnowledge editor restored as human UI — `knowledge_ui` renders one `open-knowledge` replica over `spaces/<id>/vault` (rw → /data, pinned 0.88.2 role image, replicas 1, `ok init --no-mcp --no-skills` first boot) under the ADR-0095 D2 human-surface exception — owner edits swept as `hermes-owner` by CommitExternalEdits; runtime MCP route + attestation vocabulary stay retired (#422); managed `ui_port` publish joins dedicated `knowledge-publish` net (internal agent nets drop published ports — browser-publish pattern); `git safe.directory /data` in command (host-uid vault); live-verified on artem_two dev: container healthy, vault-only rw mount, 127.0.0.1:18443 → HTTP 200 (OK 0.88.2 serving), doctor "listening"; stack/knowledge suites + just check green |
 
 ## Done — M26 Lean Role Images
 

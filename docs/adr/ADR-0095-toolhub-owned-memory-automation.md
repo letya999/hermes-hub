@@ -1,6 +1,6 @@
 ---
 description: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains verified channel intake and delivery.
-last_verified: 2026-11-08
+last_verified: 2026-11-15
 ---
 # ADR-0095: ToolHub owns memory and automation
 
@@ -100,6 +100,20 @@ bounded, safe status. Dev and prod storage remain separate.
 `memory_open` may mint a one-hour bearer link only in a verified private
 owner run. ToolHub serves a read-only search/read view and rechecks the active
 selection, `memory.search` right and published memory switch for every page.
-The upstream OpenKnowledge editor remains unavailable: it has no governed
-ToolHub API client and must not mount or write the vault directly. This is a
-bounded human viewing path, not an exception to D2 or the edit confirmation.
+This is a bounded human viewing path, not an exception to the edit
+confirmation.
+
+## 2026-11-15 amendment: OpenKnowledge human editing surface
+
+D2's "no container but ToolHub may mount the vault" gains a scoped
+exception for the human editing surface: the per-space `open-knowledge`
+container mounts the vault read-write as the upstream editor's project
+root. It is not an autonomous governed-API client — owner edits land as
+ordinary working-tree changes and the existing `CommitExternalEdits` sweep
+commits them as `hermes-owner` before rollup writes, the same provenance
+path a host-side owner edit already took. The runtime still mounts nothing
+and never receives an `mcp_servers.open_knowledge` route: agent reads and
+writes stay on the governed tools and the D6 confirmed-writer contract, and
+`knowledge_ui_write` remains deferred under #422. Editor reachability stays
+the loopback `ui_port` publish — the upstream service has no auth, so no
+wider bind is admitted.

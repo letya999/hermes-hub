@@ -1,6 +1,6 @@
 ---
 description: Per-space markdown memory vault (daily leaves, typed cards, folded summaries, audience-scoped CORE.md) with a deterministic gated nightly rollup, zero-LLM pre-turn recall, a provider seam, plus OpenKnowledge as the opt-in human editing surface over the same files.
-last_verified: 2026-11-06
+last_verified: 2026-11-15
 ---
 # ADR-0086: Memory vault and OpenKnowledge knowledge surface
 
@@ -289,6 +289,23 @@ a provider seam with conformance, and soft forget.
   governed knowledge surface exists. The `native:knowledge_ui`
   inventory entry and the `knowledge-ui`/`ui_port`/`ui_bind`/
   `ui_expose` config vocabulary stay accepted — inert, not removed.
+
+  2026-11-15 amendment (human-UI restore): the `open-knowledge` compose
+  service returns as the owner-facing editor — vault → `/data` rw, one
+  replica, the space-private net, the optional loopback `ui_port`
+  publish (managed publishes also join a dedicated `knowledge-publish`
+  net: internal agent nets drop published ports — the `browser-publish`
+  pattern). The M20.9 `mcp_servers.open_knowledge` route stays retired:
+  the agent never dials the editor, so the #422 precondition is
+  untouched. ADR-0095 D2 carves this out as a human editing surface,
+  not an autonomous client — owner UI edits land as working-tree
+  changes and the existing `vault.CommitExternalEdits` sweep commits
+  them as `hermes-owner` before rollup writes (the same provenance path
+  a host-side owner edit already took; `truth_pending` still wins
+  conflicts). `HUB_MANAGED_KNOWLEDGE_UI` and
+  `MaterializeOptions.KnowledgeUI` stay out of the attestation
+  vocabulary — they only replayed the retired route. `OK_EXTERNAL_URL`
+  is the loopback browser origin while `ui_port` is set.
 
 - **D9. Human access is a loopback port, like browser/oauth today.**
   The compose service publishes `127.0.0.1:<ui_port>` per space
