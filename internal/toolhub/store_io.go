@@ -10,7 +10,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
-	"maps"
+
 	"os"
 	"path/filepath"
 	"slices"
@@ -438,7 +438,11 @@ func (s *Store) buildSnapshotLocked() (snapshot, error) {
 		}
 		s.installationID = id
 	}
-	state := snapshot{BrokerCursors: maps.Clone(s.brokerCursors), Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	// BrokerCursors deliberately stays out of the snapshot: hot at-least-once
+	// counters live in the CursorStore sidecar (CHG-0308), so they no longer
+	// churn the registry digest or pay whole-snapshot commits. Load still
+	// reads persisted rows for the one-time migration seed.
+	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}

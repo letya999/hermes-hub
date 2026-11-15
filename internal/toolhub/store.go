@@ -105,6 +105,18 @@ type Store struct {
 	storage     *storagebudget.Counter
 	storageDir  string
 	maintenance storageMaintenanceStatus
+	// ledgerMemo memoizes one rights-ledger read for the duration of a
+	// ProjectionRevisions pass — set/cleared there, consulted by
+	// loadRightsLedgerLocked. atomic because concurrent RLock holders may
+	// read it while the pass populates it; nil means no memo.
+	ledgerMemo atomic.Pointer[ledgerMemoValue]
+}
+
+// ledgerMemoValue is the memoized outcome of one rights-ledger read —
+// doc-or-error, matching what loadRightsLedgerLocked would return.
+type ledgerMemoValue struct {
+	doc *api.Governance
+	err error
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -182,8 +194,20 @@ func (s *Store) ProjectionRevisions() ([]api.ProjectionTarget, error) {
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
+	// The digest loop below is O(profiles × managed tools), and each
+	// decideCoreLocked re-reads the governance document — on a slow mount
+	// that is tens of seconds of file I/O under s.mu.RLock every poll. A
+	// writer queued behind that read window parks every concurrent decide
+	// reader (RWMutex writer preference) — the live convoy from CHG-0308.
+	// Memoize the ledger for this pass: the document is static within one
+	// snapshot of the store, and the decide path keeps its per-call read.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.RightsLedger != nil {
+		ledger, err := s.RightsLedger()
+		s.ledgerMemo.Store(&ledgerMemoValue{doc: ledger, err: err})
+		defer s.ledgerMemo.Store(nil)
+	}
 	out := make([]api.ProjectionTarget, 0, len(s.projectionRevisions))
 	for key, revision := range s.projectionRevisions {
 		parts := strings.SplitN(key, "\x00", 3)
@@ -985,6 +1009,7 @@ func (s *Store) observeCredentialCheckIfCurrent(expected api.Connection, visibil
 		s.mu.Unlock()
 		return false, nil
 	}
+	changed := connection.CredentialVisibility != visibility || connection.HealthCause != cause
 	connection.CredentialVisibility = visibility
 	connection.CredentialCheckedAt = at.UTC()
 	connection.HealthCause = cause
@@ -1002,6 +1027,13 @@ func (s *Store) observeCredentialCheckIfCurrent(expected api.Connection, visibil
 	}
 	s.connections[connection.ConnectionID] = connection
 	s.mu.Unlock()
+	// CredentialCheckedAt and the retry counters are probe bookkeeping —
+	// memory-truth; losing them on restart just means the reconciler
+	// re-checks sooner. The durable commit rides verdict transitions only,
+	// so the 30s ScanOnce no longer rewrites the registry per connection.
+	if !changed {
+		return true, nil
+	}
 	return true, s.persistAndNotify()
 }
 

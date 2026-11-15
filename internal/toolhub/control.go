@@ -16,7 +16,12 @@ import (
 )
 
 type ControlPlane struct {
-	Store             *Store
+	Store *Store
+	// Cursors is the sidecar for hot at-least-once bookkeeping (broker event
+	// cursors) that must not pay the registry's whole-snapshot commit cost.
+	// Nil means lazily bind on first use via cursorStore() — constructed
+	// planes that never reconcile broker events never create the file.
+	Cursors           *CursorStore
 	Secrets           credstore.Backend
 	Reviewer          api.SourceReviewer
 	SourceResolver    api.SourceResolver

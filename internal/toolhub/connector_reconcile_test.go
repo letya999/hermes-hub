@@ -248,7 +248,7 @@ func TestBrokerEventGapKeepsCursorUntilOwnedStateCommits(t *testing.T) {
 	if err := c.ReconcileBrokerEvents(t.Context(), auth, false); err == nil {
 		t.Fatal("503 hidden during gap repair")
 	}
-	if s.brokerCursors[cursor] != 10 {
+	if c.Cursors.Get(cursor) != 10 {
 		t.Fatal("cursor advanced past uncommitted owner state")
 	}
 	ready.Store(true)
@@ -263,7 +263,11 @@ func TestBrokerEventGapKeepsCursorUntilOwnedStateCommits(t *testing.T) {
 	current, _ := loaded.OnboardingFor(auth, o.OnboardingID)
 	// The ready credential is the consent: the credential gate clears and the
 	// credential id commits before the cursor may advance.
-	if current.Awaiting(api.GateCredentials) || current.BrokerCredentialID != "credential_gap" || loaded.brokerCursors[cursor] != 49 {
+	sidecar, err := LoadCursorStore(filepath.Join(filepath.Dir(path), "cursors.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Awaiting(api.GateCredentials) || current.BrokerCredentialID != "credential_gap" || sidecar.Get(cursor) != 49 {
 		t.Fatal("gap repair/cursor did not survive reload")
 	}
 	other, _ := loaded.OnboardingFor(bobAuth(), foreign.OnboardingID)

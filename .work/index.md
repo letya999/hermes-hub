@@ -14,7 +14,9 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 ## In progress
 
-_None — all records resolved in the 2026-11-15 pre-release sweep._
+| Change | Summary |
+|---|---|
+| [CHG-0308](in-progress/CHG-0308-hot-ledger-sidecar/plan.md) | Hot ledger off the registry commit channel: broker cursors move to a CursorStore sidecar (JSON temp+rename, 60s flush), heartbeats persist on transition only, lifecycle tick 1s→15s — fixes /v1/rights/decide starvation → agent 403s (repeat of the CHG-0305 class) |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 
