@@ -3,22 +3,35 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
-// hubctl audit is the operator egress for durable tool-call operations:
-// pending lists unsettled intents with safe identity fields only (arguments
-// and results never reach the ledger, so they can never be printed), and
-// resolve settles one operation on evidence the operator actually verified.
-// Unsettled records have no TTL — they close only on an explicit outcome.
+// hubctl audit groups the ledger utilities: rollover migrates a stopped
+// legacy audit, pending lists unsettled operation intents with safe identity
+// fields only (arguments and results never reach the ledger, so they can
+// never be printed), and resolve settles one operation on evidence the
+// operator actually verified. Unsettled records have no TTL — they close only
+// on an explicit outcome.
 func runAudit(_ context.Context, args []string) error {
+	lang, ok := locale.Parse(os.Getenv("LANG"))
+	if !ok {
+		lang = locale.Default
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("audit requires pending or resolve")
+		return errors.New(locale.T(lang, "hubctl.audit-usage"))
+	}
+	switch args[0] {
+	case "rollover":
+		return runAuditRollover(lang, args[1:])
+	case "pending", "resolve":
+	default:
+		return errors.New(locale.T(lang, "hubctl.audit-usage"))
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("audit "+sub, flag.ContinueOnError)
@@ -30,6 +43,16 @@ func runAudit(_ context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
+	switch sub {
+	case "pending":
+		if f.NArg() != 0 || *operation != "" || *outcome != "" || *evidence != "" {
+			return errors.New(locale.T(lang, "hubctl.audit-pending-usage"))
+		}
+	case "resolve":
+		if f.NArg() != 0 || *operation == "" || *outcome == "" || *evidence == "" {
+			return errors.New(locale.T(lang, "hubctl.audit-resolve-usage"))
+		}
+	}
 	if *dir == "" {
 		*dir = filepath.Join("spaces", *profile)
 	}
@@ -39,9 +62,6 @@ func runAudit(_ context.Context, args []string) error {
 	}
 	switch sub {
 	case "pending":
-		if f.NArg() != 0 || *operation != "" || *outcome != "" || *evidence != "" {
-			return fmt.Errorf("usage: hubctl audit pending [--dir d] [--user u]")
-		}
 		events, err := ledger.Pending(audit.Scope{PrincipalID: *profile}, audit.MaxPageRecords)
 		if err != nil {
 			return err
@@ -72,10 +92,39 @@ func runAudit(_ context.Context, args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(view)
 	case "resolve":
-		if f.NArg() != 0 || *operation == "" || *outcome == "" || *evidence == "" {
-			return fmt.Errorf("usage: hubctl audit resolve --operation <id> --outcome not_started|succeeded|failed --evidence <ref> [--dir d] [--user u]")
-		}
 		return ledger.Resolve(audit.Scope{PrincipalID: *profile}, *operation, *outcome, *evidence)
 	}
-	return fmt.Errorf("audit requires pending or resolve")
+	return errors.New(locale.T(lang, "hubctl.audit-usage"))
+}
+
+func runAuditRollover(lang locale.Lang, args []string) error {
+	usage := locale.T(lang, "hubctl.audit-rollover-usage")
+	f := flag.NewFlagSet("audit rollover", flag.ContinueOnError)
+	ledger := f.String("ledger", "", locale.T(lang, "hubctl.audit-rollover-ledger"))
+	apply := f.Bool("apply", false, locale.T(lang, "hubctl.audit-rollover-apply"))
+	digest := f.String("digest", "", locale.T(lang, "hubctl.audit-rollover-digest"))
+	if err := f.Parse(args); err != nil {
+		return err
+	}
+	if f.NArg() != 0 || *ledger == "" || *apply && *digest == "" {
+		return errors.New(usage)
+	}
+	var plan audit.LegacyPlan
+	var err error
+	if *apply {
+		plan, err = audit.RolloverLegacy(*ledger, *digest)
+	} else {
+		plan, err = audit.PlanLegacyRollover(*ledger)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, audit.ErrStaleLegacyPlan):
+			return errors.New(locale.T(lang, "hubctl.audit-rollover-stale"))
+		case errors.Is(err, audit.ErrInvalid):
+			return errors.New(locale.T(lang, "hubctl.audit-rollover-invalid"))
+		default:
+			return errors.New(locale.T(lang, "hubctl.audit-rollover-failed"))
+		}
+	}
+	return json.NewEncoder(os.Stdout).Encode(plan)
 }
