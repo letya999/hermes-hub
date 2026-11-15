@@ -98,7 +98,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 			"config":    fmt.Sprintf("runtime: {timezone: %s}\nmemory: {enabled: true, nightly_rollup: \"02:30\"}\nchannels:\n  telegram: {bot: {ref: fixture-bot}}\n", zone),
 			"models":    fmt.Sprintf("default: fixture\nroutes: {fixture: {ladder: [fixture]}}\nservices:\n  fixture: {via: openai-compatible, endpoint: %q, allow_private: true, models: [{id: m32-fixture}]}\n", providerURL),
 			"workspace": "writable: [/workspace]\nread_only: [/config, /skills]\n",
-			"tools":     fmt.Sprintf("binding: {profile_id: %s-default, generation: 1}\ncore:\n  files: {via: toolhub}\n  memory: {via: toolhub}\n  routines: {via: toolhub}\n  assignments: {via: toolhub}\n  watches: {via: toolhub}\n  goals: {via: toolhub}\n  context: {via: toolhub}\n", user),
+			"tools":     fmt.Sprintf("binding: {profile_id: %s-default, generation: 1}\ncore:\n  memory: {via: toolhub}\n  assignments: {via: toolhub}\n  context: {via: toolhub}\nextended:\n  files: {via: toolhub}\n  routines: {via: toolhub}\n  watches: {via: toolhub}\n  goals: {via: toolhub}\n", user),
 		}
 		grants := "allow:\n"
 		for capability, operations := range allow {

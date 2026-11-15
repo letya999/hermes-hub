@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -148,29 +149,26 @@ func TestM32ContextPreviewApplyAndContinue(t *testing.T) {
 	if !ok {
 		t.Fatal("managed runtime missing after compaction")
 	}
-	mounts := h.docker(t, ctx, "inspect", "--format", "{{json .Mounts}}", status.Container)
-	var mounted []struct{ Source, Destination string }
-	m32Require(t, json.Unmarshal(mounts, &mounted))
-	stateDir := ""
-	for _, mount := range mounted {
-		if mount.Destination == "/state" {
-			stateDir = mount.Source
-		}
-	}
-	if stateDir == "" {
-		t.Fatal("isolated state mount missing")
-	}
-	journal, err := compaction.Open(filepath.Clean(stateDir))
-	m32Require(t, err)
-	var events []compaction.Event
+	// The journal file is owned by the in-container uid under a 0700 dir; the
+	// host cannot open it directly, so read it through the container itself.
+	var journalBody []byte
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
-		events, err = journal.Events(run.SessionID)
-		m32Require(t, err)
-		if len(events) > 0 {
+		if out, execErr := exec.CommandContext(ctx, "docker", "exec", status.Container, "cat", "/state/hub/compaction-journal.jsonl").Output(); execErr == nil && len(out) > 0 {
+			journalBody = out
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	if len(journalBody) == 0 {
+		t.Fatal("compaction journal never materialized")
+	}
+	journalRoot := t.TempDir()
+	m32Require(t, os.MkdirAll(filepath.Join(journalRoot, "hub"), 0o700))
+	m32Require(t, os.WriteFile(filepath.Join(journalRoot, "hub", "compaction-journal.jsonl"), journalBody, 0o600))
+	journal, err := compaction.Open(journalRoot)
+	m32Require(t, err)
+	events, err := journal.Events(run.SessionID)
+	m32Require(t, err)
 	if len(events) != 1 || events[0].Trigger != compaction.TriggerManual || events[0].FailureClass != "" {
 		t.Fatalf("compaction journal count=%d trigger_manual=%t", len(events), len(events) > 0 && events[0].Trigger == compaction.TriggerManual)
 	}
