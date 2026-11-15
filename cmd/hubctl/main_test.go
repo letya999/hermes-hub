@@ -98,9 +98,10 @@ func TestDoctorPrintsSkillsSection(t *testing.T) {
 	}
 }
 
-// Knowledge UI cannot mount ToolHub-owned vault data; doctor reports the
-// unavailable state even if a legacy port remains in authored config.
-func TestStatusReportsKnowledgeUIUnavailable(t *testing.T) {
+// The restored knowledge_ui service (CHG-0309) renders one OpenKnowledge
+// replica with a loopback-only ui_port edge; doctor reports that edge and
+// whether anything is listening on it.
+func TestStatusReportsKnowledgeUIEdge(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "owner")
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
@@ -125,8 +126,9 @@ func TestStatusReportsKnowledgeUIUnavailable(t *testing.T) {
 	out := captureOutput(t, func() error {
 		return run(ctx, []string{"doctor", "--dir", dir})
 	})
-	if !strings.Contains(out, "OpenKnowledge editor: unavailable") || !strings.Contains(out, "memory_open") || strings.Contains(out, "http://localhost:8443") {
-		t.Fatalf("doctor advertised the retired Knowledge UI edge:\n%s", out)
+	if !strings.Contains(out, "Knowledge UI: http://localhost:8443 — loopback-only on 127.0.0.1") ||
+		!strings.Contains(out, "listening on 127.0.0.1:8443") {
+		t.Fatalf("doctor did not report the loopback-only Knowledge UI edge:\n%s", out)
 	}
 }
 

@@ -43,7 +43,15 @@ implemented:
     CleanupError; CallRemoteMCP preserves a known result on close failure.
   - internal/audit/operation.go — Ledger.Resolve: explicit outcome + bounded
     verified evidence, scoped to the owning principal.
-  - cmd/hubctl/audit.go — hubctl audit pending|resolve operator egress.
+  - cmd/hubctl/audit.go — hubctl audit pending|resolve|rollover operator
+    egress; the pre-existing localized rollover implementation moved in
+    verbatim so its contract is preserved under one dispatch.
+  - internal/locale/strings_{en,ru,kk,es}.go — hubctl.audit-usage,
+    hubctl.audit-pending-usage, hubctl.audit-resolve-usage (catalog parity).
+  - cmd/hubctl/main_test.go — TestStatusReportsKnowledgeUIEdge: refreshed the
+    stale pre-existing expectation (doctor reported the retired-edge format
+    after CHG-0309 restored the loopback editor); failure reproduced at
+    merge-base e15ff8ac, unrelated to this change.
   - internal/toolhub/gateway_call.go — default executor path runs post-
     admission (Reload + ReverifyEffective) instead of holding s.mu.RLock
     through the backend.
@@ -62,7 +70,9 @@ slices:
   S4-lock-separation: green
 
 validation:
-  documents: pending
-  scoped_tests: pass  # TestRelayMeterAdmit*, TestBudget* green; full
-                      # communication + runtime short suites green
-  live_acceptance: pending
+  documents: pass  # just check (format + docs + vet) green; docs/spaces.md
+                   # re-verified against cd963583 and last_verified bumped
+  scoped_tests: pass  # affected packages green: communication, runtime,
+                      # audit, toolhub, supervisor, cmd/hubctl, locale
+  live_acceptance: pending  # no dev-stack rebuild performed; requires
+                            # hubctl dev-rebuild on a real space per AGENTS
