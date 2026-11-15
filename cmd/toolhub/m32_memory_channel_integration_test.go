@@ -236,8 +236,19 @@ func (h *m32Lifecycle) memoryChannelConfirmation(t *testing.T, ctx context.Conte
 		if out["status"] != "proposal" || readCard(user) != before {
 			t.Fatal("proposal changed memory before owner confirmation")
 		}
-		if call(map[string]any{"op": "apply", "id": out["id"]})["status"] != "invalid" {
-			t.Fatal("model confirmed its own proposal")
+		// A self-apply is refused whether the admitted schema rejects the op
+		// outright or the governed writer answers status=invalid — either way
+		// the proposal stays unapplied until the owner taps the confirmation.
+		applied, applyErr := session.CallTool(ctx, &mcp.CallToolParams{Name: "memory_card", Arguments: map[string]any{"op": "apply", "id": out["id"]}})
+		m32Require(t, applyErr)
+		if applied == nil {
+			t.Fatal("self-apply returned no result")
+		}
+		if !applied.IsError {
+			structured, _ := applied.StructuredContent.(map[string]any)
+			if structured["status"] != "invalid" {
+				t.Fatal("model confirmed its own proposal")
+			}
 		}
 		b := waitButton(int64(11 + i))
 		tap(b, int64(12-i))

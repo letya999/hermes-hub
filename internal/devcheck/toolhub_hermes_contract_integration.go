@@ -355,9 +355,9 @@ func nativeToolHubProvider(projectedName string, modelToolCalls *atomic.Int32, a
 			}
 		}
 		mcpToolName := "mcp__toolhub__" + strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(projectedName)
-		searchComplete := lastTool == "tool_search" && toolSearchHit(lastToolResult, mcpToolName)
-		searchMiss := lastTool == "tool_search" && toolReturned && !searchComplete
-		actualResult := lastTool == "tool_call" && toolReturned
+		searchComplete := lastTool == "mcp__toolhub__tool_search" && toolSearchHit(lastToolResult, mcpToolName)
+		searchMiss := lastTool == "mcp__toolhub__tool_search" && toolReturned && !searchComplete
+		actualResult := lastTool == "mcp__toolhub__tool_call" && toolReturned
 		if strings.Contains(input, "active-run") && actualResult {
 			activeRunOnce.Do(func() { close(activeRunEntered) })
 			select {
@@ -367,10 +367,10 @@ func nativeToolHubProvider(projectedName string, modelToolCalls *atomic.Int32, a
 			}
 		}
 		if strings.Contains(input, "toolhub") && request.Stream && !actualResult && !searchMiss {
-			callName := "tool_search"
-			callArguments, _ := json.Marshal(map[string]any{"queries": []string{mcpToolName}})
+			callName := "mcp__toolhub__tool_search"
+			callArguments, _ := json.Marshal(map[string]any{"query": mcpToolName})
 			if searchComplete {
-				callName = "tool_call"
+				callName = "mcp__toolhub__tool_call"
 				callArguments, _ = json.Marshal(map[string]any{"name": mcpToolName, "arguments": map[string]any{}})
 				modelToolCalls.Add(1)
 			}

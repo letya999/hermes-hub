@@ -41,7 +41,11 @@ func (g *Gateway) mcpCall(ctx context.Context, auth identity.Envelope, name stri
 	// re-admits on its own name under a fresh call ID, so the ledger keeps
 	// the pair as two operations. Admitted outer names never reach the retry.
 	if errors.Is(err, api.ErrNotFound) && len(args) <= 2 {
-		if inner, ok := args["tool"].(string); ok && strings.TrimSpace(inner) != "" {
+		inner, _ := args["tool"].(string)
+		if strings.TrimSpace(inner) == "" {
+			inner, _ = args["name"].(string)
+		}
+		if strings.TrimSpace(inner) != "" {
 			corr := api.CallCorrelationFrom(ctx)
 			corr.ToolCallID = api.NewToolCallID()
 			ctx = api.WithCallCorrelation(ctx, corr)

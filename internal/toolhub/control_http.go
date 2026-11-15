@@ -119,12 +119,23 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 		}
 		var arguments struct {
 			Tool      string         `json:"tool"`
+			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
+		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil {
 			return nil, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
 		}
-		return g.mcpCall(ctx, auth, arguments.Tool, arguments.Arguments)
+		// Models alternate between `tool` and `name` for the target selector;
+		// the admitted schema documents `tool`, but either resolves the same
+		// projected name through mcpCall's qualifier strip and unwrap.
+		tool := strings.TrimSpace(arguments.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(arguments.Name)
+		}
+		if tool == "" {
+			return nil, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
+		}
+		return g.mcpCall(ctx, auth, tool, arguments.Arguments)
 	})
 }
 

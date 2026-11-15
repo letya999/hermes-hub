@@ -241,13 +241,13 @@ func m32FiveRunToolReply(w http.ResponseWriter, stream bool, raw json.RawMessage
 			toolReturned = true
 		}
 	}
-	if index < 0 || lastTool == "tool_call" && toolReturned {
+	if index < 0 || lastTool == "mcp__toolhub__tool_call" && toolReturned {
 		return false
 	}
-	name := "tool_search"
-	arguments, _ := json.Marshal(map[string]any{"queries": []string{"mcp__toolhub__tool_call"}})
-	if lastTool == "tool_search" && toolReturned {
-		name = "tool_call"
+	name := "mcp__toolhub__tool_search"
+	arguments, _ := json.Marshal(map[string]any{"query": "tool_call"})
+	if lastTool == "mcp__toolhub__tool_search" && toolReturned {
+		name = "mcp__toolhub__tool_call"
 		arguments, _ = json.Marshal(map[string]any{"name": "mcp__toolhub__tool_call", "arguments": map[string]any{"tool": "memory_search", "arguments": map[string]any{"query": "synthetic-five-lane-" + strconv.Itoa(index)}}})
 	}
 	call := map[string]any{"index": 0, "id": "m32-tool", "type": "function", "function": map[string]any{"name": name, "arguments": string(arguments)}}

@@ -163,7 +163,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		}
 		return nil
 	}
-	if err := checkTerminal(filepath.Join(contextRoot, "hermes.prod.yaml")); err != nil {
+	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes.prod.yaml")); err != nil {
 		return err
 	}
 	settings, err := stack.ReadEffective(contextRoot, "prod")

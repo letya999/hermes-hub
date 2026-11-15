@@ -126,6 +126,9 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 		return body(g.knowledgeOpen(ctx, auth))
 	case "tool_call":
 		name := strings.TrimPrefix(strings.TrimSpace(api.ArgString(arguments, "tool")), toolhubNamePrefix)
+		if name == "" {
+			name = strings.TrimPrefix(strings.TrimSpace(api.ArgString(arguments, "name")), toolhubNamePrefix)
+		}
 		nested, _ := arguments["arguments"].(map[string]any)
 		if name == "" {
 			return api.BackendResult{}, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
