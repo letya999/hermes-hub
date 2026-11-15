@@ -66,7 +66,7 @@ func TestWaitingMemoryCallDoesNotHoldRegistryFence(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 	}
 	writer := make(chan struct{})
-	go func() { store.mu.Lock(); store.mu.Unlock(); close(writer) }()
+	go func() { store.mu.Lock(); close(writer); store.mu.Unlock() }()
 	select {
 	case <-writer:
 	case <-time.After(time.Second):

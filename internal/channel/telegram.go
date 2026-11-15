@@ -118,7 +118,7 @@ func (c telegram) Deliver(ctx context.Context, delivery *commodel.Delivery) erro
 				delivery.TelegramMessageID, sendErr = receiptAPI.SendKeyboardReceipt(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText(delivery.Text), delivery.Buttons)
 				if sendErr == nil {
 					if delivery.TelegramMessageID <= 0 {
-						sendErr = errors.New("Telegram keyboard receipt missing")
+						sendErr = errors.New("telegram keyboard receipt missing")
 					} else {
 						sendErr = deps.UpdateSending(*delivery)
 					}

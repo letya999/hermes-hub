@@ -244,10 +244,6 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 	return nil
 }
 
-func writeAtomic(path string, body []byte) error {
-	return writeAtomicMode(path, body, 0600)
-}
-
 func writeAtomicMode(path string, body []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".workspace-*")
 	if err != nil {

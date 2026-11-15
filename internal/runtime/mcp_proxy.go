@@ -87,10 +87,10 @@ func (s *runtimeHTTP) bindRun(jobID, runID string) error {
 		s.jobRuns = map[string]string{}
 	}
 	if existing := s.runJobs[runID]; existing != "" && existing != jobID {
-		return errors.New("Hermes run ownership changed during readmission")
+		return errors.New("hermes run ownership changed during readmission")
 	}
 	if existing := s.jobRuns[jobID]; existing != "" && existing != runID {
-		return errors.New("Hermes run changed during readmission")
+		return errors.New("hermes run changed during readmission")
 	}
 	s.runJobs[runID], s.jobRuns[jobID] = jobID, runID
 	s.signalRunChangeLocked()
