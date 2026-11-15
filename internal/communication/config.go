@@ -35,6 +35,7 @@ var gatewayOwnedEnv = map[string]bool{
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
 	Supervised         bool   `yaml:"-"`
+	Environment        string `yaml:"-"`
 	OrganizationID     string `yaml:"organization_id"`
 	Users              []User `yaml:"users"`
 	Groups             Groups `yaml:"groups,omitempty"`
@@ -43,10 +44,12 @@ type Config struct {
 	SlackSigningSecret string `yaml:"-"`
 	SlackBotToken      string `yaml:"-"`
 	ControlAuth        string `yaml:"-"`
+	ControlPrincipal   string `yaml:"-"`
+	AutomationAuth     string `yaml:"-"`
 	// ControlTokensFile optionally points at the infra owner's
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
-	// equally valid control-plane bearers. The principal still comes from
-	// X-Hub-Principal — the token only proves the caller is a hub service.
+	// admitted only as their enrolled principal. ControlPrincipal similarly
+	// binds the supervised infra owner's primary runtime bearer.
 	ControlTokensFile string                 `yaml:"-"`
 	controlAuthExtra  []string               `yaml:"-"`
 	ListenAddr        string                 `yaml:"-"`
@@ -129,6 +132,10 @@ type ServiceEndpoint struct {
 }
 
 func (c Config) Validate() error {
+	if _, err := spoolStorageLimits(limitsFromEnv()); err != nil {
+		return err
+	}
+
 	if c.Supervised && c.RuntimeURL == "" {
 		return errors.New("supervised gateway requires the host runtime URL")
 	}
@@ -230,6 +237,14 @@ func pathsOverlap(a, b string) bool {
 
 // LoadYAML reads a host-owned mapping. Secret values belong in env files.
 func LoadYAML(path string) (Config, error) {
+	c, err := parseYAML(path)
+	if err != nil {
+		return c, err
+	}
+	return c, c.Validate()
+}
+
+func parseYAML(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path) // #nosec G703 -- operator config path
 	if err != nil {
@@ -244,14 +259,14 @@ func LoadYAML(path string) (Config, error) {
 	if err := d.Decode(&extra); err != io.EOF {
 		return c, errors.New("one YAML document expected")
 	}
-	return c, c.Validate()
+	return c, nil
 }
 
 // ConfigFromEnv is the initial single-space deployment path. It uses the
 // existing user's runtime roots and maps TELEGRAM_ALLOWED_USERS to that user.
 func ConfigFromEnv() (Config, error) {
 	if path := os.Getenv("HUB_COMMUNICATION_CONFIG"); path != "" {
-		config, err := LoadYAML(path)
+		config, err := parseYAML(path)
 		if err != nil {
 			return Config{}, err
 		}
@@ -291,7 +306,7 @@ func ConfigFromEnv() (Config, error) {
 		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 		fillChannelSecrets(&config)
-		return config, nil
+		return config, config.Validate()
 	}
 	userID := os.Getenv("HUB_USER_ID")
 	if userID == "" {
@@ -405,6 +420,12 @@ func spoolLimitsFromEnv() (int, int64, int) {
 	return intFromEnv("HUB_SPOOL_MAX_FILES", 2048), int64(intFromEnv("HUB_SPOOL_MAX_ARCHIVE_BYTES", 64<<20)), intFromEnv("HUB_SPOOL_MAX_USAGE_ENTRIES", usageJournalMaxEntries)
 }
 
+// CompactLimitsFromEnv shares the gateway's retention bounds with offline cleanup.
+func CompactLimitsFromEnv() CompactLimits {
+	files, bytes, entries := spoolLimitsFromEnv()
+	return CompactLimits{MaxTerminalFiles: files, ArchiveMaxBytes: bytes, MaxUsageEntries: entries}
+}
+
 // durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).
 func durationSecondsFromEnv(name string, fallback time.Duration) time.Duration {
 	if n := intFromEnv(name, 0); n > 0 {
@@ -440,6 +461,8 @@ func fillChannelSecrets(config *Config) {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
+	config.ControlPrincipal = strings.TrimSpace(os.Getenv("HUB_USER_ID"))
+	config.AutomationAuth = envOr("HUB_AUTOMATION_AUTH", config.ControlAuth)
 	config.ControlTokensFile = os.Getenv("HUB_COMMUNICATION_TOKENS_FILE")
 	// The supervisor's own bearer is a control-plane peer too: ToolHub's
 	// prepare-outcome posts and sibling runtimes authenticate with it.
@@ -469,6 +492,7 @@ func fillChannelSecrets(config *Config) {
 	}
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 	config.ToolHubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), "/")
+	config.Environment = strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))
 }
 
 func parseSlackLinks(raw string) []SlackLink {

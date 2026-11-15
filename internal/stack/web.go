@@ -110,10 +110,8 @@ var webTieredProviders = map[string]bool{
 	"exa": true, "parallel": true, "firecrawl": true, "keenable": true,
 }
 
-// webRequiredEnv names the value a configured backend needs before its keyed
-// path can authenticate. Keyless-ring providers (exa, parallel, firecrawl
-// has a URL-only self-hosted path) and the managed alias return nothing or an
-// either-list: absence degrades to the anonymous tier, never a hard failure.
+// webRequiredEnv names values without which a backend has no usable path.
+// Keyless-ring providers, including Firecrawl, need no local credential.
 func webRequiredEnv(backend string) []string {
 	switch backend {
 	case "searxng":
@@ -124,8 +122,6 @@ func webRequiredEnv(backend string) []string {
 		return []string{"BRAVE_SEARCH_API_KEY"}
 	case "xai":
 		return []string{"XAI_API_KEY"}
-	case "firecrawl":
-		return []string{"FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"} // either
 	default:
 		return nil
 	}

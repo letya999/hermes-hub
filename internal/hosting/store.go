@@ -253,7 +253,22 @@ func (s *Service) Publish(ctx context.Context, b Binding, r PublishRequest) (res
 		return Site{}, err
 	}
 	if v, ok, err := s.replay(r.RequestID, r); ok || err != nil {
+		if ok && v.State == "failed" {
+			return Site{}, ErrUnavailable
+		}
 		return v, err
+	}
+	if len(s.cfg.Slots) != 0 {
+		allocated := false
+		for _, slot := range s.cfg.Slots {
+			allocated = allocated || slot == r.Name
+		}
+		if !allocated {
+			return Site{}, ErrSlot
+		}
+	}
+	if !s.cfg.validName(r.Name) || !safePath(r.Source) {
+		return Site{}, ErrInvalid
 	}
 	if len(s.state.Operations) >= 1024-s.cfg.MaxSites {
 		return Site{}, ErrQuota
@@ -270,9 +285,6 @@ func (s *Service) Publish(ctx context.Context, b Binding, r PublishRequest) (res
 		return Site{}, ErrQuota
 	}
 	s.publishTokens--
-	if !s.cfg.validName(r.Name) || !safePath(r.Source) {
-		return Site{}, ErrInvalid
-	}
 	if r.Mode == "" {
 		r.Mode = "static"
 	}

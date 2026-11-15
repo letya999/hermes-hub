@@ -187,6 +187,20 @@ func TestHubImageEnvironmentUsesEffectiveConfigWithoutParentLeak(t *testing.T) {
 	}
 }
 
+// M32/#517: the runtime never sees the vault — memory is ToolHub-owned, so
+// the hub child env must carry no HUB_VAULT pin regardless of memory_vault.
+func TestHubChildNeverCarriesVault(t *testing.T) {
+	for _, tools := range []map[string]ToolEntry{
+		{"workspace": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}},
+		{"workspace": {Via: ToolViaNative}},
+	} {
+		e := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: tools})["mcp_servers"].(M)["hub"].(M)["env"].(M)
+		if _, ok := e["HUB_VAULT"]; ok {
+			t.Fatalf("hub child env leaked a vault pin: %v", e["HUB_VAULT"])
+		}
+	}
+}
+
 func TestHubChildCarriesPolicyAndFullRuntimeIdentity(t *testing.T) {
 	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
 	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
@@ -273,6 +287,23 @@ func TestApplyToolHubConfigRequiresAuthToken(t *testing.T) {
 	}
 	if err := applyToolHubConfigWith(path, MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: false}); err == nil {
 		t.Fatal("missing runtime auth accepted")
+	}
+}
+
+func TestManagedToolHubConfigUsesRunBindingProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("model: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyToolHubConfigWith(path, MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), managedToolHubProxyEndpoint) || strings.Contains(string(body), "http://toolhub:8090/mcp") {
+		t.Fatalf("managed ToolHub bypasses runtime run binding: %s", body)
 	}
 }
 

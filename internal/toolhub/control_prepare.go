@@ -17,6 +17,9 @@ import (
 )
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if _, requested := args["upgrade_mode"]; requested {
+		return c.prepareConnectorUpgrade(ctx, auth, args)
+	}
 	if _, supplied := args["credentials"]; supplied && api.ArgString(args, "remote_url") == "" {
 		return nil, fmt.Errorf("%w: credentials is only supported with remote_url; source installs use connection_recipe", api.ErrInvalid)
 	}
@@ -36,12 +39,9 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 		}
 		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
 	}
-	if _, requested := args["telegram_send"]; requested {
-		return c.prepareTelegramSend(ctx, auth, args)
-	}
 	requestKey := api.ArgString(args, "request_key")
 	if requestKey != "" {
-		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved && !c.stalePreparing(existing) {
+		if existing, ok := c.Store.FindOnboardingByKey(auth, requestKey); ok && existing.Stage != api.StageFailed && !existing.DeadEnd() && !c.stalePreparing(existing) {
 			if credentialSource := api.ArgString(args, "credential_source"); credentialSource != "" {
 				if err := c.rebuildCredentialSource(&existing, credentialSource); err != nil {
 					return nil, err
@@ -135,11 +135,17 @@ func (c *ControlPlane) prepareCatalog(ctx context.Context, auth identity.Envelop
 	if err := c.Store.RequireCatalogAccess(auth, definition); err != nil {
 		return nil, err
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingCatalog, requestKey, definition, "", "")
+	onboarding, _, err := c.newOnboarding(auth, api.OnboardingCatalog, requestKey, definition, "", "", false)
 	if err != nil {
 		return nil, err
 	}
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, definition); err != nil {
+		return nil, err
+	}
+	// A credential-free catalog install asked for nothing else — the
+	// install request is the consent, so the armed setup gate completes
+	// inline instead of waiting for a click.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
@@ -199,7 +205,7 @@ func (c *ControlPlane) prepareSelfInstallAsync(ctx context.Context, auth identit
 		api.DeliverPrepareEvent(background, auth, preparing, "prepare-started")
 		body, err := c.finishSelfInstall(background, auth, preparing, source, requestKey, selected, shared, credentialSource)
 		latest := c.latestPrepareRecord(auth, preparing)
-		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.Phase, err)
+		log.Printf("toolhub prepare done: onboarding=%s phase=%s err=%v", latest.OnboardingID, latest.NoticePhase(), err)
 		if c.PrepareDone != nil {
 			c.PrepareDone(background, auth, latest)
 		}
@@ -236,7 +242,13 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 			source = prepared.Source
 		}
 	}
-	return source, api.DefaultSelfInstallConfig(source), nil
+	config := api.DefaultSelfInstallConfig(source)
+	if prepared, ok, err := api.PreparedForRepository(source.Repository, source.Subfolder); err != nil {
+		return api.ArtifactSource{}, api.ArtifactImportConfig{}, err
+	} else if ok {
+		config = prepared.Apply(config)
+	}
+	return source, config, nil
 }
 
 // prepareClaimTTL bounds one in-flight prepare: past it the record belongs to
@@ -247,7 +259,7 @@ const prepareClaimTTL = 35 * time.Minute
 // this check a crashed prepare deadlocks its request_key: every repeat call
 // early-returns the dead stub and no review ever restarts.
 func (c *ControlPlane) stalePreparing(onboarding api.Onboarding) bool {
-	return onboarding.Phase == api.PhasePreparing && !c.now().Before(onboarding.CreatedAt.Add(prepareClaimTTL))
+	return onboarding.PreparingStub && !c.now().Before(onboarding.CreatedAt.Add(prepareClaimTTL))
 }
 
 // ensurePreparing registers a preparing record before review+build so status
@@ -257,6 +269,16 @@ func (c *ControlPlane) stalePreparing(onboarding api.Onboarding) bool {
 // older than the background deadline belongs to a crashed prepare and is
 // overwritten to retry.
 func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.ArtifactSource, config api.ArtifactImportConfig, requestKey string, shared bool) (api.Onboarding, bool, error) {
+	if !shared && config.DefinitionID != "" {
+		if holder, held := c.Store.OnboardingSlot(auth, config.DefinitionID); held && holder.Stage != api.StageFailed {
+			if !holder.PreparingStub || !c.stalePreparing(holder) {
+				// The owner already has this connector — installed, installing
+				// or awaiting a human step. The repeat prepare attaches and
+				// reports it instead of running a second review+build.
+				return holder, true, nil
+			}
+		}
+	}
 	idSeed := requestKey
 	if idSeed == "" {
 		idSeed = string(api.OnboardingSelfInstall) + ":" + config.DefinitionID + "@" + config.Version + ":" + source.Repository + ":" + source.CommitSHA + ":" + source.Tag + ":" + source.Asset + ":" + source.PackageRegistry + ":" + source.PackageName + ":" + source.PackageVersion
@@ -265,9 +287,9 @@ func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.Artifa
 		idSeed += "|shared"
 	}
 	preparing := api.Onboarding{
-		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
-		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
+		Mode: api.OnboardingSelfInstall, Stage: api.StagePending, PreparingStub: true, SourceURL: source.Repository, CommitSHA: source.CommitSHA,
 		DefinitionID: config.DefinitionID, DefinitionVersion: config.Version,
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
@@ -278,14 +300,14 @@ func (c *ControlPlane) ensurePreparing(auth identity.Envelope, source api.Artifa
 // produced: normally the stub's own record, but a patch bump can move the
 // result to a sibling id. Best effort for the wake notification.
 func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onboarding) api.Onboarding {
-	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && current.Phase != api.PhaseRemoved {
+	if current, err := c.Store.onboarding(stub.OnboardingID); err == nil && !current.DeadEnd() {
 		return current
 	}
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
 	latest := stub
 	for _, candidate := range c.Store.onboardings {
-		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.Phase == api.PhaseRemoved {
+		if candidate.PrincipalID != auth.PrincipalID || candidate.ContextID != auth.ContextID || candidate.RuntimeID != auth.RuntimeID || candidate.PolicyVersion != auth.PolicyVersion || candidate.DeadEnd() {
 			continue
 		}
 		same := stub.IdempotencyKey != "" && candidate.IdempotencyKey == stub.IdempotencyKey
@@ -302,10 +324,10 @@ func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onbo
 func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate, shared bool, credentialSource string) (map[string]any, error) {
 	activeID := preparing.OnboardingID
 	failPrepare := func(err error) (map[string]any, error) {
-		if latest, latestErr := c.Store.onboarding(activeID); latestErr == nil && (latest.Phase == api.PhasePreparing || latest.Phase == api.PhaseAwaitingCreds || latest.Phase == api.PhaseAwaitingConfirm) {
-			latest.Phase = api.PhaseFailed
-			latest.FormNonce = ""
-			latest.FormExpires = time.Time{}
+		if latest, latestErr := c.Store.onboarding(activeID); latestErr == nil && (latest.PreparingStub || latest.Awaiting(api.GateCredentials) || latest.GateKind() == api.GateConfirmSetup) {
+			latest.Stage = api.StageFailed
+			latest.PreparingStub = false
+			latest.ClearGateKind(api.GateCredentials)
 			if persistErr := c.persistFailure(latest, api.PublicPrepareError(err), err); persistErr != err {
 				return nil, persistErr
 			}
@@ -316,12 +338,16 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	var err error
 	_, explicitRecipe := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe)
 	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !explicitRecipe && !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
+		log.Printf("toolhub prepare phase=artifact onboarding=%s reused=true", preparing.OnboardingID)
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
 			return failPrepare(fmt.Errorf("%w: source reviewer unavailable", api.ErrInvalid))
 		}
+		api.DeliverPrepareEvent(ctx, auth, preparing, "step-artifact")
+		artifactStart := c.now()
 		review, err = c.Reviewer(ctx, source, selected)
+		log.Printf("toolhub prepare phase=artifact onboarding=%s seconds=%.1f", preparing.OnboardingID, c.now().Sub(artifactStart).Seconds())
 		if err != nil {
 			return failPrepare(err)
 		}
@@ -339,6 +365,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		api.MergeConnectionForDefinition(filtered, &review.Definition)
 	}
 	if review.AdmissionPending {
+		api.DeliverPrepareEvent(ctx, auth, preparing, "step-admit")
 		return c.acceptCredentialGate(ctx, auth, preparing, review)
 	}
 	// The shared class must be on the definition before contract binding so a
@@ -393,7 +420,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 			return failPrepare(err)
 		}
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA)
+	onboarding, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, requestKey, review.Definition, source.Repository, source.CommitSHA, shared)
 	if err != nil {
 		return failPrepare(err)
 	}
@@ -401,8 +428,10 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if onboarding.OnboardingID != preparing.OnboardingID {
 		// A patch bump or a reviewed definition id shifted the deterministic
 		// key; callers holding the stub id follow SupersededBy to the result.
-		preparing.Phase = api.PhaseRemoved
+		preparing.Retire(api.TombstoneRemoved)
+		preparing.PreparingStub = false
 		preparing.SupersededBy = onboarding.OnboardingID
+		preparing.Revision++
 		if err := c.Store.PutOnboarding(preparing); err != nil {
 			log.Printf("toolhub: superseded onboarding stub %s not recorded: %v", preparing.OnboardingID, err)
 		}
@@ -426,20 +455,24 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	// a URL-only contract needs no token. The phase must reflect the final
 	// Required set or the onboarding deadlocks: confirm rejects a missing
 	// locator while the broker URL only surfaces in awaiting-credentials.
-	if len(onboarding.Required) > 0 && onboarding.Locator == "" && onboarding.Phase == api.PhaseAwaitingConfirm {
-		onboarding.Phase = api.PhaseAwaitingCreds
-		onboarding.FormNonce = api.RandomNonce()
-		onboarding.FormExpires = c.now().Add(c.ttl())
+	if len(onboarding.Required) > 0 && onboarding.Locator == "" && onboarding.Awaiting(api.GateConfirmSetup) {
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
-		onboarding.ConfirmationNonce = ""
-		onboarding.ConfirmationExpires = time.Time{}
 	}
 	copyDef := review.Definition
 	onboarding.Definition = &copyDef
+	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return failPrepare(err)
 	}
+	api.DeliverPrepareEvent(ctx, auth, preparing, "step-bind")
 	if err := c.ensureBrokerRequest(ctx, auth, &onboarding, review.Definition); err != nil {
+		return failPrepare(err)
+	}
+	// A credential-free install asked for nothing else from the owner — the
+	// install request is the consent, so the armed setup gate completes
+	// inline instead of waiting for a click.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
 		return failPrepare(err)
 	}
 	return c.statusBody(onboarding, false), nil

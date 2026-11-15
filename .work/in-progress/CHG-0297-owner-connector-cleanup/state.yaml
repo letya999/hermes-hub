@@ -1,0 +1,18 @@
+schema: 1
+change: CHG-0297
+title: Owner connector cleanup across policy epochs
+status: in_progress
+branch: feat/m32-integration
+updated: 2026-11-11
+phase: validation
+implementation_status: complete
+validation:
+  just_check: passed_after_final_rbac_edit
+  affected_test: passed_after_final_rbac_edit
+  broker_linux_packages: passed
+  broker_http_contract: passed
+  broker_openapi_docs: passed
+  live_acceptance: partial_control_and_broker_healthy_catalog_rebound_runtime_image_built_idle
+remaining:
+  - live signed Broker inventory read and disposable confirmed removal not yet verified
+  - remote CI acceptance requires published branch and owner authorization

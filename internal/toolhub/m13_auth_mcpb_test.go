@@ -299,9 +299,13 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 		t.Fatalf("callback: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != api.PhaseEnabled {
-		t.Fatalf("post-callback phase=%s err=%s", onboarding.Phase, onboarding.Error)
+	// The provider consent screen is itself the verified consent: the record
+	// completes inline and marks HumanConsent.Source instead of arming a
+	// second protected click.
+	if onboarding.Stage != api.StageLive || !onboarding.ConfirmationUsed || onboarding.HumanConsent == nil || onboarding.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("remote OAuth did not record implicit consent: phase=%s used=%v", onboarding.NoticePhase(), onboarding.ConfirmationUsed)
 	}
+	finishAsHuman(t, fix.control, onboardingID)
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -315,7 +319,7 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("oauth-admitted remote tool not projected")
 	}
-	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-1" {
@@ -378,6 +382,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +401,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, restarted, fix.store)
 	// The AS rotates the accepted token; the next call must refresh and retry.
 	fixture.accepted.Store("oauth-at-2")
-	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if err != nil || invoked.IsError {
 		t.Fatalf("refresh-retry invoke=%+v err=%v", invoked, err)
 	}
@@ -427,6 +432,7 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "alice", DeliveryTargetID: "alice", PolicyVersion: onboarding.PolicyVersion}
 	connection, reference, err := fix.store.OwnedConnection(caller, onboarding.ConnectionID)
@@ -472,6 +478,7 @@ func onboardRemoteOAuth(t *testing.T, fixture *remoteOAuthFixture, fix *remoteCo
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "alice", DeliveryTargetID: "alice", PolicyVersion: onboarding.PolicyVersion}
 	connection, reference, err := fix.store.OwnedConnection(caller, onboarding.ConnectionID)
@@ -484,12 +491,30 @@ func onboardRemoteOAuth(t *testing.T, fixture *remoteOAuthFixture, fix *remoteCo
 // S6.2: the durable (connection, provider) refresh lease serializes
 // concurrent expiry — N callers observe one AS exchange, the rest join on
 // the rotated token instead of double-spending it.
+type refreshReadBarrier struct {
+	credstore.Backend
+	reads   sync.WaitGroup
+	seen    atomic.Int32
+	release chan struct{}
+}
+
+func (b *refreshReadBarrier) Get(locator, owner string) (map[string]string, error) {
+	values, err := b.Backend.Get(locator, owner)
+	if b.seen.Add(1) <= 16 {
+		b.reads.Done()
+		<-b.release
+	}
+	return values, err
+}
+
 func TestRefreshLeaseSingleExchangeUnderConcurrency(t *testing.T) {
 	fixture := newRemoteOAuthFixture(t)
 	fix := newRemoteControlFixture(t)
 	connection, reference := onboardRemoteOAuth(t, fixture, fix)
 	broker := fixture.broker(fix.secrets, fix.control.origin()+"/oauth/callback")
-	refresh := remoteOAuthRefresh(fix.secrets, broker, fix.store)
+	backend := &refreshReadBarrier{Backend: fix.secrets, release: make(chan struct{})}
+	backend.reads.Add(16)
+	refresh := remoteOAuthRefresh(backend, broker, fix.store)
 	binding := api.EffectiveBinding{
 		Binding:    api.ToolBinding{PrincipalID: "alice"},
 		Connection: &connection,
@@ -510,6 +535,8 @@ func TestRefreshLeaseSingleExchangeUnderConcurrency(t *testing.T) {
 			results <- refreshed
 		}()
 	}
+	backend.reads.Wait()
+	close(backend.release)
 	wg.Wait()
 	close(results)
 	for refreshed := range results {
@@ -1006,6 +1033,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	owner := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	if owner.Locator == "" {
 		t.Fatal("oauth onboarding stored no credential locator")
@@ -1024,15 +1052,13 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 		t.Fatalf("bob prepare: %v", err)
 	}
 	bobOnb := mustOnboarding(t, fix.store, bprepared["onboarding_id"].(string))
-	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.FormNonce, map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
+	if err := fix.control.SubmitCredentials(bobOnb.OnboardingID, bobOnb.GateNonce(api.GateCredentials), map[string]string{"ACCESS_TOKEN": "member-dummy"}); err != nil {
 		t.Fatalf("bob submit: %v", err)
 	}
 	if _, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callControl(t, bob, "confirm", map[string]any{"onboarding_id": bobOnb.OnboardingID, "nonce": confirmNonceOf(t, fix.store, bobOnb.OnboardingID)}); err != nil {
-		t.Fatalf("bob confirm: %v", err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, bobOnb.OnboardingID)
 	if _, err := callControl(t, bob, "enable", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
 		t.Fatalf("bob enable: %v", err)
 	}
@@ -1049,7 +1075,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("shared remote tool not projected for member")
 	}
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("bob invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-1" {
@@ -1057,7 +1083,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	}
 	// Rotation: bob's next call must refresh alice's locator and retry once.
 	fixture.accepted.Store("oauth-at-2")
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("bob refresh-retry invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-2" {
@@ -1246,6 +1272,7 @@ func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1261,7 +1288,7 @@ func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
 	}
 	before := fixture.tokenHits.Load()
 	fixture.insufficient.Store(true)
-	_, err = alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	_, err = alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if got := fixture.tokenHits.Load(); got != before {
 		t.Fatalf("insufficient_scope triggered %d refresh attempts; want re-consent, no refresh", got-before)
 	}

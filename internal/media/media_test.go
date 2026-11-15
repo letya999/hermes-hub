@@ -21,6 +21,17 @@ import (
 	"time"
 )
 
+func TestModelEndpointVisionRoute(t *testing.T) {
+	var cfg hermesConfig
+	cfg.Model.Default = "default"
+	cfg.Model.BaseURL = "http://model-relay:8318/v1"
+	t.Setenv("HUB_MEDIA_VISION_MODEL", "vision")
+	endpoint, model, err := modelEndpoint(cfg)
+	if err != nil || endpoint != "http://model-relay:8318/v1/chat/completions" || model != "vision" {
+		t.Fatalf("vision route: endpoint=%q model=%q err=%v", endpoint, model, err)
+	}
+}
+
 func openSession(t *testing.T) (*Session, string) {
 	t.Helper()
 	dir := t.TempDir()

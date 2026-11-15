@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/routines"
 	"time"
 )
 
@@ -21,11 +23,11 @@ import (
 func TestWatchValuePicksNonEmptyGroup(t *testing.T) {
 	re := regexp.MustCompile(`(?:edited":(\d+)|<title>(.*?)</title>)`)
 	body := []byte(`<html><head><title>Notion</title></head><body>edited":1700000000</body></html>`)
-	if v := watchValue(body, re); v != "Notion" {
+	if v := routines.WatchValue(body, re); v != "Notion" {
 		t.Fatalf("title branch matched but group selection returned %q", v)
 	}
 	body = []byte(`edited":1700000000 then <title>Notion</title>`)
-	if v := watchValue(body, re); v != "1700000000" {
+	if v := routines.WatchValue(body, re); v != "1700000000" {
 		t.Fatalf("first branch value lost: %q", v)
 	}
 }
@@ -52,7 +54,7 @@ func TestFetchWatchAcceptsRealPageSize(t *testing.T) {
 // "probe status 302" or "probe body exceeds size limit" lets the agent fix the
 // watcher instead of silently retrying forever.
 func TestProbeErrorRecordedVerbatim(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-err", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/p", Regex: "x: (\\d+)"}}, caller, ""); err != nil {
 		t.Fatal(err)
@@ -62,7 +64,7 @@ func TestProbeErrorRecordedVerbatim(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return nil, errors.New("probe status 302") }
@@ -87,7 +89,7 @@ func TestProbeErrorRecordedVerbatim(t *testing.T) {
 // re-fetching — the event is not lost, and a repeated replay cannot duplicate
 // the delivery (SPEC-0048 crash-safety).
 func TestProbeResultReceiptReplaysAfterCrash(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-crash", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch the page", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/p"}}, caller, ""); err != nil {
 		t.Fatal(err)
@@ -98,22 +100,29 @@ func TestProbeResultReceiptReplaysAfterCrash(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	sourceBytes, err := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(sourceBytes, &o); err != nil {
 		t.Fatal(err)
 	}
 	// The receipt records exactly what settleProbe produced before dying: the
 	// changed value, the dispatched occurrence and the queued delivery.
 	o.State = "dispatched"
-	delivery, err := normalizeDelivery(Delivery{ID: "watch-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ChatID: o.Job.ChatID, Text: "watch the page\nhttps://example.com/p\nwas: v1\nnow: v2", CreatedAt: now})
+	delivery, err := normalizeDelivery(Delivery{ID: "watch-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: "watch the page\nhttps://example.com/p\nwas: v1\nnow: v2", CreatedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := probeResult{
-		Watch:      WatchState{ScheduleID: "w-crash", Baseline: watchHash("v2"), Value: "v2", PrevValue: "v1", ChangedAt: now, LastSuccess: now, Generation: 1},
+	receipt := routines.ProbeResult{
+		Watch:      WatchState{ScheduleID: "w-crash", Baseline: routines.WatchHash("v2"), Value: "v2", PrevValue: "v1", ChangedAt: now, LastSuccess: now, Generation: 1},
 		Occurrence: o,
 		Delivery:   &delivery,
 	}
-	receiptPath := filepath.Join(s.root, "occurrences", occurrenceID(o)+".probe-result")
+	receiptPath := filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".probe-result")
 	if err := atomicJSON(receiptPath, receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +141,7 @@ func TestProbeResultReceiptReplaysAfterCrash(t *testing.T) {
 	if extra, _ := s.ClaimDelivery(); extra != nil {
 		t.Fatalf("receipt replay duplicated the delivery: %+v", extra)
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +154,14 @@ func TestProbeResultReceiptReplaysAfterCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	var st WatchState
-	if json.Unmarshal(wb, &st) != nil || st.Value != "v2" || st.Baseline != watchHash("v2") {
+	if json.Unmarshal(wb, &st) != nil || st.Value != "v2" || st.Baseline != routines.WatchHash("v2") {
 		t.Fatalf("replayed watch state: %+v", st)
 	}
 	// A second crash window — between the delivery enqueue and the occurrence
 	// write — replays the same receipt again: the delivery id dedupes, so the
 	// recovery path never produces a duplicate notification.
 	saved.State = "probing"
-	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), saved); err != nil {
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"), saved); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(now, fetch); err != nil {

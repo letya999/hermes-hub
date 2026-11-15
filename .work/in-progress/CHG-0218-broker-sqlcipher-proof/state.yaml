@@ -3,8 +3,8 @@ change: CHG-0218
 title: "Gate сборки и аварийной атомарности SQLCipher"
 status: in_progress
 branch: fix/m23-live-wake
-updated: "2026-10-28"
-phase: design-complete
+updated: "2026-11-01"
+phase: implemented-gate-evidence
 adr: ADR-0087
 spec: SPEC-0087
 requirements: [R2]
@@ -13,12 +13,12 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
-readiness: proof_gate_pending
+implementation_status: partial
+readiness: gate_passed_dev_acceptance_pending
 slices:
-  S194.1-engine-build: not_started
-  S194.2-atomicity-matrix: not_started
-  S194.3-gate-receipt: not_started
+  S194.1-engine-build: done
+  S194.2-atomicity-matrix: done
+  S194.3-gate-receipt: done
 validation:
   documents: passed
   planning_package: passed
@@ -26,12 +26,14 @@ validation:
   just_check: not_run
   module_check: not_run
   security: not_run
-  docker_check: not_run
+  docker_check: passed
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - gate-result.md
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "Volume power-loss kill matrix not executed."
+  - "Live dev-stack activation acceptance (CHG-0226)."
 limitations:
-  - "Planning record only; no production code or live state changed."
-  - "Native dependency pins and volume-loss behaviour must be evidenced by this gate; not assumed."
+  - "Encrypted records substrate proven; normalized tables remain in CHG-0219."
+  - "Module pipeline gates run in Linux CI/toolchain image, not on this host."

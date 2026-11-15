@@ -44,7 +44,7 @@ def build():
     def add(path,method,op,summary,output='Status',input=None,aud='broker:control',status=200):
         parameters=[{'in':'path','name':name,'required':True,'schema':{'type':'string'}} for name in re.findall(r'\{([^}]+)\}',path)]
         if path=='/v1/events':parameters.append({'in':'query','name':'after','required':False,'schema':{'type':'integer','minimum':0,'default':0}})
-        schema={'type':'array','items':ref('Contract')} if output=='Contracts' else ref(output)
+        schema={'type':'array','items':ref('Contract' if output=='Contracts' else 'Credential')} if output in ('Contracts','Credentials') else ref(output)
         o={'operationId':op,'summary':summary,'x-required-audience':aud,'security':[{'HubAssertion':[]}],
            'responses':{str(status):{'description':'Success','content':{'application/json':{'schema':schema}}},'default':{'description':'Sanitized API error','content':{'application/json':{'schema':ref('Error')}}}}}
         if parameters:o['parameters']=parameters
@@ -59,6 +59,7 @@ def build():
     add('/v1/requests/{request_id}/telegram-submit','post','telegramSubmit','Owner-bound Telegram QR session transfer from Communication Hub',input='TelegramSubmit',aud='broker:approve')
     add('/v1/requests/{request_id}/cancel','post','cancel','Cancel enrollment')
     add('/v1/credentials/{credential_id}','get','getCredential','Opaque credential metadata','Credential')
+    add('/v1/connections/{connection_id}/credentials','get','connectionCredentials','Owner-scoped credential metadata for one connection, including deleted tombstones','Credentials')
     add('/v1/credentials/{credential_id}','delete','deleteCredential','Delete managed secret versions; preserve imported source')
     add('/v1/credentials/{credential_id}/revoke','post','revokeCredential','Fence local grants/leases; does not revoke upstream provider token')
     add('/v1/credentials/{credential_id}/grants','post','createGrant','Explicit binding grant','Grant','GrantRequest',status=201)
@@ -89,5 +90,5 @@ def main():
     if a.check:
         if not target.exists() or target.read_text()!=text:raise SystemExit('OpenAPI drift; run just api-fix')
         print('OpenAPI DTO and route description drift check passed.')
-    else:target.write_text(text)
+    else:target.write_bytes(text.encode())
 if __name__=='__main__':main()

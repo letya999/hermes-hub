@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
@@ -84,8 +85,9 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	store, auth, binding := seededStore(t)
 	var calls atomic.Int32
 	handler, err := (&Gateway{
-		Store:  store,
-		Tokens: map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Store:      store,
+		AuditWrite: testAuditWriter(t),
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
 		Backend: backendFunc(func(_ context.Context, effective api.EffectiveBinding, tool api.ToolSpec, args map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
 			if effective.Connection == nil || effective.Connection.Owner.ID != "alice" || tool.Name != "search" || args["query"] != "hello" {
@@ -106,7 +108,7 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	}
 	defer session.Close()
 	tools, err := session.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 4 || !toolListed(tools, "system_guide") || !toolListed(tools, "tools_list") {
+	if err != nil || len(tools.Tools) != 7 || !toolListed(tools, "platform_guide") || !toolListed(tools, "tool_search") {
 		t.Fatalf("tools/list=%+v err=%v", tools, err)
 	}
 	name := api.ProjectedToolName("google-work", "1.0.0", "search")
@@ -135,15 +137,16 @@ func TestGatewayCallBoundsBackendResult(t *testing.T) {
 		err    error
 		want   error
 	}{
-		{name: "backend", err: backendError, want: backendError},
-		{name: "text limit", result: api.BackendResult{Text: strings.Repeat("x", api.MaxOutputBytes+1)}, want: api.ErrInvalid},
-		{name: "resource limit", result: api.BackendResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: strings.Repeat("x", api.MaxOutputBytes+1)}}}}, want: api.ErrInvalid},
-		{name: "structured limit", result: api.BackendResult{Structured: strings.Repeat("x", api.MaxOutputBytes+1)}, want: api.ErrInvalid},
+		{name: "backend", err: backendError, want: audit.ErrUncertain},
+		{name: "text limit", result: api.BackendResult{Text: strings.Repeat("x", api.MaxOutputBytes+1)}, want: audit.ErrUncertain},
+		{name: "resource limit", result: api.BackendResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///readme", Text: strings.Repeat("x", api.MaxOutputBytes+1)}}}}, want: audit.ErrUncertain},
+		{name: "structured limit", result: api.BackendResult{Structured: strings.Repeat("x", api.MaxOutputBytes+1)}, want: audit.ErrUncertain},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 				return tc.result, tc.err
 			})}
+			attachGatewayAudit(t, &gateway)
 			_, err := gateway.call(context.Background(), auth, name, nil)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("gateway call error=%v want=%v", err, tc.want)
@@ -222,6 +225,7 @@ func TestMCPBackendUsesPrivateMCPContract(t *testing.T) {
 	gateway := Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return result, nil
 	})}
+	attachGatewayAudit(t, &gateway)
 	forwarded, err := gateway.call(t.Context(), auth, api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, effective.Definition.Tools[0].Name), map[string]any{})
 	if err != nil || len(forwarded.Content) != 2 || forwarded.Content[1].(*mcp.EmbeddedResource).Resource.Text != "repository file" {
 		t.Fatal("gateway discarded embedded resource", err)
@@ -713,6 +717,7 @@ func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
 		<-release
 		return api.BackendResult{Text: "ok"}, nil
 	})}
+	attachGatewayAudit(t, &gateway)
 	done := make(chan error, 1)
 	go func() {
 		_, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "hello"})
@@ -751,6 +756,7 @@ func TestGatewayAuditOmitsSecrets(t *testing.T) {
 		}
 		events = append(events, copied)
 	}}
+	attachGatewayAudit(t, &gateway)
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "super-secret-token"}); err != nil {
 		t.Fatal(err)
 	}
@@ -909,6 +915,7 @@ func TestAdmittedProviderResourceOwnerDoesNotSelectAuthority(t *testing.T) {
 		}
 		return api.BackendResult{Text: "ok"}, nil
 	})}
+	attachGatewayAudit(t, &gateway)
 	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, definition.Tools[0].Name)
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"owner": "repository-org"}); err != nil {
 		t.Fatal(err)

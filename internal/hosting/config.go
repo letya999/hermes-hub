@@ -2,6 +2,8 @@
 package hosting
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"path"
@@ -16,6 +18,7 @@ const metadataReserve = (4 << 20) + (64 << 10)
 var (
 	ErrDenied      = errors.New("hosting denied")
 	ErrInvalid     = errors.New("invalid hosting request")
+	ErrSlot        = errors.New("hosting slot not allocated")
 	ErrConflict    = errors.New("hosting conflict")
 	ErrQuota       = errors.New("hosting quota exceeded")
 	ErrUnavailable = errors.New("hosting unavailable")
@@ -49,7 +52,7 @@ type Config struct {
 }
 
 func (c *Config) validate() error {
-	if !id.MatchString(c.Owner) || (c.Environment != "dev" && c.Environment != "prod") || !label.MatchString(c.Zone) || c.Zone != c.Owner || !(filepath.IsAbs(c.Workspace) || path.IsAbs(c.Workspace)) || !(filepath.IsAbs(c.Store) || path.IsAbs(c.Store)) || c.Workspace == c.Store {
+	if !id.MatchString(c.Owner) || (c.Environment != "dev" && c.Environment != "prod") || !label.MatchString(c.Zone) || c.Zone != ZoneForOwner(c.Owner) || !(filepath.IsAbs(c.Workspace) || path.IsAbs(c.Workspace)) || !(filepath.IsAbs(c.Store) || path.IsAbs(c.Store)) || c.Workspace == c.Store {
 		return ErrInvalid
 	}
 	if relative, err := filepath.Rel(c.Workspace, c.Store); err == nil && filepath.IsLocal(relative) {
@@ -94,6 +97,15 @@ func (c *Config) validate() error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// ZoneForOwner gives non-DNS owner IDs a stable, collision-resistant sish label.
+func ZoneForOwner(owner string) string {
+	if label.MatchString(owner) {
+		return owner
+	}
+	digest := sha256.Sum256([]byte(owner))
+	return "owner-" + hex.EncodeToString(digest[:8])
 }
 func safePath(p string) bool {
 	if p == "." {

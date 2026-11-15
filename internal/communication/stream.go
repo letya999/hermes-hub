@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +19,8 @@ import (
 )
 
 type streamReceipt struct {
+	Binding          string                     `json:"binding,omitempty"`
+	FinalState       string                     `json:"final_state,omitempty"`
 	JobID            string                     `json:"job_id"`
 	Position         uint64                     `json:"position"`
 	Event            hubruntime.ExecuteResponse `json:"event"`
@@ -116,15 +119,15 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		lang = s.langOf(mapping.PrincipalID)
 	}
 	hash := sha256.Sum256([]byte(job.ID + "\x00" + event.EventID))
-	path := filepath.Join(s.root, "events", hex.EncodeToString(hash[:])+".json")
+	path := filepath.Join(s.root, "run-events", hex.EncodeToString(hash[:])+".json")
 	var receipt streamReceipt
-	if b, readErr := os.ReadFile(path); readErr == nil {
+	if b, readErr := s.fsys.ReadFile(path); readErr == nil {
 		err = json.Unmarshal(b, &receipt)
 		if err == nil && (receipt.JobID != job.ID || receipt.Event.EventID != event.EventID) {
 			err = errors.New("invalid stream receipt")
 		}
 	} else if errors.Is(readErr, os.ErrNotExist) {
-		receipt = streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 1, Event: event}
+		receipt = streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 1, Event: event, Binding: receiptBinding(mapping)}
 		if event.LastEvent == "approval.request" {
 			receipt.ApprovalDeadline = time.Now().UTC().Add(2 * time.Minute)
 		}
@@ -136,13 +139,13 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		case event.Status == "completed":
 			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
-			text, id = failureMessage(lang, job.ID, event.Status), "job-"+job.ID+"-error"
+			text, id = failureMessage(lang, event.Status), "job-"+job.ID+"-error"
 			if event.Status == "cancelled" && mapping.ApprovalID != "" && !mapping.ApprovalDeadline.IsZero() && !time.Now().Before(mapping.ApprovalDeadline) {
 				key := "job.approval-expired"
 				if mapping.Control != nil && mapping.Control.Choice == "deny" {
 					key = "job.approval-denied"
 				}
-				text = locale.T(lang, key, job.ID)
+				text = locale.T(lang, key)
 			}
 		case event.LastEvent == "approval.request":
 			text = locale.T(lang, "job.approval-needed")
@@ -171,7 +174,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		if job.AssignmentID != "" && (strings.TrimSpace(text) == "NO_ACTIONABLE_EVENT" || event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started") {
 			text = ""
 		}
-		if text != "" {
+		if text != "" || event.Status == "completed" && (event.Voice != "" || len(event.Artifacts) > 0) {
 			receipt.StatusDelivery = statusDelivery
 			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, StreamPosition: receipt.Position, CreatedAt: time.Now().UTC()}
 			if markdown {
@@ -179,6 +182,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 			}
 			if event.Status == "completed" {
 				receipt.Delivery.Artifacts = event.Artifacts
+				receipt.Delivery.Voice = event.Voice
 			}
 			if event.Status != "completed" {
 				receipt.Delivery.JobID = ""
@@ -194,7 +198,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 				receipt.Delivery.Buttons = buttons
 			}
 		}
-		err = atomicJSON(path, receipt) // Write-ahead receipt repairs a crash before mapping/outbox handoff.
+		err = s.writeRunReceipt(path, receipt) // Write-ahead receipt repairs a crash before mapping/outbox handoff.
 	} else {
 		err = readErr
 	}
@@ -214,6 +218,21 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 	return nil
 }
 
+// statusDeliveryJobID recovers the owning job from the durable status
+// convention "job-<id>-status" (and its coalesced "-edit-" sends) so a
+// JobID-less progress record still passes the delivery-time group re-check.
+func statusDeliveryJobID(id string) string {
+	rest, ok := strings.CutPrefix(id, "job-")
+	if !ok {
+		return ""
+	}
+	jobID, suffix, ok := strings.Cut(rest, "-status")
+	if !ok || jobID == "" || suffix != "" && !strings.HasPrefix(suffix, "-edit-") {
+		return ""
+	}
+	return jobID
+}
+
 // UpsertStatusDelivery maintains the single editable status delivery for a
 // job (SPEC-0053 R2.2): a pending record absorbs the newest text, and once
 // the status was sent its TelegramMessageID turns later updates into edit
@@ -228,23 +247,23 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	defer s.signal() // a written or coalesced pending record wakes delivery
 	statusName := spoolFileID(d.ID) + ".json"
 	pending := filepath.Join(s.root, "outbox", "pending", statusName)
-	if b, readErr := os.ReadFile(pending); readErr == nil {
+	if b, readErr := s.fsys.ReadFile(pending); readErr == nil {
 		var p Delivery
 		if json.Unmarshal(b, &p) == nil && p.StatusClosed {
 			return nil
 		}
-		return atomicJSON(pending, d)
+		return s.writeJSON(pending, d)
 	}
 	// An in-flight or uncertain send must never be resurrected: the message
 	// may already exist and a fresh send would be a blind duplicate.
 	for _, dir := range []string{"sending", "failed"} {
-		if _, err := os.Stat(filepath.Join(s.root, "outbox", dir, statusName)); err == nil {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, statusName)); err == nil {
 			return nil
 		}
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "outbox", "done", statusName))
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", "done", statusName))
 	if errors.Is(err, os.ErrNotExist) {
-		return atomicJSON(pending, d)
+		return s.writeJSON(pending, d)
 	}
 	if err != nil {
 		return err
@@ -253,12 +272,35 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	if json.Unmarshal(b, &sent) != nil || sent.StatusClosed || sent.TelegramMessageID <= 0 {
 		return nil
 	}
+	if d.StreamPosition < sent.StreamPosition || d.StreamPosition == sent.StreamPosition && d.Text == sent.Text {
+		return nil
+	}
+	// Coalesced edit IDs may predate their payload: fence the actual sent intent.
+	for _, dir := range []string{"sending", "done", "failed"} {
+		edits, err := filepath.Glob(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+"-edit-*.json"))
+		if err != nil {
+			return err
+		}
+		for _, path := range edits {
+			body, err := s.readEventRecordLocked(path)
+			if err != nil {
+				return err
+			}
+			var previous Delivery
+			if strictEventJSON(body, &previous) != nil {
+				return errors.New("invalid status edit receipt")
+			}
+			if previous.StreamPosition >= d.StreamPosition && previous.Text == d.Text {
+				return nil
+			}
+		}
+	}
 	// A still-pending status edit absorbs the newest text in place so a burst
 	// of progress never produces a staircase of stale edits.
 	if edits, _ := filepath.Glob(filepath.Join(s.root, "outbox", "pending", spoolFileID(d.ID)+"-edit-*.json")); len(edits) > 0 {
 		for i, path := range edits {
 			var p Delivery
-			pb, perr := os.ReadFile(path)
+			pb, perr := s.fsys.ReadFile(path)
 			if perr != nil || json.Unmarshal(pb, &p) != nil {
 				continue
 			}
@@ -267,17 +309,25 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 			}
 			if i == 0 {
 				p.Text, p.EditMessageID, p.StreamPosition = d.Text, sent.TelegramMessageID, d.StreamPosition
-				_ = atomicJSON(path, p)
+				_ = s.writeJSON(path, p)
 			} else {
-				_ = os.Remove(path)
+				_ = s.removeOwned(path)
 			}
 		}
 		return nil
 	}
 	next := d
-	next.ID = d.ID + "-edit-" + strconv.FormatUint(d.StreamPosition, 10)
+	digest := sha256.Sum256([]byte(d.Text))
+	next.ID = d.ID + "-edit-" + strconv.FormatUint(d.StreamPosition, 10) + "-" + hex.EncodeToString(digest[:12])
 	next.EditMessageID = sent.TelegramMessageID
-	return atomicJSON(filepath.Join(s.root, "outbox", "pending", spoolFileID(next.ID)+".json"), next)
+	for _, dir := range []string{"sending", "done", "failed"} {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID(next.ID)+".json")); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return s.writeJSON(filepath.Join(s.root, "outbox", "pending", spoolFileID(next.ID)+".json"), next)
 }
 
 // CloseStatusDelivery marks a job's sent status message finalized once the
@@ -287,7 +337,7 @@ func (s *Spool) CloseStatusDelivery(jobID string) (chatID int64, messageID int) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(s.root, "outbox", "done", spoolFileID("job-"+jobID+"-status")+".json")
-	b, err := os.ReadFile(path)
+	b, err := s.fsys.ReadFile(path)
 	if err != nil {
 		return 0, 0
 	}
@@ -296,7 +346,7 @@ func (s *Spool) CloseStatusDelivery(jobID string) (chatID int64, messageID int) 
 		return 0, 0
 	}
 	sent.StatusClosed = true
-	if atomicJSON(path, sent) != nil {
+	if s.writeJSON(path, sent) != nil {
 		return 0, 0
 	}
 	return sent.ChatID, sent.TelegramMessageID
@@ -310,6 +360,9 @@ var errStaleReceipt = errors.New("stale stream receipt")
 // staleReceipt reports a receipt whose event predates recorded terminal
 // state — the same conflicts updateMappingLocked rejects for live events.
 func staleReceipt(mapping JobMapping, event hubruntime.ExecuteResponse) bool {
+	if mapping.RuntimeGeneration != "" && event.RuntimeGeneration != "" && mapping.RuntimeGeneration != event.RuntimeGeneration {
+		return true
+	}
 	if !terminalStatus(mapping.Status) {
 		return false
 	}
@@ -324,13 +377,32 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 	if err != nil {
 		return err
 	}
+	if receipt.FinalState != "" && receipt.Binding == "" {
+		return errors.New("terminal receipt requires a scope binding")
+	}
+	if receipt.Binding != "" && receipt.Binding != receiptBinding(mapping) {
+		return errors.New("receipt scope mismatch")
+	}
 	if receipt.Event.JobID != receipt.JobID || receipt.Event.EventID == "" {
 		return errors.New("invalid receipt event binding")
 	}
 	if d := receipt.Delivery; d != nil && (d.ConversationID != mapping.ConversationID || d.DeliveryTargetID != mapping.DeliveryTargetID || (d.JobID != "" && d.JobID != receipt.JobID)) {
 		return errors.New("receipt delivery audience mismatch")
 	}
+	if mapping.RunID != "" && receipt.Event.RunID != "" && mapping.RunID != receipt.Event.RunID || mapping.SessionID != "" && receipt.Event.SessionID != "" && mapping.SessionID != receipt.Event.SessionID {
+		return errors.New("receipt run identity mismatch")
+	}
+	if mapping.RuntimeGeneration != "" && receipt.Event.RuntimeGeneration == "" && receipt.Event.Status == "uncertain" && receipt.Position < mapping.EventPosition {
+		return errStaleReceipt
+	}
 	if receipt.Position <= mapping.EventPosition {
+		// Re-admission regresses the mapping below its latest finished
+		// receipt; the receipt stays authoritative and must be re-asserted,
+		// not reported stale — otherwise the job strands in running and the
+		// conversation lane wedges.
+		if receipt.Position == mapping.EventPosition && receipt.FinalState != "" && !terminalStatus(mapping.Status) && mapping.Status != receipt.Event.Status {
+			return s.updateMappingLocked(receipt.JobID, outcomeFromEvent(receipt.Event), receipt.Event.Status, terminalStatus(receipt.Event.Status))
+		}
 		return nil
 	}
 	if staleReceipt(mapping, receipt.Event) {
@@ -357,32 +429,21 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 }
 
 func (s *Spool) recoverStreamEvents() error {
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		return err
 	}
 	var receipts []streamReceipt
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "events", entry.Name()))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "run-events", name))
 		if err != nil {
 			return err
 		}
 		var receipt streamReceipt
-		if err := json.Unmarshal(b, &receipt); err != nil || receipt.JobID == "" || receipt.Position == 0 {
-			// The dir is shared: event-subscription states and slack dedup
-			// markers are valid JSON owned by other contracts; only their
-			// readers may reject them. Anything else malformed is a corrupt
-			// receipt and stays fatal.
-			var foreign struct {
-				ScheduleID string `json:"schedule_id"`
-				Provider   string `json:"provider"`
-			}
-			if json.Unmarshal(b, &foreign) == nil && (foreign.ScheduleID != "" || foreign.Provider != "") {
-				continue
-			}
+		if err := strictEventJSON(b, &receipt); err != nil || receipt.JobID == "" || receipt.Position == 0 || receipt.Event.JobID != receipt.JobID || receipt.Event.EventID == "" {
 			return errors.New("invalid stream receipt")
 		}
 		receipts = append(receipts, receipt)
@@ -404,9 +465,28 @@ func (s *Spool) recoverStreamEvents() error {
 			return err
 		}
 		if receipt.Delivery != nil {
-			if err := s.EnqueueDelivery(*receipt.Delivery); err != nil {
-				return err
+			var deliveryErr error
+			if _, validationErr := normalizeDelivery(*receipt.Delivery); validationErr != nil {
+				// Keep the receipt, but never replay a delivery to an invalid audience.
+				log.Printf("communication recovery skipped invalid delivery job_id=%q", receipt.JobID)
+			} else if receipt.StatusDelivery {
+				deliveryErr = s.UpsertStatusDelivery(*receipt.Delivery)
+			} else {
+				deliveryErr = s.EnqueueDelivery(*receipt.Delivery)
 			}
+			if deliveryErr != nil {
+				return deliveryErr
+			}
+		}
+		if err := s.finishReceiptJobLocked(receipt); err != nil {
+			if errors.Is(err, errStaleReceipt) {
+				// A superseded write-ahead handoff: its apply was a benign
+				// no-op under the recorded position, so only the terminal
+				// cross-check still notices the staleness. The recorded
+				// outcome wins — dropping the straggler cannot revive it.
+				continue
+			}
+			return err
 		}
 	}
 	return nil

@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0293
+title: Primary ToolHub toolsets
+status: in-progress
+branch: feat/m32-integration
+updated: 2026-11-12
+phase: research-live-accepted
+validation:
+  local: just-check-and-affected-tests-passed
+  live_artem_two: catalog-26-projected-23-tools-web-sessions-stt-context-site-errors-pass
+  artem_main_compile: passed
+  image_generation_and_edit: generation-and-inspect-accepted-edit-pending
+  2026_11_12_media_live: antigravity-owner-route-toolhub-jpeg-1024x1024-1034276-bytes-inspect-passed
+  2026_11_12_media_checks: just-check-passed-affected-packages-passed-hubctl-reran-separately-after-windows-testexec-access-denied
+  2026_11_12_read_probes: connector_status-awaiting_confirm-site_list-empty-watch_list-ok-model_list-ok-settings_read-ok
+  2026_11_12_research: catalog-35-projected-live-create-read-completed-list-safe-supervisor-web-sources-verified
+  2026_11_12_research_restart: wsl-state-mounted-report-and-list-survive-toolhub-recreate-zero-windows-mounts
+  2026_11_12_media: generate-error-hub_media_502-cliproxy_image_route_403
+  2026_11_12_web: providers-10-reported-fetch-one-result-search-payload-ok-hit-count-unverified-multi-interrupted-by-engine-outage
+  2026_11_12_engine: docker_api_500-and-ubuntu_unix_socket_timeout-no_other_project_restart
+  2026_11_12_skill_guidance: managed-research-tool-names-corrected-just-check-and-skilleval-pass
+remaining:
+  - finish media convert/edit and async fetch acceptance separately; live image generation and inspect now pass
+  - finish link site, browser, routine, assignment, watch, memory and combined goal/context/settings live cycles after service recovery
+  - complete owner-confirmed GitHub credential setup and a successful provider read; test only a disposable connection for removal
+  - resolve unavailable m32-sish-local relay before claiming link publication
+  - repair or rebind the existing blocked watch with the owner's destination choice
+  - live memory acceptance in a verified owner run
+  - positive media edit/fetch and Telegram voice delivery when authorized

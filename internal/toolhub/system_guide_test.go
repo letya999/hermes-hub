@@ -17,6 +17,7 @@ func TestSystemGuideAvailableWithoutConnectorGrants(t *testing.T) {
 		t.Fatal("reference read executed a provider tool")
 		return api.BackendResult{}, nil
 	})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +35,10 @@ func TestSystemGuideAvailableWithoutConnectorGrants(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !toolListed(listed, "system_guide") {
+		if !toolListed(listed, "platform_guide") {
 			t.Fatal("mandatory reference missing without connector grants")
 		}
-		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "system_guide", Arguments: map[string]any{}})
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "platform_guide", Arguments: map[string]any{}})
 		if err != nil || result.IsError {
 			t.Fatalf("reference read failed: %v", err)
 		}
@@ -52,7 +53,7 @@ func TestSystemGuideAvailableWithoutConnectorGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 		listed, err = session.ListTools(t.Context(), nil)
-		if err != nil || !toolListed(listed, "system_guide") {
+		if err != nil || !toolListed(listed, "platform_guide") {
 			t.Fatal("refresh removed mandatory reference")
 		}
 	}

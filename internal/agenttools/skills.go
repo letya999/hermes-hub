@@ -44,6 +44,9 @@ var actionFields = map[string][]string{
 func (t *Tools) skillCall(ctx context.Context, name string, r Input) (any, error) {
 	switch name {
 	case "skill":
+		if strings.TrimSpace(r.Path) != "" || strings.TrimSpace(r.Version) != "" {
+			return t.skillView(r)
+		}
 		return t.skillInvoke(ctx, r)
 	case "skills_list":
 		return t.skillsList(r)
@@ -51,7 +54,12 @@ func (t *Tools) skillCall(ctx context.Context, name string, r Input) (any, error
 		return t.skillView(r)
 	case "skills_search":
 		return t.skillsSearch(r)
-	case "skill_manage":
+	case "skill_search":
+		if strings.TrimSpace(r.Query) == "" {
+			return t.skillsList(r)
+		}
+		return t.skillsSearch(r)
+	case "skill_manage", "skill_edit":
 		return nil, errors.New("not implemented")
 	}
 	return nil, fmt.Errorf("unknown skill tool %q", name)
@@ -436,15 +444,19 @@ func (t *Tools) skillInstallLocal(ctx context.Context, arguments map[string]any)
 	if err != nil {
 		return nil, err
 	}
+	diff := diffTrees(st, name, tree)
 	link := t.skillDraftLink(ctx, map[string]string{
 		"draft_id": d.ID, "skill_name": name, "scope": "user",
 		"summary":    argString(arguments, "reason"),
+		"diff":       diff,
 		"findings":   d.Meta.ScanVerdict,
 		"provenance": "workspace " + rel,
 	})
 	return map[string]any{
 		"draft_id": d.ID, "name": name, "state": "draft",
 		"dropped_dot_paths": dropped, "notes": d.Meta.ImportNotes,
+		"diff": diff, "lint": map[string]any{"ok": true},
+		"scan":      map[string]any{"verdict": d.Meta.ScanVerdict, "findings": d.Meta.ScanFindings},
 		"link_sent": link != "", "confirm_url": link,
 	}, nil
 }
@@ -747,11 +759,14 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 			credsMissing = live
 		}
 	}
+	files := append([]string{skillstore.SkillFile}, resources...)
 	result := map[string]any{
 		"name":      name,
 		"skill_dir": "/skills/" + name,
 		"body":      body,
 		"resources": resources,
+		// Agent Skills view: the whole file inventory, SKILL.md included.
+		"files": files,
 		// R7.5: scripts ride only the caller's grants — without an exec
 		// grant the skill is instructions only.
 		"readiness": map[string]any{
@@ -788,8 +803,8 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 			}
 		}
 	}
-	// R12.5: activation is journaled by the hub into the owner store —
-	// the client has no write path to usage counters.
-	_ = skillstore.RecordUsage(t.SkillsStore, name, "use", "")
+	// R12.5: activation bumps the hub-owned use counter; only resource
+	// reads journal a view event — a bare invoke stays out of the log.
+	_ = skillstore.CountUse(t.SkillsStore, name)
 	return result, nil
 }

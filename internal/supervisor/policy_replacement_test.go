@@ -30,7 +30,9 @@ func TestEnsureReplacesRuntimeOnPolicyRotation(t *testing.T) {
 		case "inspect":
 			return nil, os.ErrNotExist
 		case "run":
-			runs++
+			if isRuntimeSpawn(args) {
+				runs++
+			}
 		case "rm":
 			removes++
 		}
@@ -85,7 +87,9 @@ func TestReconcilePinsRestampStalePinPolicy(t *testing.T) {
 		case "inspect":
 			return nil, os.ErrNotExist
 		case "run":
-			spawned = append(spawned, strings.Join(args, " "))
+			if isRuntimeSpawn(args) {
+				spawned = append(spawned, strings.Join(args, " "))
+			}
 		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })

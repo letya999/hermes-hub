@@ -69,16 +69,18 @@ func TestManagedRunArgsSelectsDevRuntimeImage(t *testing.T) {
 	for _, name := range []string{"managed-runtime", "hermes"} {
 		body, err := os.ReadFile(filepath.Join(root, name+".prod.env"))
 		if name == "hermes" {
-			body, err = os.ReadFile(filepath.Join(root, "hermes.prod.yaml"))
+			body, err = os.ReadFile(filepath.Join(root, "generated", "hermes.prod.yaml"))
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
 		ext := ".env"
+		target := filepath.Join(root, name+".dev"+ext)
 		if name == "hermes" {
 			ext = ".yaml"
+			target = filepath.Join(root, "generated", name+".dev"+ext)
 		}
-		if err := os.WriteFile(filepath.Join(root, name+".dev"+ext), body, 0600); err != nil {
+		if err := os.WriteFile(target, body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

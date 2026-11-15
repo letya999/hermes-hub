@@ -27,7 +27,7 @@ func TestEgressAllowed(t *testing.T) {
 }
 
 func TestEgressRelayDeniesUnlisted(t *testing.T) {
-	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts("api.keenable.ai")))
+	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts("api.keenable.ai"), ""))
 	defer relay.Close()
 	for _, target := range []string{"http://evil.com/", "http://communication-hub:8081/v1/routines", "/relative"} {
 		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(relay.URL, "http://"), 2*time.Second)
@@ -55,7 +55,7 @@ func TestEgressRelayForwardsListedHTTP(t *testing.T) {
 	defer upstream.Close()
 	host := strings.TrimPrefix(upstream.URL, "http://")
 	hostname, _, _ := net.SplitHostPort(host)
-	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts(hostname)))
+	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts(hostname), ""))
 	defer relay.Close()
 	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(relay.URL, "http://"), 2*time.Second)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestEgressRelaySurvivesSlowControlUpstream(t *testing.T) {
 	defer upstream.Close()
 	host := strings.TrimPrefix(upstream.URL, "http://")
 	hostname, _, _ := net.SplitHostPort(host)
-	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts(hostname)))
+	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts(hostname), ""))
 	defer relay.Close()
 	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(relay.URL, "http://"), 2*time.Second)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestEgressRelayConnect(t *testing.T) {
 	// A real CONNECT tunnel to a local listener on 443 is impractical in a
 	// test; assert the policy gate instead: non-443 and unlisted are denied,
 	// listed:443 attempts to dial (fails upstream only).
-	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts("api.keenable.ai")))
+	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts("api.keenable.ai"), ""))
 	defer relay.Close()
 	addr := strings.TrimPrefix(relay.URL, "http://")
 	for _, target := range []string{"evil.com:443", "api.keenable.ai:22"} {
@@ -149,6 +149,66 @@ func TestEgressRelayConnect(t *testing.T) {
 		}
 	}
 	// Timeout/dial errors also prove the request passed the allowlist gate.
+}
+
+func TestEgressRelaySishTargetOnly(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		conn, acceptErr := upstream.Accept()
+		if acceptErr == nil {
+			_, _ = io.WriteString(conn, "ok")
+			_ = conn.Close()
+		}
+	}()
+	target := upstream.Addr().String()
+	relay := httptest.NewServer(egressRelayHandler(nil, target))
+	defer relay.Close()
+	request := func(method, address string) (*http.Response, *bufio.Reader, net.Conn) {
+		t.Helper()
+		conn, dialErr := net.DialTimeout("tcp", strings.TrimPrefix(relay.URL, "http://"), 2*time.Second)
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		host := address
+		if method != http.MethodConnect {
+			host = "test.invalid"
+		}
+		fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n", method, address, host)
+		reader := bufio.NewReader(conn)
+		response, readErr := http.ReadResponse(reader, nil)
+		if readErr != nil {
+			conn.Close()
+			t.Fatal(readErr)
+		}
+		return response, reader, conn
+	}
+	for _, address := range []string{"127.0.0.1:22", "example.invalid:2222"} {
+		response, _, conn := request(http.MethodConnect, address)
+		if response.StatusCode != http.StatusForbidden {
+			t.Fatalf("CONNECT %s status %d", address, response.StatusCode)
+		}
+		response.Body.Close()
+		conn.Close()
+	}
+	response, _, conn := request(http.MethodGet, "http://"+target+"/")
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("ordinary HTTP gained sish-only host: %d", response.StatusCode)
+	}
+	response.Body.Close()
+	conn.Close()
+	response, reader, conn := request(http.MethodConnect, target)
+	defer conn.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("declared CONNECT status %d", response.StatusCode)
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(reader, buf); err != nil || string(buf) != "ok" {
+		t.Fatalf("declared CONNECT payload %q: %v", buf, err)
+	}
 }
 
 func TestRunEgressRelayFailsOnBadListen(t *testing.T) {

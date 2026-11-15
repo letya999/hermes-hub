@@ -49,6 +49,14 @@ type Provider interface {
 	Delete(context.Context, Ref) error
 }
 
+// RefWriter is an optional capability: the provider can write a bundle at a
+// caller-reserved ref. It lets the caller persist creation intent with the
+// exact locator before any bytes reach the store — a crash between write
+// and activation keeps the object owned instead of orphaned.
+type RefWriter interface {
+	WriteRef(context.Context, Ref, Bundle) error
+}
+
 type Registry map[string]Provider
 
 func (r Registry) Resolve(ctx context.Context, ref Ref) (Bundle, error) {

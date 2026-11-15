@@ -38,8 +38,8 @@ func TestHTTPRunnerContract(t *testing.T) {
 	badRunner := HTTPRunner{URL: failed.URL, Auth: "secret", HTTP: failed.Client(), Limit: time.Second}
 	_, err = badRunner.Run(context.Background(), Job{Text: "hello"}, User{})
 	failed.Close()
-	if err == nil || errors.Is(err, ErrUncertain) {
-		t.Fatalf("deterministic runtime error classified incorrectly: %v", err)
+	if !errors.Is(err, ErrUncertain) {
+		t.Fatalf("unbound runtime failure must remain uncertain: %v", err)
 	}
 	terminal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -62,7 +62,7 @@ func TestHTTPRunnerContract(t *testing.T) {
 }
 
 func TestHTTPRunnerPinsRoutineOriginPerNewMappingAndPreservesLegacyReplay(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, _, _, env, a, b := destinationFixture(t)
 	for _, tc := range []struct {
 		id     string
 		task   Task
@@ -139,7 +139,7 @@ func TestHTTPRunnerVoiceConventionInstruction(t *testing.T) {
 // SPEC-0053 R1.8/D7: it is advertised via the rendered channel contract in the
 // effective SOUL, not per-run instructions.
 func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
-	for _, want := range []string{"artifacts/", "MEDIA: ", "inbox_fetch", "inbox=", "preserved", "artifacts/documents/", "artifacts/images/", "artifacts/videos/", "exact original bytes", "after:", "same schedule ID"} {
+	for _, want := range []string{"artifacts/", "MEDIA: ", "inbox/people/", "saved path", "preserved", "artifacts/documents/", "artifacts/images/", "artifacts/videos/", "exact original bytes", "after:", "same schedule ID"} {
 		if !strings.Contains(stack.ChannelContract, want) {
 			t.Fatalf("file-transfer convention missing %q from channel contract", want)
 		}
@@ -306,6 +306,7 @@ func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls <= 2 {
+			w.Header().Set("X-Hub-Admission", "not-dispatched")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -321,7 +322,11 @@ func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
 	}
 
 	calls = 0
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("X-Hub-Admission", "not-dispatched")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
 	defer dead.Close()
 	if _, err := (HTTPRunner{URL: dead.URL, Auth: "secret", HTTP: dead.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"}); err == nil || errors.Is(err, ErrUncertain) {
 		t.Fatalf("persistent unavailability must fail deterministically: %v", err)

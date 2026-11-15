@@ -82,7 +82,7 @@ func TestSiteToolsPublishListStatusUnpublish(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspacePath, "page", "index.html"), []byte("private fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := hosting.Open(hosting.Config{Owner: "alice", Environment: "dev", Zone: "alice", Domain: "hub.example.test", Workspace: workspacePath, Store: filepath.Join(root, "sites")}, hosting.Options{})
+	service, err := hosting.Open(hosting.Config{Owner: "alice", Environment: "dev", Zone: "alice", Domain: "hub.example.test", Workspace: workspacePath, Store: filepath.Join(root, "sites"), Slots: []string{"page"}}, hosting.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestSiteToolsPublishListStatusUnpublish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if list, ok := out.([]any); !ok || len(list) != 1 {
+	if list, ok := out.(map[string]any); !ok || len(list["sites"].([]any)) != 1 || list["slots"].([]any)[0] != "page" {
 		t.Fatal("list lost own slot")
 	}
 	out, err = tools.Call(context.Background(), "site_status", Input{Name: "page"})
@@ -125,7 +125,7 @@ func TestSiteToolsPublishListStatusUnpublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err = tools.Call(context.Background(), "site_list", Input{})
-	if err != nil || len(out.([]any)) != 0 {
+	if err != nil || len(out.(map[string]any)["sites"].([]any)) != 0 {
 		t.Fatal("unpublish did not revoke own slot")
 	}
 }

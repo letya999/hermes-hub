@@ -86,6 +86,23 @@ title: hub-media generation sidecar (phase 3 tracked in issue #182)
 
 # Acceptance
 
+## 2026-11-12 owner-scoped routing amendment
+
+A managed secondary space may declare `hub-media: per-space` for a concrete
+CLIProxy chat-image model. Compose names the service `hub-media-<owner>`, gives
+it a distinct data volume and media bearer, and points it at that owner's
+model relay. The generated `media-relay.auth` carries only a same-owner relay
+bearer; the provider credential remains in Broker behind the relay. The
+sidecar neither mounts the infra media Broker identity nor uses the infra
+media grant. Shared mode and its Broker contract remain as specified above.
+The owner's `image` route must select that model in the live
+provider catalog; a model catalog entry alone is not generation acceptance.
+The per-space container liveness check uses `GET /livez` while a passport
+transaction is open; `GET /healthz` still reports upstream readiness. A live
+generation after commit is required to accept the provider route.
+Switching the media service mode must recreate the owner egress relay with
+the new hostname allowlist before respawning the runtime.
+
 - Unit/integration fixtures cover bearer enforcement, model allowlists,
   unsafe mime and oversize rejection, fetch host allowlisting, the durable
   video lifecycle including restart resume, credential absence from runtime

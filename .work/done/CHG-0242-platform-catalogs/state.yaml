@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0242
+title: "M29.1 Generate immutable platform catalogs for capabilities, toolsets, and services"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R1.1, R1.2]
+depends_on: ["M29.0"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 425
+design_status: accepted
+implementation_status: implemented
+slices:
+  S1.1-contract: done
+  S1.2-implementation: done
+validation:
+  documents: done
+  just_check: attempted_env_flake
+  docker_check: not_affected
+  red_team: done
+  live_acceptance: deferred
+evidence:
+  - "internal/catalog generates capabilities/toolsets/services from HubToolsDefinition, SeedInventory, pinned HermesCapabilityInventory, ServiceCatalog, Compose and ConnectorTools — no second hand-written authority."
+  - "platform/catalogs/1/{capabilities,toolsets,services,manifest}.yaml emitted deterministically (sorted, no timestamps); manifest binds sha256 digests per file."
+  - "TestPlatformCatalogParityAndPinnedToolset green: handler/section/toolset/service/compose parity, docs/tools.md (incl. wildcard rows) and docs/routines.md parity, byte determinism, pinned-dir freshness, digest-tamper and Emit-drift rejection, unknown capability/operation/toolset/service/release fail-closed, admitted-space Project() isolation, empty-admission view."
+  - "devcheck catalog-emit wired (cmd/devcheck dispatch + internal/devcheck); emit refuses in-place drift — vocabulary change must bump catalog.Release."
+  - "docs/tools.md gained the Platform catalogs section; devcheck docs clean."
+  - "go test ./internal/catalog ./internal/stack ./internal/agenttools ./internal/toolhub/api ./cmd/devcheck ./internal/devcheck ./internal/exposure — all pass."
+  - "just check run on 2026-11-02: all recipes green except Windows AV blocking fresh Go toolchain binaries (compile.exe / test.exe 'Access is denied' on internal/agenttools, internal/devcheck, internal/exposure). Every flagged package passes on isolated rerun; the one staticcheck U1000 (cmd/hubctl applyKnowledge, file identical to dev) does not reproduce on a clean per-package run. Own coverage: catalog 92.0%, devcheck 84.9%, cmd/devcheck 100%, stack 88.0%; global-85 gate unverifiable under the flake — CI gates it."
+remaining: []
+limitations:
+  - "Passport-level catalog pinning lands with the M29.2 compiler; this stage provides catalog.Release + Load/Project as the pin and admitted-view mechanism."
+  - "Live operator-vs-admitted-space inspection waits for the passport binding (M29.2+) and milestone live acceptance (M29.12); covered now by Project() unit isolation."
+  - "Full `just check` on the branch remains subject to the same Windows toolchain flake seen in CHG-0241."

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -155,7 +154,7 @@ func (e *comfyGen) Poll(ctx context.Context, handle SubmitHandle, _ string) (Gen
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return GenResult{}, false, fmt.Errorf("ComfyUI output HTTP %d", response.StatusCode)
+		return GenResult{}, false, &upstreamStatusError{"ComfyUI output", response.StatusCode}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxGenResultBytes+1))
 	if err != nil || len(data) == 0 || len(data) > maxGenResultBytes {
@@ -197,7 +196,7 @@ func (e *comfyGen) json(ctx context.Context, method, path string, payload, desti
 		return errSubmissionUncertain
 	}
 	if response.StatusCode != 200 {
-		return fmt.Errorf("ComfyUI HTTP %d", response.StatusCode)
+		return &upstreamStatusError{"ComfyUI", response.StatusCode}
 	}
 	if json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(destination) != nil {
 		if method == http.MethodPost {

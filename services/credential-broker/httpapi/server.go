@@ -104,7 +104,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case "v1":
 				if len(parts) > 1 {
 					switch parts[1] {
-					case "contracts", "requests", "credentials", "grants", "leases", "runtime":
+					case "contracts", "requests", "credentials", "connections", "grants", "leases", "runtime":
 						route = "/v1/" + parts[1]
 					}
 				}
@@ -266,6 +266,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 		}
 	case len(parts) == 3 && parts[1] == "credentials" && r.Method == "GET":
 		out, e = s.b.GetCredential(a, parts[2])
+	case len(parts) == 4 && parts[1] == "connections" && parts[3] == "credentials" && r.Method == "GET":
+		out, e = s.b.ConnectionCredentials(a, parts[2])
 	case len(parts) == 3 && parts[1] == "credentials" && r.Method == "DELETE":
 		if !noBody(data) {
 			e = broker.ErrInvalid
@@ -355,6 +357,8 @@ func fail(w http.ResponseWriter, e error) {
 		status, code = 410, "expired"
 	case errors.Is(e, broker.ErrReauthorize):
 		status, code = 409, "reauthorize_required"
+	case errors.Is(e, broker.ErrRetentionFull):
+		status, code = 507, "retention_full"
 	}
 	writeJSON(w, status, v1.Error{Code: code})
 }

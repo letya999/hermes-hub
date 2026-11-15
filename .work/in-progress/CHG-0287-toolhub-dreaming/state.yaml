@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0287
+title: "ToolHub system dreaming"
+status: in_progress
+branch: feat/m32-integration
+updated: 2026-11-06
+phase: local-validation
+adr: [ADR-0095, ADR-0097]
+spec: SPEC-0099
+requirements: [A4, A5]
+depends_on: [CHG-0281]
+issue_dependencies: "../CHG-0281-m32-per-space-memory-plane/github-issues.json"
+github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
+github_milestone_number: 43
+github_issues: [524, 525]
+design_status: accepted
+implementation_status: implemented_unpublished
+slices:
+  A4: implemented_local_verified
+  A5: implemented_local_verified
+historical_slices:
+  S6.1-clock: not_started
+  S6.2-run: not_started
+  S6.3-delivery: not_started
+validation:
+  documents: passed_2026-11-05
+  just_check: passed_2026-11-06
+  docker_check: passed_2026-11-06_local_build
+  red_team: not_started
+  live_acceptance: partial_2026-11-06
+evidence:
+  - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
+  - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
+  - "2026-11-05 GitHub planning: milestone 43 and issues 524, 525 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
+  - "2026-11-06 #524/#525 on feat/m32-integration from 1e5cf54cf6d5e6c166edff26aede9809fe34da89: protected per-user local-day routine moved into the ToolHub clock; night execution uses the exact user's vault and caller-only model relay authority. Revocation, idempotent checkpoint, draft-intent retry and independent digest outbox covered by scoped tests. just check and just test ./internal/memory/night ./internal/toolhub/automation ./internal/toolhub ./internal/stack ./internal/communication ./internal/passport ./internal/devcheck ./cmd/toolhub passed (exit 0). Changes remain dirty/unpublished, so there is no remote acceptance."
+  - "2026-11-06 live Docker synthetic space zzz-dreaming-test: protected day record materialized; first relay attempt failed against private host.docker.internal as netguard refused the private destination. With an isolated Docker relay fixture using the same endpoint contract, ToolHub completed the rollup against the per-user vault, wrote card and review, queued one digest while communication was down. After ToolHub restart, no extra fixture model call or outbox item appeared. This proves the ToolHub/vault/outbox runtime path, not a real upstream provider hop or #526 two-user acceptance."
+  - "2026-11-06 just docker-check-build passed (exit 0) on the dirty working tree: seven BuildKit images, budgets, runtime smoke, pinned Hermes 0.21.0 contract, five-minute gateway lifecycle, managed network/supervisor, scratch workload and quarantine integration. Local result only; docker-clean completed."
+remaining: [ci_acceptance, live_multiuser_acceptance]
+limitations: ["No real upstream model provider call; local relay fixture only", "No published SHA or remote CI acceptance"]
+

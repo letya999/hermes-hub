@@ -27,10 +27,7 @@ func TestMockChannelEndToEnd(t *testing.T) {
 		}
 	}
 	c.Users = append(c.Users, bob)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
@@ -122,15 +119,21 @@ func TestMockChannelEndToEnd(t *testing.T) {
 	if code, body := call(http.MethodGet, "/v1/mock/outbox", nil); code != http.StatusOK || strings.Contains(body, "ответ для боба") {
 		t.Fatalf("alice saw bob's outbox: %d %s", code, body)
 	}
-	// A routine on channel=mock fires through the same occurrence pipeline
-	// and lands in the captured outbox — the whole Phase B surface is
-	// end-to-end testable offline.
-	due := time.Now().UTC().Add(time.Minute)
-	code, _ = call(http.MethodPost, "/v1/routines", strings.NewReader(`{"schedule_id":"mock-rem","channel":"mock","chat_id":42,"timezone":"UTC","expression":"once:`+due.Format(time.RFC3339)+`","input":"разбудить","job_kind":"reminder"}`))
-	if code != http.StatusOK {
-		t.Fatalf("mock routine create: %d", code)
+	// An agent's origin routes its reminder back into the owned mock chat.
+	if code, _ := callAs("bob", http.MethodPost, "/v1/routines", strings.NewReader(`{"schedule_id":"stolen-rem","origin_job_id":"`+job.ID+`","destination_task_id":"current","timezone":"UTC","expression":"after:180s","input":"wrong chat","job_kind":"reminder"}`)); code != http.StatusBadRequest {
+		t.Fatalf("foreign mock origin accepted: %d", code)
 	}
-	g.tickProactive(due.Add(2 * time.Minute))
+	due := time.Now().UTC().Add(time.Minute)
+	code, body = call(http.MethodPost, "/v1/routines", strings.NewReader(`{"schedule_id":"mock-rem","origin_job_id":"`+job.ID+`","destination_task_id":"current","timezone":"UTC","expression":"once:`+due.Format(time.RFC3339)+`","input":"разбудить","job_kind":"reminder"}`))
+	if code != http.StatusOK {
+		t.Fatalf("mock routine create: %d %s", code, body)
+	}
+	if !strings.Contains(body, `"channel":"mock"`) || !strings.Contains(body, `"chat_id":42`) {
+		t.Fatalf("mock routine routed incorrectly: %s", body)
+	}
+	if err := host.Tick(t.Context(), due.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	g.deliverOne(t.Context())
 	if code, body := call(http.MethodGet, "/v1/mock/outbox", nil); code != http.StatusOK || !strings.Contains(body, "разбудить") {
 		t.Fatalf("mock routine delivery: %d %s", code, body)

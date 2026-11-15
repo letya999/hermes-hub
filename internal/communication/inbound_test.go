@@ -106,16 +106,35 @@ func TestInboundEndpointAuthAndConsume(t *testing.T) {
 	if code, _ := call(http.MethodGet, "/v1/inbound/in-1", "bob"); code != http.StatusForbidden {
 		t.Fatalf("foreign owner's file got %d", code)
 	}
-	var name string
+	var name, source string
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/inbound/in-1", nil)
 	req.Header.Set("Authorization", "Bearer "+c.ControlAuth)
 	req.Header.Set("X-Hub-Principal", "alice")
 	if resp, err := http.DefaultClient.Do(req); err == nil {
 		name = resp.Header.Get("X-Hub-Name")
+		source = resp.Header.Get("X-Hub-Source")
 		resp.Body.Close()
 	}
 	if name != "a.txt" {
 		t.Fatalf("name header lost: %q", name)
+	}
+	if source != "people" {
+		t.Fatalf("unstamped source = %q, want people", source)
+	}
+	// A service-original record reports its own source so the workspace
+	// routes it under inbox/services (R4.2).
+	if err := g.spool.StageInbound(InboundRecord{ID: "in-2", UserID: "alice", Name: "svc.csv", Source: "services"}, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/v1/inbound/in-2", nil)
+	req.Header.Set("Authorization", "Bearer "+c.ControlAuth)
+	req.Header.Set("X-Hub-Principal", "alice")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		source = resp.Header.Get("X-Hub-Source")
+		resp.Body.Close()
+	}
+	if source != "services" {
+		t.Fatalf("service source = %q, want services", source)
 	}
 	code, body := call(http.MethodGet, "/v1/inbound/in-1", "alice")
 	if code != http.StatusOK || body != "payload" {

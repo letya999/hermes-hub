@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0224
 title: "Сохранность ToolHub и доверенное подтверждение пользователя"
 status: in_progress
-branch: fix/m23-live-wake
-updated: "2026-10-28"
-phase: design-complete
+branch: chore/storage-reliability-integration
+updated: "2026-11-01"
+phase: integrated-code-validation
 adr: ADR-0088
 spec: SPEC-0088
 requirements: [R6]
@@ -13,10 +13,10 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
+implementation_status: partial
 readiness: dependency_gated
 slices:
-  S200.1-snapshot-durability: not_started
+  S200.1-snapshot-durability: in_progress
   S200.2-onboarding-reasons: not_started
   S200.3-human-contract: not_started
 validation:
@@ -29,8 +29,8 @@ validation:
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence: [evidence.md]
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "Imported implementation requires integrated acceptance; design-only dependencies remain outstanding."
 limitations:
-  - "Planning record only; no production code or live state changed."
+  - "Imported code is under validation; no live data migration performed."

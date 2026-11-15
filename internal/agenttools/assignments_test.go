@@ -121,10 +121,20 @@ func TestAssignmentToolNoAuthorize(t *testing.T) {
 }
 
 // TestAssignmentDispatchPublishedOps (SPEC-0080 R2.3): every published
-// assignment_* tool actually dispatches — the catalog must not advertise
-// verbs the executor drops.
+// assignment_* tool actually dispatches to its own REST route — the catalog
+// must not advertise verbs the executor drops or misroutes.
 func TestAssignmentDispatchPublishedOps(t *testing.T) {
+	want := map[string][2]string{
+		"assignment_plan":   {http.MethodPost, "/v1/assignments/plan"},
+		"assignment_create": {http.MethodPost, "/v1/assignments"},
+		"assignment_list":   {http.MethodGet, "/v1/assignments"},
+		"assignment_read":   {http.MethodGet, "/v1/assignments/a1"},
+		"assignment_edit":   {http.MethodPost, "/v1/assignments/a1/pause"},
+		"assignment_remove": {http.MethodDelete, "/v1/assignments/a1"},
+	}
+	var gotMethod, gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
 		_, _ = io.WriteString(w, `{"assignment_id":"a1"}`)
 	}))
 	defer server.Close()
@@ -134,9 +144,17 @@ func TestAssignmentDispatchPublishedOps(t *testing.T) {
 		if !strings.HasPrefix(tool.Name, "assignment_") {
 			continue
 		}
-		_, err := v.call(context.Background(), tool.Name, Input{ID: "a1", ExpectedRevision: 1, Plan: `{"revision":1,"sources":[]}`}, nil, nil, nil)
+		in := Input{ID: "a1", ExpectedRevision: 1, Plan: `{"revision":1,"sources":[]}`}
+		if tool.Name == "assignment_edit" {
+			in.Action = "pause"
+		}
+		gotMethod, gotPath = "", ""
+		_, err := v.call(context.Background(), tool.Name, in, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("%s published but not dispatched: %v", tool.Name, err)
+		}
+		if route, ok := want[tool.Name]; !ok || gotMethod != route[0] || gotPath != route[1] {
+			t.Fatalf("%s routed to %s %s, want %s %s", tool.Name, gotMethod, gotPath, want[tool.Name][0], want[tool.Name][1])
 		}
 	}
 }
@@ -199,8 +217,8 @@ func TestAssignmentCapabilityIDsProjectable(t *testing.T) {
 		}
 		seen[tool.CapabilityID] = tool.Name
 	}
-	if assignments != 11 {
-		t.Fatalf("expected 11 assignment capabilities, got %d", assignments)
+	if assignments != 6 {
+		t.Fatalf("expected 6 assignment capabilities, got %d", assignments)
 	}
 }
 

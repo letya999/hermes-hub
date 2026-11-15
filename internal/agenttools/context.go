@@ -13,8 +13,7 @@ import (
 // effective threshold with provenance, journaled compaction count and last
 // event, and the live transcript estimate — each serialized as null when the
 // substrate cannot measure it. The id argument selects a session; absent, the
-// newest journaled session answers, since the agent cannot name its upstream
-// session id.
+// active turn lease answers, falling back to the newest journaled session.
 func (t *Tools) ContextStatus(ctx context.Context, r Input) (any, error) {
 	// A context argument naming anything but this runtime's bound context is
 	// a cross-context probe — refuse before touching the journal.
@@ -27,7 +26,9 @@ func (t *Tools) ContextStatus(ctx context.Context, r Input) (any, error) {
 	}
 	sessionID := r.ID
 	if sessionID == "" {
-		if sessionID, err = j.LatestSession(); err != nil {
+		if active, activeErr := compaction.ActiveSession(ctx); activeErr == nil && active != "" {
+			sessionID = active
+		} else if sessionID, err = j.LatestSession(); err != nil {
 			return nil, err
 		}
 	}
@@ -123,6 +124,10 @@ func (t *Tools) ContextCompact(ctx context.Context, r Input) (any, error) {
 			result.FailureClass = "queued"
 		}
 	}
+	var messagesAfter any
+	if !r.Preview {
+		messagesAfter = result.MessagesAfter
+	}
 	return map[string]any{
 		"object":          "hub.context_compact",
 		"session_id":      sessionID,
@@ -130,6 +135,7 @@ func (t *Tools) ContextCompact(ctx context.Context, r Input) (any, error) {
 		"method":          result.Method,
 		"failure_class":   result.FailureClass,
 		"messages_before": result.MessagesBefore,
-		"messages_after":  result.MessagesAfter,
+		"messages_after":  messagesAfter,
+		"would_method":    result.WouldMethod,
 	}, nil
 }

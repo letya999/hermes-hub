@@ -12,6 +12,21 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
+func TestParallelContextCeilingIsFive(t *testing.T) {
+	t.Setenv("HUB_CONTEXT_MAX_PARALLEL", "99")
+	if got := limitsFromEnv().MaxParallelPerContext; got != 5 {
+		t.Fatalf("parallel context ceiling=%d, want five", got)
+	}
+	t.Setenv("HUB_CONTEXT_MAX_PARALLEL", "3")
+	if got := limitsFromEnv().MaxParallelPerContext; got != 3 {
+		t.Fatalf("lower operator ceiling=%d, want three", got)
+	}
+	t.Setenv("HUB_CONTEXT_MAX_PARALLEL", "0")
+	if got := limitsFromEnv().MaxParallelPerContext; got != 5 {
+		t.Fatalf("zero ceiling=%d, want five", got)
+	}
+}
+
 // Concurrent enqueues must each hold exactly one reservation against the
 // scope: the ledger, not the caller, is the atomic source of truth for
 // pending demand under parallel admission.

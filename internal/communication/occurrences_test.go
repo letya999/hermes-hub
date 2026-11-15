@@ -20,43 +20,34 @@ import (
 	"github.com/letya999/hermes-hub/internal/routines"
 )
 
-func TestStreamRefPreservesNumericScheduleSuffix(t *testing.T) {
-	const hash = "0123456789abcdef"
-	for id, want := range map[string]string{
-		"stream2-10-watch-2026-3-" + hash: "watch-2026",
-		"stream2-8-watch-p3-0-" + hash:    "watch-p3",
-		"stream-watch-3-" + hash:          "watch", // previously queued refs
-	} {
-		if got := streamRefScheduleID(id); got != want {
-			t.Fatalf("%s: got %q, want %q", id, got, want)
-		}
-	}
-}
+// The legacy stream2-<pos>-<schedule>-<hash> event refs were retired with
+// the communication-owned event plane: under ToolHub ownership a replayed
+// event job resolves its schedule through the durable mapping and
+// SourceOccurrenceID, so no string parsing of ref ids exists to regress.
+// The replay/dedup assertions that used to hang off the old ref format are
+// covered by the automation suite (internal/toolhub/automation).
 
-func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
+func occurrenceFixture(t *testing.T) (*testOwner, RoutineOccurrence, *Gateway) {
 	t.Helper()
-	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := ownerFixture(t)
 	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}
 	o := RoutineOccurrence{ScheduleID: "schedule-one", Revision: 1, DueAt: time.Unix(100, 0), Job: job}
-	g := &Gateway{spool: s, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
-	s.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
+	g := s.g
+	g.now = func() time.Time { return time.Unix(90, 0) }
 	return s, o, g
 }
 
 // A reminder occurrence delivers its text straight to the outbox at fire
 // time: no ordinary job, no runtime, no model call.
 func TestReminderOccurrenceDeliversWithoutAgent(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "reminder"
 	o.Job.Text = "Позвонить в банк"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+		if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -78,7 +69,7 @@ func TestReminderOccurrenceDeliversWithoutAgent(t *testing.T) {
 // A reminder schedule materializes reminder occurrences end to end: the kind
 // travels from the durable schedule through the occurrence into the outbox.
 func TestReminderScheduleFiresThroughOutbox(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	_ = o
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	due := time.Now().UTC().Add(time.Minute)
@@ -86,10 +77,10 @@ func TestReminderScheduleFiresThroughOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(due.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(due.Add(time.Second), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(due.Add(time.Second), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
@@ -108,19 +99,19 @@ func TestReminderScheduleFiresThroughOutbox(t *testing.T) {
 // delivers its emit() output through the outbox — never an agent job, never
 // a runtime, never a model call.
 func TestScriptOccurrenceRunsInSandboxAndDelivers(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	o.Job.Text = `emit("disk at 91%")`
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("script occurrence woke the agent: %+v %v", job, err)
 	}
-	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
+	if err := s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
 		return RunScript(ctx, occurrence.Job.Text, occurrence.DueAt)
 	}); err != nil {
 		t.Fatal(err)
@@ -129,7 +120,7 @@ func TestScriptOccurrenceRunsInSandboxAndDelivers(t *testing.T) {
 	if err != nil || d == nil || d.Text != "disk at 91%" {
 		t.Fatalf("emitted text not delivered: %+v %v", d, err)
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,18 +135,18 @@ func TestScriptOccurrenceRunsInSandboxAndDelivers(t *testing.T) {
 	if err := s.PutOccurrence(o2, o2.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o2.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o2.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatalf("failed script woke the agent: %+v %v", job, err)
 	}
-	if err := s.RunDueScripts(context.Background(), o2.DueAt, g.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
+	if err := s.RunDueScripts(context.Background(), o2.DueAt, s.authorizeOccurrence, func(ctx context.Context, occurrence RoutineOccurrence) ([]string, error) {
 		return RunScript(ctx, occurrence.Job.Text, occurrence.DueAt)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json"))
+	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o2)+".json"))
 	var saved2 RoutineOccurrence
 	if err := json.Unmarshal(b, &saved2); err != nil || saved2.State != "failed" {
 		t.Fatalf("failed script not recorded: %+v %v", saved2, err)
@@ -210,7 +201,7 @@ func TestWatcherScheduleRequiresValidProbe(t *testing.T) {
 // seeds a durable baseline silently, an unchanged tick records no_change at
 // zero cost, and a changed hash delivers one notification with prev/now.
 func TestWatcherProbeLifecycle(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w1", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch the price", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/p", Regex: "price: (\\d+)"}}, caller, ""); err != nil {
 		t.Fatal(err)
@@ -221,7 +212,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	body := []byte("the price: 100 today")
@@ -239,7 +230,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o2, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o2.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o2.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o2.DueAt, fetch); err != nil {
@@ -255,7 +246,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o3, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o3.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o3.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o3.DueAt, fetch); err != nil {
@@ -281,7 +272,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o4, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o4.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o4.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o4.DueAt, func(context.Context, string) ([]byte, error) { return nil, errors.New("timeout") }); err != nil {
@@ -302,7 +293,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o5, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o5.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o5.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o5.DueAt, func(context.Context, string) ([]byte, error) { return []byte("page v1"), nil }); err != nil {
@@ -313,7 +304,7 @@ func TestWatcherProbeLifecycle(t *testing.T) {
 	if err := s.PutOccurrence(o6, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o6.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o6.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o6.DueAt, func(context.Context, string) ([]byte, error) { return []byte("page v2"), nil }); err != nil {
@@ -416,13 +407,14 @@ func TestGatewayTickProbesWatcher(t *testing.T) {
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-tick", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch the price", JobKind: "watcher", Probe: &WatchProbe{URL: server.URL, Regex: "price: (\\d+)"}}, caller, ""); err != nil {
 		t.Fatal(err)
 	}
-	g.spool = s
 	g.watchHTTP = server.Client()
 	due := time.Now().UTC().Add(-time.Minute)
 	sched, _ := s.loadScheduleLocked("w-tick")
 	sched.NextDue = due
 	_ = atomicJSON(s.schedulePath("w-tick"), sched)
-	g.tickProactive(due)
+	if err := s.tickProactive(due, g.fetchWatch); err != nil {
+		t.Fatal(err)
+	}
 	// Seed tick ran silently.
 	if d, _ := s.ClaimDelivery(); d != nil {
 		t.Fatalf("seed notified: %+v", d)
@@ -431,7 +423,9 @@ func TestGatewayTickProbesWatcher(t *testing.T) {
 	sched, _ = s.loadScheduleLocked("w-tick")
 	sched.NextDue = due.Add(time.Minute)
 	_ = atomicJSON(s.schedulePath("w-tick"), sched)
-	g.tickProactive(due.Add(2 * time.Minute))
+	if err := s.tickProactive(due.Add(2*time.Minute), g.fetchWatch); err != nil {
+		t.Fatal(err)
+	}
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil || !strings.Contains(d.Text, "777") {
 		t.Fatalf("tick probe did not deliver the change: %+v %v", d, err)
@@ -444,7 +438,7 @@ func TestGatewayTickProbesWatcher(t *testing.T) {
 // No baseline or a probe error means the predicate cannot be evaluated —
 // the occurrence fails, it never delivers blindly.
 func TestCheckOccurrenceEvaluatesAgainstSeededBaseline(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	due := time.Now().UTC().Add(time.Minute)
 	for i, expect := range []string{"", "bogus"} {
@@ -468,7 +462,7 @@ func TestCheckOccurrenceEvaluatesAgainstSeededBaseline(t *testing.T) {
 		if err := s.PutOccurrence(oc, caller); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DispatchDueOccurrences(oc.DueAt, g.authorizeOccurrence); err != nil {
+		if err := s.DispatchDueOccurrences(oc.DueAt, s.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
 		b := []byte(body)
@@ -493,7 +487,7 @@ func TestCheckOccurrenceEvaluatesAgainstSeededBaseline(t *testing.T) {
 	if d, _ := s.ClaimDelivery(); d != nil {
 		t.Fatalf("unmet check delivered: %+v", d)
 	}
-	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(oc)+".json"))
+	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(oc)+".json"))
 	var saved RoutineOccurrence
 	if err := json.Unmarshal(b, &saved); err != nil || saved.State != "skipped" {
 		t.Fatalf("unmet check not skipped: %+v %v", saved, err)
@@ -504,7 +498,7 @@ func TestCheckOccurrenceEvaluatesAgainstSeededBaseline(t *testing.T) {
 	if err := s.PutOccurrence(oc2, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(oc2.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(oc2.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(oc2.DueAt, func(context.Context, string) ([]byte, error) { return []byte("state: merged"), nil }); err != nil {
@@ -525,11 +519,10 @@ func TestRoutineCreateSeedsCheckBaseline(t *testing.T) {
 		_, _ = w.Write([]byte("state: open"))
 	}))
 	defer source.Close()
-	s, o, g := occurrenceFixture(t)
-	g.spool = s
+	c := testConfig(t)
+	c.ControlAuth = "tok"
+	g, host, _ := automationGatewayFixture(t, c)
 	g.watchHTTP = source.Client()
-	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
 	post := func(id, probeURL string) int {
@@ -550,14 +543,14 @@ func TestRoutineCreateSeedsCheckBaseline(t *testing.T) {
 	if hits != 1 {
 		t.Fatalf("creation probed %d times", hits)
 	}
-	st, err := s.loadWatchStateLocked("c-http")
-	if err != nil || st.Baseline != watchHash("open") {
+	st, err := host.LoadWatchState(context.Background(), c.Users[0].Envelope(11), "c-http")
+	if err != nil || st.Baseline != routines.WatchHash("open") {
 		t.Fatalf("baseline not seeded: %+v %v", st, err)
 	}
 	if code := post("c-dead", "http://127.0.0.1:1/dead"); code != http.StatusBadGateway {
 		t.Fatalf("dead source create: %d", code)
 	}
-	if _, err := s.loadScheduleLocked("c-dead"); err == nil {
+	if _, err := host.LoadSchedule(context.Background(), c.Users[0].Envelope(11), "c-dead"); err == nil {
 		t.Fatal("dead source created a schedule")
 	}
 	// No regex: the baseline is the whole bounded body.
@@ -576,18 +569,17 @@ func TestRoutineCreateSeedsCheckBaseline(t *testing.T) {
 	if code := postNoRe("c-whole"); code != http.StatusOK {
 		t.Fatalf("no-regex check create: %d", code)
 	}
-	st2, err := s.loadWatchStateLocked("c-whole")
-	if err != nil || st2.Baseline != watchHash("state: open") {
+	st2, err := host.LoadWatchState(context.Background(), c.Users[0].Envelope(11), "c-whole")
+	if err != nil || st2.Baseline != routines.WatchHash("state: open") {
 		t.Fatalf("whole-body baseline wrong: %+v %v", st2, err)
 	}
-	_ = o
 }
 
 // A digest occurrence aggregates the owner's watchers that changed since the
 // previous digest into ONE deterministic outbox message — no model, no
 // runtime. The marker advances so repeats only report new changes.
 func TestDigestOccurrenceAggregatesChangedWatches(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	mk := func(id, input string) {
 		t.Helper()
@@ -616,7 +608,7 @@ func TestDigestOccurrenceAggregatesChangedWatches(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(now, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -647,28 +639,23 @@ func TestDigestOccurrenceAggregatesChangedWatches(t *testing.T) {
 }
 
 func TestDueOccurrenceSurvivesRestartAndEnqueuesExactlyOneOrdinaryJob(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt.Add(-time.Second), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt.Add(-time.Second), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatal("future occurrence executed")
 	}
-	restarted, err := NewSpool(s.root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s = restarted
-	g.spool = s
+	s = s.reopen()
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+			if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -676,15 +663,15 @@ func TestDueOccurrenceSurvivesRestartAndEnqueuesExactlyOneOrdinaryJob(t *testing
 	wg.Wait()
 	job, err := s.ClaimJob()
 	wantEnv := o.Job.Envelope
-	wantEnv.ConversationID = routineConversation(o.ScheduleID)
-	if err != nil || job == nil || job.Trigger != "cron" || job.ID != occurrenceID(o) || !job.Envelope.Equal(wantEnv) {
+	wantEnv.ConversationID = routines.RoutineConversation(o.ScheduleID)
+	if err != nil || job == nil || job.Trigger != "cron" || job.ID != routines.OccurrenceID(o) || !job.Envelope.Equal(wantEnv) {
 		t.Fatalf("ordinary job: %+v %v", job, err)
 	}
 	if extra, err := s.ClaimJob(); err != nil || extra != nil {
 		t.Fatal("duplicate occurrence job")
 	}
 	// Simulate a crash after queue admission but before the occurrence settled.
-	path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
+	path := filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -695,7 +682,7 @@ func TestDueOccurrenceSurvivesRestartAndEnqueuesExactlyOneOrdinaryJob(t *testing
 	if err := atomicJSON(path, saved); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if extra, err := s.ClaimJob(); err != nil || extra != nil {
@@ -715,6 +702,7 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 		t.Run(kind, func(t *testing.T) {
 			s, o, g := occurrenceFixture(t)
 			caller := o.Job.Envelope
+			authorize := s.authorizeOccurrence
 			switch kind {
 			case "owner":
 				caller.ExternalIdentityID = "other"
@@ -722,8 +710,10 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 				o.Job.Text = "GITHUB_TOKEN=secret"
 			case "revoked":
 				delete(g.users, 11)
+				authorize = func(Job) error { return errors.New("revoked") }
 			case "policy":
 				t.Setenv("HUB_POLICY_VERSION", "policy-new")
+				authorize = func(Job) error { return errors.New("policy drift") }
 			}
 			err := s.PutOccurrence(o, caller)
 			if kind == "owner" || kind == "secret" {
@@ -739,7 +729,7 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 			if kind == "expired" {
 				now = now.Add(2 * time.Hour)
 			}
-			if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+			if err := s.DispatchDueOccurrences(now, authorize); err != nil {
 				t.Fatal(err)
 			}
 			if job, err := s.ClaimJob(); err != nil || job != nil {
@@ -760,7 +750,7 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 }
 
 func TestRunAtCommandPersistsVerifiedOccurrenceWithoutImmediateExecution(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.DueAt = time.Unix(100, 0)
 	o.Job.Trigger = ""
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
@@ -776,7 +766,7 @@ func TestRunAtCommandPersistsVerifiedOccurrenceWithoutImmediateExecution(t *test
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatal("occurrence executed early")
 	}
-	if err := s.DispatchDueOccurrences(time.Unix(100, 0), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(time.Unix(100, 0), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -786,7 +776,7 @@ func TestRunAtCommandPersistsVerifiedOccurrenceWithoutImmediateExecution(t *test
 }
 
 func TestOccurrencesDoNotOverlapAndUnknownRunContinuesToBlockSchedule(t *testing.T) {
-	s, first, g := occurrenceFixture(t)
+	s, first, _ := occurrenceFixture(t)
 	second := first
 	second.DueAt = first.DueAt.Add(time.Second)
 	for _, o := range []RoutineOccurrence{second, first} {
@@ -795,11 +785,11 @@ func TestOccurrencesDoNotOverlapAndUnknownRunContinuesToBlockSchedule(t *testing
 		}
 	}
 	now := second.DueAt
-	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(now, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
-	if err != nil || job == nil || job.ID != occurrenceID(first) {
+	if err != nil || job == nil || job.ID != routines.OccurrenceID(first) {
 		t.Fatalf("earliest occurrence not selected: %+v %v", job, err)
 	}
 	if extra, err := s.ClaimJob(); err != nil || extra != nil {
@@ -808,7 +798,7 @@ func TestOccurrencesDoNotOverlapAndUnknownRunContinuesToBlockSchedule(t *testing
 	if err := s.RecordOutcome(job.ID, RunOutcome{Status: "uncertain"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(now, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if extra, err := s.ClaimJob(); err != nil || extra != nil {
@@ -817,11 +807,11 @@ func TestOccurrencesDoNotOverlapAndUnknownRunContinuesToBlockSchedule(t *testing
 	if err := s.RecordOutcome(job.ID, RunOutcome{Status: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(now, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	next, err := s.ClaimJob()
-	if err != nil || next == nil || next.ID != occurrenceID(second) {
+	if err != nil || next == nil || next.ID != routines.OccurrenceID(second) {
 		t.Fatalf("terminal run did not release schedule: %+v %v", next, err)
 	}
 }

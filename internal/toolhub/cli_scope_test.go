@@ -41,8 +41,8 @@ func TestPrepareCLISharedScopeGate(t *testing.T) {
 		t.Fatalf("publication=%+v", pub)
 	}
 	onboarding := mustOnboarding(t, fix.store, body["onboarding_id"].(string))
-	if onboarding.Phase != api.PhaseAwaitingConfirm {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if onboarding.Stage != api.StageLive {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 	// The shared definition is visible to another principal with catalog
 	// access, unlike an owner-scoped install.

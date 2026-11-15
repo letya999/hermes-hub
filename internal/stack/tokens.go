@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -22,6 +23,17 @@ import (
 // The file is updated in place. A Docker bind mount follows the inode, so a
 // rename would hide the new contents from a running ToolHub.
 func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
+	if filepath.Base(filepath.Dir(filepath.Clean(spaceDir))) != "spaces" {
+		return nil
+	}
+	owner, err := ReadEffective(spaceDir, environment)
+	if err != nil {
+		return err
+	}
+	return enrollSiblingRuntimeTokens(spaceDir, environment, owner)
+}
+
+func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) error {
 	spaceDir, err := filepath.Abs(spaceDir)
 	if err != nil {
 		return err
@@ -30,16 +42,14 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 	if filepath.Base(parent) != "spaces" {
 		return nil
 	}
-	owner, err := ReadEnvironment(spaceDir, environment)
-	if err != nil {
-		return err
-	}
 	ownerToken := runtimeAuthToken(filepath.Join(spaceDir, "runtime.auth"))
 	path := filepath.Join(spaceDir, "toolhub-tokens.json")
-	entries, err := readTokenFile(path)
+	_, err = readTokenFile(path)
 	if err != nil {
 		return err
 	}
+	// Rebuild from current siblings so removed spaces lose their bearer.
+	entries := map[string]identity.Envelope{}
 	siblings, err := os.ReadDir(parent)
 	if err != nil {
 		return err
@@ -52,7 +62,7 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEnvironment(sibDir, environment)
+		settings, readErr := ReadEffective(sibDir, environment)
 		if readErr != nil {
 			continue
 		}
@@ -123,7 +133,7 @@ func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEnvironment(sibDir, environment)
+		settings, readErr := ReadEffective(sibDir, environment)
 		if readErr != nil || settings.CapabilityMode != "managed" {
 			continue
 		}
@@ -296,7 +306,7 @@ func sameTokenMap(path string, entries map[string]identity.Envelope) bool {
 }
 
 func writeFileInPlace(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0640)
 	if err != nil {
 		return err
 	}
@@ -311,5 +321,11 @@ func writeFileInPlace(path string, body []byte) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Chmod(path, 0600)
+	// Readers run as the agent UID with the operator's group, including root renders.
+	if runtime.GOOS != "windows" {
+		if err := os.Chown(path, -1, os.Getgid()); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(path, 0640)
 }

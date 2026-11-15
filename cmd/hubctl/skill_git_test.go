@@ -411,12 +411,8 @@ func TestSkillGitTokenInfraSibling(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(local, "agent.yaml"), []byte("user: me\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(member, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedSpaceDocs(t, local, "local", managedInfraDocs("local", false))
+	writeManagedSpaceDocs(t, member, "member", nil)
 	if err := os.WriteFile(filepath.Join(local, "toolhub.auth"), []byte("HUB_TOOLHIVE_ADMISSION_TOKEN=infra-tok\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

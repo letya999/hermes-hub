@@ -1,0 +1,57 @@
+apiVersion: six-passport/v2
+kind: models
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+default: everyday
+
+routes:
+  everyday:
+    ladder: [google-pro-1, google-pro-2, codex-pro, openrouter-key]
+
+services:
+  google-pro-1:
+    via: cliproxy
+    endpoint: http://cliproxy-google-1:8317/v1
+    auth:
+      upstream: {kind: oauth-session, ref: google-one-1}
+      proxy_access: {kind: broker-key, ref: cliproxy-google-1}
+    sharing: personal
+    limits:
+      - {of: provider_quota, amount: 50, unit: percent, per: 1d, clock: provider}
+    models:
+      - {id: gemini-3.8-flash-high, reasoning: high}
+      - {id: gemini-3.7-flash-high, reasoning: high}
+  google-pro-2:
+    via: cliproxy
+    endpoint: http://cliproxy-google-2:8317/v1
+    auth:
+      upstream: {kind: oauth-session, ref: google-one-2}
+      proxy_access: {kind: broker-key, ref: cliproxy-google-2}
+    sharing: personal
+    limits:
+      - {of: provider_quota, amount: 100, unit: percent, per: 1d, clock: provider}
+    models:
+      - {id: gemini-3.8-flash-high, reasoning: high}
+      - {id: gemini-3.7-flash-high, reasoning: high}
+  codex-pro:
+    via: cliproxy
+    endpoint: http://cliproxy-codex:8317/v1
+    auth:
+      upstream: {kind: oauth-session, ref: codex-pro-1}
+      proxy_access: {kind: broker-key, ref: cliproxy-codex}
+    sharing: personal
+    limits:
+      - {of: requests, amount: 150, per: 5h}
+      - {of: tokens, amount: 1200000, per: 1w}
+    models:
+      - {id: gpt-5.6-sol, reasoning: high}
+  openrouter-key:
+    via: openai-compatible
+    endpoint: https://openrouter.ai/api/v1
+    auth:
+      upstream: {kind: broker-key, ref: openrouter-alice}
+    sharing: personal
+    limits:
+      - {of: spend_usd, amount: 10, per: 1d}
+      - {of: spend_usd, amount: 40, per: 1w}
+    models:
+      - {id: google/gemini-3.8-flash, reasoning: high}

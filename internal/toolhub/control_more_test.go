@@ -184,6 +184,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	gateway := &Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	}), Tokens: map[string]identity.Envelope{aliceToken: aliceAuth()}, Control: control}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -300,10 +301,14 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	}
 	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now, ConfirmationTTL: time.Minute}
 	auth := aliceAuth()
-	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "enable-1"})
+	// "enable before confirm" needs a gate that actually survives prepare:
+	// install requests complete setup inline now, so the pending record is
+	// minted without that completion, like a legacy mid-flight record.
+	pending, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "enable-1", catalogReadDefinition(), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared := map[string]any{"onboarding_id": pending.OnboardingID}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("enable before confirm: %v", err)
 	}
@@ -328,6 +333,7 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 		t.Fatalf("confirmed onboarding=%+v err=%v", onboarding, err)
 	}
 	onboarding.BindingID = ""
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -339,8 +345,10 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	orphan := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-orphan", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "no-such-def",
-		DefinitionVersion: "1.0.0", Phase: api.PhaseConfirmed, Revision: 1, CreatedAt: time.Now().UTC(),
-	}
+		DefinitionVersion: "1.0.0",
+		Stage:             api.StagePending,
+		ConfirmationUsed:  true,
+		Gate:              &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(orphan); err != nil {
 		t.Fatal(err)
 	}
@@ -368,15 +376,13 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SubmitCredentials(credOn.OnboardingID, credOn.FormNonce, map[string]string{"TOKEN": "rotate-secret"}); err != nil {
+	if err := control.SubmitCredentials(credOn.OnboardingID, credOn.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "rotate-secret"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": credOn.OnboardingID, "nonce": confirmNonceOf(t, store, credOn.OnboardingID)}); err != nil {
-		t.Fatal(err)
-	}
+	// The submit is the consent — `enable` re-drives inline, no click.
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -428,16 +434,16 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if err := store.PutPublication(api.DefinitionPublication{DefinitionID: "missing-pub", Version: "1.0.0", Visibility: api.PublicationCatalog}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("publication missing definition: %v", err)
 	}
-	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: "nope", Phase: api.PhaseReview, Revision: 1}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: "nope", Stage: api.StagePending, Revision: 1}).Validate(); err == nil {
 		t.Fatal("bad onboarding mode accepted")
 	}
-	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: "nope", Revision: 1}).Validate(); err == nil {
-		t.Fatal("bad onboarding phase accepted")
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: "nope", Revision: 1}).Validate(); err == nil {
+		t.Fatal("bad onboarding stage accepted")
 	}
-	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseReview, Revision: 1, DefinitionID: "BAD"}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StagePending, Revision: 1, DefinitionID: "BAD"}).Validate(); err == nil {
 		t.Fatal("bad onboarding definition accepted")
 	}
-	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseReview, Revision: 1, DefinitionVersion: "v"}).Validate(); err == nil {
+	if err := (api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-x", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StagePending, Revision: 1, DefinitionVersion: "v"}).Validate(); err == nil {
 		t.Fatal("bad onboarding version accepted")
 	}
 	if err := (api.SharedCredentialPolicy{Schema: 0, PolicyID: "policy-x", DefinitionID: "catalog-read", Locator: "local://x", StoreOwner: "alice", Principals: []string{"alice"}, IssuedBy: "operator", Status: api.ActiveStatus}).Validate(); err == nil {
@@ -502,15 +508,15 @@ func (c *ControlPlane) publicationForCheck(definition api.ToolDefinition) api.De
 
 func TestStatusBodyExposesNextAction(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
-	confirm := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
-	if confirm["next_action"] != "confirm" || confirm["confirmation_sent"] != true {
+	confirm := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Time{}}}, false)
+	if confirm["next_action"] != "await_user_confirmation" || confirm["confirmation_sent"] == true {
 		t.Fatalf("awaiting-confirm status lacks next step: %v", confirm)
 	}
-	enable := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseConfirmed}, false)
+	enable := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Stage: api.StagePending, ConfirmationUsed: true, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}}, false)
 	if enable["next_action"] != "enable" {
 		t.Fatalf("confirmed status lacks enable hint: %v", enable)
 	}
-	creds := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingCreds}, false)
+	creds := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}}, false)
 	if creds["next_action"] != "submit_credentials" {
 		t.Fatalf("awaiting-credentials status lacks submit hint: %v", creds)
 	}
@@ -535,8 +541,8 @@ func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake"); ok {
-			if existing.Phase != api.PhasePreparing {
-				t.Fatalf("mid-flight phase=%s", existing.Phase)
+			if !existing.PreparingStub {
+				t.Fatalf("mid-flight phase=%s", existing.NoticePhase())
 			}
 			break
 		}
@@ -550,7 +556,7 @@ func TestPrepareSelfInstallRegistersPreparingThenFailedRecord(t *testing.T) {
 		t.Fatal("failed review accepted")
 	}
 	existing, ok := store.FindOnboardingByKey(aliceAuth(), "req-wake")
-	if !ok || existing.Phase != api.PhaseFailed {
-		t.Fatalf("failed prepare left phase=%v ok=%v", existing.Phase, ok)
+	if !ok || existing.Stage != api.StageFailed {
+		t.Fatalf("failed prepare left phase=%v ok=%v", existing.NoticePhase(), ok)
 	}
 }

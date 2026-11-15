@@ -27,9 +27,14 @@ type RoutineDestinationPage struct {
 	NextCursor string               `json:"next_cursor,omitempty"`
 }
 
-// RoutineDestinationLocked resolves the durable destination view of one
-// schedule. The engine lock must be held.
-func (e *Engine) RoutineDestinationLocked(item commodel.Schedule) RoutineDestination {
+// RoutineDestination resolves the durable destination view of one schedule.
+func (e *Engine) RoutineDestination(item commodel.Schedule) RoutineDestination {
+	return e.routineDestinationLocked(item)
+}
+
+// routineDestinationLocked is RoutineDestination's critical section; callers
+// hold e.mu.
+func (e *Engine) routineDestinationLocked(item commodel.Schedule) RoutineDestination {
 	id := item.TaskID
 	if id == "" {
 		id = commodel.DefaultTaskID
@@ -42,12 +47,12 @@ func (e *Engine) RoutineDestinationLocked(item commodel.Schedule) RoutineDestina
 		}
 		return out
 	}
-	task, err := e.deps.LoadTask(item.Envelope.PrincipalID, id)
+	task, err := e.deps.Dispatch.LoadTask(item.Envelope.PrincipalID, id)
 	if err != nil || task.ContextID != item.Envelope.ContextID || task.ChatID != item.ChatID || task.TopicID != item.TopicID {
 		return out
 	}
 	if task.TopicID != 0 {
-		bound, err := e.deps.TopicTask(task.PrincipalID, task.ChatID, task.TopicID)
+		bound, err := e.deps.Dispatch.TopicTask(task.PrincipalID, task.ChatID, task.TopicID)
 		if err != nil || bound != task.TaskID {
 			return out
 		}
@@ -66,7 +71,7 @@ func (e *Engine) ListRoutineDestinations(user commodel.User, caller identity.Env
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := RoutineDestinationPage{Items: []RoutineDestination{}}
-	tasks, err := e.deps.ListTasks(user.ID)
+	tasks, err := e.deps.Dispatch.ListTasks(user.ID)
 	if err != nil {
 		return out, err
 	}
@@ -81,7 +86,7 @@ func (e *Engine) ListRoutineDestinations(user commodel.User, caller identity.Env
 	tasks = nil
 	for _, task := range byID {
 		draft := commodel.Schedule{ChatID: task.ChatID, DestinationTaskID: task.TaskID}
-		if _, err := e.BindRoutineDestinationLocked(draft, caller, user); err != nil {
+		if _, err := e.bindRoutineDestinationLocked(draft, caller, user); err != nil {
 			continue
 		}
 		if task.TaskID <= after || !strings.Contains(strings.ToLower(task.Name+" "+task.TaskID), strings.ToLower(query)) {
@@ -100,14 +105,20 @@ func (e *Engine) ListRoutineDestinations(user commodel.User, caller identity.Env
 	return out, nil
 }
 
-// BindRoutineDestinationLocked pins a routine draft's destination task to
-// the caller's verified bindings. The engine lock must be held.
-func (e *Engine) BindRoutineDestinationLocked(in commodel.Schedule, caller identity.Envelope, user commodel.User) (commodel.Schedule, error) {
+// BindRoutineDestination pins a routine draft's destination task to the
+// caller's verified bindings.
+func (e *Engine) BindRoutineDestination(in commodel.Schedule, caller identity.Envelope, user commodel.User) (commodel.Schedule, error) {
+	return e.bindRoutineDestinationLocked(in, caller, user)
+}
+
+// bindRoutineDestinationLocked is BindRoutineDestination's critical section;
+// callers hold e.mu.
+func (e *Engine) bindRoutineDestinationLocked(in commodel.Schedule, caller identity.Envelope, user commodel.User) (commodel.Schedule, error) {
 	target := in.DestinationTaskID
 	var source commodel.JobMapping
 	if in.OriginJobID != "" {
 		var err error
-		source, err = e.deps.LoadMapping(in.OriginJobID)
+		source, err = e.deps.Dispatch.LoadMapping(in.OriginJobID)
 		canonical := user.Envelope(source.ChatID)
 		if err != nil || source.PrincipalID != caller.PrincipalID || source.ContextID != caller.ContextID || source.RuntimeID != caller.RuntimeID || source.PolicyVersion != caller.PolicyVersion || source.Channel != "telegram_bot" || source.UserID != user.ID || source.ActorID != user.ID || source.ScopeID != "user:"+user.ID || source.OrganizationID != in.OrganizationID || source.ExternalIdentityID != canonical.ExternalIdentityID || source.DeliveryTargetID != canonical.DeliveryTargetID || !slices.Contains(user.TelegramIDs, source.ChatID) {
 			return commodel.Schedule{}, errors.New("routine origin unavailable in this context")
@@ -137,13 +148,13 @@ func (e *Engine) BindRoutineDestinationLocked(in commodel.Schedule, caller ident
 	if target == commodel.DefaultTaskID {
 		task = commodel.DefaultTask(user, chatID)
 	} else {
-		task, err = e.deps.LoadTask(user.ID, target)
+		task, err = e.deps.Dispatch.LoadTask(user.ID, target)
 	}
 	if err != nil || task.Archived || task.PrincipalID != caller.PrincipalID || task.ContextID != caller.ContextID || task.Channel != "telegram_bot" || !slices.Contains(user.TelegramIDs, task.ChatID) || task.TopicID < 0 || (fromOrigin && (source.ChatID != task.ChatID || source.TopicID != task.TopicID)) {
 		return commodel.Schedule{}, errors.New("routine destination unavailable in this context")
 	}
 	if task.TopicID != 0 {
-		bound, err := e.deps.TopicTask(user.ID, task.ChatID, task.TopicID)
+		bound, err := e.deps.Dispatch.TopicTask(user.ID, task.ChatID, task.TopicID)
 		if err != nil || bound != task.TaskID {
 			return commodel.Schedule{}, errors.New("routine destination topic binding unavailable")
 		}

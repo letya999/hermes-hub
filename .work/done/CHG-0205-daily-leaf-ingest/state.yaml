@@ -1,0 +1,42 @@
+schema: 1
+change: CHG-0205
+title: Provenance-aware daily capture
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: done
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R2.1, R2.2, R2.3, R2.4, R2.5, R2.6, R2.7]
+depends_on: [CHG-0204]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 300
+design_status: accepted
+implementation_status: complete
+slices:
+  S2.1-entry-provdb: done        # Entry.ObservedAt, ProvDB jsonl + fsync + stable ids + replay + idempotent append
+  S2.2-verbatim-append: done     # vault.Daily fenced leaf appends, untrusted marker, actor-mapped commits
+  S2.3-kind-gating: done         # KindForTrigger/ProvenanceForTurn + Job.Untrusted/Probe + commodel helpers
+  S2.4-recall-exclusion: done    # memory.StripRecalled + Daily.Append strips/skips marked spans
+  S2.5-compaction-flush: done    # CompactOptions.Flush before head apply; wired at runtime/agenttools sites
+  S2.6-boundary-forging: done    # dynamic fence, serialized appends, symlink reject, DST leaf roll
+validation:
+  documents: updated             # ADR-0086 D11 amended (capture writer, rw mount, job-derived ids, sensitive)
+  just_check: "green except known Windows file-lock flake TestRunRetriesConfirmedRemovalAfterBrokerRecovers (passes isolated, unrelated)"
+  docker_check: skipped — no-docker scope
+  red_team: covered by tests (forged fence/comment/prefix inert, symlink leaf, concurrent appends, untrusted gate)
+  live_acceptance: "pending: requires live stack (deferred — no-docker scope)"
+evidence:
+  - internal/memory/provdb.go — Entry{ID,SourceRef,Provenance,Kind,Audience,ObservedAt} sidecar, fsync-append, stable <date>-<seq> ids, idempotent replay
+  - internal/vault/daily.go — Daily.Append (prov-before-leaf, stale-hash retry, mutex-serialized), fence growth, untrusted marker, FlushFunc
+  - internal/communication/memory_capture.go — captureTurn (spool onAccepted, persist-before-ack) + captureReply (before delivery enqueue)
+  - internal/communication/spool.go — captureAcceptedLocked inside both enqueue accept paths incl. hold-suppressed
+  - internal/compaction/compact.go — Flush hook before head apply; wired at runtime/compact.go, server_observe.go, agenttools/context.go
+  - tests: internal/memory/provdb_test.go, internal/vault/daily_test.go, internal/communication/memory_capture_test.go, internal/compaction/compact_test.go (flush), internal/agenttools/compact_flush_test.go, internal/commodel/memory_test.go
+remaining:
+  - live kill -9 persist-before-ack soak (A2.2) — deferred, needs live stack
+  - transcript-content flush via native engine compact — upstream drops internally, hub cannot see the head (documented)
+limitations:
+  - gateway /vault mount is now read-write (was RO in M20.1) — communication plane is the capture writer per R2.1
+  - slack channel has no forward-equivalent transport flag; slack turns capture as owner (documented scope note)
+  - wake/restart/auto-title are direct runner calls, not spooled turns — Kind mapping exists if they ever enqueue

@@ -27,7 +27,7 @@ func selectExecution(ctx context.Context, dir, sourceRoot, spool string, selecti
 	if err := selection.Validate(); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEnvironment(dir, selection.Environment)
+	settings, err := stack.ReadEffective(dir, selection.Environment)
 	if err != nil {
 		return err
 	}

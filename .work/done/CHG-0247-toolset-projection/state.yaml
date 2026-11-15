@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0247
+title: "M29.6 Project whole toolsets into core ≤20 and extended live discovery"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R6.1, R6.2]
+depends_on: ["M29.1", "M29.5"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 430
+design_status: accepted
+implementation_status: complete
+slices:
+  S6.1-contract: done
+  S6.2-implementation: done
+validation:
+  documents: done
+  just_check: environment_blocked
+  docker_check: not_run
+  red_team: done
+  live_acceptance: pending
+evidence:
+  - "TestToolsetCoreLimitAndExtendedInvokeRevoke (internal/passport): tools.yaml derives core ≤20 members + pinned tools_list/invoke discovery + catalog release pin; whole-family overflow moves to extended in sorted catalog order with no member leaked into core; rules validated — include xor exclude, real members only, access=read, scope in {call,path} — and any rule on a non-toolhub-routed (native/raw-MCP) toolset fails closed."
+  - "TestToolsetCoreLimitAndExtendedInvokeRevoke (internal/toolhub): CapabilityProfile.CoreTools limits directly projected MCP schemas to the pinned names; tools_list still reports the whole admitted surface live; extended invoke dispatches through the identical per-call admission (reaches the executor under grant, denied after a policy-revision revoke); a core name outside the selections fails profile validation."
+  - "hub-agent-tools bumped 5.10.0 -> 5.11.0; catalog.Release bumped 1 -> 2 with platform/catalogs/2/ re-emitted (drift fence refused in-place overwrite, proving the pin); docs/tools.md gains the core/extended projection contract; tools_list + invoke descriptions and internal/stack/prompt_contract.go now name the bounded core vs extended inventory."
+  - "go vet clean on internal/{passport,catalog,toolhub,toolhub/api,agenttools,stack}; focused go test green on all touched packages (toolhub retry after AV flake)."
+remaining:
+  - "Live acceptance (profile bound with >20 selected tools in a running dev stack — visible core count, discovery result, denied extended write) requires the Docker gate; not executed in this environment. Honest unit/integration evidence only."
+limitations:
+  - "just check blocked by the known Windows AV toolchain failure: fork/exec compile.exe/cover.exe/link.exe/ld.lld.exe 'Access is denied' across all packages. Not a regression — focused go vet, devcheck format/docs and package tests all pass in isolation; the same block was recorded for CHG-0246."
+  - "CoreTools populated via the confirmed profile record (hubctl capability --kind profile); deriving it automatically from a published revision is left to the migration/bind work in CHG-0252."

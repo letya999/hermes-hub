@@ -60,13 +60,22 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	c.oauthFlows.mu.Lock()
 	// ponytail: one lock serializes handoff creation; use per-onboarding locks if starts become a bottleneck.
 	defer c.oauthFlows.mu.Unlock()
+	if current, err := c.Store.OnboardingFor(auth, onboarding.OnboardingID); err == nil {
+		onboarding = current
+	} else {
+		return nil, err
+	}
+	if onboarding.DeadEnd() || onboarding.CleanupIncomplete() {
+		return nil, api.ErrRevoked
+	}
 	for state, flow := range c.oauthFlows.flows {
 		if !c.now().Before(flow.expires) {
 			delete(c.oauthFlows.flows, state)
 			continue
 		}
 		if flow.onboardingID == onboarding.OnboardingID && !resend {
-			onboarding.Phase = api.PhaseAwaitingOAuth
+			onboarding.Stage = api.StagePending
+			onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 			onboarding.ProviderAuthorizationURL = flow.url
 			// The wizard link must outlive the flow it fronts: a status poll
 			// hitting a live flow renews the TTL instead of stranding the URL.
@@ -141,7 +150,8 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		c.oauthFlows.flows = make(map[string]*preparedOAuthFlow)
 	}
 	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
-	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
 	c.armWizard(&onboarding)
 	onboarding.Error, onboarding.ErrorCode = "", ""
@@ -150,7 +160,7 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
-	api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, &onboarding)
 	if resend {
 		api.DeliverPrepareEvent(ctx, auth, onboarding, "link-resent")
 	}
@@ -215,7 +225,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 		return api.ErrUnauthorized
 	}
 	onboarding, err := c.Store.onboarding(flow.onboardingID)
-	if err != nil || onboarding.Phase != api.PhaseAwaitingOAuth {
+	if err != nil || !onboarding.Awaiting(api.GateOAuth) {
 		return api.ErrUnauthorized
 	}
 	if flow.remote {
@@ -291,23 +301,16 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err := injection.Checkpoint(); err != nil {
 		return err
 	}
-	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.Stage = api.StagePending
 	onboarding.ProviderAuthorizationURL = ""
-	onboarding.ConfirmationNonce = ""
-	onboarding.ConfirmationExpires = time.Time{}
+	onboarding.ClearGate()
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
-		return err
-	}
-	_, err = c.confirm(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce})
-	if err != nil {
-		return err
-	}
-	_, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
-	return err
+	// The provider consent screen already carried the owner's approval —
+	// bind straight through rather than asking for a second confirmation.
+	return c.completeSetup(ctx, auth, &onboarding, "oauth_callback")
 }
 
 func validPreparedOAuthURL(raw string) bool {

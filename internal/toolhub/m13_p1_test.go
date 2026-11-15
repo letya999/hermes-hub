@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -54,9 +55,9 @@ func TestOnboardingSnapshotCarriesNoEmbeddedRecipe(t *testing.T) {
 		RuntimeID:     "runtime",
 		PolicyVersion: "policy-1",
 		Mode:          api.OnboardingSelfInstall,
-		Phase:         api.PhaseAwaitingConfirm,
-		Revision:      1,
-	}
+		Stage:         api.StagePending,
+		Gate:          &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}},
+		Revision:      1}
 	onboarding.RecipeDigest = digest
 	onboarding.Recipe = &resolution // in-memory copy; must not serialize
 	if err := store.PutOnboarding(onboarding); err != nil {
@@ -181,10 +182,11 @@ func TestOnboardingFixtureShrinks(t *testing.T) {
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: fmt.Sprintf("onboard-%08d", i),
 			PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-			Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1,
+			Mode:  api.OnboardingSelfInstall,
+			Stage: api.StagePending,
+			Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1,
 			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-			Definition: &definition, Recipe: &resolution, RecipeDigest: digest,
-		}
+			Definition: &definition, Recipe: &resolution, RecipeDigest: digest}
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatal(err)
 		}

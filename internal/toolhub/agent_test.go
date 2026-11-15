@@ -135,6 +135,33 @@ func TestAgentExecErrorSurvivesGateway(t *testing.T) {
 	}
 }
 
+func TestAgentArgumentsRejectBeforeBackend(t *testing.T) {
+	s := NewStore()
+	definition := agentDefinition()
+	if err := s.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
+	if _, err := s.Enable(auth, definition.DefinitionID, definition.Version); err != nil {
+		t.Fatal(err)
+	}
+	calls, audits := 0, 0
+	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { audits++; return nil }, Backend: api.AgentExecBackend{Exec: func(context.Context, api.EffectiveBinding, api.AgentExecRequest) (api.AgentExecResult, error) {
+		calls++
+		return api.AgentExecResult{}, nil
+	}}}
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "file_read")
+	for _, args := range []map[string]any{{"command": "echo wrong"}, {"path": 3}, {"path": "ok", "operation_id": "not-a-tool-argument"}} {
+		out, err := g.mcpCall(t.Context(), auth, name, args)
+		if err != nil || out == nil || !out.IsError {
+			t.Fatalf("malformed call was not an application error: %+v %v", out, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("malformed calls executed: %d (audits=%d)", calls, audits)
+	}
+}
+
 func TestManagedAgentContainerName(t *testing.T) {
 	binding := api.EffectiveBinding{Binding: api.ToolBinding{PrincipalID: "alice", ContextID: "alice"}}
 	name, err := api.ManagedAgentContainer(binding)
@@ -173,6 +200,7 @@ func TestAgentConvertNeedsCreateAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	digest := api.DefinitionDigest(definition)
 	convert := api.CapabilityRule{CapabilityID: "documents", ImplementationDigest: digest, Action: "convert", Resource: "documents", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
 	create := api.CapabilityRule{CapabilityID: "documents", ImplementationDigest: digest, Action: "create", Resource: "artifacts", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
@@ -181,14 +209,17 @@ func TestAgentConvertNeedsCreateAuthority(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "documents", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: digest,
 			ToolName: "document_convert", Name: "doc_convert"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, s, auth)
 	calls := 0
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
 		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -234,6 +265,7 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	digest := api.DefinitionDigest(definition)
 	rule := api.CapabilityRule{CapabilityID: "files", ImplementationDigest: digest, Action: "read", Resource: "files", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice"}, Revision: 1,
@@ -241,14 +273,17 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "files", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: digest,
 			ToolName: "file_read", Name: "workspace_read"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	governance := grantToolUse(t, s, auth)
 	var exec api.AgentExecRequest
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
 		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -285,5 +320,20 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 	// A path outside the admitted prefix is denied before the executor runs.
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", map[string]any{"path": "private/readme.txt"}); err == nil {
 		t.Fatal("out-of-scope path reached the executor")
+	}
+	exec = api.AgentExecRequest{}
+	released := false
+	g.acquireRuntime = func(context.Context, api.EffectiveBinding) (func(), error) {
+		if !s.mu.TryLock() {
+			t.Fatal("managed cold start still holds the registry fence")
+		}
+		s.mu.Unlock()
+		if err := governance.RevokeRight("rightgrant-alice-use", "operator", "cold-start regression", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return func() { released = true }, nil
+	}
+	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", map[string]any{"path": "docs/readme.txt"}); err == nil || exec.Tool != "" || !released {
+		t.Fatal("a tools.use revoke during startup did not fence managed dispatch")
 	}
 }

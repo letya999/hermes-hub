@@ -15,6 +15,7 @@ import (
 )
 
 func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	definition := catalogReadDefinition()
 	runLaunch := func(t *testing.T, principal, token string, grant bool) (string, map[string]any) {
 		t.Helper()
@@ -37,7 +38,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, err := NewEndpointHandler(EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		handler, err := endpointWithTestAudit(t, EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		}), Listen: "127.0.0.1:0"}, loaded)
 		if err != nil {
@@ -65,9 +66,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		if err != nil || status["phase"] == "" {
 			t.Fatalf("status=%v err=%v", status, err)
 		}
-		if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, loaded, prepared["onboarding_id"])}); err != nil {
-			t.Fatal(err)
-		}
+		confirmViaTrustedChannel(t, server.URL, loaded, prepared["onboarding_id"].(string))
 		enabled, err := callControl(t, session, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 		if err != nil || enabled["binding_id"] == "" || enabled["phase"] != api.PhaseEnabled {
 			t.Fatalf("enable=%v err=%v", enabled, err)

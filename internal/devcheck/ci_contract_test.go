@@ -44,7 +44,7 @@ func TestCIDeploymentConfigurationGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"check: go-check lint docs-check config-check", "build: config-check", "TestDeploymentConfigurationContract"} {
+	for _, required := range []string{"check-full: go-check lint docs-check config-check", "build: config-check", "TestDeploymentConfigurationContract"} {
 		if !strings.Contains(string(data), required) {
 			t.Errorf("local gate missing %q", required)
 		}
@@ -117,6 +117,40 @@ func TestCIShipsBaseCLICellImages(t *testing.T) {
 	}
 }
 
+// A role must read the cache it exports. Sharing one export scope between
+// core/browser/knowledge overwrites the earlier role on every workflow run.
+func TestCIImageRoleCachesAreReusableAndIndependent(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string
+				Env map[string]string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, step := range workflow.Jobs["image"].Steps {
+		if !strings.Contains(step.Run, "docker-publish") {
+			continue
+		}
+		from, to := step.Env["HUB_DOCKER_CACHE_FROM"], step.Env["HUB_DOCKER_CACHE_TO"]
+		if from == "" || to != from+",mode=max" || seen[from] {
+			t.Fatalf("image cache is missing, mismatched or overwritten: from=%q to=%q", from, to)
+		}
+		seen[from] = true
+	}
+	if len(seen) != 5 {
+		t.Fatalf("missing base/role publish steps: %d", len(seen))
+	}
+}
+
 // All former sequential gates must remain reachable; the aggregate status
 // must fail when any matrix child is failed, skipped or cancelled.
 func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
@@ -146,17 +180,27 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	if gates.Needs != "image" || gates.Strategy.FailFast || strings.Join(gates.Strategy.Matrix.Target, ",") != "dev,prod" {
 		t.Fatal("matrix lost target or dependency", gates)
 	}
-	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,scratch,bench" {
+	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,m32,scratch,bench" {
 		t.Fatal("container contract omitted", gates.Strategy)
 	}
 	var scripts string
 	for _, step := range gates.Steps {
 		scripts += step.Run + "\n"
 	}
-	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "connector-bench", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
+	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", `m32-lifecycle hermes-hub:test "$TARGET"`, "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "connector-bench", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
 		if !strings.Contains(scripts, required) {
 			t.Errorf("gate missing: %s", required)
 		}
+	}
+	if !strings.Contains(scripts, `docker-pull hermes-hub:test-core "$TARGET-core"`) {
+		t.Fatal("M32 script filters require the matching core image")
+	}
+	local, err := os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(local), "go run ./cmd/devcheck m32-lifecycle hermes-hub:test {{target}}") != 2 {
+		t.Fatal("local prebuilt/build Docker acceptance omitted the M32 lifecycle leg")
 	}
 	aggregate := workflow.Jobs["containers"]
 	if aggregate.If != "always()" || aggregate.Needs != "container-gates" || len(aggregate.Steps) != 1 || aggregate.Steps[0].Env["RESULT"] != "${{ needs.container-gates.result }}" || aggregate.Steps[0].Run != `test "$RESULT" = success` {
@@ -170,6 +214,55 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	}
 	if !verifiedTTS {
 		t.Fatal("dedicated TTS image lost the actual offline model gate")
+	}
+}
+
+// SPEC-0085 R8.1/R8.5: the OpenKnowledge role image exists as a dedicated
+// stage pinned to an exact @inkeep/open-knowledge version, has prod/dev
+// targets with revision labels, is budgeted, and is wired through the
+// local and CI build/pull paths.
+func TestKnowledgeRolePinned(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../docker/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(dockerfile)
+	start := strings.Index(source, "AS knowledge")
+	if start < 0 {
+		t.Fatal("knowledge stage missing")
+	}
+	chunk := source[start:]
+	if end := strings.Index(chunk, "\nFROM "); end >= 0 {
+		chunk = chunk[:end]
+	}
+	if !strings.Contains(chunk, "@inkeep/open-knowledge@0.88.2") {
+		t.Fatal("knowledge stage lost its exact npm version pin")
+	}
+	for _, stage := range []string{"prod-knowledge", "dev-knowledge"} {
+		if !strings.Contains(source, "AS "+stage) {
+			t.Fatalf("%s target missing", stage)
+		}
+	}
+	just, err := os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"docker-build hermes-hub:test-knowledge {{target}}-knowledge", "docker-pull hermes-hub:test-knowledge {{target}}-knowledge", "image-budget hermes-hub:test-knowledge knowledge"} {
+		if !strings.Contains(string(just), want) {
+			t.Errorf("local image gate misses %s", want)
+		}
+	}
+	ci, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"${{ matrix.target }}-knowledge", "hermes-hub:test-${{ matrix.target }}-knowledge"} {
+		if !strings.Contains(string(ci), want) {
+			t.Errorf("CI image path misses %s", want)
+		}
+	}
+	if _, ok := imageRoleBudgets["knowledge"]; !ok {
+		t.Error("knowledge role missing from image budgets")
 	}
 }
 

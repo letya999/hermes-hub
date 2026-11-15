@@ -1,11 +1,49 @@
 package channel
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+type keyboardReceiptSender struct {
+	captureTelegramSender
+	id  int
+	err error
+}
+
+func (s *keyboardReceiptSender) SendKeyboardReceipt(context.Context, int64, int64, string, []commodel.DeliveryButton) (int, error) {
+	return s.id, s.err
+}
+
+func TestTelegramPersistsHumanConfirmationReceipt(t *testing.T) {
+	failure := errors.New("receipt unavailable")
+	for _, tc := range []struct {
+		name              string
+		id                int
+		sendErr, storeErr error
+		persisted         bool
+	}{
+		{"acknowledged", 47, nil, nil, true},
+		{"send failed", 0, failure, nil, false},
+		{"missing receipt", 0, nil, nil, false},
+		{"persistence failed", 47, nil, failure, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sender := &keyboardReceiptSender{id: tc.id, err: tc.sendErr}
+			var receipt commodel.Delivery
+			ch := NewTelegram(TelegramDeps{API: func() TelegramSender { return sender }, VoicePlan: func(commodel.Delivery) (string, bool) { return "", false }, UpdateSending: func(d commodel.Delivery) error { receipt = d; return tc.storeErr }})
+			d := commodel.Delivery{ID: "test-confirmation", Channel: "telegram_bot", ChatID: 11, Kind: "human_confirmation", Text: "test", Buttons: []commodel.DeliveryButton{{Text: "test", Data: "h:test"}}}
+			err := ch.Deliver(t.Context(), &d)
+			if (receipt.TelegramMessageID == 47) != tc.persisted || (err == nil) != (tc.name == "acknowledged") {
+				t.Fatalf("persisted=%t err=%v", receipt.TelegramMessageID == 47, err)
+			}
+		})
+	}
+}
 
 // A blocked notice must reach the owner's CURRENT verified home, not the
 // schedule's durable envelope target: a stale binding (chat remapped to

@@ -3,17 +3,27 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
+	"regexp"
 	"strings"
-	"unicode"
 )
 
-// SafeReceipt bounds a provider mutation receipt before it reaches the audit
-// ledger. An oversized or control-character receipt is dropped rather than
-// truncated, so a provider cannot smuggle content into control-plane records.
+var cliReceiptPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+@filesystem,network,pid@cell=[A-Za-z0-9_.-]+,rt=(runc|runsc|kata)$`)
+
+// SafeReceipt accepts canonical provider resource identifiers, not serialized
+// payload or auth links. Controls are rejected before outer whitespace is normalized.
 func SafeReceipt(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 256 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+	if value == "" || !audit.ValidReceipt(value) {
 		return ""
+	}
+	value = strings.TrimSpace(value)
+	if cliReceiptPattern.MatchString(value) {
+		return value
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-_.:@+", c)) {
+			return ""
+		}
 	}
 	return value
 }

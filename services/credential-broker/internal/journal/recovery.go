@@ -2,44 +2,119 @@ package journal
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/letya999/credential-broker/internal/seal"
 	"github.com/letya999/credential-broker/internal/securefs"
+	"github.com/letya999/credential-broker/internal/strictjson"
 )
 
 type recoveryAnchor struct {
-	dir string
-	box *seal.Box
+	dir   string
+	box   *seal.Box
+	store string
 }
 
-func (a *recoveryAnchor) initialized() (bool, error) {
-	enc, err := securefs.Read(a.dir, "initialized", 128)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
+type currentHead struct {
+	Format   int    `json:"format"`
+	Store    string `json:"store"`
+	Sequence uint64 `json:"sequence"`
+	Digest   string `json:"digest"`
+}
+
+func newAnchor(dir string, primaryIdentity, recoveryKey []byte) (*recoveryAnchor, error) {
+	box, err := seal.New(seal.Derive(recoveryKey, "journal-anchor"))
 	if err != nil {
-		return false, ErrUnavailable
+		return nil, err
+	}
+	sum := sha256.Sum256(recoveryKey)
+	id := seal.Derive(primaryIdentity, "journal-store/v2/"+hex.EncodeToString(sum[:]))
+	return &recoveryAnchor{dir: dir, box: box, store: hex.EncodeToString(id)}, nil
+}
+
+func (a *recoveryAnchor) marker() (string, error) {
+	enc, err := securefs.Read(a.dir, "initialized", 256)
+	if err != nil {
+		return "", err
 	}
 	plain, err := a.box.Open(enc, []byte("initialized"))
-	if err != nil || string(plain) != "v1" {
-		return false, ErrUnavailable
+	if err != nil {
+		return "", ErrUnavailable
 	}
-	return true, nil
+	return string(plain), nil
+}
+
+// Persist the sealed temporary file before atomically replacing the current head.
+func (a *recoveryAnchor) replace(name string, data []byte) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	temp := "head-" + hex.EncodeToString(nonce[:]) + ".tmp"
+	if err := securefs.Create(a.dir, temp, data, 0600); err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(filepath.Join(a.dir, temp)) }()
+	if err := os.Rename(filepath.Join(a.dir, temp), filepath.Join(a.dir, name)); err != nil {
+		return err
+	}
+	return securefs.SyncDir(a.dir)
 }
 
 func (a *recoveryAnchor) markInitialized() error {
-	enc, err := a.box.Seal([]byte("v1"), []byte("initialized"))
+	enc, err := a.box.Seal([]byte("v2:"+a.store), []byte("initialized"))
 	if err != nil {
 		return err
 	}
-	return securefs.Create(a.dir, "initialized", enc, 0600)
+	return a.replace("initialized", enc)
+}
+
+func (a *recoveryAnchor) writeHead(seq uint64, hash string) error {
+	plain, err := json.Marshal(currentHead{2, a.store, seq, hash})
+	if err != nil {
+		return err
+	}
+	enc, err := a.box.Seal(plain, []byte("journal-current-head/v2/"+a.store))
+	if err != nil {
+		return err
+	}
+	return a.replace("current-head", enc)
+}
+
+func (a *recoveryAnchor) current() (uint64, string, error) {
+	enc, err := securefs.Read(a.dir, "current-head", 1024)
+	if err != nil {
+		return 0, "", ErrUnavailable
+	}
+	plain, err := a.box.Open(enc, []byte("journal-current-head/v2/"+a.store))
+	if err != nil {
+		return 0, "", ErrUnavailable
+	}
+	var h currentHead
+	if err := strictjson.Decode(plain, &h); err != nil || h.Format != 2 || h.Store != a.store {
+		return 0, "", ErrUnavailable
+	}
+	if h.Sequence == 0 {
+		if h.Digest != "" {
+			return 0, "", ErrUnavailable
+		}
+	} else {
+		if len(h.Digest) != 64 {
+			return 0, "", ErrUnavailable
+		}
+		if _, err := hex.DecodeString(h.Digest); err != nil {
+			return 0, "", ErrUnavailable
+		}
+	}
+	return h.Sequence, h.Digest, nil
 }
 
 func (j *Journal) truncateTo(seq uint64) error {
@@ -65,15 +140,6 @@ func (j *Journal) truncateTo(seq uint64) error {
 	j.offsets = j.offsets[:seq]
 	j.seq, j.prev, j.size = seq, prev, size
 	return nil
-}
-
-func (a *recoveryAnchor) commit(seq uint64, hash string) error {
-	name := fmt.Sprintf("commit-%020d", seq)
-	enc, err := a.box.Seal([]byte(hash), []byte(name))
-	if err != nil {
-		return err
-	}
-	return securefs.Create(a.dir, name, enc, 0600)
 }
 
 func (a *recoveryAnchor) latest() (uint64, string, error) {
@@ -121,56 +187,67 @@ func OpenReplicated(primaryDir, recoveryDir string, primaryKey, recoveryKey []by
 }
 
 func openReplicated(primaryDir, recoveryDir string, primaryKey, recoveryKey []byte, limit int64, anchor *recoveryAnchor) (*Journal, error) {
-	recovery, err := Open(recoveryDir, recoveryKey, limit)
+	if j, handled, err := sqlDispatchReplicated(primaryDir, recoveryDir, anchor, primaryKey, recoveryKey, limit); handled {
+		return j, err
+	}
+	recovery, err := openJournal(recoveryDir, recoveryKey, limit, false)
 	if err != nil {
 		return nil, err
 	}
-	primary, err := Open(primaryDir, primaryKey, limit)
+	primary, err := openJournal(primaryDir, primaryKey, limit, false)
 	if err != nil {
 		_ = recovery.Close()
 		return nil, err
 	}
+	fail := func(err error) (*Journal, error) { _ = primary.Close(); _ = recovery.Close(); return nil, err }
 	if anchor != nil {
-		latest, hash, err := anchor.latest()
-		initialized, initErr := anchor.initialized()
-		if err != nil || initErr != nil || latest > recovery.seq || (latest == 0 && !initialized && (primary.seq > 0 || recovery.seq > 0)) {
-			_ = primary.Close()
-			_ = recovery.Close()
-			return nil, ErrUnavailable
-		}
-		if latest == 0 && !initialized {
-			if err := anchor.markInitialized(); err != nil {
-				_ = primary.Close()
-				_ = recovery.Close()
-				return nil, ErrUnavailable
+		marker, markerErr := anchor.marker()
+		if os.IsNotExist(markerErr) && primary.seq == 0 && recovery.seq == 0 {
+			entries, err := os.ReadDir(anchor.dir)
+			if err != nil || len(entries) != 0 {
+				return fail(ErrUnavailable)
 			}
+			if err = anchor.writeHead(0, ""); err == nil {
+				err = anchor.markInitialized()
+			}
+			if err != nil {
+				return fail(ErrUnavailable)
+			}
+			marker, markerErr = anchor.marker()
+		}
+		latest, hash, err := anchor.current()
+		if markerErr != nil || marker != "v2:"+anchor.store || err != nil || latest > recovery.seq {
+			return fail(ErrUnavailable)
 		}
 		if latest > 0 {
 			plain, err := json.Marshal(recovery.records[latest-1])
 			if err != nil {
-				_ = primary.Close()
-				_ = recovery.Close()
-				return nil, ErrUnavailable
+				return fail(ErrUnavailable)
 			}
 			sum := sha256.Sum256(plain)
 			if hex.EncodeToString(sum[:]) != hash {
-				_ = primary.Close()
-				_ = recovery.Close()
-				return nil, ErrUnavailable
+				return fail(ErrUnavailable)
+			}
+		}
+		// Validate committed prefixes before any destructive tail recovery.
+		upto := primary.seq
+		if upto > latest {
+			upto = latest
+		}
+		for i := uint64(0); i < upto; i++ {
+			p, r := primary.records[i], recovery.records[i]
+			if p.Sequence != r.Sequence || p.Previous != r.Previous || p.Kind != r.Kind || !bytes.Equal(p.Data, r.Data) {
+				return fail(ErrUnavailable)
 			}
 		}
 		if recovery.seq > latest {
 			if err := recovery.truncateTo(latest); err != nil {
-				_ = primary.Close()
-				_ = recovery.Close()
-				return nil, ErrUnavailable
+				return fail(ErrUnavailable)
 			}
 		}
 		if primary.seq > latest {
 			if err := primary.truncateTo(latest); err != nil {
-				_ = primary.Close()
-				_ = recovery.Close()
-				return nil, ErrUnavailable
+				return fail(ErrUnavailable)
 			}
 		}
 	}
@@ -185,18 +262,14 @@ func openReplicated(primaryDir, recoveryDir string, primaryKey, recoveryKey []by
 		}
 	}
 	if !validPrefix {
-		_ = primary.Close()
-		_ = recovery.Close()
-		return nil, ErrUnavailable
+		return fail(ErrUnavailable)
 	}
 	for _, record := range recovery.records {
 		if record.Sequence <= primary.seq {
 			continue
 		}
 		if _, err := primary.Append(record.Kind, record.Data); err != nil {
-			_ = primary.Close()
-			_ = recovery.Close()
-			return nil, err
+			return fail(err)
 		}
 	}
 	primary.recovery = recovery
@@ -208,15 +281,28 @@ func OpenReplicatedAnchored(primaryDir, recoveryDir, anchorDir string, primaryKe
 	if err := securefs.Dir(anchorDir); err != nil {
 		return nil, err
 	}
-	box, err := seal.New(seal.Derive(recoveryKey, "journal-anchor"))
+	anchor, err := newAnchor(anchorDir, seal.Derive(primaryKey, "journal-store-key/v2"), recoveryKey)
 	if err != nil {
 		return nil, err
 	}
-	return openReplicated(primaryDir, recoveryDir, primaryKey, recoveryKey, limit, &recoveryAnchor{dir: anchorDir, box: box})
+	// Refuse a lost/corrupt initialized head before opening or creating ledgers.
+	marker, markerErr := anchor.marker()
+	if markerErr == nil {
+		if marker != "v2:"+anchor.store {
+			return nil, ErrUnavailable
+		}
+		if _, _, err := anchor.current(); err != nil {
+			return nil, ErrUnavailable
+		}
+	} else if !os.IsNotExist(markerErr) {
+		return nil, ErrUnavailable
+	}
+
+	return openReplicated(primaryDir, recoveryDir, primaryKey, recoveryKey, limit, anchor)
 }
 
 func SeedReplicated(primaryDir, recoveryDir, anchorDir string, primaryKey, recoveryKey []byte, limit int64) error {
-	primary, err := Open(primaryDir, primaryKey, limit)
+	primary, err := openJournal(primaryDir, primaryKey, limit, false)
 	if err != nil {
 		return err
 	}
@@ -230,17 +316,36 @@ func SeedReplicatedFromOpen(primary *Journal, recoveryDir, anchorDir string, rec
 	if err := securefs.Dir(anchorDir); err != nil {
 		return err
 	}
-	box, err := seal.New(seal.Derive(recoveryKey, "journal-anchor"))
+	// Seeding installs new recovery copies; legacy-head adoption is separate.
+	anchor, err := newAnchor(anchorDir, primary.identity, recoveryKey)
 	if err != nil {
 		return err
 	}
-	anchor := &recoveryAnchor{dir: anchorDir, box: box}
-	recovery, err := Open(recoveryDir, recoveryKey, limit)
+	marker, markerErr := anchor.marker()
+	fresh := os.IsNotExist(markerErr)
+	if fresh {
+		entries, err := os.ReadDir(anchorDir)
+		if err != nil {
+			return ErrUnavailable
+		}
+		if len(entries) != 0 {
+			seq, hash, err := anchor.current()
+			if err != nil || len(entries) != 1 || entries[0].Name() != "current-head" || seq != primary.seq || hash != primary.prev {
+				return ErrUnavailable
+			}
+		}
+	} else if markerErr != nil || marker != "v2:"+anchor.store {
+		return ErrUnavailable
+	}
+	recovery, err := openJournal(recoveryDir, recoveryKey, limit, false)
 	if err != nil {
 		return err
 	}
 	defer recovery.Close()
-	latest, hash, err := anchor.latest()
+	latest, hash := uint64(0), ""
+	if !fresh {
+		latest, hash, err = anchor.current()
+	}
 	if err != nil || latest > primary.seq || len(recovery.records) > len(primary.records) {
 		return ErrUnavailable
 	}
@@ -265,8 +370,13 @@ func SeedReplicatedFromOpen(primary *Journal, recoveryDir, anchorDir string, rec
 			return err
 		}
 	}
-	if primary.seq > latest {
-		return anchor.commit(primary.seq, primary.prev)
+	if fresh || primary.seq > latest {
+		if err := anchor.writeHead(primary.seq, primary.prev); err != nil {
+			return err
+		}
+		if fresh {
+			return anchor.markInitialized()
+		}
 	}
 	return nil
 }

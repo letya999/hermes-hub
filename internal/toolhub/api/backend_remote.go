@@ -36,28 +36,33 @@ func (b MCPBackend) remoteReady(ctx context.Context, effective EffectiveBinding,
 func (b MCPBackend) CallRemoteMCP(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
 	endpoint := effective.Definition.Source.URL
 	if err := ValidateRemoteMCPEndpoint(endpoint); err != nil {
-		return BackendResult{}, err
+		return BackendResult{}, fmt.Errorf("%w: %w", ErrBeforeEffect, err)
 	}
 	headers, err := CredentialHeaders(effective.Definition, environment)
 	if err != nil {
-		return BackendResult{}, err
+		return BackendResult{}, fmt.Errorf("%w: %w", ErrBeforeEffect, err)
 	}
 	client := RemoteHTTPClient(endpoint, headers)
 	var challenge string
+	var authRejected bool
 	inner := client.Transport
 	client.Transport = RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		response, respErr := inner.RoundTrip(request)
 		if response != nil && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
 			challenge = response.Header.Get("WWW-Authenticate")
+			authRejected = true
 		}
 		return response, respErr
 	})
 	session, err := connectRemoteMCP(ctx, endpoint, client)
 	if err != nil {
 		if challengeParam(challenge, "error") == "insufficient_scope" {
-			return BackendResult{}, fmt.Errorf("%w: endpoint demands scope %q", ErrReconsent, challengeParam(challenge, "scope"))
+			return BackendResult{}, fmt.Errorf("%w: %w: endpoint demands scope %q", ErrBeforeEffect, ErrReconsent, challengeParam(challenge, "scope"))
 		}
-		return BackendResult{}, fmt.Errorf("%w: remote MCP session: %v", ErrIsolation, sanitizeRemoteError(err))
+		if authRejected {
+			return BackendResult{}, fmt.Errorf("%w: %w: %w: remote MCP setup rejected", ErrBeforeEffect, ErrAuthBeforeEffect, ErrIsolation)
+		}
+		return BackendResult{}, fmt.Errorf("%w: %w: remote MCP session: %v", ErrBeforeEffect, ErrIsolation, sanitizeRemoteError(err))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
 	closeErr := session.Close()

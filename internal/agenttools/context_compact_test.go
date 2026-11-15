@@ -100,7 +100,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 	}
 	found := false
 	for _, spec := range HubToolsDefinition().Tools {
-		if spec.Name == "context_compact" {
+		if spec.Name == "context_edit" {
 			found = true
 			if spec.Effect != api.WriteEffect || spec.CapabilityID == "" {
 				t.Fatalf("spec: %+v", spec)
@@ -108,7 +108,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("context_compact absent from the tool catalog")
+		t.Fatal("context_edit absent from the tool catalog")
 	}
 	client, closeConn := connectHub(t, fixture(t))
 	defer closeConn()
@@ -118,7 +118,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 	}
 	exposed := false
 	for _, tool := range list.Tools {
-		if tool.Name == "context_compact" {
+		if tool.Name == "context_edit" {
 			exposed = true
 		}
 	}
@@ -148,6 +148,31 @@ func TestContextCompactCrossContextDeny(t *testing.T) {
 	}
 	if called {
 		t.Fatal("sidecar invoked for a foreign context")
+	}
+}
+
+func TestContextCompactPreviewReportsUnknownAfterCount(t *testing.T) {
+	t.Setenv("HUB_MANAGED_CONTEXT", `{"compact_engines":["hub"],"compact_engine":"hub"}`)
+	old := compaction.Runner
+	compaction.Runner = func(_ context.Context, req []byte) ([]byte, error) {
+		var call map[string]any
+		_ = json.Unmarshal(req, &call)
+		switch call["op"] {
+		case "estimate_tokens":
+			return []byte(`{"ok":true,"tokens":200000,"message_count":2}`), nil
+		case "read_transcript":
+			return []byte(`{"ok":true,"session_id":"hub-preview","watermark":2,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":"two"}]}`), nil
+		}
+		return []byte(`{"ok":false,"error":"unexpected"}`), nil
+	}
+	t.Cleanup(func() { compaction.Runner = old })
+	out, err := (&Tools{StateDir: t.TempDir()}).ContextCompact(context.Background(), Input{ID: "hub-preview", Preview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := out.(map[string]any)
+	if view["applied"] != false || view["would_method"] != compaction.MethodPruneOnly || view["messages_after"] != nil {
+		t.Fatalf("preview projection: %v", view)
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-10-31
+last_verified: 2026-11-08
 ---
 
 # model-relay
@@ -59,6 +59,9 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   and grant ids never leave the mounted file.
 - Spawned runtimes reach the relay over the managed agent network. They do not
   mount the registry, provider keys, Broker signing key or switch-admin bearer.
+  ToolHub resolves the authenticated owner's fixed relay alias and admin
+  credential for admitted `model_list` and `model_switch` calls; tool arguments
+  cannot supply a relay URL or bearer.
 
 ## Owner and provider boundaries
 
@@ -70,9 +73,13 @@ provider credential. A foreign bearer or ungranted requested model is rejected
 before dispatch. The pinned Hermes model name is an alias for the owner's saved
 selection, so `/model` switching does not require editing Hermes.
 
-Registry layers are `spaces/models.yaml`, `spaces/<organization>/models.yaml`,
-then `spaces/<owner>/models.yaml`; later entries replace the same named entry.
-For example, these are references, not credential values:
+Registry layers on unmanaged spaces are `spaces/models.yaml`,
+`spaces/<organization>/models.yaml`, then `spaces/<owner>/models.yaml`;
+later entries replace the same named entry. Under a published passport
+revision the layered files are never consulted — the `models.yaml`
+passport (`services`/`routes`/`default`) compiles into the mounted
+registry alone and is the only model authority. For example, these are
+references, not credential values:
 
 ```yaml
 providers:
@@ -109,16 +116,35 @@ Custom URLs are fixed HTTP(S) bases without userinfo, query, fragment or parent
 traversal. The configured registry is the endpoint allowlist. DNS is checked
 and pinned at dial time; redirects and environment HTTP proxies are disabled.
 `allow_private: true` is an explicit operator trust exception for a local/LAN
-provider. It permits private and loopback addresses, but not metadata/link-local,
+provider, authored under `models.services.<name>` in a six-passport space. It
+permits private and loopback addresses, but not metadata/link-local,
 multicast or other reserved ranges. Built-in CLIProxy has this local trust.
 
-Every ladder has 1–8 ordered hops. Auth/quota failures, server failures and
-transport failures put that account on a 60-second cooldown and try the next
-declared hop. Other HTTP statuses pass through. Each attempt/skip is logged
+Every ladder has 1–8 ordered hops — one credential principal per hop.
+Auth/quota failures, server failures and transport failures put that account
+on a 60-second cooldown and try the next declared hop. A hop may carry
+`models: [...]`, the ordered in-service model list: a model-level failure
+(400/404 — the account does not serve that model) retries the next model on
+the same principal instead of advancing the ladder; `model:` stays the
+single-model shorthand. Once a response has started it is never replayed to
+another hop. `reasoning: true` declares the service accepts reasoning
+parameters; a request carrying `reasoning_effort`, `reasoning` or `thinking`
+skips hops that never declared support. `sharing: personal` requires
+`broker_grants` — a shared `key_env` principal cannot be declared personal.
+Other HTTP statuses pass through. Each attempt/skip is logged
 without request contents or keys. `GET /v1/hops` exposes the selected ladder's
 cooldown under owner/admin authentication. Defaults are 5 minutes per hop
 (`HUB_MODEL_RELAY_HOP_TIMEOUT`, maximum 5 minutes) and 6 minutes for the whole
 request (`HUB_MODEL_RELAY_TIMEOUT`, maximum 10 minutes); hop cannot exceed total.
+Durable `{of, amount, per, scope}` limits may be declared per hop:
+`of: requests` counts every upstream call, `of: tokens` reserves the
+conservative request estimate up front; `per` is `5h`, `1d` or `1w` in aligned
+windows; `scope` is `shared` (the principal) or `personal` (per owner).
+Counters persist under the relay state directory, survive restarts, are
+isolated per space, and a full window parks the hop so the ladder advances.
+`of: spend` and `of: provider_quota_percent` are rejected until a verified
+price feed or per-session usage/reset telemetry exists — an unverifiable
+quota must fail closed rather than drift.
 The hop bound covers the entire exchange, including a streamed body. A transport
 timeout allows one bounded recovery attempt after cooldown on a later request;
 concurrent callers do not all probe the recovering hop. The request budget leaves room for cooldown and one more bounded attempt.
@@ -150,3 +176,73 @@ and workload `model-relay`. Acquire/materialize/release use TLS and signed
 audiences; no signing key is mounted into Hermes. Shared secret use requires an
 explicit Broker contract and separate authorized owner grants. Provisioning and
 live account verification are separate from code/fixture verification.
+
+### Reviewed model contracts (ADR-0092 R7)
+
+Two contract types ship in `services/credential-broker/examples/contracts/`
+and must be installed into the space broker `contracts_dir` by the operator:
+
+- `model-api-key` — one bounded API key, delivered only as `MODEL_API_KEY`
+  env on the `model-relay` workload lease (`broker_grants` + `credential_env`
+  in `models.yaml` reference it; the relay resolves per call and releases).
+- `cliproxy-session` — one bounded OAuth account session file, delivered as
+  a mounted file (`env_name` points at the path, never the contents) into the
+  owning dedicated cliproxy's `auths/` view. Each account is a separate
+  credential with its own grants; rotation mints a new revision under the
+  same connection and revocation kills existing leases at next acquire —
+  independently per account, never across principals.
+
+Migrating a space off the legacy `cliproxy/api-key` + `auths/` material or a
+`key_env` provider is an explicit operator action: enroll each account as a
+`cliproxy-session` credential, grant it to workload `model-relay`/`cliproxy`
+with execution `dedicated`, point `broker_grants` at the new grant ids, then
+re-render. Bytes never enter passports, ledger DTOs, argv or diagnostics —
+the journal and every API view carry refs only.
+
+### Per-instance session delivery (S7.3)
+
+Each declared `cliproxy-*` instance gets its own init companion
+(`<instance>-init`, entrypoint `hub-runtime cliproxy-materialize`) and two
+tmpfs volumes: `cliproxy-session-<instance>` mounted at `/cliproxy/auths` and
+`cliproxy-cfg-<instance>` mounted at `/run/cliproxy-cfg`. The init companion
+is the only container that sees the shared `broker-materialized` lease view;
+the cliproxy process never mounts it. The companion reads the published
+models passport and `generated/model-grants.json` at `/run/model-gen`,
+acquires the workload lease for the service whose endpoint names its
+instance, copies the materialized session file into `auths/` as exactly
+`session.json`, renders the operator config plus the `proxy_access` key into
+`/run/cliproxy-cfg/config.yaml` (`api-keys:`), and releases the lease. A tmpfs
+volume only exists while a live container holds its mount, so the companion
+then stays up holding the session and cfg mounts; its healthcheck reports the
+moment both files exist and the runtime service depends on `service_healthy`.
+
+Enrollment is `hubctl models login --dir <space> --service <name>`: it mints
+an idempotent `cliproxy-session` + `model-api-key` request per auth ref, the
+owner submits secrets through the reviewed link, and a re-run grants each
+ready credential to binding/workload `<instance>` (execution `dedicated`) and
+records ref→grant ids in `generated/model-grants.json`. The registry
+projection resolves each hop's credential through that map, so rotation is a
+map update, not a passport change. Once both grants exist the command
+removes the plaintext `session.json` under the instance bind `auths/` — the
+tmpfs delivery is the only place session material may exist.
+When a second route names the same credential references and contract,
+`models login` reuses the existing enrollment request and adds grants for the
+new workload. This lets a dedicated vision route share the owner's existing
+provider account without requesting its secrets again. Publish a logical
+route named `vision` to make it available to managed `media_inspect`; image
+support still depends on that provider model and its Relay grant.
+
+For sibling spaces the external `broker-materialized` reference resolves to
+the infra project's volume (`hermes-hub-<infra-owner>-<env>-broker-materialized`),
+located through `InfraSpaceDir`; a space rendering its own infra declares the
+tmpfs locally instead. If more than one sibling claims infra ownership, the
+resolver does not choose one by directory order; the shared reference stays
+local until the deployment has one unambiguous owner.
+
+Every space rendering cliproxy instances also declares `broker-secrets-cliproxy`
+(project-local, mounted read-only only in the init companion). Provision its
+CA as `server.crt` and an Ed25519 signing key as `cliproxy.private`, owned by
+the service uid with mode 0600 — the same procedure as `broker-secrets-model`
+above — and register the public key with the Broker under ID `cliproxy`,
+issuer `hermes-cliproxy-session`, audiences `broker:control` and
+`broker:runtime`.

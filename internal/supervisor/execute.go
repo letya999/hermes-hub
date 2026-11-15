@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +12,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 var errJobInProgress = errors.New("job is already in progress")
@@ -55,7 +59,12 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
+	textHash := sha256.Sum256([]byte(request.Text))
+	var admission [16]byte
+	if _, err := rand.Read(admission[:]); err != nil {
+		return hubruntime.ExecuteResponse{}, false, err
+	}
+	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, AdmissionID: hex.EncodeToString(admission[:]), Request: metadata, RequestTextSHA256: hex.EncodeToString(textHash[:]), Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err
@@ -84,6 +93,60 @@ func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
 	}
 	delete(m.jobs, key)
 	_ = m.persistLocked()
+}
+
+// claimManagedLane admits up to five conversations to one managed Hermes runtime.
+// Each job keeps its own run identity; prior lane modes remain routable on replay.
+func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.ExecuteRequest, binding Binding) (string, error) {
+	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if settings.CapabilityMode != "managed" {
+		return "gateway", nil
+	}
+	key := executeJobKey(request)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		m.mu.Lock()
+		record, exists := m.jobs[key]
+		if !exists || terminalRunStatus(record.Status) || record.Status == "cancelled" {
+			m.mu.Unlock()
+			return "", errors.New("job is no longer active")
+		}
+		active := 0
+		sameConversation := false
+		for otherKey, other := range m.jobs {
+			if otherKey == key || terminalRunStatus(other.Status) || other.Request.PrincipalID != request.PrincipalID || other.Request.ContextID != request.ContextID {
+				continue
+			}
+			if other.Request.ConversationID == request.ConversationID && (other.RuntimeMode != "" || other.UpdatedAt.Before(record.UpdatedAt) || other.UpdatedAt.Equal(record.UpdatedAt) && otherKey < key) {
+				sameConversation = true
+			}
+			if other.RuntimeMode != "" || other.Generation != "" {
+				active++
+			}
+		}
+		if !sameConversation && active < 5 {
+			previous := record
+			record.RuntimeMode = "gateway"
+			record.UpdatedAt = time.Now().UTC()
+			m.jobs[key] = record
+			err = m.persistLocked()
+			if err != nil {
+				m.jobs[key] = previous
+			}
+			m.mu.Unlock()
+			return "gateway", err
+		}
+		m.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) error {
@@ -133,7 +196,11 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 		if generation != "" && record.Generation != generation {
 			return errors.New("stale job generation")
 		}
-		current := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: "gateway"})]
+		mode := record.RuntimeMode
+		if mode == "" {
+			mode = "gateway"
+		}
+		current := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: mode})]
 		if current != nil && current.Generation != record.Generation && (record.Response.RunID != "" || response.RunID != "") {
 			return errors.New("obsolete runtime producer")
 		}
@@ -290,6 +357,13 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, known)
 		return
 	}
+	mode, err := m.claimManagedLane(r.Context(), request, binding)
+	if err != nil {
+		m.abandonJob(request)
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	binding.RuntimeMode = mode
 	kind := LeaseJob
 	if r.Header.Get("Accept") == hubruntime.RunStreamContentType {
 		kind = LeaseStream
@@ -302,6 +376,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		// logged host-side; the caller only gets that the runtime is unavailable.
 		log.Printf("acquire failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
 		m.abandonJob(request)
+		w.Header().Set("X-Hub-Admission", "not-dispatched")
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
@@ -332,6 +407,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "dispatch state unavailable"})
+		return
+	}
+	request.Instructions = m.memoryInstructions(r.Context(), request)
+	body, err = json.Marshal(request)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "dispatch request unavailable"})
 		return
 	}
 	callCtx := r.Context()
@@ -458,6 +539,15 @@ func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Ru
 		return forward(event)
 	})
 	if !terminalRunStatus(known.Status) {
+		class := "eof"
+		if err != nil {
+			class = "other"
+			switch err.Error() {
+			case "stream identity mismatch", "stale stream generation", "administrative effect fence", "job already terminal", "stale job generation", "obsolete runtime producer", "job response binding mismatch":
+				class = err.Error()
+			}
+		}
+		log.Printf("supervisor stream lost before terminal class=%s bound=%t", class, known.RunID != "")
 		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
 		m.finishJobGeneration(request, known, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort after a terminal event was already recorded.
 	}

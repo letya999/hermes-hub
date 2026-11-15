@@ -1,0 +1,156 @@
+schema: 1
+change: CHG-0220
+title: "Управляемые версии secret objects и безопасный GC"
+status: done
+branch: chore/storage-reliability-dev-acceptance
+updated: "2026-11-09"
+phase: all-slices-live
+adr: ADR-0087
+spec: SPEC-0087
+requirements: [R4]
+depends_on: [CHG-0219]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: done
+readiness: object_lifecycle_live_on_dev
+slices:
+  S196.1-version-ownership: done
+  S196.2-safe-retirement: done
+  S196.3-bounded-cleanup: done
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: env_blocked
+  module_check: passed
+  security: no_dependency_changes
+  docker_check: passed
+  red_team: covered_by_tests
+  live_acceptance: passed
+evidence:
+  - date: "2026-10-28"
+    slice: S196.1
+    kind: module_tests
+    summary: >
+      objectRecord rows (intent/current/retired/deleted) replace growing
+      OwnedRefs; provider.RefWriter + Local.WriteRef let every local write
+      persist exact-locator intent before the write on all five paths
+      (submit.draft, submit.telegram, oauth.verifier, oauth.activate,
+      oauth.refresh, state.checkpoint). Delete is union of legacy OwnedRefs
+      and owned object rows — unknown remote objects never deleted.
+    proof: >
+      go test -tags libsqlite3 ./... — all 17 module packages green in
+      sqlcipher image; new reds: TestRefreshMetadataGrowthIsLinear,
+      TestCheckpointMetadataGrowthIsLinear, TestObjectsSurviveNormalizedRestart,
+      TestLocalCreateCrashBeforeActivationOwned, TestRefresh/Activation/
+      Verifier/Checkpoint/TelegramCrashKeepsObjectOwned,
+      TestUnknownRemoteObjectNeverDeleted.
+    limitation: >
+      Remote providers without RefWriter keep post-write ordering —
+      documented unknown-orphan window. Verifier object row remains intent
+      until S196.3 ownership cleanup reconciles it (file already removed
+      at exchange; row is deletable-by-owner, not an unknown remote).
+  - date: "2026-11-09"
+    slice: S196.2
+    kind: module_tests
+    summary: >
+      stateRecord carries a canonical bundle digest; identical quiesced
+      checkpoints reuse the current version (no new object, no new row).
+      Changed checkpoints activate the replacement and retire the
+      superseded row in the same mutation — activate-before-retire.
+      Superseded versions under a live pin are marked pinned and stay
+      resolvable; OAuth rotation always mints a version (no dedup).
+      Pins: BeginUse pins the credential object per op, materialization
+      pins the state version per lease, dropLease releases both;
+      DeleteCredential denies while any owned pin is live.
+    proof: >
+      go test -tags libsqlite3 ./broker — green: TestUnchangedQuiesced-
+      CheckpointDoesNotCreateVersion, TestChangedCheckpointRetiresPrevious-
+      Version, TestSupersededCheckpointStaysResolvable,
+      TestPinnedCheckpointVersionSurvivesGC, TestRotatingOAuthReplacement-
+      NotLost, TestDropLeaseReleasesUsePins, TestSuccessfulWriteLeavesNoIntent.
+  - date: "2026-11-09"
+    slice: S196.3
+    kind: module_tests
+    summary: >
+      SweepObjects — bounded, idempotent pending-delete worker: durable
+      pending-delete commit before any physical delete, provider.Delete
+      removes primary+recovery copies with dir sync, deleted receipt only
+      after physical removal, 30s backoff on failure, request-terminal
+      intents (canceled/expired drafts and verifiers) freed through
+      ownership only. Activation retires consumed request objects in the
+      same commit; maintenance Sweep() drains a batch of 64 every second.
+    proof: >
+      go test -tags libsqlite3 ./broker — green: TestDeleteFailureRemains-
+      PendingAndDenied, TestCleanupBothCopiesBeforeReceipt,
+      TestAliasAndSharedCredentialUntouched, TestAbandonedIntentFreedBy-
+      Ownership, TestExpiredDraftFreedByOwnership,
+      TestMaintenanceSweepCollectsObjects, TestSweepHonorsBatchLimit,
+      TestSweepSkipsLivePinnedObjects, TestActivationRetiresRequestObjects.
+  - date: "2026-11-09"
+    slice: acceptance
+    kind: module_tests
+    summary: >
+      TestLifecycleScaleAcceptance — 1000 synthetic cycles (500
+      dedup/supersede checkpoints + 500 rotating OAuth refreshes) under a
+      live broker. After draining the worker: object rows settle to
+      exactly 3 current + 752 deleted, the provider directory holds 4
+      files (3 current versions + 1 foreign unknown object preserved),
+      a fresh materialize restore succeeds, and a byte-scan of all ledger
+      files finds no raw sentinel or token material.
+    proof: >
+      broker_test run inside pinned sqlcipher image:
+      acceptance: 1000 cycles, object states map[current:3 deleted:752],
+      retained files 4 — PASS (32.0s).
+  - date: "2026-11-09"
+    slice: live-dev
+    kind: live_runtime
+    summary: >
+      Dev broker rebuilt via hubctl dev-rebuild onto
+      hermes-hub-dev-local-credential-broker:local and exercised over the
+      real 327MB SQLCipher store: signed control request -> browser form
+      submit -> credential -> delete. The audit table recorded
+      request.created, object.intent (durable pre-write intent row),
+      credential.ready, credential.revoked, credential.deleted. The state
+      table gained kind='object' with body
+      {state:deleted, owner_kind:credential, op:enroll,
+      ref.locator 2_p68O...} — the exact WriteRef-reserved locator. The
+      physical object file appeared at submit and was removed from both
+      primary and recovery legs on delete; the four pre-existing foreign
+      objects stayed untouched.
+    proof: >
+      brokerctl (toolhub signer, SSL_CERT_FILE pinned) POST/GET/DELETE over
+      mTLS from a container sharing the broker netns; sqlcipher probe of a
+      live primary.db copy (double-derived key, opened read-only):
+      state|object = 1 -> deleted|credential|enroll|2_p68O52OTwF.
+    limitation: >
+      The async SweepObjects path produced no dev traffic: all dev
+      contracts are form intake, so drafts activate immediately and
+      DeleteCredential destroys owned objects synchronously in the same
+      call. Retired/pinned/intent cleanup is proven by the 1000-cycle
+      acceptance test and unit coverage, not by dev telemetry.
+  - date: "2026-11-09"
+    slice: gates
+    kind: gate_run
+    summary: >
+      docker_check: production image hermes-credential-broker:test builds
+      clean (SQLCipher compile + libsqlite3 binary) — passed.
+      Root just check: docs-check green after repairing cross-state links
+      introduced by moving CHG-0219 to done; go-check fails only on the
+      known Windows-environment class (lld access denied on
+      hub-media/hub-stt, AV fork/exec denial on toolhub/api test binary,
+      docker sandbox contention; TestScratchLeasePersistence passes in
+      isolation). Module go test -tags libsqlite3 ./... green in the
+      pinned image (18 packages); linux GOOS=linux vet+build clean.
+      Red-team coverage: unknown-object preservation, digest-verified
+      replay, pin-denied delete, pending-delete durability and the ledger
+      secret-byte scan are all regression tests — covered_by_tests.
+remaining:
+  - "OAuth-configured dev contract would let the async sweep path fire live; optional — covered by acceptance test."
+  - "Root just check on a Linux/CI runner (Windows linker + AV deny are environmental)."
+limitations:
+  - "Remote providers without RefWriter keep the post-write unknown-orphan window (documented)."
+  - "Backoff is a flat 30s re-arm; exponential growth and jitter are not implemented."
+  - "Object sweep only runs inside the Broker process tick; no offline CLI variant."

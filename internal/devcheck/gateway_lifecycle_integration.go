@@ -20,16 +20,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,
 // authenticated supervisor HTTP server/reaper and actual pinned Hermes containers.
-// Only Telegram and the model endpoint are local fixtures; no external send occurs.
+// Telegram, the model endpoint and ToolHub are fixtures; no external send occurs.
+// This gate does not prove the integrated memory/automation boundary of M32.
 func GatewayLifecycle(ctx context.Context, image string) error {
 	provider, providerURL, err := nativeContractProvider()
 	if err != nil {
@@ -49,46 +52,99 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		return err
 	}
 	defer os.RemoveAll(root)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# gateway lifecycle canary\n"), 0644); err != nil {
+		return err
+	}
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	network := "hermes-gateway-" + suffix
 	if err := exec.CommandContext(ctx, "docker", "network", "create", network).Run(); err != nil {
 		return err
 	}
 	defer exec.Command("docker", "network", "rm", network).Run()
+	defer func() {
+		for _, user := range []string{"alice-" + suffix, "bob-" + suffix} {
+			_ = exec.Command("docker", "rm", "-f", "hermes-gateway-toolhub-"+user).Run()
+			_ = exec.Command("docker", "rm", "-f", "hermes-gateway-model-"+user).Run()
+			_ = exec.Command("docker", "network", "rm", "hermes-hub-agent-"+user+"-prod").Run()
+		}
+	}()
 	control := "synthetic-gateway-control-0123456789"
 	// The deployment default warm window is now 30 min (SPEC-0053 S2), far
 	// beyond this check's budget, so the fixture pins its own five-minute
 	// window and verifies the extension+reap mechanics at that value.
 	const warmWindow = 5 * time.Minute
 	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, PortBase: 32000, WarmTTL: warmWindow}
+	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
+		if len(args) != 0 && args[0] == "network" {
+			for i, arg := range args {
+				if arg == "hermes-hub-control" {
+					args[i] = network
+				}
+			}
+		}
+		return exec.CommandContext(callCtx, "docker", args...).CombinedOutput()
+	}
 	manager, err := supervisor.New(cfg)
 	if err != nil {
 		return err
 	}
 	users := make([]communication.User, 0, 2)
 	bindings := make([]supervisor.Binding, 0, 2)
+	const toolhubFixture = `import json
+from http.server import BaseHTTPRequestHandler,HTTPServer
+class H(BaseHTTPRequestHandler):
+ def do_POST(self):
+  request=json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+  method=request.get('method','')
+  result={'protocolVersion':'2025-03-26','capabilities':{'tools':{}},'serverInfo':{'name':'toolhub-stub','version':'0.1'}} if method=='initialize' else {'tools':[]} if method=='tools/list' else {}
+  body=json.dumps({'jsonrpc':'2.0','id':request.get('id'),'result':result}).encode()
+  self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
+ def do_GET(self): self.send_response(200); self.end_headers()
+ def log_message(self,*args): pass
+HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	for i, name := range []string{"alice", "bob"} {
 		name = name + "-" + suffix
 		dir := filepath.Join(root, name)
+		agentNet := "hermes-hub-agent-" + name + "-prod"
+		if err := exec.CommandContext(ctx, "docker", "network", "create", "--internal", agentNet).Run(); err != nil {
+			return err
+		}
 		if err := stack.InitEnvironment(dir, name, "prod"); err != nil {
 			return err
 		}
-		// Init seeds the schema-3 agent.yaml/workspace.yaml pair, which takes
-		// precedence over a settings.yaml found beside it. This fixture stands
-		// in for a pre-migration space where settings.yaml is authoritative, so
-		// the seeded pair is removed before the legacy file is written.
-		for _, seeded := range []string{"agent.yaml", "workspace.yaml"} {
-			if err := os.Remove(filepath.Join(dir, seeded)); err != nil {
+		for passportName, body := range map[string]string{
+			"stack":  "identity: {user: " + name + ", infra: true}\nservices:\n  hermes-runtime: {mode: supervised}\n  model-relay: {mode: shared}\n  cliproxy: {mode: shared}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n  communication-hub: {mode: shared}\n  supervisor: {mode: shared}\n",
+			"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-contract}}\n",
+			"models": "default: gpt-4o-mini\nroutes: {gpt-4o-mini: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: " + providerURL + ", models: [{id: gpt-4o-mini}]}\n",
+			"tools":  "binding: {profile_id: " + name + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\nextended:\n  'native:terminal': {via: native}\n",
+		} {
+			if err := os.WriteFile(filepath.Join(dir, "passports", passportName+".yaml"), []byte(body), 0600); err != nil {
 				return err
 			}
 		}
-		settings := "schema: 1\nuser: " + name + "\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, telegram]\nnative_toolsets: [terminal]\nmodel: gpt-4o-mini\nmodel_url: " + providerURL + "\n"
-		if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), []byte(settings), 0600); err != nil {
+		catalogDocs, err := catalog.Generate()
+		if err != nil {
 			return err
 		}
-		// The synthetic network has no toolhub service; opt the fixture out of
-		// the default endpoint so cold start does not depend on it.
-		if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS="+strconv.Itoa(21+i)+"\nHUB_TOOLHUB_ENDPOINT=\n"), 0600); err != nil {
+		revision, err := passport.CompileAuthored(dir, "prod", time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(dir), map[string][]string{})
+		if err != nil {
+			return err
+		}
+		if err := revision.Publish(dir); err != nil {
+			return err
+		}
+		initialSelection := stack.ExecutionSelection{Schema: 1, User: name, Environment: "prod", Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
+		selectionBody, err := json.Marshal(initialSelection)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, stack.ExecutionPath("prod")), selectionBody, 0600); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS="+strconv.Itoa(21+i)+"\n"), 0600); err != nil {
 			return err
 		}
 		// The contract provider probes the real terminal tool, so this fixture
@@ -101,7 +157,19 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err := api.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), api.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
-		if err := stack.RenderEnvironment(dir, ".", "prod"); err != nil {
+		if err := stack.RenderEnvironment(dir, root, "prod"); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "managed-runtime.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
+			return err
+		}
+		if err := dockerContract(ctx, "run", "-d", "--name", "hermes-gateway-toolhub-"+name, "--network", agentNet, "--network-alias", "toolhub", "--entrypoint", "python", image, "-c", toolhubFixture); err != nil {
+			return fmt.Errorf("gateway synthetic ToolHub: %w", err)
+		}
+		if err := dockerContract(ctx, "run", "-d", "--name", "hermes-gateway-model-"+name, "--network", agentNet, "--network-alias", "model-relay", "--add-host", "host.docker.internal:host-gateway", "-e", "HUB_MODEL_RELAY_MODEL=gpt-4o-mini", "-e", "HUB_MODEL_RELAY_UPSTREAMS=fixture="+providerURL, "--entrypoint", "hub-runtime", image, "model-relay"); err != nil {
+			return fmt.Errorf("gateway synthetic model relay: %w", err)
+		}
+		if err := dockerContract(ctx, "network", "connect", network, "hermes-gateway-model-"+name); err != nil {
 			return err
 		}
 		// Synthetic fixture directories must be writable by container uid10001 on Linux.
@@ -117,14 +185,14 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 			return err
 		}
 
-		settingsValue, err := stack.ReadEnvironment(dir, "prod")
+		settingsValue, err := stack.ReadEffective(dir, "prod")
 		if err != nil {
 			return err
 		}
 		policy := stack.PolicyVersion(settingsValue)
 		users = append(users, communication.User{ID: name, RuntimeID: name, PolicyVersion: policy, Enabled: true, TelegramIDs: []int64{int64(21 + i)}, Features: []string{"workspace", "telegram"}})
 		bindings = append(bindings, supervisor.Binding{PrincipalID: name, ContextID: name, RuntimeID: name, RuntimeMode: "gateway", UserID: name, OrganizationID: "personal", PolicyVersion: policy, ContextRoot: dir})
-		if err := os.WriteFile(filepath.Join(dir, "workspace", "isolation-canary"), []byte(name), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "managed", "prod", "hermes", "isolation-canary"), []byte(name), 0644); err != nil {
 			return err
 		}
 	}
@@ -135,6 +203,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 			if runtime, ok, err := manager.Status(binding); err == nil && ok && runtime.State != supervisor.Stopped {
 				if id, err := smokeOwnedContainerID(cleanupCtx, manager, runtime); err == nil {
 					_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", id).Run()
+					_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", runtime.Container+"-ctl").Run()
 				}
 			}
 		}
@@ -222,9 +291,8 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if _, err := migration.SelectExecution(binding.ContextRoot, selection, audit, true); err != nil {
 			return err
 		}
-		if err := stack.RenderEnvironment(binding.ContextRoot, ".", "prod"); err != nil {
-			return err
-		}
+		// The host-side supervisor endpoint changes only execution routing;
+		// the already rendered agent source and managed env are unchanged.
 
 	}
 	config := communication.Config{Supervised: true, OrganizationID: "personal", Users: users, TelegramToken: "synthetic-bot", APIBaseURL: api.URL, SpoolDir: spoolDir, RuntimeURL: endpoint, RuntimeAuth: control, PollTimeout: time.Second}
@@ -266,12 +334,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	appendTask(71001, 21)
 	if err := wait("Alice cold start and final", coldStartBudget, func() bool { mu.Lock(); defer mu.Unlock(); return finals[21] == 1 }); err != nil {
 		runtime, _, _ := manager.Status(bindings[0])
-		inspect, _ := exec.Command("docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}", runtime.Container).CombinedOutput()
-		logs, _ := exec.Command("docker", "logs", "--tail", "12", runtime.Container).CombinedOutput()
-		if len(logs) > 4096 {
-			logs = logs[len(logs)-4096:]
-		}
-		return fmt.Errorf("%w: runtime=%s inspect=%q logs=%q", err, runtime.State, strings.TrimSpace(string(inspect)), string(logs))
+		return fmt.Errorf("%w: runtime=%s", err, runtime.State)
 	}
 	first, err := readMapping(71001)
 	if err != nil || first.Status != "completed" || first.ContextID != users[0].ID || first.RuntimeID != users[0].ID || first.RunID == "" {
@@ -295,25 +358,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 			return err == nil && ok && runtime.Leases == 0 && runtime.State == supervisor.Idle
 		}); err != nil {
 			runtime, _, _ := manager.Status(binding)
-			detail := ""
-			if raw, readErr := os.ReadFile(filepath.Join(root, ".control", "supervisor.json")); readErr == nil {
-				var state struct {
-					Items []struct {
-						Leases map[string]json.RawMessage `json:"leases"`
-					} `json:"items"`
-				}
-				if jsonErr := json.Unmarshal(raw, &state); jsonErr == nil {
-					for i, item := range state.Items {
-						for id, lease := range item.Leases {
-							detail += fmt.Sprintf("; item%d %s=%s", i, id, string(lease))
-						}
-					}
-				}
-				if len(detail) > 4096 {
-					detail = detail[:4096]
-				}
-			}
-			return fmt.Errorf("%w (last observed leases=%d state=%s%s)", err, runtime.Leases, runtime.State, detail)
+			return fmt.Errorf("%w (last observed leases=%d state=%s)", err, runtime.Leases, runtime.State)
 		}
 		runtime, ok, err := manager.Status(binding)
 		if err != nil || !ok || runtime.Leases != 0 || runtime.State != supervisor.Idle {
@@ -324,7 +369,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		if err != nil {
 			return err
 		}
-		body, err := exec.CommandContext(ctx, "docker", "exec", id, "cat", "/workspace/isolation-canary").Output()
+		body, err := exec.CommandContext(ctx, "docker", "exec", id, "cat", "/state/hermes/isolation-canary").Output()
 		if err != nil || strings.TrimSpace(string(body)) != users[i].ID {
 			return errors.New("gateway runtime mounted another user's home")
 		}

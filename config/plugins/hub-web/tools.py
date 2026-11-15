@@ -267,11 +267,10 @@ def _search_one(name: str, query: str, limit: int) -> Dict[str, Any]:
         return {"provider": name, "ok": False, "error": "provider does not support search"}
     try:
         payload = provider.search(query, limit)
-    except Exception as exc:  # noqa: BLE001 — vendor error lands per-provider
-        return {"provider": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    except Exception as exc:  # noqa: BLE001 — vendor exception text may contain credentials
+        return {"provider": name, "ok": False, "error": type(exc).__name__}
     if not isinstance(payload, dict) or not payload.get("success"):
-        error = payload.get("error") if isinstance(payload, dict) else None
-        return {"provider": name, "ok": False, "error": str(error or "search failed")}
+        return {"provider": name, "ok": False, "error": "search failed"}
     return {"provider": name, "ok": True, "hits": _hits(payload)}
 
 
@@ -285,8 +284,8 @@ def handle_web_providers(args: dict, **kw) -> str:
     allowed = _allowed_providers(web)
     try:
         registered = registry.list_providers()
-    except Exception as exc:  # noqa: BLE001
-        return tool_error(f"web provider registry failed: {exc}")
+    except Exception:  # noqa: BLE001
+        return tool_error("web provider registry failed")
     providers = []
     for provider in registered:
         name = _norm_name(getattr(provider, "name", ""))
@@ -379,7 +378,7 @@ def handle_web_search_multi(args: dict, **kw) -> str:
                 outcomes[futures[future]] = future.result()
             except Exception as exc:  # noqa: BLE001 — defensive; _search_one never raises
                 outcomes[futures[future]] = {"provider": futures[future], "ok": False,
-                                             "error": f"{type(exc).__name__}: {exc}"}
+                                             "error": type(exc).__name__}
     finally:
         # Never block the tool on a hung provider thread.
         pool.shutdown(wait=False, cancel_futures=True)

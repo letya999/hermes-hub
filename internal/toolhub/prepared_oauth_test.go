@@ -77,10 +77,11 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce", Expires: time.Now().Add(time.Hour)}, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
+	grantTestControlOperations(t, store, auth.PrincipalID, "confirm")
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "tokens.enc"), Key: bytes.Repeat([]byte("k"), 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		}
 		return nil
 	}
-	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce})
+	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.GateNonce(api.GateConfirmSetup)})
 	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff: %v %v", body, err)
 	}
@@ -138,10 +139,10 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 	c.oauthFlows.mu.Lock()
 	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
 	c.oauthFlows.mu.Unlock()
-	resumed, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID})
+	resumed, err := c.ensurePreparedOAuth(t.Context(), auth, on, d, false)
 	newRaw := providerAuthURLOf(t, store, on.OnboardingID)
 	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || newRaw == "" || newRaw == authURL.String() {
-		t.Fatal("status did not reissue lost OAuth link", err)
+		t.Fatal("explicit handoff did not reissue lost OAuth link", err)
 	}
 	authURL, _ = url.Parse(newRaw)
 	state := authURL.Query().Get("state")
@@ -197,9 +198,12 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		t.Fatal("replayed callback accepted", err)
 	}
 	stored, _ := store.onboarding(on.OnboardingID)
-	if stored.Phase != api.PhaseEnabled || stored.ProviderAuthorizationURL != "" {
-		t.Fatal("onboarding did not resume")
+	// The provider consent screen is the verified consent — the record
+	// completes inline with HumanConsent.Source=oauth_callback.
+	if stored.Stage != api.StageLive || !stored.ConfirmationUsed || stored.HumanConsent == nil || stored.HumanConsent.Source != "oauth_callback" || stored.ProviderAuthorizationURL != "" {
+		t.Fatal("OAuth did not record implicit consent")
 	}
+	finishAsHuman(t, c, stored.OnboardingID)
 	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d, false); err == nil || !strings.Contains(err.Error(), "existing token state") {
 		t.Fatal("existing token was overwritten", err)
 	}

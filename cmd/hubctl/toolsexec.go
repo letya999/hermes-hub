@@ -37,6 +37,9 @@ func openExecTools() (*agenttools.Tools, error) {
 // execRequest dispatches one admitted request through the shared Tools
 // instance; per-request timeout comes from the admitted frame.
 func execRequest(ctx context.Context, t *agenttools.Tools, request api.AgentExecRequest) api.AgentExecResult {
+	if request.ConversationID != "" {
+		ctx = agenttools.WithConversationID(ctx, request.ConversationID)
+	}
 	if request.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)

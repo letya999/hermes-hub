@@ -3,12 +3,48 @@ package migration
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+func validateID(id string) error {
+	if id == "" {
+		return errors.New("identifier is required")
+	}
+	for i, r := range id {
+		if !(r >= 'a' && r <= 'z') && !(i > 0 && r >= '0' && r <= '9') && !(i > 0 && r == '_') && !(i > 0 && r == '-') {
+			return errors.New("identifier must be a lowercase path-safe value")
+		}
+		if i >= 40 {
+			return errors.New("identifier is too long")
+		}
+	}
+	return nil
+}
+
+func atomicWriteRoot(root *os.Root, path string, body []byte) error {
+	tmpPath := fmt.Sprintf(".migration-%d", time.Now().UnixNano())
+	tmp, err := root.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(tmpPath)
+	if _, err = tmp.Write(body); err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return root.Rename(tmpPath, path)
+}
 
 type ExecutionReport struct {
 	NativeCron          *NativeCronSnapshot       `json:"native_cron_snapshot,omitempty"`
@@ -117,7 +153,7 @@ func SelectExecution(dir string, selection stack.ExecutionSelection, audit Execu
 	if err := selection.Validate(); err != nil {
 		return audit, err
 	}
-	settings, err := stack.ReadEnvironment(dir, selection.Environment)
+	settings, err := stack.ReadEffective(dir, selection.Environment)
 	if err != nil {
 		return audit, err
 	}

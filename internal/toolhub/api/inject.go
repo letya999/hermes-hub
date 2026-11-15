@@ -49,7 +49,7 @@ func HeaderCorrelation(jobID, runID string) CallCorrelation {
 
 func sanitizeCorrelationID(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 64 || strings.ContainsAny(value, "\r\n") {
+	if value == "" || len(value) > 256 || strings.ContainsAny(value, "\r\n") {
 		return ""
 	}
 	return value

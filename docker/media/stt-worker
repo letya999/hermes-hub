@@ -3,8 +3,8 @@
 
 Two modes:
   stt-worker <path> <mime>  — one-shot: transcribe and exit (engine=command)
-  stt-worker --serve        — resident: one wav path per stdin line, one JSON
-                              line per stdout ("text" or "error"). The model
+  stt-worker --serve        — resident: one JSON request per stdin line, one JSON
+                              response with text and timed segments. The model
                               loads once; engine=command-serve uses this.
 """
 import json
@@ -37,9 +37,14 @@ def load_model():
     return WhisperModel(os.environ.get("HUB_STT_MODEL", "tiny"), device="cpu", compute_type="int8")
 
 
-def transcribe(model, path: str) -> str:
-    segments, _ = model.transcribe(load_samples(path), beam_size=1)
-    return "".join(segment.text for segment in segments).strip()
+def transcribe(model, path: str, language: str = "") -> dict:
+    segments, _ = model.transcribe(load_samples(path), beam_size=1, language=language or None)
+    spans = [
+        {"start": segment.start, "end": segment.end, "text": segment.text.strip()}
+        for segment in segments
+        if segment.text.strip()
+    ]
+    return {"text": " ".join(span["text"] for span in spans), "segments": spans}
 
 
 def serve(model) -> int:
@@ -47,12 +52,12 @@ def serve(model) -> int:
     # the first line as the handshake, so a slow load never looks ready.
     print(json.dumps({"ready": True}), flush=True)
     for line in sys.stdin:
-        path = line.strip()
-        if not path:
+        if not line.strip():
             continue
         try:
-            text = transcribe(model, path)
-            out = {"text": text} if text else {"error": "empty transcript"}
+            request = json.loads(line)
+            result = transcribe(model, request["path"], request.get("language", ""))
+            out = result if result["text"] else {"error": "empty transcript"}
         except Exception as exc:  # per-request failure must not kill the worker
             out = {"error": str(exc)[:200]}
         print(json.dumps(out), flush=True)
@@ -64,10 +69,10 @@ def main() -> int:
         return serve(load_model())
     if len(sys.argv) < 2:
         return 1
-    text = transcribe(load_model(), sys.argv[1])
-    if not text:
+    result = transcribe(load_model(), sys.argv[1], os.environ.get("HUB_STT_REQUEST_LANGUAGE", ""))
+    if not result["text"]:
         return 1
-    print(text)
+    print(json.dumps(result))
     return 0
 
 

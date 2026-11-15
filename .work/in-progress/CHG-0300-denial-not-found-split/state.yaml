@@ -1,0 +1,23 @@
+change: CHG-0300-denial-not-found-split
+status: in_progress
+created: 2026-11-12
+incident:
+  job: telegram-837846090
+  window: "21:44:20-21:48:33"
+  elapsed: "4m13s"
+  model_turns_observed: 22
+  tool_calls_ok: 11
+  tool_calls_denied: 4
+gates:
+  toolhub_tests: passed
+  audit_tests: passed
+  stack_tests: passed  # incl. stale supervisor-ports assertion updated to the committed loopback contract
+  agenttools_tests: passed
+  catalog_tests: passed
+  catalog_emit: passed  # platform/catalogs/37, vocabulary identical to 36
+  just_check: passed  # format + docs + vet; tools.md trimmed under the 500-line gate
+  affected_packages: passed  # just test toolhub audit stack agenttools catalog
+  soul_regenerated: passed  # both spaces, terminal-inventory clauses present
+  dev_rebuild_toolhub: passed  # hermes-hub-dev-artem_main-toolhub:local, shared container healthy
+  rebind_respawn: passed  # capability agent-tools repin + space apply: artem_main rev r-2aecd8f6e5acd218, artem_two rev 82/r-1b48831a8e04cb9c, selections pin 18.3.19; no runtime was running so next spawn projects the new contract
+  live_telegram_rerun: pending  # owner rerun of the language ask; measure model turns, tool calls, repeated searches

@@ -39,7 +39,7 @@ func TestCredentialGateUsesBrokerForGenericRecipe(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
 	definition := statefulContainerDefinition()
 	definition.Credentials = []api.CredentialInput{{Name: "CUSTOM_API_TOKEN", Required: true}, {Name: "CUSTOM_CLIENT_JSON", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"}}
-	preparing, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "generic-gate", definition, definition.Source.Repository, definition.Source.CommitSHA)
+	preparing, _, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "generic-gate", definition, definition.Source.Repository, definition.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestCredentialGateUsesBrokerForGenericRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(*registered) != 1 || stored.BrokerRequestID == "" || stored.FormNonce != "" || stored.Definition == nil || stored.Definition.CredentialContractID == "" {
+	if len(*registered) != 1 || stored.BrokerRequestID == "" || stored.GateNonce(api.GateCredentials) != "" || stored.Definition == nil || stored.Definition.CredentialContractID == "" {
 		t.Error("generic auth-first admission bypassed Broker contract and form")
 	}
 	if !stored.AdmissionPending || len(stored.Definition.Tools) != 0 {
@@ -846,7 +846,7 @@ func TestBrokerConfirmAllOptionalCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "opt-confirm", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "opt-confirm", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,11 +857,10 @@ func TestBrokerConfirmAllOptionalCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != api.PhaseAwaitingConfirm {
+	// The reused credential binds straight through — the install request is
+	// the consent, no second click is armed.
+	if stored.Stage != api.StageLive || stored.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("unexpected phase: %+v", stored)
-	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce}); err != nil {
-		t.Fatalf("confirm rejected all-optional credential reference: %v", err)
 	}
 	effective, err := store.Resolve(auth, stored.OnboardingID)
 	if err == nil {

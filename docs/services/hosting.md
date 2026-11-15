@@ -1,6 +1,6 @@
 ---
 description: User-scoped immutable static sites and isolated stateless go-http workloads, private publishing and sish serving.
-last_verified: 2026-10-26
+last_verified: 2026-11-10
 ---
 # Site hosting
 
@@ -15,13 +15,17 @@ rendered Compose or inspect fixtures as proof of isolation.
 
 ## Operator configuration
 
-Enable `hosting` and `exposure` in the space's feature policy. Configure an
+Select `sites` and `exposure` in `passports/tools.yaml` and issue their
+rights independently through the protected grant ledger. Configure an
 owner-bound sish exposure connection with the existing per-user DNS/wildcard
 certificate setup. Hosting consumes it; publishing makes no DNS mutations.
-Declare up to four slot names in `hosting.slots` in `agent.yaml`. Slots and
+Declare up to four slot names in `passports/config.yaml` under `hosting.slots`. Slots and
 manual exposure endpoints must be distinct and fit the exposure connection cap.
-The resulting origin is `https://<slot>.<user>.<relay-domain>`; for a relay domain
-`hub.example.test` this is `page.alice.hub.example.test`.
+The resulting origin is `https://<slot>.<zone>.<relay-domain>`; for a relay domain
+`hub.example.test` this is `page.alice.hub.example.test`. A user ID that is
+already a DNS label uses that ID as its zone. Other IDs, such as `artem_two`,
+use the deterministic `owner-<hash>` label returned by `hosting.ZoneForOwner`;
+the reviewed exposure config must use that exact label.
 
 ```yaml
 hosting:
@@ -39,6 +43,9 @@ enough; no language toolchain is required inside it.
 
 Rendering writes `generated/hosting.<env>.json`, optional hosting controller
 configuration and separate per-environment control token files under `runtime/`.
+Changing slots reconciles the hosting service. Changing image or runtime also
+reconciles the hosting controller; removing the image removes its generated
+controller config and container.
 Use the normal render/doctor workflow; never print tokens or environments.
 The web tier runs on Linux, UID 10001, with the selected workspace read-only
 and its own site volume writable. It has no Docker socket or full space mount.
@@ -63,6 +70,13 @@ owner/environment binding. No tool argument chooses owner, image, command,
 mount, environment variables or runtime. Repeated request IDs do not reissue
 share tokens. Failed preparation consumes a revision; callers use the current
 published revision for their next replacement, not an assumed counter.
+`site_list` returns `{slots, sites}`; use one of the allocated `slots` as the
+publish name. An unallocated name returns HTTP 422 (`hosting slot not
+allocated`) before publish rate tokens are consumed. The refusal is terminal
+until the operator changes the slot allocation; retrying the same name cannot
+make it publishable.
+Replaying a request ID whose publication failed returns an error again; the
+stored failed operation never reports success or a usable URL.
 
 The default access is `link`: a random fragment token is exchanged for a
 host-only `__Host-hub-site` Secure/HttpOnly/SameSite cookie. Only a token hash is

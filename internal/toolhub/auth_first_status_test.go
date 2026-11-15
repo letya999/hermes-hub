@@ -17,14 +17,15 @@ func TestAuthFirstStatusSeparatesFormArtifactAndTools(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := statefulContainerDefinition()
-			o := api.Onboarding{Definition: &d, AdmissionPending: !tc.listed, Phase: api.PhaseAwaitingCreds}
+			o := api.Onboarding{Definition: &d, AdmissionPending: !tc.listed, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}}
 			if !tc.built {
 				d.Source.Digest = ""
 			}
 			if !tc.listed {
 				d.Tools = nil
 			} else {
-				o.Phase = api.PhaseAwaitingConfirm
+				o.Stage = api.StagePending
+				o.ArmGate(api.GateConfirmSetup, "", time.Time{})
 			}
 			if tc.form {
 				o.BrokerAuthorizationURL = "http://127.0.0.1/connect/synthetic"

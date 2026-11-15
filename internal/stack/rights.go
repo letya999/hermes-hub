@@ -29,9 +29,20 @@ var settingsFieldRights = map[string]string{
 	"OAuthPort":           "",
 	"BrowserPort":         "",
 	"SlackEventsPort":     "",
-	"Infra":               "",
-	"Diagnostics":         "",
-	"SpaceDir":            "",
+	// R10.1/R10.3: the UI host edge is a publish knob like the other ports —
+	// deployment state, not a grant; ui_expose is inert until M18 lands it.
+	"UIPort":   "",
+	"UIBind":   "",
+	"UIExpose": "",
+	// R11: provider endpoint fields are operator-owned deployment config —
+	// the capability gate is the tools entry, never these fields.
+	"MemoryProvider":         "",
+	"MemoryProviderURL":      "",
+	"MemoryProviderTokenEnv": "",
+	"Infra":                  "",
+	"Diagnostics":            "",
+	"SpaceDir":               "",
+	"PassportRevision":       "",
 
 	"CapabilityMode":        "CapabilityMode",
 	"CapabilityProfileID":   "CapabilityProfileID",
@@ -69,8 +80,24 @@ var settingsFieldRights = map[string]string{
 	"Compression":  "",
 	"SummaryModel": "",
 	"JudgeModel":   "",
-	"Context":      "Context",
-	"Goals":        "Goals",
+	// The nightly rollup clock is a schedule knob — it grants nothing and
+	// must not move the policy hash.
+	"MemoryRollupTime":        "",
+	"MemoryLeafRetentionDays": "",
+	"MemoryLeafFoldBytes":     "",
+	"Context":                 "Context",
+	"Goals":                   "Goals",
+	// The stack passport's services map and the config section are render
+	// state consumed by the compose plan and env/supervision renders; grants
+	// live in grants.yaml, not the topology.
+	"PassportServices":  "",
+	"PassportConfig":    "",
+	"PassportWorkspace": "",
+	// ScopeKind is the immutable identity stamp projected from the published
+	// revision — grants cannot move it, and PassportConnectors is provenance
+	// metadata (which s.MCP entries the passport declared), not a grant.
+	"ScopeKind":          "",
+	"PassportConnectors": "",
 	// The evaluated tool-governance view is itself a grant fence: its decisions
 	// decide which sections may render and which are capped to read-only.
 	"gov": "Governance",
@@ -125,13 +152,26 @@ type rightsView struct {
 }
 
 func rightsProjection(s Settings) rightsView {
+	tools := s.Tools
+	if s.CapabilityMode == "managed" {
+		// Managed connector selection is fenced by the published profile
+		// revision. Keep the session policy version stable when only that
+		// selection changes, so a sibling connector remains callable.
+		tools = make(map[string]ToolEntry, len(s.Tools))
+		for name, entry := range s.Tools {
+			if name != "browser" && mcpConnectors[name] || s.MCP[name].URL != "" || s.MCP[name].Command != "" {
+				continue
+			}
+			tools[name] = entry
+		}
+	}
 	view := rightsView{
 		CapabilityMode:        s.CapabilityMode,
 		CapabilityProfileID:   s.CapabilityProfileID,
 		CapabilityGeneration:  s.CapabilityGeneration,
 		CLIRegistries:         s.CLIRegistries,
 		CLIToolboxes:          s.CLIToolboxes,
-		Tools:                 s.Tools,
+		Tools:                 tools,
 		Ingress:               s.Ingress,
 		TelegramAuth:          s.Has("telegram_auth"),
 		Workspace:             s.Workspace,

@@ -5,25 +5,39 @@ package toolhub
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/storagebudget"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type Store struct {
 	mu                  sync.RWMutex
+	reloadMu            sync.Mutex
 	path                string
 	savedPath           string
+	db                  *sql.DB
+	dbVersion           int64
+	dbFile              os.FileInfo
+	digestPollUnix      atomic.Int64
+	dbRows              map[dbKey][32]byte
+	dbListCounts        map[string]int
 	diskDigest          [32]byte
 	diskStamp           storeStamp
+	fileHash            [32]byte
+	installationID      string
+	syncDirectory       func(string) error
 	Reconnect           *ReconnectController
 	Stopper             api.WorkloadStopper
 	definitions         map[string]api.ToolDefinition
@@ -32,6 +46,9 @@ type Store struct {
 	bindings            map[string]api.ToolBinding
 	workloads           map[string]api.WorkloadInstance
 	projectionRevisions map[string]uint64
+	brokerCursors       map[string]uint64
+	restartApplied      map[string]uint64
+	restartDigests      map[string]string
 	grants              map[string]api.Grant
 	onboardings         map[string]api.Onboarding
 	operations          map[string]api.Operation
@@ -55,7 +72,14 @@ type Store struct {
 	capabilityPolicies map[string]api.CapabilityPolicy
 	capabilityProfiles map[string]api.CapabilityProfile
 	capabilityChanges  []api.CapabilityChange
-	bindingChanges     []bindingChange
+	// RightsDoc is the pinned RBAC vocabulary the PDP enforces (SPEC-0092
+	// R2): wired at server start from the image's platform catalog release.
+	// An empty doc fails Decide closed — unknown rights never allow.
+	RightsDoc api.RightsDoc
+	// RightsLedger reads the live governance document Decide evaluates;
+	// nil means no capability grants exist anywhere.
+	RightsLedger   func() (*api.Governance, error)
+	bindingChanges []bindingChange
 	// exMu guards the exclusion set separately: exclusions are observability
 	// written from read-locked projection scans, so they must not ride s.mu.
 	exMu           sync.Mutex
@@ -71,10 +95,61 @@ type Store struct {
 	viewerLinks       map[string]viewerLink
 	viewerLinksLoaded bool
 	viewerSessions    map[string]viewerSession
+	// storage accounts every ToolHub-owned byte under the snapshot
+	// directory; bound lazily on the first persisted write. maintenance
+	// records the last reconcile attempt/success/error for operator
+	// surfaces; guarded by s.mu like the rest of the store state.
+	// storageMu alone guards the lazy counter binding: lease and
+	// viewer-link persist paths run under leaseMu, never s.mu.
+	storageMu   sync.Mutex
+	storage     *storagebudget.Counter
+	storageDir  string
+	maintenance storageMaintenanceStatus
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
 	return principalID + "\x00" + contextID + "\x00" + runtimeID
+}
+
+func (s *Store) AppliedRestartRevision(target api.ProjectionTarget) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.restartApplied[projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)]
+}
+
+func (s *Store) AppliedRestartDigest(target api.ProjectionTarget) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.restartDigests[projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)]
+}
+
+func (s *Store) MarkRestartApplied(target api.ProjectionTarget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)
+	previous := s.restartApplied[key]
+	if target.Revision <= previous {
+		return nil
+	}
+	previousDigest := s.restartDigests[key]
+	s.restartApplied[key] = target.Revision
+	s.restartDigests[key] = target.Digest
+	if s.path != "" {
+		if err := s.saveLocked(s.path); err != nil {
+			if previous == 0 {
+				delete(s.restartApplied, key)
+			} else {
+				s.restartApplied[key] = previous
+			}
+			if previousDigest == "" {
+				delete(s.restartDigests, key)
+			} else {
+				s.restartDigests[key] = previousDigest
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) touchProjectionLocked(binding *api.ToolBinding) uint64 {
@@ -115,7 +190,7 @@ func (s *Store) ProjectionRevisions() ([]api.ProjectionTarget, error) {
 		if len(parts) != 3 || revision == 0 {
 			continue
 		}
-		out = append(out, api.ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision})
+		out = append(out, api.ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision, Digest: s.semanticRestartDigestLocked(parts[0], parts[1], parts[2])})
 	}
 	return out, nil
 }
@@ -433,6 +508,20 @@ func (s *Store) credentialFor(id string) (api.CredentialReference, bool) {
 	return reference, ok
 }
 
+// bindingStatus reports the binding lifecycle for an onboarding view —
+// enabled/disabled lives on the binding, not on the onboarding stage.
+func (s *Store) bindingStatus(bindingID string) api.Status {
+	if bindingID == "" {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if binding, ok := s.bindings[bindingID]; ok {
+		return binding.Status
+	}
+	return ""
+}
+
 // Connections returns a snapshot of every connection record — the
 // reconciler's desired-state list.
 func (s *Store) Connections() []api.Connection {
@@ -533,7 +622,118 @@ func (s *Store) PutBinding(binding api.ToolBinding) error {
 		s.projectionRevisions[key] = binding.ProjectionRevision
 	}
 	s.bindings[binding.ToolBindingID] = binding
+	if binding.Status == api.ActiveStatus {
+		// Pending selection transition: an authored connector toolset with no
+		// active binding materializes its selections here instead of waiting
+		// for the next passport publish. Admission refusal leaves the toolset
+		// pending — a structural problem for apply to surface, never a wedge.
+		s.materializePendingSelectionsLocked(binding)
+	}
 	return nil
+}
+
+// materializePendingSelectionsLocked fills profile selections for authored
+// connector toolsets that point at this binding's definition. Selections
+// pinned to a superseded connection are replaced — a connector re-onboard
+// re-points the toolset without a passport publish. Idempotent: re-running
+// with the same binding reproduces the same selection set. Admission
+// refusals are dropped, not fatal — the pending toolset simply stays
+// unmaterialized until publish-time validation explains why.
+func (s *Store) materializePendingSelectionsLocked(binding api.ToolBinding) {
+	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
+	if !ok {
+		return
+	}
+	for _, profile := range s.capabilityProfiles {
+		if profile.Status != api.ActiveStatus || profile.PrincipalID != binding.PrincipalID ||
+			profile.ContextID != binding.ContextID || profile.RuntimeID != binding.RuntimeID {
+			continue
+		}
+		changed := false
+		selections := slices.Clone(profile.Selections)
+		coreTools := slices.Clone(profile.CoreTools)
+		for _, ts := range profile.Toolsets {
+			toolsetDefID := ts.Name
+			if strings.HasPrefix(ts.Via, "mcp:") {
+				toolsetDefID = strings.TrimPrefix(ts.Via, "mcp:")
+			} else if ts.Via != "mcp" {
+				continue
+			}
+			if toolsetDefID != binding.DefinitionID {
+				continue
+			}
+			fresh, freshCore, err := api.DeriveConnectorSelections(definition, binding, ts.Name, ts.Access, ts.Include, ts.Exclude, ts.Placement)
+			if err != nil {
+				continue
+			}
+			kept := selections[:0]
+			for _, sel := range selections {
+				if sel.Toolset != ts.Name {
+					kept = append(kept, sel)
+				}
+			}
+			selections = append(kept, fresh...)
+			for _, name := range freshCore {
+				if !slices.Contains(coreTools, name) {
+					coreTools = append(coreTools, name)
+				}
+			}
+			changed = true
+		}
+		if !changed || selectionsEqual(selections, profile.Selections) && slices.Equal(coreTools, profile.CoreTools) {
+			continue
+		}
+		profile.Selections, profile.CoreTools = selections, coreTools
+		profile.Revision++
+		profile.IssuedBy, profile.IssuedAt, profile.Confirmation = "platform", time.Now().UTC(), nil
+		if err := api.Confirm(&profile, "platform", profile.IssuedAt); err != nil {
+			continue
+		}
+		if err := profile.Validate(); err != nil {
+			continue
+		}
+		_ = s.putCapabilityProfileLocked(profile, false)
+	}
+}
+
+// MaterializePendingSelections is the convergence sweep the periodic
+// reconciler runs: every active binding retries the authored-toolset
+// materialization, which no-ops when selections already match. Bindings
+// committed through a path that skipped the activation hook — including
+// stores written before the hook existed — self-heal here instead of
+// waiting for a re-onboard or passport publish.
+func (s *Store) MaterializePendingSelections() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, binding := range s.bindings {
+		if binding.Status != api.ActiveStatus {
+			continue
+		}
+		s.materializePendingSelectionsLocked(binding)
+	}
+}
+
+// selectionsEqual compares two selection lists as sets — publish order and
+// materialize-append order differ, so order-insensitive comparison is what
+// keeps re-activation idempotent.
+func selectionsEqual(a, b []api.CapabilitySelection) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, sel := range a {
+		body, _ := json.Marshal(sel)
+		counts[string(body)]++
+	}
+	for _, sel := range b {
+		body, _ := json.Marshal(sel)
+		key := string(body)
+		if counts[key] == 0 {
+			return false
+		}
+		counts[key]--
+	}
+	return true
 }
 
 func (s *Store) PutWorkloadInstance(workload api.WorkloadInstance) error {
@@ -1115,6 +1315,39 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
+// RemoveOwnedConnectionRecords finishes a confirmed delete whose binding row
+// was already lost. A personal owner and deleting state are both required.
+func (s *Store) RemoveOwnedConnectionRecords(auth identity.Envelope, connectionID string) error {
+	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
+		return fmt.Errorf("%w: invalid owner", api.ErrUnauthorized)
+	}
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	if connection.Owner.Type != api.PrincipalOwner || !connection.Owner.Matches(auth) || connection.Status != api.DeletingStatus {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection cleanup", api.ErrUnauthorized)
+	}
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == connectionID {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: connection bindings remain", api.ErrStale)
+		}
+	}
+	delete(s.connections, connectionID)
+	s.forgetConnectionStatusLocked(connectionID)
+	for id, ref := range s.credentials {
+		if ref.ConnectionID == connectionID {
+			delete(s.credentials, id)
+		}
+	}
+	s.mu.Unlock()
+	return s.persistAndNotify()
+}
+
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
 	if auth.CapabilityProfile != "" {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: managed lookup requires a capability", api.ErrUnauthorized)
@@ -1211,6 +1444,11 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	}
 	if binding.PrincipalID != auth.PrincipalID || binding.ContextID != auth.ContextID || binding.RuntimeID != auth.RuntimeID || binding.PolicyVersion != auth.PolicyVersion {
 		return api.EffectiveBinding{}, fmt.Errorf("%w: exact runtime owner", api.ErrUnauthorized)
+	}
+	for _, o := range s.onboardings {
+		if o.CleanupIncomplete() && o.PrincipalID == binding.PrincipalID && o.ContextID == binding.ContextID && o.RuntimeID == binding.RuntimeID && (o.BindingID == bindingID || o.ConnectionID != "" && o.ConnectionID == binding.ConnectionID) {
+			return api.EffectiveBinding{}, fmt.Errorf("%w: cleanup in progress", api.ErrRevoked)
+		}
 	}
 	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
 	if !ok {
@@ -1354,12 +1592,16 @@ func (s *Store) Recipe(digest string) (api.RecipeResolution, error) {
 
 type snapshot struct {
 	Schema              int                             `json:"schema"`
+	InstallationID      string                          `json:"installation_id,omitempty"`
 	Definitions         []api.ToolDefinition            `json:"definitions"`
 	Connections         []api.Connection                `json:"connections"`
 	Credentials         []api.CredentialReference       `json:"credential_references"`
 	Bindings            []api.ToolBinding               `json:"bindings"`
 	Workloads           []api.WorkloadInstance          `json:"workloads"`
 	ProjectionRevisions map[string]uint64               `json:"projection_revisions,omitempty"`
+	BrokerCursors       map[string]uint64               `json:"broker_cursors,omitempty"`
+	RestartApplied      map[string]uint64               `json:"restart_applied,omitempty"`
+	RestartDigests      map[string]string               `json:"restart_digests,omitempty"`
 	Grants              []api.Grant                     `json:"grants,omitempty"`
 	Onboardings         []api.Onboarding                `json:"onboardings,omitempty"`
 	Operations          []api.Operation                 `json:"operations,omitempty"`

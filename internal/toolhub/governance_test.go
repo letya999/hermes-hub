@@ -285,6 +285,7 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{Store: s, Governance: NewGovernanceStore(govPath)}
+	attachGatewayAudit(t, g)
 	filtered, err := g.filterProjectedTools(auth, tools)
 	if err != nil || len(filtered) != len(tools) {
 		t.Fatalf("default posture filtered user-owned tool: %v %v", filtered, err)
@@ -297,6 +298,10 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 	filtered, err = g.filterProjectedTools(auth, tools)
 	if err != nil || len(filtered) != 0 {
 		t.Fatalf("owner=user deny not applied: %v %v", filtered, err)
+	}
+	exact, err := g.toolsList(auth, "", tools[0].Name, "", 0)
+	if err != nil || exact["found"] != false {
+		t.Fatalf("exact lookup bypassed governance denial: %v %v", exact, err)
 	}
 	// cap:read keeps read tools, drops write tools.
 	doc.Rules = doc.Rules[:len(doc.Rules)-1]
@@ -345,7 +350,8 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 
 func TestGovernanceNilStoreIsLegacyPermissive(t *testing.T) {
 	s, auth, _ := seededStore(t)
-	g := &Gateway{Store: s} // no Governance: pre-governance deployment
+	g := &Gateway{Store: s}
+	attachGatewayAudit(t, g) // no Governance: pre-governance deployment
 	tools, err := s.ListProjectedTools(auth)
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +363,46 @@ func TestGovernanceNilStoreIsLegacyPermissive(t *testing.T) {
 	admit := g.admitGoverned(auth, func(api.ProjectedTool, api.EffectiveBinding) error { return nil })
 	if err := admit(tools[0], api.EffectiveBinding{}); err != nil {
 		t.Fatalf("nil governance denied: %v", err)
+	}
+}
+
+func TestGovernanceFilterDropsBindingRevokedAfterProjection(t *testing.T) {
+	s, auth, binding := seededStore(t)
+	projected, err := s.ListProjectedTools(auth)
+	if err != nil || len(projected) == 0 {
+		t.Fatalf("fixture projection: %v %v", projected, err)
+	}
+	path := filepath.Join(t.TempDir(), "governance.json")
+	if err := api.SaveGovernance(path, api.NewGovernance()); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{Store: s, Governance: NewGovernanceStore(path)}
+	if err := s.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus); err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := g.filterProjectedTools(auth, projected)
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("revoked binding survived stale projection: %v %v", filtered, err)
+	}
+}
+
+func TestGovernanceFilterDropsManagedBindingRevokedAfterProjection(t *testing.T) {
+	s, auth, _, _ := managedStore(t)
+	projected, err := s.ListProjectedTools(auth)
+	if err != nil || len(projected) == 0 {
+		t.Fatalf("managed projection: %v %v", projected, err)
+	}
+	path := filepath.Join(t.TempDir(), "governance.json")
+	if err := api.SaveGovernance(path, api.NewGovernance()); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{Store: s, Governance: NewGovernanceStore(path)}
+	if err := s.SetBindingStatus(projected[0].BindingID, api.RevokedStatus); err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := g.filterProjectedTools(auth, projected)
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("revoked managed binding survived stale projection: %v %v", filtered, err)
 	}
 }
 
@@ -448,6 +494,7 @@ func TestServeGrantAckForm(t *testing.T) {
 	}
 	control := &ControlPlane{Store: NewStore(), Governance: govStore, Listen: "127.0.0.1:8090", Now: time.Now}
 	g := &Gateway{Store: control.Store, Control: control, Governance: govStore}
+	attachGatewayAudit(t, g)
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 	if err := putGrant(t, control.Store, api.OperatorControlGrant(auth.PrincipalID, "grant_request")); err != nil {
 		t.Fatal(err)
@@ -875,6 +922,7 @@ func TestServeGrantAckRefusals(t *testing.T) {
 	govStore := NewGovernanceStore(govPath)
 	control := &ControlPlane{Store: NewStore(), Governance: govStore, Listen: "127.0.0.1:8090", Now: time.Now}
 	g := &Gateway{Store: control.Store, Control: control, Governance: govStore}
+	attachGatewayAudit(t, g)
 	server := httptest.NewServer(http.HandlerFunc(g.serveGrantAck))
 	defer server.Close()
 	get := func(url string) int {
@@ -920,6 +968,7 @@ func TestServeGrantAckRefusals(t *testing.T) {
 	}
 	// No governance configured → 404.
 	bare := &Gateway{Store: NewStore(), Control: &ControlPlane{Store: NewStore()}}
+	attachGatewayAudit(t, bare)
 	bareServer := httptest.NewServer(http.HandlerFunc(bare.serveGrantAck))
 	defer bareServer.Close()
 	if code := get(bareServer.URL + "/grants/grant-1?nonce=n"); code != http.StatusNotFound {

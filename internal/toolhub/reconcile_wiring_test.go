@@ -339,10 +339,9 @@ func TestNewReconcilerNotifyRearmsOnboarding(t *testing.T) {
 		RuntimeID:     "runtime",
 		PolicyVersion: "policy-1",
 		Mode:          api.OnboardingCatalog,
-		Phase:         api.PhaseEnabled,
+		Stage:         api.StageLive,
 		ConnectionID:  "google-work",
-		Revision:      1,
-	}
+		Revision:      1}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -354,15 +353,15 @@ func TestNewReconcilerNotifyRearmsOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rearmed.Phase != api.PhaseAwaitingCreds || rearmed.FormNonce == "" || rearmed.WizardNonce == "" {
-		t.Fatalf("reauth notice left phase=%s form=%q wizard=%q", rearmed.Phase, rearmed.FormNonce, rearmed.WizardNonce)
+	if !rearmed.Awaiting(api.GateCredentials) || rearmed.GateNonce(api.GateCredentials) == "" || rearmed.WizardNonce == "" {
+		t.Fatalf("reauth notice left phase=%s form=%q wizard=%q", rearmed.NoticePhase(), rearmed.GateNonce(api.GateCredentials), rearmed.WizardNonce)
 	}
 	if err := r.Notify(context.Background(), "alice", "drift", map[string]any{"connection": "google-work"}); err != nil {
 		t.Fatal(err)
 	}
 	rearmed, _ = store.onboarding("onb-google-work")
-	if rearmed.Phase != api.PhaseAwaitingConfirm || rearmed.ConfirmationNonce == "" || rearmed.ConfirmationUsed {
-		t.Fatalf("drift notice left phase=%s nonce=%q used=%v", rearmed.Phase, rearmed.ConfirmationNonce, rearmed.ConfirmationUsed)
+	if !rearmed.Awaiting(api.GateConfirmSetup) || rearmed.GateNonce(api.GateConfirmSetup) == "" || rearmed.ConfirmationUsed {
+		t.Fatalf("drift notice left phase=%s nonce=%q used=%v", rearmed.NoticePhase(), rearmed.GateNonce(api.GateConfirmSetup), rearmed.ConfirmationUsed)
 	}
 }
 
@@ -456,8 +455,8 @@ func TestMaterializeRotatesHealableConnection(t *testing.T) {
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0",
 		Locator: "local://alice/google/2", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}},
-		Phase: api.PhaseAwaitingConfirm, Revision: 1, CreatedAt: time.Now().UTC(),
-	}
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -484,8 +483,8 @@ func TestMaterializeRotatesDeadCredentialDegraded(t *testing.T) {
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0",
 		Locator: "local://alice/google/2", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}},
-		Phase: api.PhaseAwaitingConfirm, Revision: 1, CreatedAt: time.Now().UTC(),
-	}
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -512,10 +511,9 @@ func TestConfirmAcceptsDriftedConnection(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: "onboard-drift", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0",
-		Phase: api.PhaseAwaitingConfirm, ConnectionID: "google-work", BindingID: binding.ToolBindingID,
-		ConfirmationNonce: "nonce-drift", ConfirmationExpires: time.Now().Add(time.Hour).UTC(),
-		Revision: 1, CreatedAt: time.Now().UTC(),
-	}
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-drift", Expires: time.Now().Add(time.Hour).UTC()}, ConnectionID: "google-work", BindingID: binding.ToolBindingID,
+		Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -553,10 +551,9 @@ func TestConfirmAcceptsRecipeDrift(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: "onboard-rdrift", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0",
-		Phase: api.PhaseAwaitingConfirm, ConnectionID: "google-work", BindingID: binding.ToolBindingID,
-		ConfirmationNonce: "nonce-rdrift", ConfirmationExpires: time.Now().Add(time.Hour).UTC(),
-		Revision: 1, CreatedAt: time.Now().UTC(),
-	}
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-rdrift", Expires: time.Now().Add(time.Hour).UTC()}, ConnectionID: "google-work", BindingID: binding.ToolBindingID,
+		Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}

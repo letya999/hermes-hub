@@ -325,6 +325,30 @@ func TestMarkdownDeliverySendsSourceDocWhenDegraded(t *testing.T) {
 	}
 }
 
+func TestMarkdownDeliveryCapsPathologicalFanout(t *testing.T) {
+	// A stitched context dump or other runaway response must never flood the
+	// chat: beyond telegramMaxParts the delivery degrades to the truncation
+	// notice + final part + the full source as a document.
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	huge := strings.Repeat("эхо контекста ", 20000)
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-telegram-4-response", ChatID: 11, Text: huge, Format: formatMarkdown}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	if len(fake.sent) > telegramMaxParts {
+		t.Fatalf("fan-out not capped: %d messages", len(fake.sent))
+	}
+	if len(fake.docs) != 1 || !strings.Contains(fake.docs[0], "эхо контекста") {
+		t.Fatalf("full source document missing: %v", fake.docs)
+	}
+}
+
 func TestQuoteWithNestedListAndBreak(t *testing.T) {
 	// Blockquote children flatten to plain lines — exercises blockPlainText's
 	// list/table/hr branches instead of silently dropping the structure.
@@ -341,5 +365,12 @@ func TestQuoteWithNestedListAndBreak(t *testing.T) {
 	sparts := renderSlack(src)
 	if !strings.Contains(sparts[0], "один") {
 		t.Fatalf("slack quote: %v", sparts)
+	}
+}
+
+func TestTelegramApproximationTildesStayLiteral(t *testing.T) {
+	parts, degraded := renderTelegram("~50 specialists and ~10 projects")
+	if degraded || len(parts) != 1 || strings.Contains(parts[0], "<s>") || !strings.Contains(parts[0], "~50") || !strings.Contains(parts[0], "~10") {
+		t.Fatalf("approximation tildes became formatting: parts=%v degraded=%v", parts, degraded)
 	}
 }

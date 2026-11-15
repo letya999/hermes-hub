@@ -45,11 +45,26 @@ func TestConfirmedToolContractLifecycle(t *testing.T) {
 		t.Fatalf("mismatched attach: %v", err)
 	}
 	// digest is canonical — tool order does not matter
-	reordered := ConfirmedToolContract{Source: ToolContractPreflight, Tools: []ToolSpec{probed[1], probed[0]}}
+	reordered := ConfirmedToolContract{Source: ToolContractPreflight, Tools: []ToolSpec{contract.Tools[1], contract.Tools[0]}}
 	d1, _ := ConfirmedToolContractDigest(contract)
 	d2, _ := ConfirmedToolContractDigest(reordered)
 	if d1 != d2 {
 		t.Fatal("digest not canonical")
+	}
+}
+
+func TestPreflightConnectorToolsCarryProjectableCapability(t *testing.T) {
+	imported := ImportedArtifact{Definition: ToolDefinition{DefinitionID: "github-mcp-server", Transport: ContainerMCP}}
+	contract, err := ApplyPreflightToolList(&imported, []ToolSpec{{Name: "get_me", Effect: ReadEffect}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := contract.Tools[0]
+	if tool.CapabilityID == "" || tool.Executor != "connector:github-mcp-server" || len(tool.Requires) != 1 || tool.Requires[0] != "tools.use" || len(tool.Uses) != 0 {
+		t.Fatalf("connector capability not projectable: %+v", tool)
+	}
+	if err := VerifyDefinitionToolContract(imported.Definition); err != nil {
+		t.Fatal(err)
 	}
 }
 

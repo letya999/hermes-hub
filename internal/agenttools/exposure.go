@@ -2,10 +2,9 @@ package agenttools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
@@ -41,6 +40,7 @@ func (t *Tools) openExposure() {
 			Broker: broker,
 			Auth:   runtimeEnvelope(),
 			Public: os.Getenv("HUB_PUBLIC_TARGET"),
+			Proxy:  os.Getenv("HUB_EGRESS_PROXY"),
 		})
 	}
 	ledger, err := audit.Open(filepath.Join(t.StateDir, "audit", "exposure.jsonl"))
@@ -57,6 +57,8 @@ func (t *Tools) openExposure() {
 
 // setExposureProvider replaces the tunnel provider — tests inject fakes
 // through it so the previous real provider's config root is released.
+//
+//lint:ignore U1000 test-only injection seam; production sets the provider via config root
 func (t *Tools) setExposureProvider(p exposure.Provider) {
 	if c, ok := t.exposureProvider.(interface{ Shutdown() }); ok {
 		c.Shutdown()
@@ -70,7 +72,10 @@ func (t *Tools) exposureService() (*exposure.Manager, error) {
 	if t.Exposure != nil {
 		return t.Exposure, nil
 	}
-	return nil, t.exposureErr
+	if t.exposureErr != nil {
+		return nil, t.exposureErr
+	}
+	return nil, errors.New("exposure capability is not configured on this runtime")
 }
 
 func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any, error) {
@@ -80,15 +85,18 @@ func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any
 	}
 	tunnelView := func(tn *exposure.Tunnel) map[string]any {
 		return map[string]any{"endpoint": tn.Endpoint, "public_name": tn.PublicName,
-			"target": tn.Target, "expires_at": tn.ExpiresAt}
+			"target": tn.Target, "expires_at": tn.ExpiresAt, "uncertain": tn.Uncertain}
 	}
 	if name == "exposure_list" {
 		live := svc.List()
 		tunnels := make([]map[string]any, 0, len(live))
 		for i := range live {
+			if r.ID != "" && live[i].Endpoint != r.ID {
+				continue
+			}
 			tunnels = append(tunnels, tunnelView(&live[i]))
 		}
-		return map[string]any{"tunnels": tunnels}, nil
+		return map[string]any{"declared_endpoints": svc.DeclaredEndpoints(), "tunnels": tunnels}, nil
 	}
 	if name == "exposure_status" {
 		tunnel, err := svc.Status(r.Name)
@@ -108,19 +116,4 @@ func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any
 		return nil, err
 	}
 	return tunnelView(tunnel), nil
-}
-
-func (t *Tools) registerExposure(s *mcp.Server) {
-	if os.Getenv("HUB_EXPOSURE_CONFIG") == "" {
-		return
-	}
-	add := func(name, description string) {
-		mcp.AddTool(s, &mcp.Tool{Name: name, Description: description}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
-			return nil, nil, nil
-		})
-	}
-	add("exposure_list", "List live public exposures (tunnels) on this runtime.")
-	add("exposure_status", "Show one live public exposure by endpoint name.")
-	add("exposure_open", "Open one declared endpoint's public tunnel. Name-only: binds, targets and relay details come from the reviewed config, never from arguments.")
-	add("exposure_close", "Close one live public exposure by endpoint name.")
 }

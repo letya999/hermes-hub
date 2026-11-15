@@ -297,3 +297,22 @@ func (r *Relay) Address() string {
 	}
 	return net.JoinHostPort(r.Host, fmt.Sprint(port))
 }
+
+// ValidSiteSlot reports whether n is a safe site label: it shares the
+// endpoint namespace of the exposure zone, so it must be a lowercase DNS
+// label that cannot shadow the zone's reserved names.
+func ValidSiteSlot(n string) bool {
+	if len(n) < 1 || len(n) > 40 || n[0] < 'a' || n[0] > 'z' || n[len(n)-1] == '-' {
+		return false
+	}
+	switch n {
+	case "api", "admin", "auth", "broker", "hub", "control", "localhost":
+		return false
+	}
+	for _, r := range n {
+		if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}

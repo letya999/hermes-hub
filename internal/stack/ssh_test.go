@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 )
 
 // writeSSHConfig gives Render a valid per-owner SSH capability config.
@@ -25,14 +24,22 @@ func writeSSHConfig(t *testing.T, dir string) {
 	}
 	hostKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 	sshDir := filepath.Join(dir, "connections", "ssh")
-	if err = os.MkdirAll(filepath.Join(sshDir, "keys"), 0700); err != nil {
+	if err = os.MkdirAll(filepath.Join(sshDir, "keys"), 0750); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(sshDir, "keys", "id"), []byte("x"), 0600); err != nil {
+	// Init scaffolds connections/ssh owner-only; the managed runtime reads the
+	// mount as uid 10001 through the operator group, so the fixture carries
+	// the reviewed perms a working deployment needs.
+	for _, p := range []string{sshDir, filepath.Join(sshDir, "keys")} {
+		if err = os.Chmod(p, 0750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = os.WriteFile(filepath.Join(sshDir, "keys", "id"), []byte("x"), 0640); err != nil {
 		t.Fatal(err)
 	}
 	body := "schema: 1\nhosts:\n  box:\n    host: 127.0.0.1\n    user: deploy\n    host_keys: [\"" + hostKey + "\"]\n    key_ref: \"file:keys/id\"\n    commands: [\"uptime\"]\n"
-	if err = os.WriteFile(filepath.Join(sshDir, "config.yaml"), []byte(body), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(sshDir, "config.yaml"), []byte(body), 0640); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,38 +85,46 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeSSHConfig(t, d)
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.Tools, s.Ingress = testTools("ssh", "ssh_write", "ssh_tunnel"), testIngress("ssh", "ssh_write", "ssh_tunnel")
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	// Managed runtimes are supervisor-spawned: the ssh state dir is a
+	// read-only mount in the RuntimeService spawn contract, not the compose
+	// file.
+	found := false
+	for _, v := range RuntimeService(s, root, d)["volumes"].([]any) {
+		m := v.(M)
+		if m["target"] == "/state/ssh" {
+			if m["read_only"] != true {
+				t.Fatal("ssh config mount must be read-only")
+			}
+			found = true
+		}
 	}
-	text := string(compose)
-	if !strings.Contains(text, "target: /state/ssh") || !strings.Contains(text, "read_only: true") {
-		t.Fatal("ssh config mount missing or writable")
+	if !found {
+		t.Fatal("ssh config mount missing from RuntimeService")
 	}
-	hermes, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	managedEnv := RuntimeService(s, root, d)["environment"].(M)
+	if managedEnv["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || managedEnv["HUB_SSH_WRITE"] != "true" || managedEnv["HUB_SSH_TUNNEL"] != "true" || managedEnv["HUB_SSH_SHELL"] != "false" {
+		t.Fatal("managed SSH config environment missing")
 	}
-	var rendered map[string]any
-	if err = yaml.Unmarshal(hermes, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	hub := rendered["mcp_servers"].(map[string]any)["hub"].(map[string]any)
-	env := hub["env"].(map[string]any)
+	// The unmanaged `hub` stdio server carries the same reviewed settings.
+	unmanaged := s
+	unmanaged.CapabilityMode = ""
+	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)
+	env := hub["env"].(M)
 	if env["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || env["HUB_SSH_WRITE"] != "true" || env["HUB_SSH_TUNNEL"] != "true" || env["HUB_SSH_SHELL"] != "false" {
 		t.Fatalf("ssh env wrong: %v", env)
 	}
@@ -124,12 +139,13 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Tools, s.Ingress = testTools("ssh"), testIngress("ssh")
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err == nil {

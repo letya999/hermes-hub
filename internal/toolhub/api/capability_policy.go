@@ -69,6 +69,7 @@ type CapabilityPolicy struct {
 	Reason        string            `json:"reason"`
 	Status        Status            `json:"status"`
 	Ceiling       []CapabilityRule  `json:"ceiling"`
+	RightCeiling  []RightRule       `json:"right_ceiling,omitempty"`
 	Defaults      []CapabilityRule  `json:"defaults"`
 	DefaultGroups []CapabilityGroup `json:"default_groups,omitempty"`
 	Denies        []CapabilityRule  `json:"denies,omitempty"`
@@ -76,37 +77,58 @@ type CapabilityPolicy struct {
 }
 
 type CapabilitySelection struct {
-	CapabilityID         string `json:"capability_id"`
-	DefinitionID         string `json:"definition_id"`
-	DefinitionVersion    string `json:"definition_version"`
-	ImplementationDigest string `json:"implementation_digest"`
-	ToolName             string `json:"tool_name"`
-	Name                 string `json:"name"`
-	ConnectionID         string `json:"connection_id,omitempty"`
+	CapabilityID         string   `json:"capability_id"`
+	DefinitionID         string   `json:"definition_id"`
+	DefinitionVersion    string   `json:"definition_version"`
+	ImplementationDigest string   `json:"implementation_digest"`
+	ToolName             string   `json:"tool_name"`
+	Name                 string   `json:"name"`
+	ConnectionID         string   `json:"connection_id,omitempty"`
+	PathScopes           []string `json:"path_scopes,omitempty"`
+	// Toolset is the authored tools.yaml set the selection came from
+	// (`browser`, `github`, …) — the operator vocabulary, not a capability
+	// axis. Empty for selections appended outside a passport apply.
+	Toolset string `json:"toolset,omitempty"`
+}
+
+// ProfileToolset is one authored tools.yaml set carried on the published
+// profile so the inventory can answer "which toolsets are selected" with
+// live admitted counts instead of inferred name-prefix groups.
+type ProfileToolset struct {
+	Name      string `json:"name"`
+	Placement string `json:"placement"` // "core" | "extended"
+	Via       string `json:"via"`
+	// Access/Include/Exclude carry the authored connector filter so a pending
+	// (unbound) selection can be materialized when a binding activates —
+	// without re-reading the passport. Empty means unfiltered.
+	Access  string   `json:"access,omitempty"`
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // A profile is published by the host control path for an exact runtime
 // generation. An absent profile or policy never enables legacy grants.
 type CapabilityProfile struct {
-	Schema         int                   `json:"schema"`
-	ProfileID      string                `json:"profile_id"`
-	PrincipalID    string                `json:"principal_id"`
-	ContextID      string                `json:"context_id"`
-	RuntimeID      string                `json:"runtime_id"`
-	Environment    string                `json:"environment"`
-	Generation     uint64                `json:"generation"`
-	PolicyVersion  string                `json:"policy_version"`
-	PolicyID       string                `json:"policy_id"`
-	PolicyRevision uint64                `json:"policy_revision"`
-	Revision       uint64                `json:"revision"`
-	IssuedBy       string                `json:"issued_by"`
-	IssuedAt       time.Time             `json:"issued_at"`
-	Reason         string                `json:"reason"`
-	Status         Status                `json:"status"`
-	Selections     []CapabilitySelection `json:"selections"`
-	Allows         []CapabilityRule      `json:"allows,omitempty"`
-	AllowGroups    []CapabilityGroup     `json:"allow_groups,omitempty"`
-	Denies         []CapabilityRule      `json:"denies,omitempty"`
+	Schema           int                   `json:"schema"`
+	ProfileID        string                `json:"profile_id"`
+	PrincipalID      string                `json:"principal_id"`
+	ContextID        string                `json:"context_id"`
+	RuntimeID        string                `json:"runtime_id"`
+	Environment      string                `json:"environment"`
+	Generation       uint64                `json:"generation"`
+	PolicyVersion    string                `json:"policy_version"`
+	PassportRevision string                `json:"passport_revision,omitempty"`
+	PolicyID         string                `json:"policy_id"`
+	PolicyRevision   uint64                `json:"policy_revision"`
+	Revision         uint64                `json:"revision"`
+	IssuedBy         string                `json:"issued_by"`
+	IssuedAt         time.Time             `json:"issued_at"`
+	Reason           string                `json:"reason"`
+	Status           Status                `json:"status"`
+	Selections       []CapabilitySelection `json:"selections"`
+	Allows           []CapabilityRule      `json:"allows,omitempty"`
+	AllowGroups      []CapabilityGroup     `json:"allow_groups,omitempty"`
+	Denies           []CapabilityRule      `json:"denies,omitempty"`
 	// ControlOperations is the reviewed allowlist of control-plane operations
 	// the managed principal's runtime token may invoke. Names must come from
 	// ControlOperations; absent means none, and legacy grants never leak in.
@@ -120,8 +142,23 @@ type CapabilityProfile struct {
 	// entirely, "personal" projects the nine connector_* tools over the
 	// principal's own connections, "personal+team" additionally allows
 	// lifecycle on team connections where the caller is a member.
-	Connectors   string        `json:"connectors,omitempty"`
-	Confirmation *Confirmation `json:"confirmation,omitempty"`
+	Connectors string `json:"connectors,omitempty"`
+	// Rights is the compiled grants.yaml allow flattened to
+	// capability.operation ceiling rows (SPEC-0092 R2): the PDP refuses any
+	// right the published revision never carried, and live ledger grants can
+	// only narrow inside it.
+	Rights []RightRule `json:"rights,omitempty"`
+	// CoreTools is the compiled revision's direct-schema allowlist (ADR-0092
+	// D6, R6.1): only these selected names get a projected MCP schema; the
+	// rest of the admitted surface stays callable through tools_list/invoke.
+	// Empty keeps the legacy all-projected posture for unmanaged bindings.
+	CoreBound bool     `json:"core_bound,omitempty"`
+	CoreTools []string `json:"core_tools,omitempty"`
+	// Toolsets is the authored selection the published revision compiled:
+	// placement and via per set, membership resolved through
+	// Selection.Toolset. Recomputed per call by the inventory.
+	Toolsets     []ProfileToolset `json:"toolsets,omitempty"`
+	Confirmation *Confirmation    `json:"confirmation,omitempty"`
 }
 
 // Connector capability bundle values for CapabilityProfile.Connectors.
@@ -158,6 +195,11 @@ func ValidCapabilityPath(value string) bool {
 	return value == "" || (len(value) <= 4096 && value != "." && !strings.HasPrefix(value, "/") &&
 		!strings.ContainsAny(value, "\\:\x00\r\n") && path.Clean(value) == value &&
 		value != ".." && !strings.HasPrefix(value, "../"))
+}
+
+func ValidSelectionPath(value string) bool {
+	return len(value) <= 4096 && strings.HasPrefix(value, "/") && value != "/" &&
+		!strings.ContainsAny(value, "\\:\x00\r\n") && path.Clean(value) == value
 }
 
 func prefixContains(prefix, value string) bool {
@@ -261,6 +303,16 @@ func (p CapabilityPolicy) Validate() error {
 	if p.Organization == "" && len(p.Members) != 1 {
 		return fmt.Errorf("%w: personal policy has one member", ErrInvalid)
 	}
+	if len(p.RightCeiling) > 4096 {
+		return fmt.Errorf("%w: too many rights in policy ceiling", ErrInvalid)
+	}
+	rights := map[RightRule]bool{}
+	for _, right := range p.RightCeiling {
+		if !rightNamePattern.MatchString(right.Capability) || !rightNamePattern.MatchString(right.Operation) || rights[right] {
+			return fmt.Errorf("%w: policy right ceiling", ErrInvalid)
+		}
+		rights[right] = true
+	}
 	for _, rules := range [][]CapabilityRule{p.Ceiling, p.Defaults} {
 		if err := validateCapabilityRules(rules, false); err != nil {
 			return err
@@ -305,6 +357,9 @@ func (p CapabilityProfile) ValidateStructure() error {
 		(p.Environment != "dev" && p.Environment != "prod") || len(p.Selections) > 1024 {
 		return fmt.Errorf("%w: capability profile identity", ErrInvalid)
 	}
+	if p.PassportRevision != "" && !identity.ValidID(p.PassportRevision) {
+		return fmt.Errorf("%w: capability passport revision", ErrInvalid)
+	}
 	if err := validateCapabilityRules(p.Allows, false); err != nil {
 		return err
 	}
@@ -323,6 +378,11 @@ func (p CapabilityProfile) ValidateStructure() error {
 			(selection.ConnectionID != "" && !identity.ValidID(selection.ConnectionID)) || names[selection.Name] || capabilities[key] || ValidControlOperation(selection.Name) {
 			return fmt.Errorf("%w: ambiguous capability selection", ErrInvalid)
 		}
+		for _, scope := range selection.PathScopes {
+			if !ValidSelectionPath(scope) {
+				return fmt.Errorf("%w: invalid selected path scope", ErrInvalid)
+			}
+		}
 		names[selection.Name], capabilities[key] = true, true
 	}
 	if len(p.ControlOperations) > len(ControlOperations) {
@@ -335,6 +395,16 @@ func (p CapabilityProfile) ValidateStructure() error {
 		}
 		seenOps[operation] = true
 	}
+	if len(p.CoreTools) > 20 {
+		return fmt.Errorf("%w: core projection over the tool budget", ErrInvalid)
+	}
+	coreSeen := map[string]bool{}
+	for _, name := range p.CoreTools {
+		if !names[name] || coreSeen[name] {
+			return fmt.Errorf("%w: core tool outside the admitted selections", ErrInvalid)
+		}
+		coreSeen[name] = true
+	}
 	switch p.Connectors {
 	case "", ConnectorsNone, ConnectorsPersonal, ConnectorsPersonalTeam:
 	default:
@@ -343,11 +413,25 @@ func (p CapabilityProfile) ValidateStructure() error {
 	return nil
 }
 
+// RemoteExecutor reports whether the executor runs the call behind the PEP
+// outside the in-runtime handler channel: connector:<name>, flow:<name> or
+// runtime:<api> (ADR-0094 D2). Remote tools carry no path scopes; their
+// admission is the selection plus the declared `requires` rights.
+func RemoteExecutor(executor Executor) bool {
+	return strings.HasPrefix(executor, "connector:") ||
+		strings.HasPrefix(executor, "flow:") ||
+		strings.HasPrefix(executor, "runtime:")
+}
+
 func validateToolCapability(tool ToolSpec) error {
 	if tool.CapabilityID == "" && len(tool.Uses) == 0 && len(tool.ArgumentEquals) == 0 {
 		return nil
 	}
-	if !capabilityIDPattern.MatchString(tool.CapabilityID) || len(tool.Uses) == 0 || len(tool.Uses) > 16 || len(tool.ArgumentEquals) > 32 {
+	// Remote executors (connector:, flow:, runtime:) carry no capability-use
+	// path scopes: their calls never reach an os.Root boundary, so a zero
+	// Uses list is legal; handler: tools keep requiring ≥1 use.
+	remote := RemoteExecutor(tool.Executor)
+	if !capabilityIDPattern.MatchString(tool.CapabilityID) || (!remote && len(tool.Uses) == 0) || len(tool.Uses) > 16 || len(tool.ArgumentEquals) > 32 {
 		return fmt.Errorf("%w: reviewed tool capability", ErrInvalid)
 	}
 	for _, use := range tool.Uses {
@@ -437,7 +521,117 @@ func CapabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 			limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 		}
 	}
-	return limits, scopes, len(tool.Uses) > 0
+	return limits, scopes, len(tool.Uses) > 0 || RemoteExecutor(tool.Executor)
+}
+
+// NarrowSelectionScopes intersects authored paths with the admitted policy
+// prefixes before dispatch. The resulting prefix also reaches the executor's
+// os.Root guard, so a symlink cannot escape a lexical argument check.
+func NarrowSelectionScopes(selection CapabilitySelection, tool ToolSpec, arguments map[string]any, admitted []CapabilityScope, projection bool) ([]CapabilityScope, bool) {
+	if len(selection.PathScopes) == 0 {
+		return admitted, true
+	}
+	if tool.Executor != "handler:files" || len(tool.Uses) == 0 {
+		return nil, false
+	}
+	for _, use := range tool.Uses {
+		if use.PathArgument == "" {
+			return nil, false
+		}
+	}
+	if len(admitted) == 0 {
+		return nil, false
+	}
+	if projection {
+		return admitted, true
+	}
+	root := "workspace"
+	if value, present := arguments["root"]; present {
+		name, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		if name != "" {
+			root = name
+		}
+	}
+	switch root {
+	case "workspace", "archive", "organization":
+	default:
+		return nil, false
+	}
+	out := slices.Clone(admitted)
+	byArgument := map[string]string{}
+	for i, scope := range out {
+		var values []string
+		switch value := arguments[scope.PathArgument].(type) {
+		case nil:
+			values = []string{""}
+		case string:
+			values = []string{value}
+		case []string:
+			values = value
+		case []any:
+			for _, item := range value {
+				v, ok := item.(string)
+				if !ok {
+					return nil, false
+				}
+				values = append(values, v)
+			}
+		default:
+			return nil, false
+		}
+		if len(values) == 0 {
+			return nil, false
+		}
+		chosen := ""
+		selected := false
+		for _, value := range values {
+			if value == "." {
+				value = ""
+			}
+			if !ValidCapabilityPath(value) {
+				return nil, false
+			}
+			matched := false
+			valuePrefix := ""
+			for _, allowed := range selection.PathScopes {
+				base := "/" + root
+				if allowed != base && !strings.HasPrefix(allowed, base+"/") {
+					continue
+				}
+				prefix := strings.TrimPrefix(strings.TrimPrefix(allowed, base), "/")
+				if !prefixContains(prefix, value) {
+					continue
+				}
+				if prefixContains(scope.PathPrefix, prefix) {
+					// The authored prefix is narrower than the policy grant.
+				} else if prefixContains(prefix, scope.PathPrefix) {
+					prefix = scope.PathPrefix
+				} else {
+					continue
+				}
+				if !matched || len(prefix) > len(valuePrefix) {
+					valuePrefix = prefix
+				}
+				matched = true
+			}
+			if !matched {
+				return nil, false
+			}
+			if selected && chosen != valuePrefix {
+				return nil, false
+			}
+			chosen, selected = valuePrefix, true
+		}
+		if prior, set := byArgument[scope.PathArgument]; set && prior != chosen {
+			return nil, false
+		}
+		byArgument[scope.PathArgument] = chosen
+		out[i].PathPrefix = chosen
+	}
+	return out, true
 }
 
 // ProfilePreviewEntry is one selection's dispatch outcome in a preview: either
@@ -493,15 +687,23 @@ func allowedRuleSets(profile CapabilityProfile, policy CapabilityPolicy) [][]Cap
 	return sets
 }
 
-func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time) (CapabilityLimits, string, bool) {
-	active := func(rule CapabilityRule) bool { return rule.ExpiresAt.IsZero() || now.Before(rule.ExpiresAt) }
+func ruleActive(rule CapabilityRule, now time.Time) bool {
+	return rule.ExpiresAt.IsZero() || now.Before(rule.ExpiresAt)
+}
+
+// scanCapabilityRules returns the first active allow∩ceiling pair admitting
+// the tuple. admit decides whether the candidate prefix is acceptable:
+// CapabilityRuleDecision passes the deny check, coverage passes true. Never
+// merge unrelated rules' actions, resources, connections, expiry or
+// execution limits.
+func scanCapabilityRules(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time, admit func(candidate string) bool) (CapabilityLimits, string, bool) {
 	for _, allows := range allowedRuleSets(profile, policy) {
 		for _, allow := range allows {
-			if !active(allow) || !sameCapabilityTuple(allow, tuple) {
+			if !ruleActive(allow, now) || !sameCapabilityTuple(allow, tuple) {
 				continue
 			}
 			for _, ceiling := range policy.Ceiling {
-				if !active(ceiling) || !sameCapabilityTuple(allow, ceiling) {
+				if !ruleActive(ceiling, now) || !sameCapabilityTuple(allow, ceiling) {
 					continue
 				}
 				prefix := allow.PathPrefix
@@ -517,19 +719,76 @@ func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, 
 						continue
 					}
 				}
-				denied := false
-				for _, denies := range [][]CapabilityRule{policy.Denies, profile.Denies} {
-					for _, deny := range denies {
-						if active(deny) && sameCapabilityTuple(deny, tuple) && prefixContains(deny.PathPrefix, candidate) {
-							denied = true
-						}
-					}
-				}
-				if !denied {
+				if admit(candidate) {
 					return CapabilityLimits{min(allow.Limits.OutputBytes, ceiling.Limits.OutputBytes), min(allow.Limits.TimeoutSeconds, ceiling.Limits.TimeoutSeconds)}, prefix, true
 				}
 			}
 		}
 	}
 	return CapabilityLimits{}, "", false
+}
+
+func CapabilityRuleDecision(profile CapabilityProfile, policy CapabilityPolicy, tuple CapabilityRule, actualPath *string, now time.Time) (CapabilityLimits, string, bool) {
+	return scanCapabilityRules(profile, policy, tuple, actualPath, now, func(candidate string) bool {
+		for _, denies := range [][]CapabilityRule{policy.Denies, profile.Denies} {
+			for _, deny := range denies {
+				if ruleActive(deny, now) && sameCapabilityTuple(deny, tuple) && prefixContains(deny.PathPrefix, candidate) {
+					return false
+				}
+			}
+		}
+		return true
+	})
+}
+
+// CapabilityCoverage reports whether a selection's uses are backed by active
+// allow∩ceiling authority, ignoring deny rules. Coverage is the profile's
+// positive authority: a selection the rules cannot admit is suppressed under
+// projection — a gap the denial surface and diagnostics report, whatever its
+// cause (revocation, never-authorized intent, or the digest-split bug).
+// The path binding mirrors projection: a use without a path argument checks
+// the empty path, a path-scoped use asks whether any permitted path exists.
+func CapabilityCoverage(profile CapabilityProfile, policy CapabilityPolicy, selection CapabilitySelection, tool ToolSpec, now time.Time) bool {
+	for _, use := range tool.Uses {
+		tuple := CapabilityRule{CapabilityID: selection.CapabilityID, ImplementationDigest: selection.ImplementationDigest,
+			Action: use.Action, Resource: use.Resource, ConnectionID: selection.ConnectionID}
+		var actual *string
+		if use.PathArgument == "" {
+			empty := ""
+			actual = &empty
+		}
+		if _, _, covered := scanCapabilityRules(profile, policy, tuple, actual, now, func(string) bool { return true }); !covered {
+			return false
+		}
+	}
+	return len(tool.Uses) > 0 || RemoteExecutor(tool.Executor)
+}
+
+// CapabilityRepinConflict is the digest-split signature: a use tuple the
+// selection pins at its implementation digest is governed by an active rule
+// at a different digest. The publish bug abandoned the rules' digest when it
+// repinned selections; revocation or never-authorized intent does not match
+// (no rule at another digest governs the tuple) — those are legitimate
+// profile states the denial surface reports, while a repin that leaves the
+// rules behind is a write-time bug the admission gate refuses. Denies count
+// as governing: a tuple the rulebook knows only at another generation was
+// still repinned past its records.
+func CapabilityRepinConflict(profile CapabilityProfile, policy CapabilityPolicy, selection CapabilitySelection, tool ToolSpec, now time.Time) bool {
+	if len(tool.Uses) == 0 {
+		return false
+	}
+	sets := append(allowedRuleSets(profile, policy), policy.Ceiling, policy.Denies, profile.Denies)
+	for _, use := range tool.Uses {
+		for _, rules := range sets {
+			for _, rule := range rules {
+				if !ruleActive(rule, now) || rule.ImplementationDigest == "" || rule.ImplementationDigest == selection.ImplementationDigest {
+					continue
+				}
+				if rule.CapabilityID == selection.CapabilityID && rule.Action == use.Action && rule.Resource == use.Resource && rule.ConnectionID == selection.ConnectionID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

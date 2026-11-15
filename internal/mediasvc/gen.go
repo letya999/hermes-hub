@@ -46,6 +46,16 @@ type SubmitHandle struct {
 
 var errSubmissionUncertain = errors.New("media submission outcome uncertain; inspect provider before retrying")
 
+// upstreamStatusError carries a provider's non-success HTTP status so the
+// API layer can answer with an allowlisted reason token — the upstream body
+// and engine internals stay in service logs, never in the client response.
+type upstreamStatusError struct {
+	what   string
+	status int
+}
+
+func (e *upstreamStatusError) Error() string { return fmt.Sprintf("%s HTTP %d", e.what, e.status) }
+
 type GenRequest struct {
 	Kind       string // "image" | "video"
 	Model      string
@@ -101,7 +111,7 @@ func (r *genRouter) Generate(ctx context.Context, req GenRequest) (GenResult, er
 		}
 		last = err
 	}
-	return GenResult{}, fmt.Errorf("all media providers failed for %q (%v)", req.Model, last)
+	return GenResult{}, fmt.Errorf("all media providers failed for %q (%w)", req.Model, last)
 }
 
 func (r *genRouter) Ready(ctx context.Context) bool {
@@ -143,7 +153,7 @@ func (r *genRouter) Submit(ctx context.Context, req GenRequest) (SubmitHandle, e
 		log.Printf("hub-media model=%s engine=%s submit status=ok remote=%s", req.Model, hop.Engine, h.RemoteID)
 		return h, nil
 	}
-	return SubmitHandle{}, fmt.Errorf("no async media provider accepted %q (%v)", req.Model, last)
+	return SubmitHandle{}, fmt.Errorf("no async media provider accepted %q (%w)", req.Model, last)
 }
 
 func (r *genRouter) Poll(ctx context.Context, h SubmitHandle, model string) (GenResult, bool, error) {
@@ -420,7 +430,7 @@ func (e *remoteGen) chatImage(ctx context.Context, req GenRequest, key string) (
 		return GenResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return GenResult{}, fmt.Errorf("upstream image HTTP %d", resp.StatusCode)
+		return GenResult{}, &upstreamStatusError{"upstream image", resp.StatusCode}
 	}
 	var parsed struct {
 		Choices []struct {
@@ -460,7 +470,7 @@ func (e *remoteGen) readImages(req *http.Request) (GenResult, error) {
 		return GenResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return GenResult{}, fmt.Errorf("upstream image HTTP %d", resp.StatusCode)
+		return GenResult{}, &upstreamStatusError{"upstream image", resp.StatusCode}
 	}
 	var parsed struct {
 		Data []struct {
@@ -539,7 +549,7 @@ func (e *falGen) Generate(ctx context.Context, req GenRequest) (GenResult, error
 		return GenResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return GenResult{}, fmt.Errorf("fal image HTTP %d", resp.StatusCode)
+		return GenResult{}, &upstreamStatusError{"fal image", resp.StatusCode}
 	}
 	var parsed struct {
 		Images []struct {
@@ -594,7 +604,7 @@ func (e *falGen) Submit(ctx context.Context, req GenRequest) (SubmitHandle, erro
 		return SubmitHandle{}, errSubmissionUncertain
 	}
 	if resp.StatusCode != http.StatusOK {
-		return SubmitHandle{}, fmt.Errorf("fal queue submit HTTP %d", resp.StatusCode)
+		return SubmitHandle{}, &upstreamStatusError{"fal queue submit", resp.StatusCode}
 	}
 	var parsed struct {
 		RequestID string `json:"request_id"`
@@ -678,7 +688,7 @@ func (e *falGen) getJSON(ctx context.Context, url string, out any, key string) e
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fal queue HTTP %d", resp.StatusCode)
+		return &upstreamStatusError{"fal queue", resp.StatusCode}
 	}
 	return json.Unmarshal(raw, out)
 }

@@ -15,13 +15,13 @@ func TestReconcileOnboardingRejectsUnrelatedHistory(t *testing.T) {
 		{"wrong-principal", func(o *api.Onboarding) { o.PrincipalID = "bob" }},
 		{"old-credential", func(o *api.Onboarding) { o.CredentialRefID = "credential-old" }},
 		{"superseded", func(o *api.Onboarding) { o.SupersededBy = "onboard-new" }},
-		{"removed", func(o *api.Onboarding) { o.Phase = api.PhaseRemoved }},
-		{"revoked", func(o *api.Onboarding) { o.Phase = api.PhaseRevoked }},
+		{"removed", func(o *api.Onboarding) { o.Retire(api.TombstoneRemoved) }},
+		{"revoked", func(o *api.Onboarding) { o.Retire(api.TombstoneRevoked) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewStore()
 			s.connections["connection-a"] = api.Connection{ConnectionID: "connection-a", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, CredentialRefID: "credential-current"}
-			o := api.Onboarding{OnboardingID: "onboard-a", PrincipalID: "alice", ContextID: "context-a", ConnectionID: "connection-a", CredentialRefID: "credential-current", Phase: api.PhaseEnabled}
+			o := api.Onboarding{OnboardingID: "onboard-a", PrincipalID: "alice", ContextID: "context-a", ConnectionID: "connection-a", CredentialRefID: "credential-current", Stage: api.StageLive}
 			tc.change(&o)
 			s.onboardings[o.OnboardingID] = o
 			if _, ok := s.onboardingForConnection("connection-a"); ok {
@@ -35,7 +35,7 @@ func TestReconcileOnboardingSelectsCurrentReferenceBeforeLegacy(t *testing.T) {
 	s := NewStore()
 	s.connections["connection-a"] = api.Connection{ConnectionID: "connection-a", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, CredentialRefID: "credential-current"}
 	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
-	current := api.Onboarding{OnboardingID: "onboard-current", PrincipalID: "alice", ConnectionID: "connection-a", CredentialRefID: "credential-current", Phase: api.PhaseEnabled, CreatedAt: now}
+	current := api.Onboarding{OnboardingID: "onboard-current", PrincipalID: "alice", ConnectionID: "connection-a", CredentialRefID: "credential-current", Stage: api.StageLive, CreatedAt: now}
 	legacy := current
 	legacy.OnboardingID, legacy.CredentialRefID, legacy.CreatedAt = "onboard-legacy", "", now.Add(time.Hour)
 	s.onboardings[current.OnboardingID], s.onboardings[legacy.OnboardingID] = current, legacy
@@ -51,7 +51,7 @@ func TestReconcileOnboardingUsesStableLatestRecord(t *testing.T) {
 	for _, sameTime := range []bool{false, true} {
 		s := NewStore()
 		s.connections["connection-a"] = api.Connection{ConnectionID: "connection-a", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}}
-		older := api.Onboarding{OnboardingID: "onboard-a", PrincipalID: "alice", ConnectionID: "connection-a", Phase: api.PhaseEnabled, CreatedAt: time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)}
+		older := api.Onboarding{OnboardingID: "onboard-a", PrincipalID: "alice", ConnectionID: "connection-a", Stage: api.StageLive, CreatedAt: time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)}
 		newer := older
 		newer.OnboardingID = "onboard-z"
 		if !sameTime {
@@ -70,7 +70,7 @@ func TestReconcileOnboardingUsesStableLatestRecord(t *testing.T) {
 func TestReconcileOnboardingContextOwnerAndMissingConnection(t *testing.T) {
 	s := NewStore()
 	s.connections["connection-a"] = api.Connection{ConnectionID: "connection-a", Owner: api.OwnerRef{Type: api.ContextOwner, ID: "context-a"}}
-	o := api.Onboarding{OnboardingID: "onboard-a", ConnectionID: "connection-a", ContextID: "context-b", Phase: api.PhaseEnabled}
+	o := api.Onboarding{OnboardingID: "onboard-a", ConnectionID: "connection-a", ContextID: "context-b", Stage: api.StageLive}
 	s.onboardings[o.OnboardingID] = o
 	if _, ok := s.onboardingForConnection("connection-a"); ok {
 		t.Fatal("foreign context accepted")

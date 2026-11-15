@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -11,8 +12,24 @@ import (
 // HostLog mirrors supervisor log lines to a bounded local file so the
 // container collector can include host-side lifecycle activity.
 func HostLog(path string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	return hostLog(path, os.Chmod)
+}
+
+func hostLog(path string, chmod func(string, os.FileMode) error) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0770); err != nil {
 		return nil, err
+	}
+	info, err := os.Lstat(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("unsafe diagnostic directory")
+	}
+	if err := chmod(filepath.Dir(path), 0770); err != nil {
+		// A bind mount may forbid chmod; never write diagnostics without it.
+		log.Print("diagnostic_gap reason=host_mirror_permission_unavailable")
+		return func() {}, nil
 	}
 	previous := log.Writer()
 	w := &boundedFile{path: path}
@@ -28,14 +45,12 @@ type boundedFile struct {
 func (w *boundedFile) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	flags := os.O_CREATE | os.O_APPEND | os.O_WRONLY
-	if info, err := os.Stat(w.path); err == nil && info.Size()+int64(len(p)) > 10<<20 {
-		flags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+	count := len(p)
+	if len(p) > maxDiagnosticLine {
+		p = []byte("[diagnostic-gap] reason=oversized_host_record\n")
 	}
-	f, err := os.OpenFile(w.path, flags, 0600) // #nosec G304 -- caller provides fixed project .local path.
-	if err != nil {
+	if err := appendDiagnostic(w.path, p, 10<<20); err != nil {
 		return 0, err
 	}
-	defer f.Close()
-	return f.Write(p)
+	return count, nil
 }

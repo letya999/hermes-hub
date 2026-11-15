@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestDockerM10ScriptMemoryIsolation(t *testing.T) {
 	}
 	oom := false
 	names := []string{}
-	m, _ := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) {
+	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "run" {
 			retained := []string{}
 			name := ""
@@ -48,13 +49,22 @@ func TestDockerM10ScriptMemoryIsolation(t *testing.T) {
 		}
 		return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	}, nil)
-	m.cfg.Image = image
+	m.cfg.ScriptImage = image
+	watch := filepath.Join(root, "watch")
+	if err := os.MkdirAll(watch, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(watch, "probe.txt"), []byte("ok"), 0640); err != nil {
+		t.Fatal(err)
+	}
 	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron"}, DueAt: time.Now()}
 	for _, test := range []struct {
 		source string
 		status int
-	}{{`emit("ok")`, 200}, {`emit("x" * 1000000000)`, 502}, {`load("/etc/passwd", "secret")`, 502}, {`http.get("https://example.com")`, 502}} {
+		mount  bool
+	}{{`emit("ok")`, 200, false}, {`emit(read_file("probe.txt"))`, 200, true}, {`emit(read_file("../runtime.auth"))`, 502, true}, {`emit("x" * 1000000000)`, 502, false}, {`load("/etc/passwd", "secret")`, 502, false}, {`http.get("https://example.com")`, 502, false}} {
 		request.Text = test.source
+		request.MountSpace = test.mount
 		body, err := json.Marshal(request)
 		if err != nil {
 			t.Fatal(err)

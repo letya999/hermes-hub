@@ -240,6 +240,10 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 	if err := os.Chmod(effective, 0644); err != nil {
 		return err
 	}
+	const revision = "r-0123456789abcdef"
+	if err := os.WriteFile(filepath.Join(dir, "revision"), []byte(revision+"\n"), 0644); err != nil {
+		return err
+	}
 	for _, name := range []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"} {
 		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
 			return err
@@ -250,7 +254,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 			"-e", "HERMES_HOME=/config", "-e", "HUB_CAPABILITY_MODE=managed", "-e", "HUB_MANAGED_MODEL_ID=synthetic",
 			"-e", "HERMES_BUNDLES_DIR=/config/skill-bundles", "-e", "HERMES_ENABLE_PROJECT_PLUGINS=0",
 			"-e", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "-e", "TZ=UTC", "-e", "HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp",
-			"-e", "HUB_RUNTIME_AUTH=synthetic-auth"}
+			"-e", "HUB_RUNTIME_AUTH=synthetic-auth", "-e", "HUB_PASSPORT_REVISION=" + revision}
 		for _, override := range overrides {
 			args = append(args, "-e", override)
 		}
@@ -262,6 +266,9 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 		return nil
 	}
 	if err := probe("managed capability profile is unset"); err != nil {
+		return err
+	}
+	if err := probe("managed runtime passport activation mismatch", "HUB_PASSPORT_REVISION=r-0123456789abcdee"); err != nil {
 		return err
 	}
 	// With the reviewed environment present the verifier walks past identity

@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-10-26
+last_verified: 2026-11-13
 ---
 
 # Testing
@@ -9,7 +9,14 @@ last_verified: 2026-10-26
 
 1. **Unit** — `go test ./internal/...`; table tests over real handlers, not
    interfaces-under-themselves. Race (`-race`) and shuffle are part of
-   `just check`, not opt-in extras.
+   required CI, not optional acceptance extras. `just check` is format/docs/vet;
+   `just test <packages>` runs affected local tests. Vet only touched packages
+   during edits (`go vet -p=2 <packages>`); `just check` is the final local
+   gate. `just check-full` runs the
+   exhaustive local fallback. Preserve result caching during local iteration.
+   During an edit, use `go test -short -run '^TestName$' ./affected/package`
+   for the named regression. Run `just test ./affected/package` once after the
+   last edit; do not rerun a whole large package for every diagnosis.
 2. **Contract probes** — `go run -tags integration ./cmd/devcheck
    <probe>`: `hermes-contract` (pinned image `/v1/*` + sessions),
    `toolhub-contract`, `toolhub-hermes-contract`, `forward_live_test`
@@ -50,16 +57,30 @@ explicit `--chat-id/--organization/--runtime/--policy/--user` quintuple.
 
 ## Local Docker acceptance
 
+For ordinary service smoke, reuse existing dev spaces when they are
+running and verify only the changed service. Do not start a duplicate Compose
+stack to diagnose an error already visible in an existing container. Fault and
+authorization tests that alter grants, stop services or write memory need
+isolated fixtures or a dedicated CI canary; never use personal data as a test
+fixture. Build only the changed image during local iteration.
+
 Use dedicated verification tags and temporary contexts. The managed
 supervisor canary namespaces its runtime and control bridges; fixture
 ToolHub/model DNS aliases must never enter a deployment network. Cold-start
 budgets include the four-minute supervisor readiness allowance plus
 execution; warm-path checks keep tighter bounds.
+The managed supervisor canary also declares a synthetic exposure endpoint,
+then calls `exposure_list` through real ToolHub admission and the private
+executor in the spawned container. It requires one declared endpoint and zero
+open tunnels; it never dials the external relay. `just docker-check` and CI's
+managed container gate run this check against their exact image. After a dev
+rollout, repeat a read-only `exposure_list` against the selected owner's live
+ToolHub binding; the canary does not prove any real relay accepts a tunnel.
 
 ## E2E runner
 
-`cmd/e2e` is the sequential capability runner (147 scenarios; `--scope
-core` = the 116 local/agent/credential-free cases, `--scope all` includes
+`cmd/e2e` is the sequential capability runner (182 scenarios; `--scope
+core` = the 151 local/agent/credential-free cases, `--scope all` includes
 31 account-dependent ones the owner opted out). A scenario definition is
 not evidence of a pass.
 
@@ -88,7 +109,7 @@ it is not knowledge isolation/revocation evidence. Runtime cache/admission
 and real local filesystem tests complement the tool contract. None of
 these fixtures prove a live Hermes, Honcho, connector or chat integration.
 
-Own Go statement coverage ≥85% (`just check` enforces; upstream Hermes and
+Own Go statement coverage ≥85% (CI / `just check-full` enforce; upstream Hermes and
 copied broker source excluded from the denominator). Windows zero-statement
 profile rows are accepted by the coverage parser. When a gate is
 unavailable locally (no Docker, no provider account) — report it

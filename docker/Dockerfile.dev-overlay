@@ -3,3 +3,4 @@ FROM ${BASE}
 ARG BINARY
 COPY binary /usr/local/bin/${BINARY}
 COPY companions/ /usr/local/bin/
+COPY --chown=0:0 catalogs/ /opt/hub/platform/catalogs/

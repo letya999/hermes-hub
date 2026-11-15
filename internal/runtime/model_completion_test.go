@@ -83,7 +83,7 @@ func TestRegistryProviderCooldownAppliesAcrossLogicalModels(t *testing.T) {
 	first := registry.ladderFor(file, "first", file.Models["first"])
 	second := registry.ladderFor(file, "second", file.Models["second"])
 	first[0].fail()
-	if second[0].available(time.Now()) {
+	if second[0].availableFor(time.Now(), false) {
 		t.Error("exhausted provider account remains usable through another logical model")
 	}
 }
@@ -205,7 +205,7 @@ func TestModelRelayTimedOutHopFallsBackWithinRequestDeadline(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)
 	}))
 	defer fast.Close()
-	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "40ms")
+	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "250ms")
 	handler, err := modelRelayHandler(oneHop(t, "slow="+slow.URL+",fast="+fast.URL), "synthetic")
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestModelRelayRejectsUnboundedConfiguration(t *testing.T) {
 			t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "")
 			t.Setenv("HUB_MODEL_RELAY_TIMEOUT", "")
 			t.Setenv(tc.key, tc.value)
-			if _, err := modelRelayHandlerFromEnv(); err == nil {
+			if _, err := ModelRelayHandlerFromEnv(); err == nil {
 				t.Fatal("unbounded timeout configuration accepted")
 			}
 		})
@@ -308,7 +308,7 @@ func TestModelRelayRejectsUnboundedConfiguration(t *testing.T) {
 		hops = append(hops, fmt.Sprintf("hop%d=http://provider.invalid", i))
 	}
 	t.Setenv("HUB_MODEL_RELAY_UPSTREAMS", strings.Join(hops, ","))
-	if _, err := modelRelayHandlerFromEnv(); err == nil {
+	if _, err := ModelRelayHandlerFromEnv(); err == nil {
 		t.Fatal("more than eight hops accepted")
 	}
 }

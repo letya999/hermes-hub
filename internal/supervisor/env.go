@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"log"
@@ -40,6 +39,12 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(job)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "inspect_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
@@ -99,6 +104,9 @@ func (m *Manager) skillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -151,6 +159,9 @@ func (m *Manager) skillCreds(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("supervisor skill-creds binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
@@ -240,7 +251,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 			log.Printf("supervisor soul heal skipped")
 		}
 	}
-	settings, err := stack.ReadEnvironment(binding.ContextRoot, env)
+	settings, err := stack.ReadEffective(binding.ContextRoot, env)
 	if err != nil || !settings.RendersInfra() {
 		return
 	}
@@ -253,23 +264,14 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
 // runtime contract: secrets.<env>.env endpoint override and self-services.
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
-	settings := stack.Settings{}
-	hasConfig := false
-	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml"} {
-		if _, err := os.Stat(filepath.Join(binding.ContextRoot, name)); err == nil {
-			hasConfig = true
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
+	// A spawned runtime is configured by the published revision alone —
+	// missing, corrupt or foreign revisions deny the materialization
+	// instead of producing a config from empty settings (SPEC-0095).
+	settings, err := stack.ReadEffective(binding.ContextRoot, env)
+	if err != nil {
+		return "", err
 	}
-	if hasConfig {
-		var err error
-		settings, err = stack.ReadEnvironment(binding.ContextRoot, env)
-		if err != nil {
-			return "", err
-		}
-	}
-	source := filepath.Join(binding.ContextRoot, "hermes."+env+".yaml")
+	source := filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
 	envName := "runtime." + env + ".env"
 	if settings.CapabilityMode == "managed" {
@@ -305,10 +307,10 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		// attestation replays; without it the source-vs-template check
 		// rejects every browser-carrying managed config.
 		Browser: settings.ManagedBrowserGrant(),
-		User:    settings.User,
-	}
-	if settings.CapabilityMode == "managed" {
-		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)
+		// The hub-side subsystem flags replay the reviewed render's
+		// admission the same way the browser grant does.
+		MemoryVault: settings.ManagedMemoryVaultFlag(),
+		User:        settings.User,
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"

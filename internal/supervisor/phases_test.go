@@ -262,11 +262,18 @@ func TestJobPhaseWakingWhileRuntimeStarts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	publishAliceRevision(t, ctxRoot, nil)
 	writeHermesSources(t, ctxRoot)
 	gate := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
 	command := func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[0] == "network" && args[1] == "inspect" {
+			if args[3] == "{{.Internal}}" {
+				return []byte("true"), nil
+			}
+			return nil, os.ErrNotExist
+		}
 		if len(args) > 0 && args[0] == "run" {
 			once.Do(func() { close(started) })
 			<-gate

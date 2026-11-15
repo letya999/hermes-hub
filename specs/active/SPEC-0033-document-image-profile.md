@@ -78,8 +78,9 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
    concurrency 2, 5 seconds. A PDF also fails when it has more than 20 pages. A
    slide file fails above 20 slides. An xlsx sheet allows 2000 rows and 64
    columns. The xlsx and pptx zip allows 64 entries and 8 MiB uncompressed, and
-   rejects `..`, an absolute name, and an encrypted entry. Images: 5 MiB, edge
-   4096, 4000000 pixels. Inspect: concurrency 2, 30 seconds. Generate:
+   rejects `..`, an absolute name, and an encrypted entry. Source images: 20 MiB,
+   edge 4096, 4000000 pixels. Inspect compacts vision inputs to at most 16 MiB
+   combined before model encoding. Inspect: concurrency 2, 30 seconds. Generate:
    concurrency 1, 60 seconds. Prompt: 1 to 2000 runes. A known credential value
    is not written into a new artifact. Archives: `archive_create` writes a new
    zip under `artifacts/` from distinct existing regular files and refuses an

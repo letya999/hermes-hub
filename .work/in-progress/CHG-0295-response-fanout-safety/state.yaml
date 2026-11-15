@@ -1,0 +1,21 @@
+change: CHG-0295-response-fanout-safety
+status: in_progress
+created: 2026-11-10
+incident:
+  job: telegram-837846020
+  run: run_f64cf2b2ae2f4579b49cf4eefaf1f214
+  session: hub-96b0f455b6a8f7c6ae2e7d69
+  response_chars: 220157
+  telegram_parts_sent: 75
+  status_edits: 126
+gates:
+  communication_tests: passed
+  stack_tests: passed
+  locale_tests: passed
+  just_check: passed
+  dev_rebuilds: passed  # communication-hub + supervisor on :local
+  soul_regenerated: passed  # both spaces, new clauses present
+  live_cap_delivery: passed  # injected 237,500-char delivery → 2 messages + answer.md, done/ settled
+  live_telegram_rerun: failed_rerun025  # rerun 025: qualified mcp__toolhub__ names hit PINNED tool_call/tool_search (core_tools excludes them) — normalization was only in executor dispatch; 3x record-not-found tripped hermes circuit breaker
+  platform_usage_roots: passed  # shared toolhub resolves meter+models.yaml under /model-state-by|/model-config-by per-principal RO mounts; absent meter = honest zero; live probe returned available:true
+  pinned_name_normalization: passed  # mcpCall + toolsList strip mcp__toolhub__ at the shared funnels; live MCP session: tool_call(mcp__toolhub__web_providers) executed, tool_search(name=mcp__toolhub__session_list) found:true

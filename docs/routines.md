@@ -1,14 +1,26 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-10-28
+last_verified: "2026-11-12"
 ---
 # Routines
 
-The communication hub owns the durable clock, occurrence queue and outbox.
-Hermes interprets requests and calls business tools through ToolHub. A reminder
-delivers its exact text without waking a model. Agent tasks use current runtime
-authorization; deterministic probes/scripts use existing bounded paths. The hub
-must be running to fire a routine.
+ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
+Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights. Research jobs persist separately and replay their Supervisor job ID after restart; research_read shows the final report only after completion.
+
+`media_speak` uses this outbox for the active run's recorded destination: `delivery_id` and `status=queued` acknowledge enqueue, not sending. The worker rechecks `channels.send_voice`; synthesis/sending can still fail and uncertain sends are never blindly repeated.
+In the mock channel, the worker synthesizes audio and stores its bytes in the owner-scoped mock outbox; only a captured `voice_sent=true` record proves mock delivery. The ToolHub admission lock is released and authority rechecked before the communication callback, which asks ToolHub for the live send right.
+The M32 cutover places the clock, assignments, watches and protected nightly
+dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
+schedule with a normal routine occurrence and due recovery, keyed once per
+owner and local date. Its operation processes memory and queues its digest
+through the normal delivery outbox; ordinary routine CRUD cannot change it.
+The schedule time and timezone come from the current published passport.
+Memory disablement overrides tool selection. Calls require `tools.use` and
+their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
+Settings edits require current `config.edit_own` and `settings_read`'s revision; interrupted publications recover under the apply lock.
+Edits may respawn the runtime, so same-turn restore is uncertain.
+ToolHub reads gateway bindings from files or activated SQLite in place, read-only; cutover refuses legacy automation records/jobs until migration.
+New occurrences persist the current supervisor admission epoch; holds block admission and retries never adopt a later epoch.
 
 Decision: [ADR-0042](adr/ADR-0042-routine-lifecycle.md). Requirements:
 [SPEC-0056](../specs/active/SPEC-0056-routine-lifecycle.md). Acceptance:
@@ -32,9 +44,9 @@ Deterministic and MCP contract tests do not establish deployed acceptance.
 |---|---|
 | routine_create | Save ID, timezone, expression, text, action and destination; return configuration and deadline. Repeating the same intent returns current state. |
 | routine_list | Find compact cards sorted by ID. `view=destinations` instead lists live owned session/task names and routing IDs. Query and cursor work in both views. |
-| routine_get | Full configuration, revision, state, named saved destination and its availability, baseline/errors and event health. Optional include=[history,next_runs] adds bounded history and planned dates. A known retired ID remains readable. |
+| routine_read | Full configuration, revision, state, named saved destination and its availability, baseline/errors and event health. Optional include=[history,next_runs] adds bounded history and planned dates. A known retired ID remains readable. |
 | routine_edit | Apply action=update, pause, resume or snooze using expected_revision. update takes patch, including destination_task_id for moving future results; snooze takes until RFC3339. pause/resume accept neither field. |
-| routine_delete | Permanently retire ID, retain evidence and stop admission. Already sent messages remain sent. |
+| routine_remove | Permanently retire ID, retain evidence and stop admission. Already sent messages remain sent. |
 
 There are exactly five public routine tools. For edit, update requires a nonempty
 patch. Pause stops future admission, including stream responses already in flight.
@@ -48,7 +60,19 @@ default 10, and history_cursor from history.next_cursor. include=[next_runs] use
 preview_limit 1..20, default 5. Both can be requested together. History keeps its
 items/next_cursor page; next_runs contains state/timezone/times. No work is run.
 These component reads are not one atomic snapshot; any failed component fails
-the call. Structured history answers user questions; raw logs remain diagnostics.
+the call. Structured history answers user questions; diagnostics expose bounded lifecycle
+metadata only. Search stable IDs/status fields; message bodies are excluded.
+Repeated source_position marks replay; diagnostic_gap/truncated cannot prove success.
+Toolhub `status=uncertain` / `retryable=false` identifies an unresolved operation;
+retain operation_id and reconcile it before any repeat. It is an application
+error, not permission to retry a transport. Only verified setup failure before
+business dispatch permits one authentication recovery.
+SSH uncertain results require reconciliation before repeating a command, write
+or session action. Shell/tunnel close still attempts access termination if audit
+fails; uncertainty is not a confirmed receipt.
+Exposure errors or list/status uncertain=true require reconciliation of the existing
+endpoint before repeating open. Close still attempts to stop access if audit fails;
+an uncertain close is not a confirmed completion receipt.
 
 Operations stay inside the authenticated principal and context. Identity and
 audience are host-derived. List includes saved paused/completed schedules; use
@@ -81,13 +105,13 @@ settle into the new revision.
 
 ## Probe and event internals
 
-- One OS file lock fences the gateway lifetime against a second gateway or
-  offline writer; `apply` and offline routine commands require the gateway
-  stopped. Opening a spool offline does not recover running jobs. Schedule
-  revision changes invalidate queued occurrences; delete writes a permanent
-  tombstone and retired IDs are never reused. Admitted Hermes work may
-  continue; queued delivery is re-checked before sending — cancellation
-  cannot recall a message an external service accepted.
+- One OS file lock fences the gateway against other gateways/offline writers;
+  `apply` and offline routines require it stopped; offline opening cannot recover jobs.
+  Schedule revisions invalidate queued occurrences.
+- Delete permanently retires the ID. An owned tombstone durably stops dispatch
+  retries after restart, preserving the unknown outcome of already admitted work
+  and accepting late results. Pause, unreadable state and foreign tombstones do
+  not discard pending work. Delivery rechecks cancellation; accepted messages cannot be recalled.
 - Tick admits ≤16 oldest eligible occurrences per pass, one per source; due
   occurrences inside catch-up take priority over expired backlog so backlog
   recording cannot starve fresh reminders. 16 settlements/pass bound
@@ -105,8 +129,8 @@ settle into the new revision.
   `read_file`/`list_dir`/`hash_path` builtins. `needs[]` (≤4 read-tool
   calls, ≤64 KiB each via `needs()`) prefetch under the owner binding; a
   failed need is a probe error, container stays networkless.
-- `kind=tool` normalizes to `mcp_tool` — read-effect tools only under owner
-  grants via `/v1/tool-call`. `kind=render`/`kind=service` POST a bounded
+- `kind=tool` normalizes to `mcp_tool`: owner-granted read tools via `/v1/tool-call` (structured-only results become JSON text).
+  `kind=render`/`kind=service` POST a bounded
   structured request (kind/url/args/steps/wait_for, ≤512 KiB response) to an
   operator-registered `service_endpoints` entry — never a schedule-supplied
   URL; render steps are a declarative browser-action list. `github_issue`
@@ -152,7 +176,7 @@ settle into the new revision.
 ## Event subscriptions (watches)
 
 A watch is an event-kind schedule subscribed to one `mcp_tool` source through
-`watch_subscribe`: its probe is `{kind:mcp_tool, tool, args}` and the sink is
+`watch_create`: its probe is `{kind:mcp_tool, tool, args}` and the sink is
 `notify` (one message per fresh event) or `agent` (one job per batch, events
 flagged untrusted). The probe never calls a model — unchanged sources and
 `filter`-dropped events cost zero model wakes. `filter` is a Starlark script
@@ -167,7 +191,7 @@ are bounded long-polls and need no interval; a plain poll tool must declare
 between starts of successful rounds (read time counts). Validation rejects stream
 on non-`mcp_tool` probes and on poll tools without a declared interval; it
 also rejects probes on non-probe job kinds, pointing agent-kind misuse at
-`watch_subscribe`. The cron expression anchors liveness bookkeeping only —
+`watch_create`. The cron expression anchors liveness bookkeeping only —
 it is not the poll cadence — and the global one-minute floor for ordinary
 scheduled routines is unchanged. Before each stream round, the hub refreshes the
 supervisor hold projection; a failed refresh blocks acquisition, and an admitted
@@ -179,8 +203,8 @@ Events dedupe durably per schedule revision; `next_cursor` persists for
 restart resume; batch settlement fans out once — sink=agent wakes the model
 once per batch, not per event, honoring quiet windows, daily limits and
 assignment wake budgets. Connector auth failures mark the subscription
-`degraded` instead of emitting fake empties. `watch_list`, `watch_pause`,
-`watch_resume` and `watch_delete` are scoped to event-kind schedules;
+`degraded` instead of emitting fake empties. `watch_list`, `watch_edit`
+(pause|resume) and `watch_remove` are scoped to event-kind schedules;
 `routine_edit` update/pause/resume manages them under the same revision
 fence. One subscription should cover the broadest scope the source tool
 offers (e.g. account-wide args); narrowing belongs to `filter` — durable
@@ -199,8 +223,10 @@ Agent-sink bundles attribute every event as `[label] text`.
 
 For non-consuming cursor reads, set `probe.cursor_arg` to the projected tool's
 cursor parameter. The hub supplies the last durable `next_cursor` to each
-source's next call. A missing cursor lets the connector establish a silent
-high-watermark baseline; dropped events and successfully admitted events
+source's next call. A never-initialized source may establish a silent
+high-watermark baseline; loss of an initialized cursor fails closed with a
+visible gap and requires recovery. Cursor state lives in `event-state/` outside
+terminal-history compaction. Dropped events and successfully admitted events
 advance it, while overflow, filtering failure and sink failure leave it in
 place so the next poll replays the unhandled page. A source response without
 `next_cursor` fails closed. For Telegram group messages use the opt-in
@@ -234,7 +260,7 @@ It binds the verified owner envelope — never a Hermes session — and is
 managed through `POST/GET /v1/assignments`, the `assignment_*` agent tools
 and the `/assignments` `/assignment <id> …` chat commands.
 
-- Save the owner's intent as a draft immediately, before provider reads.
+- Save the owner's intent as a draft immediately, unless the owner explicitly requests `assignment_plan` first.
   Check public Telegram sources in batches of at most four with non-consuming
   `watch_chat_messages` bootstrap reads; persist checked accessible sources and
   `plan.unavailable` entries with reasons through CAS-guarded plan updates.
@@ -255,18 +281,24 @@ and the `/assignments` `/assignment <id> …` chat commands.
   scope and organization onto every artifact; receipts record
   `created|kept|replaced|removed` per source so re-apply is idempotent
   and a retired id is recreated with a `-rN` generation suffix, never
-  resurrected.
+  resurrected. For a one-time first HTTP read, use `watcher` with `deliver_mode=content`; `check expect=unchanged` requires a prior baseline. A completed `once:` schedule may finish its in-flight probe after retirement.
 - Lifecycle propagates to artifacts: pause/resume flip the applied
   schedules, cancel/complete tombstone them and fence the record
   terminal; wakes are fenced by the applied plan generation at admission
-  and claim, so a paused or re-planned assignment cannot run a stale job.
+  and claim, so a paused or re-planned assignment cannot run a stale job. The completing trigger's confirmed response remains sendable after its own source retires and occurrence moves to archive, while deleting the assignment or revoking delivery rights still blocks it.
+  An active owner assignment may use the owner's currently selected and
+  granted memory tools under the same `memory.enabled` switch. The exact
+  owner, job, run and generation are checked at call time and before writes;
+  assignment output is not automatically a trusted owner memory fact.
+  ToolHub carries assignment and untrusted provenance to supervisor and uses
+  its run stream so the exact run ID is durable before model tool calls.
 - For judgment-only candidate batches the specialist records progress and
   returns exactly `NO_ACTIONABLE_EVENT` when none merit a notice; the gateway
   suppresses that sentinel and routine status chatter. A useful finding is
   delivered once through the usual bound Telegram job reply with the requested
   mention. Failure notices remain visible.
 - The specialist receives the owner intent, previous summary and next step
-  with each filtered trigger. `assignment_progress` requires that running
+  with each filtered trigger. `assignment_edit action=progress` requires that running
   trigger's job id and current assignment revision, and stores a bounded
   summary, one new finding and next step; `complete=true` retires sources
   only when the owner-defined completion condition is met.
@@ -291,9 +323,9 @@ and `gap_count`.
 `kind=hook` schedules carry a `hook:<label>` url and take no fetch: an
 authenticated owner-scoped `POST /v1/hooks/<schedule-id>` writes the body
 into the schedule's durable inbox (`data/hooks/<schedule>/`), and each
-probing occurrence drains the oldest staged payload into normal event
-settlement. An empty inbox is an idle tick (`no_change`), not a probe
-failure. Intake is restart-safe because staged payloads live on disk.
+probing occurrence drains the oldest staged payload into event settlement,
+preserving source IDs. Empty envelopes/inboxes are idle ticks (`no_change`).
+Intake is restart-safe because staged payloads live on disk.
 
 ## Schedules and windows
 
@@ -348,9 +380,9 @@ source task even if another conversation changes `/use` at the same time. To
 choose a different session, call `routine_list` with `view=destinations`, search
 by name, and pass the returned `task_id` as `destination_task_id`. The explicit
 `default` target is the root chat. The public create tool requires an origin or
-explicit destination; old private HTTP clients retain their prior behavior.
+explicit destination; old private HTTP clients retain their prior behavior. Mock-origin reminders return to the claimed mock chat and its captured outbox.
 
-`routine_get` displays the saved task name, chat/topic IDs, and `active`,
+`routine_read` displays the saved task name, chat/topic IDs, and `active`,
 `archived`, or `unavailable` status. An archived task is marked `archived`;
 a revoked or broken binding is `unavailable`. Neither is silently rerouted.
 To move a routine, use
@@ -382,10 +414,10 @@ than catch-up settles `missed`, never silent.
 
 ## Outcomes and retention
 
-Schedule state, execution and delivery are separate. A completed once schedule
-has no future slots while its admitted work may still be pending. `/routines`
-distinguishes completion from pause and omits zero-year deadlines. Read deadlines
-include legacy snooze state.
+A completed once schedule has no future slots; admitted work remains retryable
+under its revision, while edits, deletion and revocation fence it. `/routines`
+separates schedule, execution and delivery state. Starlark probes use two slots
+independent of warm runtimes; read deadlines include legacy snooze state.
 
 A schedule the tick cannot safely advance becomes `blocked`: unreadable
 schedule state and persistent owner-authorization failure stop the retry loop
@@ -401,22 +433,27 @@ distinguishes queued, partial, delivered and uncertain; delivery_count includes
 only the bound audience. Uncertain sends may have arrived and are not replayed
 automatically. Delivered does not mean read.
 
-Settled detail remains for at least 48 hours after its last write. Owner-bound
-summaries follow spool retention, normally 14 days. Legacy receipts lacking
-ownership/outcome evidence cannot become trustworthy history. Streams have no
-clock occurrences; inspect event_state for current health/error.
+ToolHub archives settled occurrences after delivery leaves both outboxes and
+agent execution is terminal; live sends retain their authorization record.
+Detail remains at least 48 hours after its last write. Owner-bound summaries
+remain normally 72 hours after compaction. Legacy receipts without ownership or
+outcome evidence are untrusted; streams have no clock occurrences (see event_state).
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.7.0. Old definitions remain immutable. Register
-the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
-preserving scopes, denies and limits. routine_edit requires routines.update and
-the update:routines tuple for all four actions. Do not translate a former
-pause-only or snooze-only selection into this broader edit grant automatically.
-Delete remains a separate capability. Old private operations still serve already
-pinned definitions; current MCP discovery shows the five routine tools plus the
-watch and assignment families. No provider connection or
-external write grant is created by a catalog upgrade.
+The current agent-tool catalog is hub-agent-tools@18.7.0 (platform Release 41); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The platform's new-space template selects `web_search`, `sessions`, `memory` and `media` through ToolHub; rights and service/provider configuration remain separate. `media_transcribe` resolves `/workspace/` paths into the same admitted workspace as relative paths, without accepting traversal. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab. For a local skill import, `file_write` stages `SKILL.md` first; `skill_edit action=install_local` reads the same `/workspace`-relative path and returns `diff`, `lint`, `scan` and a confirmation card. The skill becomes active only after owner approval and managed runtime refresh. For requested post-delivery cleanup, keep a pending reminder active and remove it only after history confirms delivery. Assignment plans carry nonempty sources[].schedule and structural dry-run verdicts; apply follows a saved verified plan, while progress requires a real assignment trigger job. Mock assignment sources bind to the claimed destination chat envelope before their first tick. Settings publication may respawn the current runtime; a request requiring a same-turn restore stops after `settings_read`. `settings_read.manageable_keys` bounds the whole reviewed setting surface — an absent key cannot be changed through tools, and chat language lives in the `/language` channel command, not ToolHub settings. A call denied on a declared selection reports a denial distinct from the not-found an undeclared name returns; deny events audit a bounded reason class.
+For recurring reminders, use `routine_create` with `kind=reminder` and an `every:` expression, then read the saved routine and its next due time. For a new watch, read its source through the projected ToolHub tool before creating it; `watch_sample` samples an existing watch. Stream delivery on a plain poll source requires `min_interval_seconds`. A blocked schedule records the safe authorization reason code for owner rights or channel binding; restore the actual right or binding before resuming.
+`memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent
+tool admission; selection does not grant the right. Current MCP discovery shows
+the five routine tools plus the watch and assignment families. A catalog
+upgrade creates no provider connection or external write grant.
+For ToolHub onboarding, `you_must=click_link` means a protected link requires the user's verified Telegram callback in the original chat; other channels cannot complete this step yet. The callback binds actor,
+action digest, revision and expiry and is consumed once; protected pages show
+status only. The agent-facing `confirm` tool reads status only; a tool call
+with a nonce never supplies human consent. Credential submission, OAuth
+provider consent and an explicit credential-free install request each count
+as the owner's consent — the install completes inline; separate confirmation
+remains only for `allow_writes`, `remove` and drift gates. After Broker form submission, query `connector_status` by exact onboarding/operation ID. It reads saved state, you_must and the last observation; background Broker events advance the onboarding. An expired one-time form does not imply a lost credential, and transient admissions retry without discarding it. Waiting for credentials, OAuth or confirmation sends a deterministic notice without launching a redundant model continuation. If the link or button is missing, use `connector_edit action=resend` for that ID; it queues a notice. `connector_status` reads the exact notice's durable channel outcome in `delivery`+`channel`: `queued` is accepted pending, `sent` has the named channel's confirmation — never user read or click — `uncertain` is unconfirmed and `not_sent` means no notice entered the queue. Recheck status before claiming delivery; do not use reauth to recover a missing notice. A running install/edit operation also reports its journaled position — `current_step`, `step_index`/`step_total`, `elapsed_seconds` and `step_started_at` — so progress checks answer with the named step, not a guess. For an enabled browser connector, resend sends its viewer link. `reauth` explicitly opens credential entry even before setup confirmation and after a completed reauth cycle. `resend` repeats the current pending action; it does not replace submitted credentials. `disable` retains credentials; `revoke` cuts authorization, including a pending rotation target, without deleting the record. A missing old Broker credential cannot prevent an explicitly requested separate owner-scoped intake; its unknown status stays unknown. Never request secrets in chat. The effective system contract must be valid UTF-8; failed materialization preserves the previous readable file.
 
 Use the [operations rebuild procedure](operations.md). Runtime dev overlays
 update both hub-runtime and its hubctl executor. Verify actual managed MCP
@@ -431,13 +468,32 @@ Three owner prompts for a manual check:
    напоминай размяться. Сначала покажи ближайшие срабатывания».
 3. «Каждую пятницу в 10:00 по Москве напоминай подвести итоги недели».
 
-To check routing manually, create two named tasks/topics. In the first ask:
-«Поставь тестовое напоминание через две минуты именно в эту сессию; покажи
-сохранённый топик». Then ask: «Покажи доступные сессии для рутин и перенеси
-напоминание в `<имя второй сессии>`; покажи новую карточку и прежнюю историю».
-The next message should arrive in the second topic. Test this with a harmless
-fixture and remove it afterwards.
+For routing acceptance, move a fixture reminder between two named topics; verify the destination and remove it.
 
-Then ask to show all pages, open the card, pause, change text, resume, snooze,
-show history and delete the fixture. Verify ID, revision, state and dates after
-each change. Record real sends and cleanup as their own acceptance evidence.
+## Source batch recovery
+
+Event sources persist one bounded pending batch with exact filter decisions and
+prepared sink payloads in their existing cursor state before fanout. A restart or
+full sink drains that remainder before another source fetch; recovered events do
+not rerun the filter. Drop decisions and sink admission precede cursor advance.
+Pause, owner authorization and assignment/revision fences still apply to replay.
+Agent batch references additionally bind schedule and probe revisions at claim
+and delivery. Sources with consuming reads and no ACK cannot guarantee delivery
+across a crash before the first local receipt; prefer non-consuming cursor reads.
+Failed agent turns keep their logical job identity and do not create automatic
+`-r1` submissions. Failed goals pause; missing tool telemetry is not proof of no
+effect. Same-identity retry is limited to verified pre-dispatch failures; unknown
+results reconcile. CHG-0222 native/container acceptance remains pending.
+
+Assignment wake checkpoints retain bounded unresolved `wake_operations`, keyed by
+logical job ID with its applied generation. Replaying that reservation preserves
+the original wake charge across enqueue failure or day rollover. Current pause
+and generation checks still apply. A confirmed durable job admission releases
+its reservation; failed confirmation leaves replayable local work. Event wakes
+also check the durable mapping before reserving, so lost acknowledgements do not recharge.
+Non-event watcher escalation saves exact job intent in its existing `probe-result`
+receipt before enqueue. Replay keeps source/occurrence identity and current owner
+checks; it does not refetch or charge the same reserved wake twice. Storage
+failure is returned separately from an exhausted quota. A receipt from another
+source or with another audience is refused before admission. Probe receipts are
+regular files bounded to 4 MiB and decode as one known JSON document.

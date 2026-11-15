@@ -3,7 +3,6 @@ package communication
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -35,7 +34,8 @@ func (g *Gateway) opsEngine() *commops.Engine {
 func (g *Gateway) configUser(id string) (User, bool) {
 	for _, u := range g.config.Users {
 		if u.ID == id && u.Enabled {
-			return u, true
+			u = g.user(id)
+			return u, u.Enabled
 		}
 	}
 	return User{}, false
@@ -71,7 +71,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 			if !ok {
 				return errors.New("task handle mismatch")
 			}
-			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "")
+			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "", false)
 		},
 		MappingStatus: func(jobID string) (string, bool, error) {
 			m, found, err := g.spool.Mapping(jobID)
@@ -79,16 +79,16 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		Mappings: func(userID string) []commops.Mapping {
 			var out []commops.Mapping
-			entries, err := os.ReadDir(filepath.Join(g.spool.root, "mappings"))
+			entries, err := g.spool.fsys.ReadDir(filepath.Join(g.spool.root, "mappings"))
 			if err != nil {
 				return nil
 			}
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			for _, name := range entries {
+				if !strings.HasSuffix(name, ".json") {
 					continue
 				}
 				g.spool.mu.Lock()
-				m, err := g.spool.loadMappingLocked(strings.TrimSuffix(entry.Name(), ".json"))
+				m, err := g.spool.loadMappingLocked(strings.TrimSuffix(name, ".json"))
 				g.spool.mu.Unlock()
 				if err != nil || m.UserID != userID {
 					continue
@@ -132,7 +132,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		MockLink: g.mockLinkClaim,
 		MockDelivered: func(deliveryID string) bool {
-			_, err := os.Stat(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(deliveryID)+".json"))
+			_, err := g.spool.fsys.Lstat(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(deliveryID)+".json"))
 			return err == nil
 		},
 		NotifyOwner: func(ctx context.Context, idempotency string, chatID int64, text string) {
@@ -140,7 +140,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		JobTimeout:      func() time.Duration { return canaryJobTimeout },
 		DeliveryGrace:   func() time.Duration { return canaryDeliveryGrace },
-		WriteJSONAtomic: atomicJSON,
+		WriteJSONAtomic: g.spool.writeJSON,
 	}
 }
 
@@ -148,18 +148,6 @@ func (g *Gateway) opsDeps() commops.Deps {
 // New code should use g.opsEngine() directly.
 
 func canaryInterval() time.Duration { return commops.Interval() }
-
-func (g *Gateway) runCanary(ctx context.Context, now time.Time) string {
-	return g.opsEngine().Run(ctx, now)
-}
-
-func (g *Gateway) canaryToolCheck(jobID string) string {
-	return g.opsEngine().ToolCheck(jobID)
-}
-
-func (g *Gateway) recordCanary(ctx context.Context, now time.Time, class string) {
-	g.opsEngine().Record(ctx, now, class)
-}
 
 func (g *Gateway) canaryLoop(ctx context.Context, interval time.Duration) {
 	g.opsEngine().Loop(ctx, interval)

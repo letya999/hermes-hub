@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,10 +31,12 @@ func DeliverPrepareEvent(ctx context.Context, auth identity.Envelope, onboarding
 	PostPrepareNotice(ctx, auth, onboarding, event, 0)
 }
 
-func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
+// prepareRoute resolves the channel's prepare-outcome endpoint and its
+// shared control credential from the environment; "" when unconfigured.
+func prepareRoute() (string, string) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
-	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
-		return ""
+	if base == "" {
+		return "", ""
 	}
 	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
 	if token == "" {
@@ -44,17 +47,36 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		}
 	}
 	if token == "" {
-		return ""
+		return "", ""
+	}
+	return base, token
+}
+
+func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
+	url, _ := PostPrepareNoticeWithDelivery(ctx, auth, onboarding, event, tools)
+	return url
+}
+
+// PostPrepareNoticeWithDelivery distinguishes a queued notice from a channel
+// sign-in link: ordinary confirmation notices have no login_url.
+func PostPrepareNoticeWithDelivery(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) (string, bool) {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
+		return "", false
 	}
 	payload := map[string]any{
 		"onboarding_id":     onboarding.OnboardingID,
-		"phase":             onboarding.Phase,
+		"notice_version":    onboarding.NoticeVersion,
+		"phase":             onboarding.NoticePhase(),
 		"definition_id":     onboarding.DefinitionID,
 		"contract_id":       onboarding.BrokerContractID,
 		"broker_request_id": onboarding.BrokerRequestID,
 		"repository":        onboarding.SourceURL,
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
+	}
+	if onboarding.Awaiting(GateConfirmSetup) {
+		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.Gate.Nonce, Revision: ConfirmationRevision(onboarding), ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.Gate.Expires}
 	}
 	// The reviewed contract declares how credentials may be collected; the
 	// channel offers that intake (e.g. QR login) instead of sniffing ids.
@@ -68,32 +90,92 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	}
 	if event != "" {
 		payload["event"] = event
+		if event == "link-resent" {
+			id := onboarding.NoticeEventID
+			if id == "" {
+				id = RandomNonce()
+			}
+			payload["event_id"] = id
+		}
 	}
 	if tools > 0 {
 		payload["tools"] = tools
 	}
+	return preparePostResult(ctx, auth, base, token, payload)
+}
+
+// ReadPrepareDeliveryStatus checks the channel's persisted outcome, never the
+// mere acknowledgement that a notice entered its queue, and names the channel
+// that holds the delivery so the caller can say where it went.
+func ReadPrepareDeliveryStatus(ctx context.Context, auth identity.Envelope, onboardingID string, version uint64) (string, string) {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || onboardingID == "" || version == 0 {
+		return PrepareDeliveryUnknown, ""
+	}
+	query := url.Values{"onboarding_id": {onboardingID}, "notice_version": {strconv.FormatUint(version, 10)}}
+	callCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, base+"/v1/prepare-delivery-status?"+query.Encode(), nil) // #nosec G704 -- internal control endpoint
+	if err != nil {
+		return PrepareDeliveryUnknown, ""
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
+	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
+	if err != nil {
+		return PrepareDeliveryUnknown, ""
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return PrepareDeliveryUnknown, ""
+	}
+	var result struct {
+		DeliveryStatus string `json:"delivery_status"`
+		Channel        string `json:"channel"`
+	}
+	if json.NewDecoder(response.Body).Decode(&result) != nil {
+		return PrepareDeliveryUnknown, ""
+	}
+	switch result.DeliveryStatus {
+	case PrepareDeliveryUnknown, PrepareDeliveryQueued, PrepareDeliveryDelivered, PrepareDeliveryUncertain:
+		return result.DeliveryStatus, result.Channel
+	default:
+		return PrepareDeliveryUnknown, ""
+	}
+}
+
+// preparePost ships one prepared payload to the channel's prepare-outcome
+// endpoint and returns the channel-minted login URL when the notice carries
+// one. A missing route or a failed post is silent — callers stay honest in
+// their own result instead.
+func preparePost(ctx context.Context, auth identity.Envelope, base, token string, payload map[string]any) string {
+	url, _ := preparePostResult(ctx, auth, base, token, payload)
+	return url
+}
+
+func preparePostResult(ctx context.Context, auth identity.Envelope, base, token string, payload map[string]any) (string, bool) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		return ""
+		return "", false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
 	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		log.Printf("toolhub prepare outcome delivery failed onboarding=%s: %v", onboarding.OnboardingID, err)
-		return ""
+		log.Printf("toolhub prepare outcome delivery failed onboarding=%v: %v", payload["onboarding_id"], err)
+		return "", false
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub prepare outcome delivery onboarding=%s status=%d", onboarding.OnboardingID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
-		return ""
+		log.Printf("toolhub prepare outcome delivery onboarding=%v status=%d", payload["onboarding_id"], response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
+		return "", false
 	}
 	// The channel returns the sign-in link it minted for this request (QR
 	// invite and friends); callers may surface it in the tool result.
@@ -101,49 +183,22 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		LoginURL string `json:"login_url"`
 	}
 	_ = json.NewDecoder(response.Body).Decode(&outcome)
-	return outcome.LoginURL
+	return outcome.LoginURL, true
 }
 
 // DeliverViewerLink posts the one-time browser viewer link to the owner's
 // channel. The URL never enters a tool result — only the notice carries it.
 func DeliverViewerLink(ctx context.Context, auth identity.Envelope, connectionID, viewerURL string) {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
+	_ = DeliverViewerLinkWithDelivery(ctx, auth, connectionID, viewerURL)
+}
+
+func DeliverViewerLinkWithDelivery(ctx context.Context, auth identity.Envelope, connectionID, viewerURL string) bool {
+	base, token := prepareRoute()
 	if base == "" || auth.PrincipalID == "" || connectionID == "" || viewerURL == "" {
-		return
+		return false
 	}
-	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
-	if token == "" {
-		if strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "" {
-			token = os.Getenv("HUB_SUPERVISOR_AUTH")
-		} else {
-			token = os.Getenv("HUB_RUNTIME_AUTH")
-		}
-	}
-	if token == "" {
-		return
-	}
-	body, err := json.Marshal(map[string]any{"connection_id": connectionID, "viewer_url": viewerURL})
-	if err != nil {
-		return
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
-	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
-	if err != nil {
-		log.Printf("toolhub viewer link delivery failed connection=%s: %v", connectionID, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub viewer link delivery connection=%s status=%d", connectionID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
-	}
+	_, queued := preparePostResult(ctx, auth, base, token, map[string]any{"connection_id": connectionID, "viewer_url": viewerURL})
+	return queued
 }
 
 // ViewerLinkURL renders the owner-only viewer address on the public form
@@ -166,46 +221,58 @@ func credentialNoticeURL(onboarding Onboarding) string {
 	return ActionURL(FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")), onboarding)
 }
 
+// NoticeActionURL resolves the user-facing action link a pending notice would
+// carry. Empty means the armed human step has no usable URL yet — a notice
+// posted now would tell the owner a link "arrives next message" that may never
+// land, so callers must wait for a non-empty result before announcing a step.
+func NoticeActionURL(onboarding Onboarding) string {
+	return credentialNoticeURL(onboarding)
+}
+
 // ActionURL resolves the user-facing link for the onboarding's pending action
 // against an explicit form origin. Selection order matches the channel notice
 // so elicitation and notices never disagree about which link is live.
 func ActionURL(origin string, onboarding Onboarding) string {
-	if onboarding.OnboardingID == "" {
+	if onboarding.OnboardingID == "" || onboarding.Stage == StageGone {
 		return ""
 	}
-	// A live remove link outranks other pending actions: the preview mints it
-	// while the onboarding still sits in its previous phase.
-	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
-		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.RemoveNonce)
+	gate := onboarding.Gate
+	if gate == nil {
+		return ""
 	}
-	// An armed wizard collapses the interactive phases into one stable link:
+	if gate.Kind == GateRemove {
+		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
+	}
+	// An armed wizard collapses the interactive gates into one stable link:
 	// the page renders the live step itself, so a rotated OAuth state or a
 	// reminted broker request never strands the URL the channel delivered.
 	if onboarding.WizardNonce != "" {
-		switch onboarding.Phase {
-		case PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth:
-			return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+	}
+	switch gate.Kind {
+	case GateConfirmSetup:
+		if gate.Nonce != "" && !onboarding.ConfirmationUsed {
+			return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
 		}
-	}
-	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
-		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.ConfirmationNonce)
-	}
-	// External action links (provider OAuth, broker connect) hop through
-	// /connect/ so the destination URL and its state never sit in chat text.
-	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
-		if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
-			if state := parsed.Query().Get("state"); state != "" {
-				return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+	case GateOAuth:
+		// External action links (provider OAuth, broker connect) hop through
+		// /connect/ so the destination URL and its state never sit in chat text.
+		if onboarding.ProviderAuthorizationURL != "" {
+			if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
+				if state := parsed.Query().Get("state"); state != "" {
+					return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+				}
 			}
 		}
+	case GateCredentials:
+		if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
+			return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
+		}
+		if gate.Nonce != "" {
+			return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(gate.Nonce)
+		}
 	}
-	if onboarding.Phase == PhaseAwaitingCreds && onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
-		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
-	}
-	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" {
-		return ""
-	}
-	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.FormNonce)
+	return ""
 }
 
 func ErrString(text string) error {
@@ -218,3 +285,23 @@ func ErrString(text string) error {
 type plainError struct{ text string }
 
 func (e *plainError) Error() string { return e.text }
+
+// DeliverMemoryConfirmation sends a memory edit proposal's confirmation
+// proof to the owner's channel through the same prepare-outcome lane the
+// connector confirmations use — the channel renders the verified button and
+// posts the tap back to /v1/confirmations. The label gives the notice text
+// its subject; delivery itself is best-effort like every prepare notice.
+func DeliverMemoryConfirmation(ctx context.Context, auth identity.Envelope, proof HumanConfirmation, label string) {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || proof.OnboardingID == "" {
+		return
+	}
+	payload := map[string]any{
+		"onboarding_id": proof.OnboardingID,
+		"phase":         "awaiting-confirm",
+		"repository":    label,
+		"created_at":    time.Now().UTC().Format(time.RFC3339Nano),
+		"confirmation":  proof,
+	}
+	preparePost(ctx, auth, base, token, payload)
+}

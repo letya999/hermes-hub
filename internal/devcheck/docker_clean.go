@@ -88,8 +88,8 @@ func cliDocker(ctx context.Context, args ...string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-// activeImageTags lists the hermes-hub tags still referenced by generated
-// compose files; "test" is always kept because docker-check produces it.
+// activeImageTags lists tags used by Compose, rollout pins, and the matching
+// supervisor runtime; "test" is always kept because docker-check produces it.
 func activeImageTags(root string) (map[string]bool, error) {
 	keep := map[string]bool{"test": true}
 	spaces, err := filepath.Glob(filepath.Join(root, "spaces", "*", "generated", "image-pins.json"))
@@ -129,7 +129,13 @@ func activeImageTags(root string) (map[string]bool, error) {
 				return nil, err
 			}
 			for _, match := range composeImagePattern.FindAllSubmatch(body, -1) {
-				keep[string(match[1])] = true
+				tag := string(match[1])
+				keep[tag] = true
+				for _, role := range []string{"-core", "-control"} {
+					if runtimeTag, ok := strings.CutSuffix(tag, role); ok {
+						keep[runtimeTag] = true // Supervisor spawns this image outside Compose.
+					}
+				}
 			}
 		}
 	}

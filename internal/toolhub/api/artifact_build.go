@@ -107,7 +107,11 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	}
 	for _, image := range []string{RestrictedBuildKitImage, RestrictedBuildProxyImage} {
 		if _, err := run(ctx, nil, "image", "inspect", image); err != nil {
-			return StoredOCIArtifact{}, fmt.Errorf("%w: pinned builder image unavailable", ErrIsolation)
+			// A pruned daemon cache is self-healing: the digest-pinned ref
+			// restores the exact reviewed bits, no mutable tag can drift.
+			if _, err := run(ctx, nil, "pull", "--quiet", image); err != nil {
+				return StoredOCIArtifact{}, fmt.Errorf("%w: pinned builder image unavailable", ErrIsolation)
+			}
 		}
 	}
 	var nonce [8]byte
@@ -232,6 +236,8 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 		return StoredOCIArtifact{}, fmt.Errorf("%w: invalid build proxy address", ErrIsolation)
 	}
 	proxyURL := "http://" + proxyIP + ":3128"
+	log.Printf("toolhub build phase=topology builder=%s", builder)
+	buildStart := time.Now()
 	buildArgs := []string{"exec", builder, "buildctl", "--addr", "unix:///run/user/1000/buildkit/buildkitd.sock", "build", "--progress", "plain", "--frontend", "dockerfile.v0", "--local", "context=/run/hermes-context", "--local", "dockerfile=/run/hermes-context",
 		"--opt", "filename=" + recipe.Dockerfile,
 		"--opt", "build-arg:HTTP_PROXY=" + proxyURL, "--opt", "build-arg:HTTPS_PROXY=" + proxyURL, "--opt", "build-arg:NO_PROXY=",
@@ -240,6 +246,7 @@ func BuildRestrictedOCIWith(ctx context.Context, recipe ArtifactRecipe, contextB
 	if _, err := run(ctx, nil, buildArgs...); err != nil {
 		return StoredOCIArtifact{}, err
 	}
+	log.Printf("toolhub build phase=buildctl builder=%s seconds=%.1f", builder, time.Since(buildStart).Seconds())
 	temporary, err := os.CreateTemp("", "hermes-artifact-*.oci.tar")
 	if err != nil {
 		return StoredOCIArtifact{}, err

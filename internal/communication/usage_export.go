@@ -36,9 +36,18 @@ type UsageReport struct {
 }
 
 // ReadUsageJournal parses the append-only journal directly, never opening the
-// spool or mutating state.
+// spool or mutating state. On an activated spool the journal is a spool.db
+// row; a read-only backend handle sees it without taking the writer fence.
 func ReadUsageJournal(root string) ([]UsageRecord, error) {
 	body, err := os.ReadFile(usagePath(root)) // #nosec G304 -- operator-selected spool root.
+	if spoolActivated(root) {
+		fsys, openErr := openSpoolDB(root, true)
+		if openErr != nil {
+			return nil, openErr
+		}
+		defer fsys.Close()
+		body, err = fsys.ReadFile(usagePath(root))
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

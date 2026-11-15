@@ -59,7 +59,14 @@ func (g *Gateway) telegramDeps() channel.TelegramDeps {
 		VoicePlan:        func(d Delivery) (string, bool) { return g.voicePlan(d) },
 		SendVoice:        func(ctx context.Context, d Delivery, text string) error { return g.sendVoiceReply(ctx, d, text) },
 		SendMarkdown:     func(ctx context.Context, d *Delivery) error { return g.sendTelegramMarkdown(ctx, d) },
-		UserByChat:       func(chatID int64) (User, bool) { u, ok := g.users[chatID]; return u, ok },
+		UserByChat: func(chatID int64) (User, bool) {
+			u, ok := g.users[chatID]
+			if !ok {
+				return User{}, false
+			}
+			u = g.user(u.ID)
+			return u, u.Enabled
+		},
 		UserByPrincipal: func(id string) User {
 			if g == nil {
 				return User{}
@@ -67,7 +74,9 @@ func (g *Gateway) telegramDeps() channel.TelegramDeps {
 			return g.user(id)
 		},
 		OwnsRoutineEnvelope: func(job Job, canonical identity.Envelope) bool {
-			return g.ownsRoutineEnvelope(job, canonical)
+			// Communication owns no routine envelopes — ToolHub is the sole
+			// automation authority; deny so nothing resumes automation here.
+			return false
 		},
 	}
 }
@@ -82,10 +91,10 @@ func (g *Gateway) slackDeps() channel.SlackDeps {
 
 func (g *Gateway) mockDeps() channel.MockDeps {
 	return channel.MockDeps{
-		Capture:             func(d *Delivery) error { return g.captureMock(d) },
+		Capture:             g.captureMock,
 		LinkOwner:           func(chatID int64) (string, error) { return g.mockLinkOwner(chatID) },
 		UserByPrincipal:     func(id string) User { return g.user(id) },
-		OwnsRoutineEnvelope: func(job Job, canonical identity.Envelope) bool { return g.ownsRoutineEnvelope(job, canonical) },
+		OwnsRoutineEnvelope: func(job Job, canonical identity.Envelope) bool { return false },
 	}
 }
 

@@ -1,7 +1,6 @@
 package communication
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
 )
 
@@ -20,9 +21,11 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/goals", g.handleGoals)
+	mux.HandleFunc("/v1/media/speak", g.handleSpeak)
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
 	mux.HandleFunc("/v1/tasks", g.handleTasks)
 	mux.HandleFunc("/v1/tasks/", g.handleTasks)
+	mux.HandleFunc("/v1/sessions", g.handleSessions)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/hooks/", g.handleHooks)
 	mux.HandleFunc("/v1/assignments", g.handleAssignments)
@@ -33,6 +36,9 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/skill-drafts", g.handleSkillDraftRequest)
 	mux.HandleFunc("/v1/skill-git", g.handleSkillGit)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
+	mux.HandleFunc("/v1/prepare-delivery-status", g.handlePrepareDeliveryStatus)
+	mux.HandleFunc("/v1/automation/deliveries", g.handleAutomationDelivery)
+	mux.HandleFunc("/v1/automation/owner-home", g.handleAutomationOwnerHome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
 	mux.HandleFunc("/skill-drafts/", g.serveSkillDraft)
 	g.registerTelegramAuth(mux)
@@ -48,6 +54,10 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 	if !g.controlTokenAccepted(token, &principal) {
 		return identity.Envelope{}, false
 	}
+	return g.controlCaller(principal)
+}
+
+func (g *Gateway) controlCaller(principal string) (identity.Envelope, bool) {
 	user := g.user(principal)
 	if user.ID == "" || !user.Enabled {
 		return identity.Envelope{}, false
@@ -72,6 +82,12 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 		return false
 	}
 	if g.config.ControlAuth != "" && token == g.config.ControlAuth {
+		if g.config.Supervised && g.config.AutomationAuth != "" && g.config.AutomationAuth != g.config.ControlAuth {
+			if !identity.ValidID(g.config.ControlPrincipal) {
+				return false
+			}
+			*principal = g.config.ControlPrincipal
+		}
 		return true
 	}
 	if slices.Contains(g.config.controlAuthExtra, token) {
@@ -90,7 +106,7 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 		return false
 	}
 	user := g.user(env.PrincipalID)
-	if (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
+	if !user.Enabled || (user.PolicyVersion != "" && user.PolicyVersion != env.PolicyVersion) || (user.RuntimeID != "" && user.RuntimeID != env.RuntimeID) {
 		return false
 	}
 	*principal = env.PrincipalID
@@ -115,21 +131,40 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if r.URL.Query().Get("view") == "destinations" {
-			page, err := g.spool.ListRoutineDestinations(g.user(caller.PrincipalID), caller, r.URL.Query().Get("after"), limit, r.URL.Query().Get("query"))
+			var page routines.RoutineDestinationPage
+			err := g.automationCall(r.Context(), caller, "schedule.destinations", map[string]any{"after": r.URL.Query().Get("after"), "limit": limit, "query": r.URL.Query().Get("query")}, &page)
 			if err != nil {
-				http.Error(w, "destination list failed", http.StatusInternalServerError)
+				http.Error(w, "destination list failed", automationStatus(err))
 				return
 			}
 			writeJSON(w, page)
 			return
 		}
-		items, err := g.spool.ListSchedules(caller)
+		items, err := g.listSchedules(r.Context(), caller)
 		if err != nil {
-			http.Error(w, "list failed", http.StatusInternalServerError)
+			http.Error(w, "list failed", automationStatus(err))
 			return
 		}
 		if r.URL.RawQuery != "" {
-			writeJSON(w, routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query"), g.spool.watchLastError))
+			page := routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query"), nil)
+			for i := range page.Items {
+				// The durable probe outcome lives on the owner card now; join
+				// it for every kind that carries watch or event state.
+				if page.Items[i].Kind != "check" && page.Items[i].Kind != "event" && page.Items[i].Kind != "watcher" {
+					continue
+				}
+				card, err := g.getRoutineCard(r.Context(), page.Items[i].ID, caller)
+				if err != nil {
+					http.Error(w, "list failed", automationStatus(err))
+					return
+				}
+				if card.EventState != nil {
+					page.Items[i].LastError = card.EventState.LastError
+				} else {
+					page.Items[i].LastError = card.WatchState.LastError
+				}
+			}
+			writeJSON(w, page)
 		} else {
 			writeJSON(w, items)
 		}
@@ -145,6 +180,24 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 		in.ActorID = caller.PrincipalID
 		in.ScopeID = "user:" + caller.PrincipalID
 		in.OrganizationID = g.config.OrganizationID
+		if in.OriginJobID != "" {
+			lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
+			origin, found, err := g.spool.Mapping(in.OriginJobID)
+			if err != nil || !found {
+				http.Error(w, locale.T(lang, "routines.origin-unavailable"), http.StatusBadRequest)
+				return
+			}
+			if origin.Channel == "mock" {
+				user := g.user(caller.PrincipalID)
+				canonical := user.MockEnvelope(origin.ChatID)
+				if origin.PrincipalID != caller.PrincipalID || origin.ContextID != canonical.ContextID || origin.RuntimeID != canonical.RuntimeID || origin.PolicyVersion != canonical.PolicyVersion || origin.ExternalIdentityID != canonical.ExternalIdentityID || origin.DeliveryTargetID != canonical.DeliveryTargetID || origin.UserID != user.ID || origin.ActorID != user.ID || origin.ScopeID != "user:"+user.ID || origin.OrganizationID != in.OrganizationID || origin.TaskID != "default" || (in.DestinationTaskID != "" && in.DestinationTaskID != "current") || (in.Channel != "" && in.Channel != "mock") {
+					http.Error(w, locale.T(lang, "routines.origin-unavailable"), http.StatusBadRequest)
+					return
+				}
+				in.Channel, in.ChatID, in.TopicID = "mock", origin.ChatID, origin.TopicID
+				in.OriginJobID, in.DestinationTaskID = "", ""
+			}
+		}
 		if in.Channel == "" {
 			in.Channel = "telegram_bot"
 		}
@@ -168,29 +221,16 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		g.spool.mu.Lock()
-		if in.OriginJobID != "" || in.DestinationTaskID != "" {
-			var err error
-			in, err = g.spool.bindRoutineDestinationLocked(in, caller, g.user(caller.PrincipalID))
-			if err != nil {
-				g.spool.mu.Unlock()
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			caller = in.Envelope
+		var replay struct {
+			Schedule Schedule `json:"schedule"`
+			Found    bool     `json:"found"`
 		}
-		replayed, found, existingErr := g.spool.creationReplayLocked(in, caller)
-		g.spool.mu.Unlock()
-		if existingErr != nil {
-			if errors.Is(existingErr, ErrScheduleConflict) {
-				http.Error(w, existingErr.Error(), http.StatusConflict)
-			} else {
-				http.Error(w, existingErr.Error(), http.StatusBadRequest)
-			}
+		if err := g.automationCall(r.Context(), caller, "schedule.replay", map[string]any{"schedule": in}, &replay); err != nil {
+			http.Error(w, "schedule replay failed", automationStatus(err))
 			return
 		}
-		if found {
-			writeJSON(w, replayed)
+		if replay.Found {
+			writeJSON(w, replay.Schedule)
 			return
 		}
 		now := g.now().UTC()
@@ -210,13 +250,10 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			}
 			initialValue = &value
 		}
-		created, err := g.spool.createScheduleAt(in, caller, g.config.NativeCron, initialValue, now, g.user(caller.PrincipalID))
+		var created Schedule
+		err := g.automationCall(r.Context(), caller, "schedule.create", map[string]any{"schedule": in, "native_cron": g.config.NativeCron, "baseline": initialValue}, &created)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrScheduleConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, err.Error(), status)
+			http.Error(w, "schedule create failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, created)
@@ -248,9 +285,9 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		items, err := g.spool.RoutineHistory(id, caller)
+		items, err := g.routineHistory(r.Context(), id, caller)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "schedule history failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, routineHistoryPage(items, r.URL.Query().Get("after"), limit))
@@ -264,14 +301,15 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		preview, err := g.spool.PreviewRoutine(id, caller, limit, g.now().UTC())
+		var preview RoutinePreview
+		err := g.automationCall(r.Context(), caller, "schedule.preview", map[string]any{"id": id, "count": limit}, &preview)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "schedule preview failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, preview)
 	case r.Method == http.MethodGet && action == "":
-		card, err := g.getRoutineCard(id, caller)
+		card, err := g.getRoutineCard(r.Context(), id, caller)
 		if err != nil {
 			if errors.Is(err, ErrRoutineNotOwned) {
 				http.NotFound(w, r)
@@ -294,20 +332,29 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		if patch.ExpectedRevision != nil {
 			expected = append(expected, *patch.ExpectedRevision)
 		}
-		if err := g.spool.SnoozeSchedule(id, caller, patch.Until, expected...); err != nil {
-			if errors.Is(err, ErrRoutineRevision) {
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
+		// The owner's typed cause is not exposed on the control wire; the card
+		// carries the effective deadline so the contract message survives.
+		card, err := g.getRoutineCard(r.Context(), id, caller)
+		if err != nil {
+			status := automationStatus(err)
+			if errors.Is(err, ErrRoutineNotOwned) {
+				status = http.StatusNotFound
 			}
-			if errors.Is(err, ErrRoutineSnoozeNotLater) {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			http.Error(w, "schedule not owned", http.StatusForbidden)
+			http.Error(w, "schedule not owned", status)
+			return
+		}
+		if !card.Schedule.NextDue.IsZero() && !patch.Until.After(card.Schedule.NextDue) {
+			http.Error(w, ErrRoutineSnoozeNotLater.Error(), http.StatusBadRequest)
+			return
+		}
+		args := scheduleRevisionPayload(id, expected)
+		args["until"] = patch.Until
+		if err := g.automationCall(r.Context(), caller, "schedule.snooze", args, nil); err != nil {
+			http.Error(w, "schedule snooze failed", automationStatus(err))
 			return
 		}
 		if len(expected) > 0 {
-			g.writeRoutineCard(w, id, caller)
+			g.writeRoutineCard(w, r.Context(), id, caller)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -317,16 +364,12 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if err := g.spool.DeleteSchedule(id, caller, expected...); err != nil {
-			if errors.Is(err, ErrRoutineRevision) {
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusForbidden)
+		if err := g.automationCall(r.Context(), caller, "schedule.delete", scheduleRevisionPayload(id, expected), nil); err != nil {
+			http.Error(w, "schedule delete failed", automationStatus(err))
 			return
 		}
 		if len(expected) > 0 {
-			g.writeRoutineCard(w, id, caller)
+			g.writeRoutineCard(w, r.Context(), id, caller)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -336,16 +379,12 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if err := g.spool.PauseSchedule(id, caller, expected...); err != nil {
-			if errors.Is(err, ErrRoutineRevision) {
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusForbidden)
+		if err := g.automationCall(r.Context(), caller, "schedule.pause", scheduleRevisionPayload(id, expected), nil); err != nil {
+			http.Error(w, "schedule pause failed", automationStatus(err))
 			return
 		}
 		if len(expected) > 0 {
-			g.writeRoutineCard(w, id, caller)
+			g.writeRoutineCard(w, r.Context(), id, caller)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -357,16 +396,10 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid sample request", http.StatusBadRequest)
 			return
 		}
-		toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
-			return g.toolCallProbeWithin(ctx, principal, probe, sampleCallBudget)
-		}
-		sample, err := g.sampleRoutine(r.Context(), id, caller, req.Filter, toolCall)
+		var sample watchSample
+		err := g.automationCall(r.Context(), caller, "schedule.sample", map[string]any{"id": id, "filter": req.Filter}, &sample)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrRoutineNotOwned) {
-				status = http.StatusForbidden
-			}
-			http.Error(w, err.Error(), status)
+			http.Error(w, "schedule sample failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, sample)
@@ -379,17 +412,10 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		baseline, err := g.routineEditBaseline(r.Context(), id, caller, patch)
 		var item Schedule
 		if err == nil {
-			item, err = g.spool.editRoutine(id, caller, patch, action == "resume", g.now().UTC(), routineEditContext{User: g.user(caller.PrincipalID), Baseline: baseline})
+			err = g.automationCall(r.Context(), caller, "schedule.edit", map[string]any{"id": id, "patch": patch, "resume": action == "resume", "baseline": baseline}, &item)
 		}
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrRoutineNotOwned) {
-				status = http.StatusForbidden
-			}
-			if errors.Is(err, ErrRoutineRevision) {
-				status = http.StatusConflict
-			}
-			http.Error(w, err.Error(), status)
+			http.Error(w, "schedule edit failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, item)
@@ -420,6 +446,11 @@ func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "":
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Hub-Name", rec.Name)
+		src := rec.Source
+		if src == "" {
+			src = "people"
+		}
+		w.Header().Set("X-Hub-Source", src)
 		_, _ = w.Write(data)
 	case r.Method == http.MethodPost && action == "consume":
 		if err := g.spool.ConsumeInbound(id); err != nil {
@@ -448,13 +479,13 @@ func (g *Gateway) handleHooks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
 	}
-	card, err := g.spool.GetRoutine(id, caller)
+	card, err := g.getRoutineCard(r.Context(), id, caller)
 	if err != nil || card.Schedule.Probe == nil || card.Schedule.Probe.Kind != "hook" {
 		http.NotFound(w, r)
 		return
 	}
-	if err := g.spool.rt.IntakeHook(id, body, g.now().UTC()); err != nil {
-		http.Error(w, "intake failed", http.StatusInternalServerError)
+	if err := g.automationCall(r.Context(), caller, "hook.intake", map[string]any{"id": id, "body": body}, nil); err != nil {
+		http.Error(w, "intake failed", automationStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)

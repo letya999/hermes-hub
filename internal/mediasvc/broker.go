@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	mediaBrokerBinding  = "hub-media"
 	mediaBrokerWorkload = "hub-media"
 	// mediaBrokerCacheTTL bounds how long a materialized key stays in memory
 	// before the next engine call re-materializes — a fal video job polls every
@@ -75,11 +74,12 @@ func (c Config) brokerIdentity() identity.Envelope {
 // broker for the media grant. The lease is released before the provider call;
 // the plaintext is cleared from the DTO right after extraction.
 func brokerMaterializeKey(ctx context.Context, cfg credentialbroker.Config, auth identity.Envelope, grantID string) (string, error) {
-	control, err := cfg.NewForBinding(auth, "broker:control", mediaBrokerBinding, mediaBrokerWorkload)
+	binding := credentialbroker.MediaBinding(auth.PrincipalID)
+	control, err := cfg.NewForBinding(auth, "broker:control", binding, binding)
 	if err != nil {
 		return "", fmt.Errorf("media broker control client: %w", err)
 	}
-	runtimeClient, err := cfg.NewForBinding(auth, "broker:runtime", mediaBrokerBinding, mediaBrokerWorkload)
+	runtimeClient, err := cfg.NewForBinding(auth, "broker:runtime", binding, binding)
 	if err != nil {
 		return "", fmt.Errorf("media broker runtime client: %w", err)
 	}

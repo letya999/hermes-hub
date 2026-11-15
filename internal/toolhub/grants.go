@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -12,7 +14,16 @@ import (
 // the remove ladder mutates Finalizers in place, so the map and callers
 // must never share its backing array.
 func cloneOnboarding(o api.Onboarding) api.Onboarding {
+	if o.Initiator != nil {
+		actor := *o.Initiator
+		actor.Scopes = slices.Clone(actor.Scopes)
+		o.Initiator = &actor
+	}
 	o.Finalizers = slices.Clone(o.Finalizers)
+	if o.HumanConsent != nil {
+		consent := *o.HumanConsent
+		o.HumanConsent = &consent
+	}
 	return o
 }
 
@@ -78,9 +89,95 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.putOnboardingLocked(onboarding)
+}
+
+func (s *Store) putOnboardingLocked(onboarding api.Onboarding) error {
+	previous, existed := s.onboardings[onboarding.OnboardingID]
+	onboarding = prepareOnboardingWrite(previous, onboarding)
+	if existed {
+		if api.RecordsEqual(previous, onboarding) {
+			return nil
+		}
+		if err := api.ValidateOnboardingTransition(previous, onboarding); err != nil {
+			return err
+		}
+	}
+	if err := onboarding.Validate(); err != nil {
+		return err
+	}
+	return s.commitOnboardingLocked(onboarding)
+}
+
+// commitOnboardingLocked also stores metadata-only acknowledgement facts, whose
+// version is NoticeVersion rather than the domain transition revision.
+func (s *Store) commitOnboardingLocked(onboarding api.Onboarding) error {
+	previous, existed := s.onboardings[onboarding.OnboardingID]
+	oldOps := s.operations
+	s.operations = maps.Clone(oldOps)
+	for id, op := range s.operations {
+		if op.OnboardingID == onboarding.OnboardingID {
+			s.operations[id] = installProgress(op, onboarding)
+		}
+	}
 	s.onboardings[onboarding.OnboardingID] = cloneOnboarding(onboarding)
-	s.mu.Unlock()
-	return s.persist()
+	if s.path != "" {
+		previousDigest := s.diskDigest
+		if err := s.saveLocked(s.path); err != nil {
+			if s.diskDigest == previousDigest {
+				s.operations = oldOps
+				if existed {
+					s.onboardings[onboarding.OnboardingID] = previous
+				} else {
+					delete(s.onboardings, onboarding.OnboardingID)
+				}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// PutOnboardingIfRevision prevents concurrent Broker polls from replacing a
+// newer confirmation proof or resurrecting an onboarding being removed.
+func (s *Store) PutOnboardingIfRevision(onboarding api.Onboarding, expected uint64) error {
+	if err := onboarding.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.onboardings[onboarding.OnboardingID]
+	if !ok || previous.Revision != expected || onboarding.Revision != expected+1 {
+		return api.ErrStale
+	}
+	return s.putOnboardingLocked(onboarding)
+}
+
+// ConsumeConfirmation persists the single-use claim before binding work starts.
+func (s *Store) ConsumeConfirmation(expected api.Onboarding) (api.Onboarding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.consumeConfirmationLocked(expected, false, nil)
+}
+
+func (s *Store) consumeConfirmationLocked(expected api.Onboarding, completeWrites bool, consent *api.HumanConsent) (api.Onboarding, error) {
+	current, ok := s.onboardings[expected.OnboardingID]
+	if !ok || current.Revision != expected.Revision || current.ConfirmationUsed {
+		return api.Onboarding{}, fmt.Errorf("%w: confirmation already consumed or stale", api.ErrUnauthorized)
+	}
+	current.ConfirmationUsed = true
+	if consent != nil {
+		current.HumanConsent = consent
+	}
+	if completeWrites {
+		current.WritesEnabled, current.PendingWrites, current.Stage = true, false, api.StageLive
+	}
+	current.Revision++
+	if err := s.putOnboardingLocked(current); err != nil {
+		return api.Onboarding{}, err
+	}
+	return cloneOnboarding(s.onboardings[current.OnboardingID]), nil
 }
 
 // ClaimPreparingOnboarding atomically reports a fresh record already in flight
@@ -92,13 +189,17 @@ func (s *Store) ClaimPreparingOnboarding(onboarding api.Onboarding, maxAge time.
 		return api.Onboarding{}, false, err
 	}
 	s.mu.Lock()
-	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.Phase == api.PhasePreparing && now.Before(existing.CreatedAt.Add(maxAge)) {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok && existing.PreparingStub && now.Before(existing.CreatedAt.Add(maxAge)) {
 		return existing, true, nil
 	}
-	s.onboardings[onboarding.OnboardingID] = onboarding
-	s.mu.Unlock()
-	return onboarding, false, s.persist()
+	if existing, ok := s.onboardings[onboarding.OnboardingID]; ok {
+		onboarding.Revision = existing.Revision + 1
+	}
+	if err := s.putOnboardingLocked(onboarding); err != nil {
+		return api.Onboarding{}, false, err
+	}
+	return cloneOnboarding(s.onboardings[onboarding.OnboardingID]), false, nil
 }
 
 func (s *Store) PromoteToCatalog(definitionID, version, operator string) error {
@@ -198,10 +299,8 @@ func (s *Store) sharedConnectionCoversLocked(auth identity.Envelope, connection 
 	return policy.StoreOwner == connection.Owner.ID && slices.Contains(policy.Principals, auth.PrincipalID)
 }
 
-// sharedForeignConnection reports that connectionID is governed by a shared
-// credential policy whose store owner is someone other than this principal —
-// the member may cut its own binding but never the shared connection, its
-// ciphertext or the shared workload.
+// sharedForeignConnection protects team connections and shared-policy
+// connections from member-level lifecycle cleanup.
 func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	if connectionID == "" {
 		return false
@@ -209,7 +308,7 @@ func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	connection, ok := s.connections[connectionID]
-	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
+	return ok && (connection.Owner.Type != api.PrincipalOwner || connection.Owner.ID != principalID)
 }
 
 // teamConnectionCoversLocked admits a member to a team-owned connection: the
@@ -339,7 +438,9 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		// AuthorizeProjectedCall (ADR-0089 D3). Under "" the profile's own
 		// control_operations allowlist stays the strict contract.
 		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
-			allowed["invoke"] = true
+			if decision, err := s.decideLocked(auth, "tools", "use", "", time.Now().UTC()); err == nil && decision.Allow {
+				allowed["invoke"] = true
+			}
 			for _, tool := range api.ConnectorTools {
 				allowed[tool] = true
 			}
@@ -347,6 +448,14 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		}
 		if profile.Connectors == api.ConnectorsNone {
 			return allowed, nil
+		}
+		// The published tools.use right admits the invoke control —
+		// the tool_call dispatch path for extended selections — and the
+		// profile's own control_operations allowlist cannot express it. The
+		// right is re-decided on every call, so a revoked or ceiling-dropped
+		// right closes the control on the next projection refresh.
+		if decision, err := s.decideLocked(auth, "tools", "use", "", time.Now().UTC()); err == nil && decision.Allow {
+			allowed["invoke"] = true
 		}
 		for _, operation := range profile.ControlOperations {
 			if slices.Contains(api.ControlOperations, operation) {
@@ -393,6 +502,108 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (api.Onboarding
 	return cloneOnboarding(onboarding), nil
 }
 
+// OnboardingSlot resolves the record holding the owner's slot for a
+// definition — see onboardingSlotLocked for the matching rules.
+func (s *Store) OnboardingSlot(auth identity.Envelope, definitionID string) (api.Onboarding, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.onboardingSlotLocked(auth, definitionID)
+}
+
+// onboardingSlotLocked is the one place a repeat install discovers "the owner
+// already has this connector". The slot key is
+// (principal, context, runtime, policy, definition): any non-terminal record
+// matching it can hold the slot, so a fresh request attaches instead of
+// minting a sibling. Two record kinds deliberately stay outside the slot —
+// an upgrade-keyed record is a parallel version change by contract, and a
+// shared (team-scope) record never answers a personal install. Preparing
+// stubs do match — a caller that needs the live holder skips them, while a
+// prepare caller uses a fresh stub to dedup its own in-flight build.
+// Pre-fix stores can hold siblings; the best holder wins deterministically —
+// non-stub over stub, live over pending over failed, connection-bound over
+// loose, then newest — so every caller resolves the same target.
+func (s *Store) onboardingSlotLocked(auth identity.Envelope, definitionID string) (api.Onboarding, bool) {
+	if definitionID == "" {
+		return api.Onboarding{}, false
+	}
+	var best api.Onboarding
+	found := false
+	for _, o := range s.onboardings {
+		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion || o.DefinitionID != definitionID {
+			continue
+		}
+		if !onboardingSlotEligible(o) {
+			continue
+		}
+		if !found || onboardingSlotRank(o) > onboardingSlotRank(best) || onboardingSlotRank(o) == onboardingSlotRank(best) && o.CreatedAt.After(best.CreatedAt) {
+			best, found = o, true
+		}
+	}
+	return best, found
+}
+
+// onboardingSlotEligible mirrors the slot's matching rules so the load-time
+// quarantine and the runtime claim agree on which records compete.
+func onboardingSlotEligible(o api.Onboarding) bool {
+	if o.Stage == api.StageGone || strings.HasPrefix(o.IdempotencyKey, upgradeKeyPrefix) {
+		return false
+	}
+	if o.Definition != nil && o.Definition.Workload.Class == api.Shared {
+		return false
+	}
+	if credentialGateDeadEnd(o) {
+		// A credentials wait with no redeemable channel is a wedge, not a
+		// holder — the next prepare overwrites the record and retries.
+		return false
+	}
+	return true
+}
+
+// credentialGateDeadEnd reports a record that claims to await credentials but
+// can never accept them: the form nonce is empty and no Broker request carries
+// the intake. A broker-gate arm interrupted before the request was minted
+// leaves exactly this — never a healthy flow.
+func credentialGateDeadEnd(o api.Onboarding) bool {
+	return o.Awaiting(api.GateCredentials) && o.GateNonce(api.GateCredentials) == "" && o.BrokerRequestID == ""
+}
+
+// onboardingSlotRank picks the deterministic slot holder: non-stub over stub,
+// live over pending over failed, connection-bound over loose.
+func onboardingSlotRank(o api.Onboarding) int {
+	score := 0
+	if !o.PreparingStub {
+		score += 8
+	}
+	switch o.Stage {
+	case api.StageLive:
+		score += 4
+	case api.StagePending:
+		score += 2
+	}
+	if o.ConnectionID != "" {
+		score++
+	}
+	return score
+}
+
+// supersedeOnboardingLocked retires a slot corpse so the retry minted under a
+// different seed becomes the one live record — the loser keeps its audit
+// history and names its replacement.
+func (s *Store) supersedeOnboardingLocked(previous api.Onboarding, newID string) error {
+	previous.Retire(api.TombstoneRemoved)
+	previous.SupersededBy = newID
+	previous.Revision++
+	return s.putOnboardingLocked(previous)
+}
+
+// SupersedeOnboarding is the locked-entry variant for callers that do not
+// already hold the store mutex.
+func (s *Store) SupersedeOnboarding(previous api.Onboarding, newID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.supersedeOnboardingLocked(previous, newID)
+}
+
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -400,7 +611,7 @@ func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onb
 	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.PrincipalID == auth.PrincipalID && onboarding.ContextID == auth.ContextID && onboarding.RuntimeID == auth.RuntimeID && onboarding.PolicyVersion == auth.PolicyVersion && onboarding.IdempotencyKey == key && key != "" {
-			if onboarding.Phase == api.PhaseRemoved {
+			if onboarding.DeadEnd() {
 				removed, found = onboarding, true
 				continue
 			}

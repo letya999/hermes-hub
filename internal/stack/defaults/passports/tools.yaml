@@ -1,0 +1,8 @@
+binding: {profile_id: __USER__-default, generation: 1}
+core:
+  files: {via: toolhub}
+  memory: {via: toolhub}
+extended:
+  web_search: {via: toolhub}
+  sessions: {via: toolhub}
+  media: {via: toolhub}

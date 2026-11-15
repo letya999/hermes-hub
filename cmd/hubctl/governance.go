@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -21,7 +22,7 @@ import (
 // /grants/<id>?nonce= acknowledge pair activates a pending grant.
 func runGovernance(_ context.Context, args []string) error {
 	f := flag.NewFlagSet("governance", flag.ContinueOnError)
-	kind := f.String("kind", "status", "status, rule, grant or revoke")
+	kind := f.String("kind", "status", "status, rule, grant, revoke, right or revoke-right")
 	user := f.String("user", "me", "principal a user-scope rule or grant targets")
 	scope := f.String("scope", "user", "rule scope: global, org, user or default")
 	subject := f.String("subject", "", "rule subject; defaults to --user for user scope")
@@ -35,6 +36,9 @@ func runGovernance(_ context.Context, args []string) error {
 	status := f.String("status", string(api.ActiveStatus), "rule status: active, disabled or revoked")
 	grantID := f.String("grant", "", "grant id for revoke (default: derived)")
 	ruleID := f.String("rule", "", "explicit rule id, including updates to legacy attribute rules")
+	rightCap := f.String("cap", "", "rights capability domain for --kind right (workspace, models, ...)")
+	rightOp := f.String("op", "", "rights operation for --kind right (read, write, switch, ...)")
+	rightBind := f.String("bind", "", "scope value binding the right grant (path, model, toolset, target principal)")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation and commit")
 	storePath := f.String("toolhub-store", os.Getenv("HUB_TOOLHUB_STORE"), "ToolHub registry path")
 	govPath := f.String("governance", os.Getenv("HUB_TOOL_GOVERNANCE"), "governance document path (default: beside the registry)")
@@ -81,7 +85,15 @@ func runGovernance(_ context.Context, args []string) error {
 			}
 			grants = append(grants, map[string]any{"grant_id": g.GrantID, "principal": g.PrincipalID, "section": g.Section, "status": state, "expires": g.ExpiresAt.Format(time.RFC3339), "reason": g.Reason})
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"path": *govPath, "revision": doc.Revision, "sections": len(doc.Inventory), "rules": len(doc.Rules), "grants": grants})
+		rights := []map[string]any{}
+		for _, g := range doc.Rights {
+			state := g.Status
+			if g.Status == api.GrantActive && !now.Before(g.ExpiresAt) {
+				state = "expired"
+			}
+			rights = append(rights, map[string]any{"grant_id": g.GrantID, "principal": g.PrincipalID, "capability": g.Capability, "operation": g.Operation, "scope": g.Scope, "status": state, "expires": g.ExpiresAt.Format(time.RFC3339), "reason": g.Reason})
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"path": *govPath, "revision": doc.Revision, "sections": len(doc.Inventory), "rules": len(doc.Rules), "grants": grants, "rights": rights})
 	case "rule":
 		if *reason == "" || *section == "" && *match == "" || *section != "" && *match != "" {
 			return fmt.Errorf("rule requires --reason and exactly one of --section/--match")
@@ -152,6 +164,34 @@ func runGovernance(_ context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": *grantID, "status": api.GrantRevoked})
+	case "right":
+		if *reason == "" || *rightCap == "" || *rightOp == "" || *expires == "" {
+			return fmt.Errorf("right requires --cap, --op, --expires and --reason")
+		}
+		docs, err := catalog.LoadPinned()
+		if err != nil {
+			return fmt.Errorf("rights vocabulary: %w", err)
+		}
+		at, err := parseExpiry(*expires, now)
+		if err != nil {
+			return err
+		}
+		grant := api.NewRightGrant(deterministicRightID(*user, *rightCap, *rightOp, *rightBind, *grantID), *user, *rightCap, *rightOp, *rightBind, *reason, *issuer, at)
+		if err := confirmRecord(*confirm, *issuer, &grant); err != nil {
+			return err
+		}
+		if err := store.GrantRight(grant, docs.Rights, now); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": grant.GrantID, "principal_id": grant.PrincipalID, "capability": grant.Capability, "operation": grant.Operation, "scope": grant.Scope, "status": grant.Status, "expires": grant.ExpiresAt.Format(time.RFC3339)})
+	case "revoke-right":
+		if *grantID == "" || *reason == "" {
+			return fmt.Errorf("revoke-right requires --grant and --reason")
+		}
+		if err := store.RevokeRight(*grantID, *issuer, *reason, now); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"grant_id": *grantID, "status": api.GrantRevoked})
 	default:
 		return fmt.Errorf("unknown --kind %q", *kind)
 	}
@@ -184,6 +224,13 @@ func deterministicGrantID(user, section, explicit string) string {
 		return explicit
 	}
 	return governanceID("toolgrant", user, section, time.Now().UTC().Format("20060102150405"))
+}
+
+func deterministicRightID(user, cap, op, bind, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return governanceID("rightgrant", user, cap, op, bind, time.Now().UTC().Format("20060102150405"))
 }
 
 func governanceID(prefix string, values ...string) string {

@@ -10,15 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
-	"gopkg.in/yaml.v3"
 )
 
 // This command is a host operation, never an agent-facing MCP method. Its input
@@ -27,10 +24,10 @@ import (
 // checks revisions and pins.
 func runCapability(args []string) error {
 	f := flag.NewFlagSet("capability", flag.ContinueOnError)
-	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors, tools, team, team-share or team-drop")
+	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors, team, team-share or team-drop")
 	teamID := f.String("team", "", "team id for team-share")
 	definitionID := f.String("definition", "", "definition id for team-share")
-	definitionVersion := f.String("version", "", "definition version for team-share")
+	definitionVersion := f.String("version", "", "definition version for team-share, or the already-registered version agent-tools repins to")
 	backend := f.String("backend", "", "credential backend for team-share")
 	locator := f.String("locator", "", "credential locator for team-share")
 	brokerContext := f.String("broker-context", "", "Broker context owning the shared credential (required for credential-broker team-share)")
@@ -39,8 +36,6 @@ func runCapability(args []string) error {
 	file := f.String("file", "", "operator-reviewed JSON record")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation onto the reviewed record")
-	settingsPath := f.String("settings", "", "space settings.yaml the tools plan applies to")
-	set := f.String("set", "", "comma-separated name=backend tool entries (empty backend removes the entry)")
 	principal := f.String("principal", os.Getenv("HUB_PRINCIPAL_ID"), "principal owning the agent-tools binding")
 	contextID := f.String("context", os.Getenv("HUB_CONTEXT_ID"), "context owning the agent-tools binding")
 	runtimeID := f.String("runtime", os.Getenv("HUB_RUNTIME_ID"), "runtime owning the agent-tools binding")
@@ -49,11 +44,8 @@ func runCapability(args []string) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "tools" && *kind != "team" && *kind != "team-share" && *kind != "team-drop") {
-		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|tools|team|team-share|team-drop; no positional arguments")
-	}
-	if *kind == "tools" {
-		return runCapabilityTools(*settingsPath, *set, *confirm)
+	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "team" && *kind != "team-share" && *kind != "team-drop") {
+		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|team|team-share|team-drop; no positional arguments")
 	}
 	if *kind == "connectors" {
 		manifest := api.RecommendedConnectorManifest()
@@ -91,7 +83,7 @@ func runCapability(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := toolhub.Load(absolute)
+	store, err := loadOperatorStore(absolute)
 	create := errors.Is(err, os.ErrNotExist)
 	if err != nil && !create {
 		return err
@@ -99,6 +91,7 @@ func runCapability(args []string) error {
 	if create {
 		store = toolhub.NewStore()
 	}
+	defer func() { _ = store.CloseDB() }()
 	var id string
 	var revision uint64
 	var status api.Status
@@ -155,26 +148,40 @@ func runCapability(args []string) error {
 		if *principal == "" || *contextID == "" || *runtimeID == "" || *policyVersion == "" {
 			return errors.New("agent-tools requires --principal, --context, --runtime and --policy-version (or HUB_* equivalents)")
 		}
-		// The built-in catalog is compiled into this binary and reviewed with
-		// the release; installing it is still an explicit operator act on the
-		// protected store, and the binding carries only operator-supplied
-		// identity (never model arguments).
-		definition := agenttools.HubToolsDefinition()
-		if err := store.RegisterDefinition(definition); err != nil {
-			return err
-		}
-		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
-			ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "operator", DeliveryTargetID: "operator", PolicyVersion: *policyVersion}
-		binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
-		if err != nil {
-			return err
-		}
-		if create {
-			if err := store.Save(absolute); err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				_ = store.CloseDB()
+				store, err = loadOperatorStore(absolute)
+				if err != nil {
+					return err
+				}
+			}
+			// The built-in catalog is compiled into this binary and reviewed with
+			// the release; binding carries only operator-supplied identity.
+			definition := agenttools.HubToolsDefinition()
+			if *definitionVersion != "" {
+				stored, err := store.Definition(definition.DefinitionID, *definitionVersion)
+				if err != nil {
+					return err
+				}
+				definition = stored
+			} else if err := store.RegisterDefinition(definition); err != nil {
+				return err
+			}
+			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
+				ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "operator", DeliveryTargetID: "operator", PolicyVersion: *policyVersion}
+			binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
+			if create && err == nil {
+				err = store.Save(absolute)
+			}
+			if err == nil {
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
+			}
+			if create || !retryableStoreConflict(err) || attempt == 2 {
 				return err
 			}
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": definition.DefinitionID, "revision": definition.Version, "binding": binding.ToolBindingID})
+		return api.ErrConflict
 	}
 	if *kind == "policy" {
 		var record api.CapabilityPolicy
@@ -237,298 +244,7 @@ func confirmRecord(confirmed bool, issuer string, record any) error {
 	return nil
 }
 
-// runCapabilityTools inspects or edits the unified `tools:` surface of one
-// space. Without --settings it prints the reviewed vocabulary; without --set
-// it prints the compiled plan (which backend serves what); with --set
-// name=backend it surgically rewrites the tools map in workspace.yaml,
-// re-validates the whole space and swaps atomically.
-func runCapabilityTools(settingsPath, set string, confirm bool) error {
-	if settingsPath == "" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{
-			"kind":              "tools",
-			"backends":          []string{"native", "toolhub", "mcp[:server]", "mcp-raw[:server]", "off"},
-			"access":            []string{"ro"},
-			"carveout_toolsets": stack.NativeCarveoutToolsets(),
-			"note":              "hubctl capability --kind tools --settings <space-dir|workspace.yaml> [--set name=backend[+ro],...] [--confirm]",
-		})
-	}
-	current, err := stack.Read(settingsPath)
-	if err != nil {
-		return fmt.Errorf("settings: %w", err)
-	}
-	if strings.TrimSpace(set) == "" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": "tools", "plan": current.ToolPlan()})
-	}
-	updates, removals, err := parseToolSet(set)
-	if err != nil {
-		return err
-	}
-	candidate := current
-	candidate.Tools = map[string]stack.ToolEntry{}
-	for name, entry := range current.Tools {
-		candidate.Tools[name] = entry
-	}
-	for _, name := range removals {
-		delete(candidate.Tools, name)
-	}
-	for name, entry := range updates {
-		candidate.Tools[name] = entry
-	}
-	if err := candidate.Validate(); err != nil {
-		return fmt.Errorf("tools plan would become invalid: %w", err)
-	}
-	before, after := current.ToolPlan(), candidate.ToolPlan()
-	if !confirm {
-		fmt.Fprintf(os.Stderr, "tools plan before: %+v\ntools plan after:  %+v\nre-run with --confirm to commit\n", before, after)
-		return errors.New("tools plan not confirmed")
-	}
-	target, legacy, err := workspaceTarget(settingsPath)
-	if err != nil {
-		return err
-	}
-	if err := writeToolEntries(target, legacy, updates, removals); err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"kind": "tools", "plan": after, "changed": true,
-		"note": "restart or re-spawn the runtime; native tools have no per-call admission",
-	})
-}
-
-// parseToolSet parses `name=backend,name=backend` — `backend` is
-// native|toolhub|mcp[:server]|mcp-raw[:server]|off with an optional `+ro`
-// access suffix; an empty backend removes the entry.
-func parseToolSet(set string) (map[string]stack.ToolEntry, []string, error) {
-	updates := map[string]stack.ToolEntry{}
-	var removals []string
-	for _, pair := range strings.Split(set, ",") {
-		name, backend, found := strings.Cut(strings.TrimSpace(pair), "=")
-		if !found {
-			return nil, nil, fmt.Errorf("invalid --set pair %q (want name=backend)", pair)
-		}
-		if name = strings.TrimSpace(name); name == "" {
-			return nil, nil, fmt.Errorf("invalid --set pair %q: empty name", pair)
-		}
-		backend = strings.TrimSpace(backend)
-		if backend == "" {
-			removals = append(removals, name)
-			continue
-		}
-		entry := stack.ToolEntry{}
-		if strings.HasSuffix(backend, "+ro") {
-			entry.Access = stack.ToolAccessRO
-			backend = strings.TrimSuffix(backend, "+ro")
-		}
-		entry.Via = backend
-		if strings.HasPrefix(backend, "mcp-raw:") {
-			entry.Via, entry.Server = "mcp-raw", strings.TrimPrefix(backend, "mcp-raw:")
-		} else if strings.HasPrefix(backend, "mcp:") {
-			entry.Via, entry.Server = "mcp", strings.TrimPrefix(backend, "mcp:")
-		}
-		updates[name] = entry
-	}
-	return updates, removals, nil
-}
-
-// toolEntryNode renders an entry as the compact scalar form when possible,
-// keeping written workspace.yaml as terse as the operator's own style.
-func toolEntryNode(entry stack.ToolEntry) (*yaml.Node, error) {
-	if entry.Access == "" && len(entry.Only) == 0 && len(entry.Except) == 0 && len(entry.Tools) == 0 && len(entry.Paths) == 0 && len(entry.Limits) == 0 {
-		switch {
-		case entry.Via == "mcp" && entry.Server != "":
-			return &yaml.Node{Kind: yaml.ScalarNode, Value: "mcp:" + entry.Server}, nil
-		case entry.Via == "mcp-raw" && entry.Server != "":
-			return &yaml.Node{Kind: yaml.ScalarNode, Value: "mcp-raw:" + entry.Server}, nil
-		case entry.Server == "":
-			return &yaml.Node{Kind: yaml.ScalarNode, Value: entry.Via}, nil
-		}
-	}
-	body, err := yaml.Marshal(entry)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(body, &doc); err != nil {
-		return nil, err
-	}
-	return doc.Content[0], nil
-}
-
-// workspaceTarget resolves the file a tools write applies to: a directory or
-// split-file path selects workspace.yaml, a settings.yaml stays a legacy
-// single-file target.
-func workspaceTarget(settingsPath string) (string, bool, error) {
-	dir := settingsPath
-	base := filepath.Base(settingsPath)
-	if info, err := os.Stat(settingsPath); err == nil && info.IsDir() {
-		base = ""
-	} else {
-		dir = filepath.Dir(settingsPath)
-	}
-	switch base {
-	case "", "workspace.yaml", "agent.yaml":
-		workspace := filepath.Join(dir, "workspace.yaml")
-		if _, err := os.Stat(workspace); err == nil {
-			return workspace, false, nil
-		}
-		if base == "workspace.yaml" {
-			return "", false, fmt.Errorf("%s does not exist", workspace)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "settings.yaml")); err == nil {
-			return filepath.Join(dir, "settings.yaml"), true, nil
-		}
-		return "", false, fmt.Errorf("no workspace.yaml or settings.yaml in %s", dir)
-	case "settings.yaml":
-		return settingsPath, true, nil
-	default:
-		// An explicitly named .yaml file is a legacy single-file target; the
-		// extension check keeps directories-that-aren't-spaces out.
-		if ext := filepath.Ext(base); ext == ".yaml" || ext == ".yml" {
-			return settingsPath, true, nil
-		}
-		return "", false, fmt.Errorf("expected a space dir, workspace.yaml or settings.yaml, got %s", settingsPath)
-	}
-}
-
-// writeToolEntries upserts/removes keys inside the top-level `tools:` mapping
-// of the target file, preserving comments and every other key, then proves
-// the result still parses as valid settings before swapping atomically.
-func writeToolEntries(path string, legacy bool, updates map[string]stack.ToolEntry, removals []string) error {
-	body, err := os.ReadFile(path) // #nosec G304 -- operator-supplied settings path.
-	if err != nil {
-		return err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(body, &doc); err != nil {
-		return err
-	}
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return errors.New("tools file is not a YAML mapping")
-	}
-	root := doc.Content[0]
-	if legacy {
-		current, err := stack.Read(path)
-		if err != nil {
-			return err
-		}
-		migrated := false
-		for i := 0; i+1 < len(root.Content); {
-			key := root.Content[i].Value
-			if key == "features" || key == "native_toolsets" || key == "disabled_mcp" {
-				root.Content = append(root.Content[:i], root.Content[i+2:]...)
-				migrated = true
-			} else {
-				i += 2
-			}
-		}
-		if migrated {
-			var toolsNode yaml.Node
-			if err := toolsNode.Encode(current.Tools); err != nil {
-				return err
-			}
-			root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "tools"}, &toolsNode)
-			if len(current.Ingress) > 0 {
-				var ingressNode yaml.Node
-				if err := ingressNode.Encode(current.Ingress); err != nil {
-					return err
-				}
-				root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "ingress"}, &ingressNode)
-			}
-		}
-	}
-	var tools *yaml.Node
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "tools" {
-			tools = root.Content[i+1]
-		}
-	}
-	if tools == nil {
-		tools = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "tools"}, tools)
-	}
-	if tools.Kind != yaml.MappingNode {
-		return errors.New("tools: is not a mapping")
-	}
-	setPair := func(name string, value *yaml.Node) {
-		for i := 0; i+1 < len(tools.Content); i += 2 {
-			if tools.Content[i].Value == name {
-				if value == nil {
-					tools.Content = append(tools.Content[:i], tools.Content[i+2:]...)
-				} else {
-					tools.Content[i+1] = value
-				}
-				return
-			}
-		}
-		if value != nil {
-			tools.Content = append(tools.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: name}, value)
-		}
-	}
-	for _, name := range removals {
-		setPair(name, nil)
-	}
-	names := make([]string, 0, len(updates))
-	for name := range updates {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		node, err := toolEntryNode(updates[name])
-		if err != nil {
-			return err
-		}
-		setPair(name, node)
-	}
-	out, err := yaml.Marshal(&doc)
-	if err != nil {
-		return err
-	}
-	if !legacy {
-		// The space validates as a pair: stage the edited workspace.yaml next
-		// to a copy of agent.yaml and run the spawn parser on the pair before
-		// swapping — a file the runtime would reject never lands.
-		stage, err := os.MkdirTemp("", "hub-workspace-*")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(stage)
-		if err = os.WriteFile(filepath.Join(stage, "workspace.yaml"), out, 0600); err != nil {
-			return err
-		}
-		agent, err := os.ReadFile(filepath.Join(filepath.Dir(path), "agent.yaml"))
-		if err != nil {
-			return err
-		}
-		if err = os.WriteFile(filepath.Join(stage, "agent.yaml"), agent, 0600); err != nil { // #nosec G703 -- generated staging dir, fixed filename
-			return err
-		}
-		if _, err = stack.Read(stage); err != nil {
-			return fmt.Errorf("workspace.yaml would become invalid: %w", err)
-		}
-		return writeAtomic(path, out)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if _, err = tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	// The post-write file must pass the same strict parse a spawn performs;
-	// a settings file that no longer validates never reaches the runtime.
-	if _, err = stack.Read(name); err != nil {
-		return fmt.Errorf("settings would become invalid: %w", err)
-	}
-	return os.Rename(name, path)
-}
-
-func writeAtomic(path string, body []byte) error {
+func writeAtomicMode(path string, body []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".workspace-*")
 	if err != nil {
 		return err
@@ -536,6 +252,10 @@ func writeAtomic(path string, body []byte) error {
 	name := tmp.Name()
 	defer os.Remove(name)
 	if _, err = tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}

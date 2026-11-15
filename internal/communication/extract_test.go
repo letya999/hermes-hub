@@ -8,19 +8,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 func TestExtractCSSAndHTML2Text(t *testing.T) {
 	page := `<html><body><nav>menu</nav><div class="price">  $42.00 </div><script>var x=1;</script></body></html>`
 	p := &WatchProbe{Extract: []ExtractStep{{Kind: "css", Selector: "div.price"}}}
-	got, err := extractValue(p, []byte(page))
+	got, err := routines.ExtractValue(p, []byte(page))
 	if err != nil || got != "$42.00" {
 		t.Fatalf("css extract: %q %v", got, err)
 	}
 	p = &WatchProbe{Extract: []ExtractStep{{Kind: "html2text"}, {Kind: "strip"}}}
-	got, err = extractValue(p, []byte(page))
+	got, err = routines.ExtractValue(p, []byte(page))
 	if err != nil || !strings.Contains(got, "$42.00") || strings.Contains(got, "var x=1") {
 		t.Fatalf("html2text: %q %v", got, err)
 	}
@@ -35,13 +38,13 @@ func TestExtractChainTransforms(t *testing.T) {
 		{Kind: "sort_lines"},
 	}}
 	doc := "<ul class=\"items\">\n<li>b price 2</li>\n<li>a price 1</li>\n<li>skip</li>\n</ul>"
-	got, err := extractValue(p, []byte(doc))
+	got, err := routines.ExtractValue(p, []byte(doc))
 	if err != nil || got != "a price 1\nb price 2" {
 		t.Fatalf("chain: %q %v", got, err)
 	}
 	// drop_lines removes noisy lines
 	p = &WatchProbe{Extract: []ExtractStep{{Kind: "drop_lines", Pattern: `updated|views`}}}
-	got, err = extractValue(p, []byte("updated: today\nload: 5\nviews: 42"))
+	got, err = routines.ExtractValue(p, []byte("updated: today\nload: 5\nviews: 42"))
 	if err != nil || got != "load: 5" {
 		t.Fatalf("drop_lines: %q %v", got, err)
 	}
@@ -50,12 +53,12 @@ func TestExtractChainTransforms(t *testing.T) {
 func TestExtractJSONPath(t *testing.T) {
 	body := []byte(`{"items":[{"status":"ok","name":"a"},{"status":"bad","name":"b"}],"n":2}`)
 	p := &WatchProbe{Extract: []ExtractStep{{Kind: "json_path", Path: "$.items[1].status"}}}
-	got, err := extractValue(p, body)
+	got, err := routines.ExtractValue(p, body)
 	if err != nil || got != "bad" {
 		t.Fatalf("json_path index: %q %v", got, err)
 	}
 	p = &WatchProbe{Extract: []ExtractStep{{Kind: "json_path", Path: "$.items[*].name"}}}
-	got, err = extractValue(p, body)
+	got, err = routines.ExtractValue(p, body)
 	if err != nil || got != "a\nb" {
 		t.Fatalf("json_path wildcard: %q %v", got, err)
 	}
@@ -63,34 +66,34 @@ func TestExtractJSONPath(t *testing.T) {
 
 func TestExtractLegacyAndEmpty(t *testing.T) {
 	p := &WatchProbe{Regex: `version: ([0-9.]+)`}
-	got, err := extractValue(p, []byte("release\nversion: 1.4.2\n"))
+	got, err := routines.ExtractValue(p, []byte("release\nversion: 1.4.2\n"))
 	if err != nil || got != "1.4.2" {
 		t.Fatalf("legacy regex: %q %v", got, err)
 	}
-	got, err = extractValue(&WatchProbe{}, []byte("plain body"))
+	got, err = routines.ExtractValue(&WatchProbe{}, []byte("plain body"))
 	if err != nil || got != "plain body" {
 		t.Fatalf("whole body: %q %v", got, err)
 	}
-	got, err = extractValue(&WatchProbe{Kind: "github_issue"}, []byte(`{"state":"closed"}`))
+	got, err = routines.ExtractValue(&WatchProbe{Kind: "github_issue"}, []byte(`{"state":"closed"}`))
 	if err != nil || got != "closed" {
 		t.Fatalf("github_issue: %q %v", got, err)
 	}
 	// Empty extraction is an error — never silent "no change".
 	p = &WatchProbe{Extract: []ExtractStep{{Kind: "css", Selector: "div.missing"}}}
-	if _, err = extractValue(p, []byte("<html><body>x</body></html>")); err == nil {
+	if _, err = routines.ExtractValue(p, []byte("<html><body>x</body></html>")); err == nil {
 		t.Fatal("empty extraction must be an error")
 	}
 	// A legacy regex that stops matching is a probe error, not a change to "".
-	if _, err = extractValue(&WatchProbe{Regex: `(v\d+)`}, []byte("no match here")); err == nil {
+	if _, err = routines.ExtractValue(&WatchProbe{Regex: `(v\d+)`}, []byte("no match here")); err == nil {
 		t.Fatal("unmatched legacy regex must error")
 	}
 	// Malformed GitHub issue responses are probe errors too.
-	if _, err = extractValue(&WatchProbe{Kind: "github_issue"}, []byte(`{"state":"weird"}`)); err == nil {
+	if _, err = routines.ExtractValue(&WatchProbe{Kind: "github_issue"}, []byte(`{"state":"weird"}`)); err == nil {
 		t.Fatal("invalid issue state must error")
 	}
 	// A regex without a capture group is invalid (create-time validation
 	// enforces it; the probe itself stays defensive).
-	if _, err = extractValue(&WatchProbe{Regex: `v\d+`}, []byte("v42")); err == nil {
+	if _, err = routines.ExtractValue(&WatchProbe{Regex: `v\d+`}, []byte("v42")); err == nil {
 		t.Fatal("group-less regex must error")
 	}
 }
@@ -128,7 +131,7 @@ func TestExtractValidationAtCreate(t *testing.T) {
 }
 
 func TestScriptProbeFeedsBodyToIsolatedRunner(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	var gotSrc, gotInput string
 	var gotMount bool
@@ -147,7 +150,7 @@ func TestScriptProbeFeedsBodyToIsolatedRunner(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return []byte("page-body"), nil }
@@ -164,7 +167,7 @@ func TestScriptProbeFeedsBodyToIsolatedRunner(t *testing.T) {
 }
 
 func TestCommandProbeMountsSpaceAndNeverFetches(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	var gotMount bool
 	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, mountSpace bool, _ []string) (string, error) {
@@ -181,7 +184,7 @@ func TestCommandProbeMountsSpaceAndNeverFetches(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) {
@@ -201,7 +204,7 @@ func TestCommandProbeMountsSpaceAndNeverFetches(t *testing.T) {
 }
 
 func TestCommandProbeWithoutRuntimeSettlesFailed(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wc-nort", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -213,7 +216,7 @@ func TestCommandProbeWithoutRuntimeSettlesFailed(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return nil, errors.New("unused") }
@@ -227,7 +230,7 @@ func TestCommandProbeWithoutRuntimeSettlesFailed(t *testing.T) {
 }
 
 func TestScriptProbeAppliesExtractBeforeInput(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wc-sx", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -244,7 +247,7 @@ func TestScriptProbeAppliesExtractBeforeInput(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) {
@@ -266,17 +269,17 @@ func TestExtractRSSAndAtom(t *testing.T) {
 	rss := `<?xml version="1.0"?><rss version="2.0"><channel><title>Feed</title>
 		<item><title>Post One</title><link>https://x/1</link><pubDate>Mon, 01 Jan 2024</pubDate></item>
 		<item><title>Post Two</title><link>https://x/2</link><pubDate>Tue, 02 Jan 2024</pubDate></item></channel></rss>`
-	got, err := extractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte(rss))
+	got, err := routines.ExtractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte(rss))
 	if err != nil || got != "Post One|https://x/1|Mon, 01 Jan 2024\nPost Two|https://x/2|Tue, 02 Jan 2024" {
 		t.Fatalf("rss: %q %v", got, err)
 	}
 	atom := `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
 		<entry><title>Entry A</title><link href="https://x/a"/><updated>2024-01-01T00:00:00Z</updated></entry></feed>`
-	got, err = extractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte(atom))
+	got, err = routines.ExtractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte(atom))
 	if err != nil || got != "Entry A|https://x/a|2024-01-01T00:00:00Z" {
 		t.Fatalf("atom: %q %v", got, err)
 	}
-	if _, err = extractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte("not xml")); err == nil {
+	if _, err = routines.ExtractValue(&WatchProbe{Extract: []ExtractStep{{Kind: "rss"}}}, []byte("not xml")); err == nil {
 		t.Fatal("malformed feed must be a probe error")
 	}
 }
@@ -336,18 +339,52 @@ func TestProbeScriptValidatedAtCreate(t *testing.T) {
 	}
 }
 
-func TestGatewayWiresProbeScriptRunner(t *testing.T) {
-	g, err := New(testConfig(t))
-	if err != nil {
+// The script runner is wired on the ToolHub owner now: a constructed host
+// drives a command probe through its supervisor client end to end.
+func TestHostWiresProbeScriptRunner(t *testing.T) {
+	var gotRequest hubruntime.ScriptRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" {
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer fixture" {
+				t.Error("invalid admission epoch request")
+			}
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.URL.Path != "/v1/script" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
+			t.Error("bad script request")
+		}
+		_, _ = w.Write([]byte(`["value"]`))
+	}))
+	defer srv.Close()
+	c := testConfig(t)
+	_, host, _ := automationGatewayFixturePorts(t, c, nil, &automation.HTTPSupervisorClient{URL: srv.URL, Token: "fixture"})
+	caller := c.Users[0].Envelope(11)
+	due := time.Now().UTC().Add(time.Minute).Truncate(time.Second).Add(time.Second)
+	sched := Schedule{ScheduleID: "wc-cmd", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice",
+		Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "project state watch", JobKind: "watcher",
+		Probe: &WatchProbe{Kind: "command", Script: "emit(hash_path('.'))"}}
+	if _, err := host.CreateSchedule(context.Background(), caller, sched, ""); err != nil {
 		t.Fatal(err)
 	}
-	if g.spool.probeScript == nil {
-		t.Fatal("script/command probes have no runtime in a constructed gateway")
+	if err := host.Tick(context.Background(), due.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !gotRequest.MountSpace {
+		t.Fatal("command probe ran without the space mount")
+	}
+	st, err := host.LoadWatchState(context.Background(), caller, "wc-cmd")
+	if err != nil || st.Value != "value" {
+		t.Fatalf("script result did not become watch value: %+v %v", st, err)
 	}
 }
 
 func TestProbeScriptRunnerContractsSingleEmit(t *testing.T) {
-	_, o, g := occurrenceFixture(t)
+	_, o, _ := occurrenceFixture(t)
 	var gotInput string
 	var gotMount bool
 	response := `["value"]`
@@ -360,10 +397,8 @@ func TestProbeScriptRunnerContractsSingleEmit(t *testing.T) {
 		_, _ = w.Write([]byte(response))
 	}))
 	defer srv.Close()
-	g.config.Supervised = true
-	g.config.RuntimeURL = srv.URL
-	g.config.RuntimeAuth = "token"
-	value, err := g.runProbeScript(context.Background(), o, "emit(input())", "fetched-body", true, nil)
+	sup := &automation.HTTPSupervisorClient{URL: srv.URL, Token: "token"}
+	value, err := sup.ProbeScript(context.Background(), o, "emit(input())", "fetched-body", true, nil)
 	if err != nil || value != "value" {
 		t.Fatalf("probe script=%q %v", value, err)
 	}
@@ -371,13 +406,13 @@ func TestProbeScriptRunnerContractsSingleEmit(t *testing.T) {
 		t.Fatalf("input/mount lost in transport: %q %v", gotInput, gotMount)
 	}
 	response = `["a","b"]`
-	if _, err = g.runProbeScript(context.Background(), o, "src", "", false, nil); err == nil {
+	if _, err = sup.ProbeScript(context.Background(), o, "src", "", false, nil); err == nil {
 		t.Fatal("multi-emit probe accepted")
 	}
 }
 
 func TestProbeScriptRunnerForwardsNeeds(t *testing.T) {
-	_, o, g := occurrenceFixture(t)
+	_, o, _ := occurrenceFixture(t)
 	var gotNeeds []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request hubruntime.ScriptRequest
@@ -388,10 +423,8 @@ func TestProbeScriptRunnerForwardsNeeds(t *testing.T) {
 		_, _ = w.Write([]byte(`["value"]`))
 	}))
 	defer srv.Close()
-	g.config.Supervised = true
-	g.config.RuntimeURL = srv.URL
-	g.config.RuntimeAuth = "token"
-	if _, err := g.runProbeScript(context.Background(), o, "emit(needs()[0])", "", false, []string{"alpha", "beta"}); err != nil {
+	sup := &automation.HTTPSupervisorClient{URL: srv.URL, Token: "token"}
+	if _, err := sup.ProbeScript(context.Background(), o, "emit(needs()[0])", "", false, []string{"alpha", "beta"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(gotNeeds) != 2 || gotNeeds[0] != "alpha" || gotNeeds[1] != "beta" {

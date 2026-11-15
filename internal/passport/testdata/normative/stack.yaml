@@ -1,0 +1,16 @@
+apiVersion: six-passport/v2
+kind: stack
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+identity: {user: alice, organization: acme}
+
+services:
+  hermes-runtime:       {mode: supervised}
+  communication-hub:    {mode: shared}
+  toolhub:              {mode: shared}
+  credential-broker:    {mode: shared}
+  model-relay:          {mode: per-space}
+  vault:                {mode: per-space}
+  cliproxy-google-1:    {mode: per-space}
+  cliproxy-google-2:    {mode: per-space}
+  cliproxy-codex:       {mode: per-space}
+  hub-stt:              {mode: shared}

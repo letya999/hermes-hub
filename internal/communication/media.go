@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	mediaSizeLimit = 8 << 20
+	mediaSizeLimit = 20 << 20
 	// Videos stay under Telegram's 50 MB bot upload bound with headroom for
 	// multipart framing; documents use the same ceiling since artifacts are
 	// already capped per-bucket at the runtime.
@@ -28,6 +28,7 @@ const (
 	// HUB_MEDIA_MAX_DURATION (seconds) — limits are policy, not constants.
 	defaultMediaDurationLimit = 120
 	defaultSTTTimeout         = 180 * time.Second
+	defaultTTSTimeout         = 90 * time.Second
 )
 
 // MediaEnvelope is the bounded voice/file record. Canonical job text stays text.
@@ -65,20 +66,9 @@ func serviceTranscriber(base, auth string, timeout time.Duration) Transcriber {
 
 func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string) Synthesizer {
 	if strings.TrimSpace(base) != "" {
-		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: 30 * time.Second}
+		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: defaultTTSTimeout}
 	}
 	return nil
-}
-
-// commandAvailable reports whether the configured worker binary can actually
-// run: an empty command or an unresolvable path both mean "not available".
-func commandAvailable(command string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-	_, err := exec.LookPath(command)
-	return err == nil
 }
 
 type CommandTranscriber struct {
@@ -120,7 +110,7 @@ func (c CommandSynthesizer) Synthesize(ctx context.Context, _ locale.Lang, text 
 		return nil, "", errors.New("tts is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
+		c.Timeout = defaultTTSTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
@@ -152,7 +142,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {
-		defer os.Remove(path)
+		defer g.spool.removeOwned(path)
 	}
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.download-failed"))
@@ -191,7 +181,7 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	}
 	inbox := ""
 	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
-		defer os.Remove(path)
+		defer g.spool.removeOwned(path)
 		staged, replied, stageErr := g.stageTelegramFile(ctx, update, message, user, envelope, media, name, path, saveErr)
 		if replied || stageErr != nil {
 			return stageErr
@@ -256,7 +246,7 @@ func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User,
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "media.task-failed"))
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID)
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID, message.ForwardOrigin != nil)
 }
 
 func rejectMedia(e MediaEnvelope, maxDuration int) error {
@@ -382,7 +372,7 @@ func (c HTTPSynthesizer) Synthesize(ctx context.Context, lang locale.Lang, text 
 		return nil, "", errors.New("tts is not configured")
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
+		c.Timeout = defaultTTSTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
@@ -467,19 +457,38 @@ func (g *Gateway) downloadTelegramMedia(ctx context.Context, fileID string) (str
 	if file.FileSize > mediaSizeLimit {
 		return "", errors.New("too large")
 	}
+	release, err := g.spool.reserveStorage(mediaSizeLimit, 1, false)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	tmp, err := os.CreateTemp(filepath.Join(g.spool.root, "tmp"), "media-*")
 	if err != nil {
 		return "", err
 	}
-	defer tmp.Close()
-	if err := g.api.DownloadFile(ctx, file.FilePath, tmp); err != nil {
-		_ = os.Remove(tmp.Name())
-		return "", err
-	}
-	info, err := tmp.Stat()
-	if err != nil || info.Size() > mediaSizeLimit {
-		_ = os.Remove(tmp.Name())
-		return "", errors.New("too large")
+	writer := &boundedMediaWriter{dest: tmp, remaining: mediaSizeLimit}
+	downloadErr := g.api.DownloadFile(ctx, file.FilePath, writer)
+	closeErr := tmp.Close()
+	if downloadErr != nil || closeErr != nil || writer.exceeded {
+		_ = g.spool.removeOwned(tmp.Name())
+		return "", errors.New("media download failed or exceeded storage limit")
 	}
 	return tmp.Name(), nil
+}
+
+// Bound writes at the file boundary even when a provider reports the wrong size.
+type boundedMediaWriter struct {
+	dest      io.Writer
+	remaining int64
+	exceeded  bool
+}
+
+func (w *boundedMediaWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		w.exceeded = true
+		return 0, errors.New("media exceeds storage limit")
+	}
+	n, err := w.dest.Write(p)
+	w.remaining -= int64(n)
+	return n, err
 }

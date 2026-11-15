@@ -7,6 +7,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestCatalogEnableHostCommand(t *testing.T) {
@@ -36,5 +37,49 @@ func TestCatalogEnableHostCommand(t *testing.T) {
 		if err := runCatalog(bad); err == nil {
 			t.Fatalf("invalid catalog command accepted: %v", bad)
 		}
+	}
+}
+
+func TestCatalogEnableRetriesStaleStoreSnapshot(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "store.db")
+	seed := toolhub.NewStore()
+	definitions := api.CLICatalogDefinitions()
+	if err := seed.RegisterDefinition(definitions[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PromoteToCatalog(definitions[1].DefinitionID, definitions[1].Version, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	_ = seed.CloseDB()
+	previous := loadOperatorStore
+	calls := 0
+	loadOperatorStore = func(path string) (*toolhub.Store, error) {
+		store, err := toolhub.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		calls++
+		if calls == 1 {
+			other, err := toolhub.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = other.EnableCatalog(identity.TelegramEnvelope("bob", 8, "bob", "policy-1"), "cli-rg-search", "1.0.2", "operator", false)
+			_ = other.CloseDB()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return store, nil
+	}
+	t.Cleanup(func() { loadOperatorStore = previous })
+	if err := runCatalog([]string{"--toolhub-store", p, "--definition", "cli-rg-search", "--version", "1.0.2", "--principal", "alice", "--policy-version", "policy-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatal("stale catalog operation did not reload the store")
 	}
 }

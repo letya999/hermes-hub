@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"io"
 	"net"
 	"net/http"
@@ -22,7 +24,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 func TestShellEndToEnd(t *testing.T) {
@@ -104,7 +105,11 @@ func TestShellRingBounds(t *testing.T) {
 	if sh2.base != 3 || len(sh2.ring) != shellBuffer || !strings.HasSuffix(string(sh2.ring), "new") {
 		t.Fatalf("overflow eviction wrong: base=%d len=%d", sh2.base, len(sh2.ring))
 	}
-	svc := &Service{shells: map[string]*shell{"sh-y": sh2}, done: make(chan struct{})}
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{shells: map[string]*shell{"sh-y": sh2}, done: make(chan struct{}), ledger: ledger, auth: identity.Envelope{PrincipalID: "me"}}
 	res, err := svc.ShellRead("sh-y", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -293,9 +298,9 @@ func TestBrokerKeyMaterialization(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := Open(Options{ConfigPath: configPath,
+	svc, err := Open(testAuditOptions(t, Options{ConfigPath: configPath,
 		Auth:   identity.Envelope{Schema: identity.Schema, PrincipalID: "me", ContextID: "me", RuntimeID: "rt", PolicyVersion: "p"},
-		Broker: brokerConfig(t, srv)})
+		Broker: brokerConfig(t, srv)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,9 +316,9 @@ func TestBrokerKeyMaterialization(t *testing.T) {
 	// Missing env var: the lease still must be released.
 	released.Store(0)
 	srv2 := fakeBroker(t, map[string]string{"OTHER": "x"}, released)
-	svc2, err := Open(Options{ConfigPath: configPath,
+	svc2, err := Open(testAuditOptions(t, Options{ConfigPath: configPath,
 		Auth:   identity.Envelope{Schema: identity.Schema, PrincipalID: "me", ContextID: "me", RuntimeID: "rt", PolicyVersion: "p"},
-		Broker: brokerConfig(t, srv2)})
+		Broker: brokerConfig(t, srv2)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +331,9 @@ func TestBrokerKeyMaterialization(t *testing.T) {
 	}
 
 	// No broker configured: fail closed.
-	svc3, err := Open(Options{ConfigPath: configPath,
+	svc3, err := Open(testAuditOptions(t, Options{ConfigPath: configPath,
 		Auth:   identity.Envelope{Schema: identity.Schema, PrincipalID: "me", ContextID: "me", RuntimeID: "rt", PolicyVersion: "p"},
-		Broker: credentialbroker.Config{}})
+		Broker: credentialbroker.Config{}}))
 	if err != nil {
 		t.Fatal(err)
 	}

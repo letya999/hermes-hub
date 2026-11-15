@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
@@ -46,7 +44,7 @@ func (e *Engine) acquirePath(key string) string {
 
 func (e *Engine) loadAcquireLocked(principal, url string) (AcquireState, error) {
 	var st AcquireState
-	b, err := os.ReadFile(e.acquirePath(acquireKey(principal, url)))
+	b, err := e.readFile(e.acquirePath(acquireKey(principal, url)))
 	if err != nil {
 		return st, err
 	}
@@ -60,9 +58,10 @@ func (e *Engine) writeAcquireLocked(st AcquireState) error {
 	return e.atomicJSON(e.acquirePath(st.Key), st)
 }
 
-// AcquireSubscribeLocked registers a schedule's interest in the shared
+// acquireSubscribeLocked registers a schedule's interest in the shared
 // source; the pool's freshness window is the shortest subscriber interval.
-func (e *Engine) AcquireSubscribeLocked(principal, url, scheduleID string, interval time.Duration, now time.Time) {
+// The engine lock must be held.
+func (e *Engine) acquireSubscribeLocked(principal, url, scheduleID string, interval time.Duration, now time.Time) {
 	key := acquireKey(principal, url)
 	st, err := e.loadAcquireLocked(principal, url)
 	if err != nil {
@@ -75,10 +74,11 @@ func (e *Engine) AcquireSubscribeLocked(principal, url, scheduleID string, inter
 	_ = e.writeAcquireLocked(st)
 }
 
-// AcquirePeekLocked returns the body fetched earlier in this probe sweep —
+// acquirePeekLocked returns the body fetched earlier in this probe sweep —
 // coalescing never serves a body fetched by a previous sweep (SPEC-0081
 // R2.1). Durable retry-after backoff still fences peeks across sweeps.
-func (e *Engine) AcquirePeekLocked(principal, url string, now time.Time) ([]byte, bool) {
+// The engine lock must be held.
+func (e *Engine) acquirePeekLocked(principal, url string, now time.Time) ([]byte, bool) {
 	if st, err := e.loadAcquireLocked(principal, url); err == nil && st.NextPollAt.After(now) {
 		return nil, false
 	}
@@ -86,9 +86,9 @@ func (e *Engine) AcquirePeekLocked(principal, url string, now time.Time) ([]byte
 	return body, ok
 }
 
-// AcquireRecordLocked caches the body for the rest of this sweep and stamps
-// the durable fetch timestamp.
-func (e *Engine) AcquireRecordLocked(principal, url string, body []byte, now time.Time) error {
+// acquireRecordLocked caches the body for the rest of this sweep and stamps
+// the durable fetch timestamp. The engine lock must be held.
+func (e *Engine) acquireRecordLocked(principal, url string, body []byte, now time.Time) error {
 	key := acquireKey(principal, url)
 	if e.acquireBurst == nil {
 		e.acquireBurst = map[string][]byte{}
@@ -116,19 +116,19 @@ func (e *Engine) IntakeHook(scheduleID string, body []byte, now time.Time) error
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := e.mkdirOwned(dir, false); err != nil {
 		return err
 	}
 	sum := sha256.Sum256(append([]byte(scheduleID+"\x00"), body...))
 	name := hex.EncodeToString(sum[:16]) + ".json"
-	return os.WriteFile(filepath.Join(dir, name), body, 0o600)
+	return e.writeBytes(filepath.Join(dir, name), body)
 }
 
 // HookPendingCount reports staged payloads awaiting the next probe tick.
 func (e *Engine) HookPendingCount(scheduleID string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "hooks", commodel.FileID(scheduleID)))
+	entries, err := e.readDir(filepath.Join(e.root, "hooks", commodel.FileID(scheduleID)))
 	if err != nil {
 		return 0
 	}
@@ -138,23 +138,23 @@ func (e *Engine) HookPendingCount(scheduleID string) int {
 // popHookLocked removes and returns the oldest staged payload, or nil.
 func (e *Engine) popHookLocked(scheduleID string) []byte {
 	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
-	entries, err := os.ReadDir(dir)
+	entries, err := e.readDir(dir)
 	if err != nil || len(entries) == 0 {
 		return nil
 	}
-	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
-	path := filepath.Join(dir, entries[0].Name())
-	body, err := os.ReadFile(path)
+	slices.Sort(entries)
+	path := filepath.Join(dir, entries[0])
+	body, err := e.readFile(path)
 	if err != nil {
 		return nil
 	}
-	_ = os.Remove(path)
+	_ = e.removeOwned(path)
 	return body
 }
 
-// AcquireBackoffLocked records a Retry-After/backoff deadline; peeks return
-// miss until it elapses (SPEC-0081 R2.2).
-func (e *Engine) AcquireBackoffLocked(principal, url string, until, now time.Time) {
+// acquireBackoffLocked records a Retry-After/backoff deadline; peeks return
+// miss until it elapses (SPEC-0081 R2.2). The engine lock must be held.
+func (e *Engine) acquireBackoffLocked(principal, url string, until, now time.Time) {
 	key := acquireKey(principal, url)
 	st, err := e.loadAcquireLocked(principal, url)
 	if err != nil {

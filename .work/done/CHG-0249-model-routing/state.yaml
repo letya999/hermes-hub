@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0249
+title: "M29.8 Route by model service, enforce quotas, and fail over safely"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R8.1, R8.2]
+depends_on: ["M29.2", "M29.7", "M29.5"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 432
+design_status: accepted
+implementation_status: implemented
+slices:
+  S8.1-contract: done
+  S8.2-implementation: done
+validation:
+  documents: pass
+  just_check: running
+  docker_check: not_run
+  red_team: reviewed
+  live_acceptance: not_run
+evidence:
+  - unit: "TestModelServiceLadderQuotaIsolationAndStreamFence green: two isolated owner sessions on separate state paths follow declared order; m1 404 retries m2 inside service a; exhausted requests window advances to service b; started SSE stream never replays to another hop; reasoning request skips non-declaring service."
+  - schema: "ModelHopRef gains models[]/limits[]/reasoning/sharing; Validate enforces model-vs-models, {of:requests|tokens, amount>0, per:5h|1d|1w, scope:shared|personal}; spend/provider_quota_percent rejected until verified telemetry exists; sharing:personal requires broker_grants."
+  - relay: "in-service model retry on 400/404 inside one credential principal; durable relayMeter counters in <state>.usage.json, aligned windows, shared/personal keys never cross; charge-before-admit reservation; reasoning capability check before quota burn."
+  - stack_tests: "internal/runtime + internal/stack green; runtime package coverage 86.5%."
+  - docs: "docs/services/model-relay.md documents models/reasoning/sharing/limits and stream no-replay; devcheck docs/format clean."
+  - live: "Live dev acceptance with synthetic providers (404/429/partial-stream/quota telemetry) not run — Docker gate deferred; unit evidence only."
+remaining:
+  - "M29.12: live multi-provider dev acceptance proving 404/429/partial-stream routing and usage receipts in a running stack."
+limitations:
+  - "tokens limit reserves the conservative request estimate (body/6 + completion reserve); real usage tokens are not parsed from streams."
+  - "provider_quota_percent/spend limits fail closed at validation until verified telemetry/pricing exists."

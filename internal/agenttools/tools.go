@@ -1,6 +1,7 @@
 package agenttools
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/exposure"
@@ -25,6 +26,8 @@ type Input struct {
 	Mode               string         `json:"mode,omitempty"`
 	Access             string         `json:"access,omitempty"`
 	Profile            string         `json:"profile,omitempty"`
+	Session            string         `json:"session,omitempty"`
+	Target             string         `json:"target,omitempty"`
 	RequestID          string         `json:"request_id,omitempty"`
 	LifetimeSeconds    int            `json:"lifetime_seconds,omitempty"`
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
@@ -38,9 +41,12 @@ type Input struct {
 	Revision           string         `json:"revision,omitempty"`
 	Version            string         `json:"version,omitempty"`
 	Query              string         `json:"query,omitempty"`
+	Providers          []string       `json:"providers,omitempty"`
 	Format             string         `json:"format,omitempty"`
 	Name               string         `json:"name,omitempty"`
 	Prompt             string         `json:"prompt,omitempty"`
+	Language           string         `json:"language,omitempty"`
+	Timestamps         bool           `json:"timestamps,omitempty"`
 	ID                 string         `json:"id,omitempty"`
 	ResumeID           string         `json:"resume_id,omitempty"`
 	Message            string         `json:"message,omitempty"`
@@ -65,6 +71,10 @@ type Input struct {
 	Queue              bool           `json:"queue,omitempty"`
 	Timing             map[string]any `json:"timing,omitempty"`
 	Limit              int            `json:"limit,omitempty"`
+	From               string         `json:"from,omitempty"`
+	To                 string         `json:"to,omitempty"`
+	Kinds              []string       `json:"kinds,omitempty"`
+	History            bool           `json:"history,omitempty"`
 	Cursor             string         `json:"cursor,omitempty"`
 	State              string         `json:"state,omitempty"`
 	Host               string         `json:"host,omitempty"`
@@ -84,16 +94,20 @@ type Input struct {
 	Regex              string `json:"regex,omitempty"`
 	ProbeKind          string `json:"probe_kind,omitempty"`
 	Recipe             string `json:"recipe,omitempty"`
-	Extract            string `json:"extract,omitempty"`
-	ProbeScript        string `json:"probe_script,omitempty"`
-	// Needs is a JSON array of {"tool","args"} read-tool calls the hub runs
-	// before a script/command probe so needs() returns their results.
-	Needs        string `json:"needs,omitempty"`
+	// Extract is a list of extraction steps applied to watched output. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
+	Extract     any    `json:"extract,omitempty"`
+	ProbeScript string `json:"probe_script,omitempty"`
+	// Needs is a list of {"tool","args"} read-tool calls the hub runs
+	// before a script/command probe so needs() returns their results. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
+	Needs        any    `json:"needs,omitempty"`
 	DeliverMode  string `json:"deliver_mode,omitempty"`
 	ArtifactName string `json:"artifact_name,omitempty"`
-	// Steps is a JSON array of declarative browser actions for render probes;
+	// Steps is a list of declarative browser actions for render probes. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
 	// WaitFor is the terminal wait condition the render service honors.
-	Steps      string   `json:"steps,omitempty"`
+	Steps      any      `json:"steps,omitempty"`
 	WaitFor    string   `json:"wait_for,omitempty"`
 	Tool       string   `json:"tool,omitempty"`
 	NotifyMode string   `json:"notify_mode,omitempty"`
@@ -103,9 +117,10 @@ type Input struct {
 	QuietTo    string   `json:"quiet_to,omitempty"`
 	DailyLimit int      `json:"daily_limit,omitempty"`
 	MaxRetries int      `json:"max_retries,omitempty"`
-	// Plan carries an assignment plan as a JSON object string; Title names
+	// Plan carries an assignment plan object. The r5 schema types it
+	// object; the legacy JSON-string form still decodes. Title names
 	// the assignment for the owner. Intent rides the existing Text field.
-	Plan     string `json:"plan,omitempty"`
+	Plan     any    `json:"plan,omitempty"`
 	Title    string `json:"title,omitempty"`
 	JobID    string `json:"job_id,omitempty"`
 	Summary  string `json:"summary,omitempty"`
@@ -114,7 +129,9 @@ type Input struct {
 	Complete bool   `json:"complete,omitempty"`
 	Sink     string `json:"sink,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
-	Args     string `json:"args,omitempty"`
+	// Args is the tool-arguments object for mcp_tool/event probes. The r5
+	// schema types it object; the legacy JSON-string form still decodes.
+	Args any `json:"args,omitempty"`
 	// Filter is the deterministic per-event Starlark gate for event
 	// subscriptions (probe.filter); MinIntervalSeconds declares the source
 	// cadence for stream delivery on poll-style tools.
@@ -122,9 +139,29 @@ type Input struct {
 	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
 	CursorArg          string `json:"cursor_arg,omitempty"`
 	// Sources fans one subscription out over several acquisition inputs: a
-	// JSON array string of {name?,tool?,args} entries merged onto the
-	// probe's tool+args per stream round.
-	Sources string `json:"sources,omitempty"`
+	// list of {name?,tool?,args} entries merged onto the probe's tool+args
+	// per stream round. The r5 schema types it array; the legacy
+	// JSON-string form still decodes.
+	Sources any `json:"sources,omitempty"`
+	// Surgical file-edit and mkdir fields (files family r5).
+	OldString  string `json:"old_string,omitempty"`
+	NewString  string `json:"new_string,omitempty"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+	Parents    bool   `json:"parents,omitempty"`
+	// Terminal exec fields (terminal family r5).
+	Cmd        string `json:"cmd,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Stdin      string `json:"stdin,omitempty"`
+	Shell      string `json:"shell,omitempty"`
+	Background bool   `json:"background,omitempty"`
+	Job        string `json:"job,omitempty"`
+	// memory_card contract (SPEC-0085 R6): Op selects the write; Card/To
+	// name cards, Evidence anchors a fact to a captured entry, Tags sets
+	// frontmatter on created cards.
+	Op       string   `json:"op,omitempty"`
+	Card     string   `json:"card,omitempty"`
+	Evidence string   `json:"evidence,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -133,6 +170,18 @@ type Tools struct {
 	HHEnabled, OrgScoped             bool
 	OrgActions                       map[string]bool
 	ReadOnlyTools                    map[string]bool
+	// ReadOnlyPaths lists workspace-relative directory prefixes the file
+	// tools refuse to write: inbox originals, shared mounts and vault
+	// memory land here, rendered from the workspace passport.
+	ReadOnlyPaths []string
+	// BoundaryPath is the mounted /config/workspace.yaml the file tools
+	// reload for the active writable/read_only contract. Managed startup
+	// requires it; stateless component callers may omit it.
+	BoundaryPath string
+	// ToolPolicyPath is the rendered snapshot location (HUB_TOOL_POLICY):
+	// toolPolicyDeny reloads it per call so a revoke lands on the next call,
+	// not the next respawn (R5.2 grant epoch).
+	ToolPolicyPath string
 	// ToolPolicy is the rendered tool-governance extract (HUB_TOOL_POLICY):
 	// deny/deny-all/refuse-read only decisions compiled per capability
 	// family. Nil on unmanaged runtimes — the env pin is only rendered with
@@ -158,6 +207,8 @@ type Tools struct {
 	// the skills: logical root for file/document/image ops (R7.3).
 	Skills        *os.Root
 	Media         *media.Session
+	browserMu     sync.Mutex
+	browserRuns   map[string]*browserRun
 	mu            sync.Mutex
 	lock, envLock *flock.Flock
 }
@@ -241,7 +292,22 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	if eff := os.Getenv("HUB_SKILLS_EFFECTIVE"); eff != "" {
 		sk, _ = os.OpenRoot(eff)
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	boundaryPath := strings.TrimSpace(os.Getenv("HUB_WORKSPACE_BOUNDARY"))
+	explicitBoundary := boundaryPath != ""
+	managed := os.Getenv("HUB_PASSPORT_REVISION") != "" || os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	if boundaryPath == "" {
+		boundaryPath = "/config/workspace.yaml"
+	}
+	if !managed && !explicitBoundary {
+		if _, err := os.Lstat(boundaryPath); os.IsNotExist(err) { // #nosec G703 -- boundaryPath is the packaged default or operator env, probed for existence only.
+			boundaryPath = ""
+		}
+	}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	if _, err := t.boundary(); err != nil {
+		t.Close()
+		return nil, err
+	}
 	t.openSSH()
 	t.openExposure()
 	return t, nil
@@ -326,6 +392,12 @@ func runtimeEnvelope() identity.Envelope {
 	return identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: toolHubEnvOr("HUB_EXTERNAL_ID", principal), ContextID: contextID, RuntimeID: runtimeID, ConversationID: toolHubEnvOr("HUB_CONVERSATION_ID", "toolhub"), DeliveryTargetID: toolHubEnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"), PolicyVersion: toolHubEnvOr("HUB_POLICY_VERSION", "policy-1")}
 }
 func (t *Tools) Close() {
+	t.browserMu.Lock()
+	for id, run := range t.browserRuns {
+		_ = run.session.Close()
+		delete(t.browserRuns, id)
+	}
+	t.browserMu.Unlock()
 	if t.SSH != nil {
 		t.SSH.Close()
 	}
@@ -345,4 +417,33 @@ func (t *Tools) Close() {
 	if t.Skills != nil {
 		_ = t.Skills.Close()
 	}
+}
+
+// hasParam reports whether a structured `any` argument carries a value —
+// either a non-empty legacy JSON string or a decoded object/array.
+func hasParam(v any) bool {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) != ""
+	}
+	return v != nil
+}
+
+// jsonParam decodes one structured call argument into out. The r5 schema
+// sends real objects/arrays; the older internal caller convention passed
+// the same JSON as a string — both forms decode identically here.
+func jsonParam(v any, out any) error {
+	if s, ok := v.(string); ok {
+		if strings.TrimSpace(s) == "" {
+			return nil
+		}
+		return json.Unmarshal([]byte(s), out)
+	}
+	if v == nil {
+		return nil
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, out)
 }

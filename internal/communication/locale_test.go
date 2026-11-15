@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/channel"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -44,6 +46,23 @@ func wantText(t *testing.T, lang locale.Lang, key string, args ...any) string {
 		t.Errorf("catalog %s missing key %q", lang, key)
 	}
 	return locale.T(lang, key, args...)
+}
+
+func TestJobErrorMessagesOmitInternalID(t *testing.T) {
+	for _, lang := range []locale.Lang{locale.LangEN, locale.LangRU, locale.LangKK, locale.LangES} {
+		for _, status := range []string{"failed", "cancelled", "interrupted"} {
+			text := failureMessage(lang, status)
+			if text == "" || strings.Contains(text, "ID:") || strings.Contains(text, "%!") {
+				t.Errorf("%s/%s leaked an internal ID or formatting error: %q", lang, status, text)
+			}
+		}
+		for _, key := range []string{"job.approval-expired", "job.approval-denied", "job.uncertain", "job.recheck"} {
+			text := wantText(t, lang, key)
+			if strings.Contains(text, "ID:") || strings.Contains(text, "%!") {
+				t.Errorf("%s/%s leaked an internal ID or formatting error: %q", lang, key, text)
+			}
+		}
+	}
 }
 
 // /language <code> persists a chosen preference in the user's workspace and
@@ -475,10 +494,7 @@ func TestApprovalAndCancelErrorsLocalized(t *testing.T) {
 func TestRoutinesListLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	fake := &fakeAPI{}
 	g.api = fake
 	if err := g.handleUpdate(context.Background(), langUpdate(1, 1, 11, "/routines", "")); err != nil {
@@ -503,14 +519,12 @@ func TestRoutinesListLocalized(t *testing.T) {
 func TestRoutinesFragmentsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.ControlAuth = "control-token"
+	g, host, _ := automationGatewayFixture(t, c)
 	fake := &fakeAPI{}
 	g.api = fake
 	env := c.Users[0].Envelope(11)
-	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "frag-check", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "x", JobKind: "reminder"}, env, ""); err != nil {
+	if _, err := host.CreateSchedule(context.Background(), env, Schedule{ScheduleID: "frag-check", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "x", JobKind: "reminder"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.handleUpdate(context.Background(), langUpdate(1, 1, 11, "/routines", "")); err != nil {
@@ -531,22 +545,21 @@ func TestRoutinesFragmentsLocalized(t *testing.T) {
 func TestRoutinesStateVariantsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.ControlAuth = "control-token"
+	g, host, automationRoot := automationGatewayFixture(t, c)
 	fake := &fakeAPI{}
 	g.api = fake
 	env := c.Users[0].Envelope(11)
 	base := Schedule{Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "x", JobKind: "reminder", Enabled: true, NextDue: time.Now().UTC().Add(time.Hour)}
 	base.ScheduleID = "paused-one"
-	if _, err := g.spool.CreateSchedule(base, env, ""); err != nil {
+	if _, err := host.CreateSchedule(context.Background(), env, base, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.PauseSchedule("paused-one", env); err != nil {
+	if err := host.PauseSchedule(context.Background(), env, "paused-one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(c.SpoolDir, "schedules"), 0700); err != nil {
+	ownerSchedules := filepath.Join(automationRoot, "users", "alice", "schedules")
+	if err := os.MkdirAll(ownerSchedules, 0700); err != nil {
 		t.Fatal(err)
 	}
 	seed := func(id string, mut func(*Schedule)) {
@@ -554,7 +567,7 @@ func TestRoutinesStateVariantsLocalized(t *testing.T) {
 		sc.ScheduleID = id
 		mut(&sc)
 		body, _ := json.Marshal(sc)
-		if err := os.WriteFile(filepath.Join(c.SpoolDir, "schedules", commodel.FileID(id)+".json"), body, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(ownerSchedules, commodel.FileID(id)+".json"), body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -973,11 +986,11 @@ func TestStreamEventTextsLocalized(t *testing.T) {
 		wantText(t, locale.LangES, "job.approval-needed"),
 		windowPrefix,
 		wantText(t, locale.LangES, "job.approval-hint", "j-appr", "req-1", "once, deny", "j-appr"),
-		wantText(t, locale.LangES, "job.cancelled", "j-cancel"),
-		wantText(t, locale.LangES, "job.interrupted", "j-interr"),
-		wantText(t, locale.LangES, "job.failed", "j-fail"),
-		wantText(t, locale.LangES, "job.approval-expired", "j-exp"),
-		wantText(t, locale.LangES, "job.approval-denied", "j-deny"),
+		wantText(t, locale.LangES, "job.cancelled"),
+		wantText(t, locale.LangES, "job.interrupted"),
+		wantText(t, locale.LangES, "job.failed"),
+		wantText(t, locale.LangES, "job.approval-expired"),
+		wantText(t, locale.LangES, "job.approval-denied"),
 		"git push",
 		"/approve j-appr req-1",
 	} {
@@ -1230,8 +1243,18 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Past the reconciliation window the owner is told the outcome is unknown.
-	g.now = func() time.Time { return time.Now().Add(hubruntime.RunBudget() + time.Minute) }
+	// The first uncertain observation starts the window; backdate only those
+	// two jobs to exercise the localized notice after reconciliation expires.
+	for _, id := range []string{"w-uncertain", "w-uncertain2"} {
+		mapping, found, err := g.spool.Mapping(id)
+		if err != nil || !found {
+			t.Fatalf("mapping %s: %v", id, err)
+		}
+		mapping.UncertainSince = time.Now().Add(-hubruntime.RunBudget() - time.Minute)
+		if err := atomicJSON(g.spool.mappingPath(id), mapping); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -1249,10 +1272,10 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 	<-done
 	joined := strings.Join(fake.sent, "\n")
 	for _, want := range []string{
-		wantText(t, locale.LangES, "job.interrupted", "w-interr"),
-		wantText(t, locale.LangES, "job.cancelled", "w-goal") + " " + wantText(t, locale.LangES, "job.goal-paused"),
-		wantText(t, locale.LangES, "job.uncertain", "w-uncertain2"),
-		wantText(t, locale.LangES, "job.recheck", "w-uncertain"),
+		wantText(t, locale.LangES, "job.interrupted"),
+		wantText(t, locale.LangES, "job.cancelled") + " " + wantText(t, locale.LangES, "job.goal-paused"),
+		wantText(t, locale.LangES, "job.uncertain"),
+		wantText(t, locale.LangES, "job.recheck"),
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sent=%q missing %q", joined, want)
@@ -1285,21 +1308,18 @@ func (r *scriptedRunner) RunOutcome(_ context.Context, job Job) (RunOutcome, err
 func TestToolHubTextsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, automationRoot := automationGatewayFixture(t, c)
 	user := c.Users[0]
 	env := user.Envelope(11)
 	want := func(key string, args ...any) string { return wantText(t, locale.LangES, key, args...) }
 
 	// /watches: one paused event subscription over a tool probe.
-	if err := os.MkdirAll(filepath.Join(c.SpoolDir, "schedules"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(automationRoot, "users", "alice", "schedules"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	sc := Schedule{ScheduleID: "ev-loc", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "mail events", JobKind: "event", Enabled: true, Paused: true, Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}
 	body, _ := json.Marshal(sc)
-	if err := os.WriteFile(filepath.Join(c.SpoolDir, "schedules", commodel.FileID("ev-loc")+".json"), body, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(automationRoot, "users", "alice", "schedules", commodel.FileID("ev-loc")+".json"), body, 0600); err != nil {
 		t.Fatal(err)
 	}
 	list := g.watchesCommand(user, 11)
@@ -1310,7 +1330,7 @@ func TestToolHubTextsLocalized(t *testing.T) {
 	}
 
 	// Removing the only subscription renders the empty tail.
-	if err := os.Remove(filepath.Join(c.SpoolDir, "schedules", commodel.FileID("ev-loc")+".json")); err != nil {
+	if err := os.Remove(filepath.Join(automationRoot, "users", "alice", "schedules", commodel.FileID("ev-loc")+".json")); err != nil {
 		t.Fatal(err)
 	}
 	if got := g.watchesCommand(user, 11); !strings.HasSuffix(got, want("watches.empty")) {
@@ -1318,7 +1338,7 @@ func TestToolHubTextsLocalized(t *testing.T) {
 	}
 
 	// Corrupt schedule storage flips the listing to the unavailable reply.
-	bad := filepath.Join(c.SpoolDir, "schedules", commodel.FileID("bad-loc")+".json")
+	bad := filepath.Join(automationRoot, "users", "alice", "schedules", commodel.FileID("bad-loc")+".json")
 	if err := os.WriteFile(bad, []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2217,26 +2237,42 @@ func TestOpsWiringUsesWorkspaceLang(t *testing.T) {
 	}
 }
 
-// The routines engine resolves notice language through the spool's principal
-// resolver — a blocked schedule reaches the owner already localized.
+// The routines engine resolves notice language through the owner's principal
+// resolver — a blocked schedule reaches the owner already localized. The
+// resolver moved to the ToolHub engine; drive it on the real engine seam.
 func TestRoutineBlockedNoticeLangWired(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.api = &fakeAPI{}
+	var sent []commodel.Delivery
+	engine := routines.NewEngine(t.TempDir(), routines.Deps{
+		Storage: routines.StoragePort{WriteJSONAtomic: func(path string, value any) error {
+			return atomicJSON(path, value)
+		}},
+		Delivery: routines.DeliveryPort{
+			EnqueueDelivery:   func(d commodel.Delivery) error { sent = append(sent, d); return nil },
+			NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
+		},
+		LangOf: func(principal string) locale.Lang { return locale.LangOf(c.Users[0].WorkspaceDir) },
+		ChannelFor: func(id string) routines.OccurrenceChannel {
+			return channel.NewTelegram(channel.TelegramDeps{UserByPrincipal: func(string) commodel.User { return c.Users[0] }})
+		},
+		Signal: func() {},
+	})
 	item := commodel.Schedule{ScheduleID: "r-one", Envelope: c.Users[0].Envelope(11), Channel: "telegram_bot"}
-	if err := g.spool.rt.BlockScheduleLocked(&item, "bad cron", g.now()); err != nil {
+	if err := os.MkdirAll(filepath.Dir(engine.SchedulePath(item.ScheduleID)), 0700); err != nil {
 		t.Fatal(err)
 	}
-	d, err := g.spool.ClaimDelivery()
-	if err != nil || d == nil {
-		t.Fatalf("no blocked delivery: %v", err)
+	if err := atomicJSON(engine.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(d.Text, strings.Split(wantText(t, locale.LangES, "routines.blocked", "r-one", "bad cron"), "bad cron")[0]) {
-		t.Fatalf("notice %q", d.Text)
+	if err := engine.BlockSchedule(&item, "bad cron", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("no blocked delivery: %v", sent)
+	}
+	if !strings.Contains(sent[0].Text, strings.Split(wantText(t, locale.LangES, "routines.blocked", "r-one", "bad cron"), "bad cron")[0]) {
+		t.Fatalf("notice %q", sent[0].Text)
 	}
 }
 

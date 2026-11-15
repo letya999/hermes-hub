@@ -124,11 +124,14 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err := c.registerAdmittedDefinition(&definition, auth.PrincipalID); err != nil {
 		t.Fatal(err)
 	}
-	original, err := c.newOnboarding(auth, api.OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA)
+	original, _, err := c.newOnboarding(auth, api.OnboardingSelfInstall, "read", definition, entry.Source.Repository, entry.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	original.BrokerCredentialID, original.Locator = "owner-session", "owner-session"
+	original.Stage = api.StagePending
+	original.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +139,15 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original.BindingID, original.ConnectionID, original.Phase = bind.ToolBindingID, bind.ConnectionID, api.PhaseEnabled
+	original.BindingID, original.ConnectionID = bind.ToolBindingID, bind.ConnectionID
+	original.Stage = api.StageLive
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"telegram_send": true, "onboarding_id": original.OnboardingID}
-	for _, invalid := range []map[string]any{{"telegram_send": false}, {"telegram_send": "true"}, {"telegram_send": true}, {"telegram_send": true, "onboarding_id": original.OnboardingID, "source": entry.Source.Repository}} {
-		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); !errors.Is(err, api.ErrInvalid) {
+	args := map[string]any{"upgrade_mode": "send", "onboarding_id": original.OnboardingID}
+	for _, invalid := range []map[string]any{{"upgrade_mode": ""}, {"upgrade_mode": "unknown", "onboarding_id": original.OnboardingID}, {"upgrade_mode": "send"}, {"upgrade_mode": "send", "onboarding_id": original.OnboardingID, "source": entry.Source.Repository}} {
+		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); err == nil {
 			t.Fatalf("invalid selection accepted: %v", err)
 		}
 	}
@@ -172,18 +177,15 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() {
-			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != api.PhaseAwaitingConfirm {
+			if body, err := c.Invoke(t.Context(), auth, "prepare_source", args); err != nil || body["phase"] != api.PhaseEnabled {
 				t.Errorf("send preparation: %v %v", body, err)
 			}
 		})
 	}
 	wg.Wait()
-	upgrade, ok := c.Store.FindOnboardingByKey(auth, "telegram-send:"+original.OnboardingID)
+	upgrade, ok := c.Store.FindOnboardingByKey(auth, "upgrade:"+original.OnboardingID+":send")
 	if !ok || probes.Load() != 1 || upgrade.BrokerCredentialID != original.BrokerCredentialID || upgrade.BrokerRequestID != "" || upgrade.DefinitionVersion == original.DefinitionVersion {
 		t.Fatal("upgrade duplicated probe, login or session, or replaced immutable read version")
-	}
-	if _, err := c.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": upgrade.OnboardingID, "nonce": upgrade.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
 	}
 	body, err := c.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": upgrade.OnboardingID})
 	if err != nil || body["phase"] != api.PhaseEnabled {
@@ -193,6 +195,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	// Write tools stay unprojected until writes are explicitly enabled on the
 	// onboarding; the send upgrade stands in for an already-approved one.
 	upgrade.WritesEnabled = true
+	upgrade.Revision++
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +212,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if managed {
 		tools, err := c.Store.ListProjectedTools(auth)
 		if err != nil || len(tools) != 3 {
-			t.Fatalf("managed projection lost read or send tools: %v %v", tools, err)
+			t.Fatalf("self-install connector must project its tools under the managed surface: %v %v", tools, err)
 		}
 	}
 }
@@ -221,11 +224,11 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	if err := putGrant(t, c.Store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"telegram_send": true, "onboarding_id": "missing"}
+	args := map[string]any{"upgrade_mode": "send", "onboarding_id": "missing"}
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil {
 		t.Fatal("missing onboarding accepted")
 	}
-	original := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
+	original := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "telegram-read", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now()}
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +236,15 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("unconfirmed session accepted: %v", err)
 	}
-	original.Phase, original.BrokerCredentialID = api.PhaseEnabled, "credential"
+	original.BrokerCredentialID = "credential"
+	original.Stage = api.StageLive
+	original.Revision++
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
 	upgrade := original
-	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "telegram-send:"+original.OnboardingID, api.PhaseRemoved
+	upgrade.OnboardingID, upgrade.IdempotencyKey = "telegram-send-upgrade", "upgrade:"+original.OnboardingID+":send"
+	upgrade.Retire(api.TombstoneRemoved)
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}
@@ -280,9 +286,31 @@ func TestTelegramSendRejectsContractDrift(t *testing.T) {
 			case "unconfirmed":
 				packet.Definition.Source.ToolContractDigest = ""
 			}
-			if err := validateTelegramSendUpgrade(expected, packet.Definition); (err == nil) != (scenario == "valid" || scenario == "whitespace") {
+			if err := validateConnectorUpgrade(expected, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"send_message"}}); (err == nil) != (scenario == "valid" || scenario == "whitespace") {
 				t.Fatalf("unexpected admission: %v", err)
 			}
 		})
+	}
+}
+
+func TestConnectorUpgradeDiffIsProviderNeutral(t *testing.T) {
+	base := statefulContainerDefinition()
+	base.DefinitionID = "fixture"
+	base.Tools = []api.ToolSpec{{Name: "lookup", Effect: api.ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	packet := api.ImportedArtifact{Definition: base}
+	if _, err := api.ApplyPreflightToolList(&packet, base.Tools); err != nil {
+		t.Fatal(err)
+	}
+	base = packet.Definition
+	packet = api.ImportedArtifact{Definition: base}
+	added := api.ToolSpec{Name: "publish", Effect: api.WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}
+	if _, err := api.ApplyPreflightToolList(&packet, append(append([]api.ToolSpec(nil), base.Tools...), added)); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConnectorUpgrade(base, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"publish"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConnectorUpgrade(base, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"send_message"}}); err == nil {
+		t.Fatal("unreviewed added tool accepted")
 	}
 }

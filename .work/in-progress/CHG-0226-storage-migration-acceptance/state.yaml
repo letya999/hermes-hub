@@ -3,7 +3,7 @@ change: CHG-0226
 title: "Явная миграция и итоговая приёмка ограниченного хранения"
 status: in_progress
 branch: fix/m23-live-wake
-updated: "2026-10-28"
+updated: "2026-11-01"
 phase: design-complete
 adr: ADR-0087
 spec: SPEC-0087
@@ -14,24 +14,28 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
+implementation_status: partial
 readiness: dependency_gated
 slices:
-  S202.1-read-only-import: not_started
-  S202.2-dev-acceptance: not_started
-  S202.3-closeout: not_started
+  S202.1-read-only-import: in_progress
+  S202.2-dev-acceptance: implemented
+  S202.3-closeout: in_progress
 validation:
   documents: passed
   planning_package: passed
   planning_just_check: failed
-  just_check: not_run
-  module_check: not_run
-  security: not_run
-  docker_check: not_run
+  just_check: failed
+  module_check: passed
+  security: passed
+  docker_check: passed
   red_team: not_started
-  live_acceptance: not_started
-evidence: []
+  live_acceptance: partial
+evidence:
+  - dev-acceptance.md
+  - "../CHG-0218-broker-sqlcipher-proof/gate-result.md"
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "All three services live-verified on spaces/local (dev-acceptance.md): broker on encrypted SQLCipher, toolhub on store.db, communication on spool.db. Closeout = commit this increment; prod and the dev branch remain untouched per owner instruction."
 limitations:
-  - "Planning record only; no production code or live state changed."
+  - "Power-loss matrix unavailable; broker normalized tables (CHG-0219) out of this slice."
+  - "Windows bind-mount chmod quirk needed a container-side store.db recreate; the activated-spool reopen crash (migrateEventLayout raw-os manifest read, Linux-only symptom) was found and fixed during live acceptance."
+  - "Root just check on this host: environmental AV/CGO linker denials (Access is denied on spawned cover.exe/gcc/ld.lld) — recorded, not code failures. Module check must run with -tags=libsqlite3 + codec headers (CI updated: libsqlcipher-dev + GOFLAGS env); coverage gate now green at 88.97% with 14 new refusal-path engine tests."

@@ -1,0 +1,22 @@
+schema: 1
+change: CHG-0291
+title: Separate shared and infra-owner user Compose projects
+status: done
+updated: 2026-11-09
+branch: feat/m32-integration
+implementation_status: locally_verified_live_dev
+validation:
+  named_regressions: passed_2026-11-09
+  just_check: passed_2026-11-09
+  affected_tests: passed_2026-11-09_internal_stack_and_hubctl
+  docker: passed_2026-11-09_shared_6_artem_main_3_artem_two_7
+evidence:
+  - "Published artem_main revision r-99d77983fe506c30 declares model-relay per-space; both generated Compose plans pass config validation."
+  - "Live Docker projects: hermes-hub-artem_main-dev has six shared services; hermes-hub-artem_main-dev-user has three personal relays; hermes-hub-artem_two-dev has seven containers including the idle browser."
+  - "artem_main personal model relay still mounts hermes-hub-artem_main-dev_broker-secrets-model; agent network is internal."
+  - "Repeated hubctl up --no-build left all six shared and three personal container IDs unchanged."
+  - "artem_two dedicated CLIProxy init is healthy with on-failure restart; proxy has zero restarts; synthetic chat completion through its model relay returned HTTP 200."
+  - "artem_two doctor is blocked only by missing GITHUB_TOKEN for the selected legacy github MCP; no credential was invented or provider selection changed."
+remaining:
+  - "GitHub requires an owner-provided credential or a reviewed move to the prepared connector path; artem_two doctor/full hubctl up remains blocked until then."
+  - "Remote CI and full Docker acceptance were not run."

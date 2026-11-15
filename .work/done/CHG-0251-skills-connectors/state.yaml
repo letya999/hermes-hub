@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0251
+title: "M29.10 Integrate skills, connectors, raw MCP and capability packs with passports"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R10.1, R10.2]
+depends_on: ["M29.1", "M29.4", "M29.5", "M29.6"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 434
+design_status: accepted
+implementation_status: implemented
+slices:
+  S10.1-contract: done
+  S10.2-implementation: done
+validation:
+  documents: pass
+  just_check: failed_environmental
+  docker_check: not_run
+  red_team: reviewed
+  live_acceptance: not_run
+evidence:
+  - unit: "TestSkillConnectorPassportProjectionAndRawMCPDenial green: cataloged skill/connector/org_mcp sections compile; ad-hoc mcp-raw:<server> fails; user widening beyond ceiling fails; uncataloged skills_manage operation fails."
+  - bound_fix: "classNarrow fields now enforce ceiling bounds — a narrower layer cannot widen tools.sections/services/features/workspace lists beyond the enclosing ceiling (previously unenforced; found during R10 compile review)."
+  - catalog: "release 3: user_mcp and org_mcp are the only placeable raw-MCP surfaces (kind mcp-raw, via mcp-raw, dynamic members); kind vocabulary extended. skills read/manage and the connectors pack were already cataloged as the single projection."
+  - governance: "existing user_mcp denied-by-default tests pass; org-scoped mcp-raw routes to org_mcp section."
+  - stack_tests: "catalog/passport/devcheck/stack green; devcheck docs/format clean."
+  - live: "Enable-one-connector + draft-one-skill live acceptance not run — deferred to M29.12."
+remaining:
+  - "M29.12: live dev acceptance of connector enable + skill draft + revoke visibility."
+limitations:
+  - "Raw-MCP tool names remain dynamically projected at admission; the passport records the section, not member lists."

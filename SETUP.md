@@ -260,11 +260,13 @@ the organization explicitly permits that mutation. The repository does not provi
 public authentication gateway, so an external ingress must authenticate the principal
 and select the corresponding user space before invoking `hubctl`.
 
-Existing installations must be migrated explicitly; the command is dry-run by default:
+Existing spaces need six authored passport files before the next managed
+restart. Review `passports/{stack,config,models,workspace,tools,grants}.yaml`
+and publish the set after independently issuing any requested rights:
 
 ```bash
-./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme
-./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme --apply
+./bin/hubctl-linux-amd64 space apply --dir spaces/artem --env prod
+./bin/hubctl-linux-amd64 space apply --dir spaces/artem --env prod --confirm
 ```
 
 ## VPS and another person

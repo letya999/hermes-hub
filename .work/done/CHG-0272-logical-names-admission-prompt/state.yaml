@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0272
+title: M31.9 Wire logical names, admission dispatch and the modular prompt contract
+status: done
+branch: feat/m31-model-tool-surface
+updated: 2026-11-03
+phase: done
+adr: ADR-0094
+spec: SPEC-0093
+requirements: [R4.1, R4.2, R4.3, R4.4]
+depends_on: []
+github_milestone: "M31 — Consolidated Model Tool Surface (catalog r5)"
+github_issue: "446"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_applicable
+  red_team: done
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

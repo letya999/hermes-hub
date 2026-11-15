@@ -177,3 +177,12 @@ func RandomNonce() string {
 	}
 	return hex.EncodeToString(raw)
 }
+
+// ValidPrepareEventID checks the exact format emitted by RandomNonce.
+func ValidPrepareEventID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}

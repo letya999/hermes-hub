@@ -74,7 +74,7 @@ func TestConfirmDeliveryFailureDoesNotRerouteOAuth(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-workspace-delivery", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GOOGLE_CLIENT_SECRET_PATH"}, {Name: "USER_GOOGLE_EMAIL"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-workspace-delivery", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)}, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GOOGLE_CLIENT_SECRET_PATH"}, {Name: "USER_GOOGLE_EMAIL"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestConfirmDeliveryFailureDoesNotRerouteOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+	if !after.Awaiting(api.GateCredentials) || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("delivery failure did not reopen the credential form: %+v", after)
 	}
 	if after.ProviderAuthorizationURL != "" || len(control.oauthFlows.flows) != 0 {

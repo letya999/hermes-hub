@@ -1,0 +1,64 @@
+schema: 1
+change: CHG-0276
+title: Pre-turn recall lane — zero-LLM, pinned per run
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: implementation
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R4.1, R4.2, R4.3, R4.4, R4.5, R4.6]
+depends_on: [CHG-0204, CHG-0205, CHG-0207]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 419
+design_status: accepted
+implementation_status: implemented
+slices:
+  S4.1-recall-assembly: done
+  S4.2-pinned-snapshot: done
+  S4.3-instructions-delivery: done
+  S4.4-lane2-hint: done
+  S4.5-audience-gate: done
+validation:
+  documents: green: devcheck format + devcheck docs pass
+  just_check: partial: all legs green; go-check's full-suite pass failed only on
+    pre-existing Windows fork/exec AV flakes in untouched packages
+    (internal/memory, internal/migration — both pass isolated with -count=1);
+    search/communication suites green at 91.9%/86.7% coverage
+  docker_check: not_run
+  red_team: covered: directive-laden hit inert inside frame (TestRecallDirectiveHitInert);
+    budget/ordering under flooding (TestRecallBudgetCap, TestRecallOrdering); crafted
+    scope userx:* fails closed end-to-end (TestGroupRunExcludesPrivateRecall,
+    TestRecallAudienceFilter); recalled bytes non-extractable
+    (TestRecalledBlockMarkedNonExtractable)
+  live_acceptance: pending: requires live stack (deferred — no-docker scope)
+evidence:
+  - internal/memory/search/recall.go — deterministic card-only assembly: audience+Kinds
+    filter via the D6 index, ≤4 hits, recency-decayed order, evidence refs, recalled
+    markers + "data, not instructions" frame, hard 2500-char cap; lane-2 hint on
+    EN/RU past-reference turns only
+  - internal/commodel/mapping.go — RecallSnapshot/RecallSnapshotted pinned on the
+    durable job mapping (same mechanism as CoreForRun)
+  - internal/communication/recall.go — Spool.RecallForRun pins under spool lock;
+    retry replays identical bytes
+  - internal/communication/runtime.go — recall block rides ExecuteRequest.Instructions
+    after CORE inside the 4096-byte admission ceiling; index failure degrades to a
+    flagged marker-wrapped line and the run still executes
+  - tests: TestRecallBudgetCap, TestRecallFramePresent, TestRecallOrdering,
+    TestLane2HintTriggers, TestLane2SilentOnFreshTopic, TestRecallDirectiveHitInert
+    (internal/memory/search); TestRecallSnapshotPinnedAcrossRetries,
+    TestRecallInInstructions, TestRecallDegradedStillRuns, TestRecallAudienceFilter,
+    TestGroupRunExcludesPrivateRecall, TestRecalledBlockMarkedNonExtractable
+    (internal/communication)
+  - coverage: internal/memory/search 91.9%, internal/communication 86.7%
+remaining:
+  - live acceptance A4.1-A4.7 on a dev stack (fact visible next run, byte-identical
+    retry, group prompt zero private bytes, kill-runtime-mid-run identical payload)
+limitations:
+  - R4.1's ≤2500 budget is applied to the recall block itself; CORE keeps its own
+    R1.6/D12 ≤3600 slice — both share the 4096-byte instructions ceiling (CORE
+    yields first)
+  - group runs receive the framed-but-empty recall block (markers + frame, zero
+    hits) — no private bytes, consistent with R4.5
+  - lane-2 trigger set is a fixed EN/RU phrase list; misses are silent by design
+  - the first-run pin is lazy (first RunOutcome), matching the CORE discipline

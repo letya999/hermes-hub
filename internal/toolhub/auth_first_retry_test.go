@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,13 +121,14 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-retry",
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
 		AdmissionPending: true, Definition: &draft, BrokerRequestID: "request_1",
 		Recipe: &api.RecipeResolution{
 			Source:     api.ArtifactSource{Repository: draft.Source.Repository, CommitSHA: draft.Source.CommitSHA},
 			Connection: api.ConnectionRecipe{AuthBeforeToolsList: true, Fields: []api.ConnectionField{{Name: "CUSTOM_TOKEN", Required: true, Delivery: "env"}}},
-		},
-	}
+		}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +138,7 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 		Store: store, Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now,
 		Reviewer: func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
 			reviews++
-			return api.SourceReview{Definition: built}, errors.New("server rejected the submitted token")
+			return api.SourceReview{Definition: built}, fmt.Errorf("%w: server rejected the submitted token", api.ErrAuthBeforeEffect)
 		},
 		AdmitWithCredentials: func(_ context.Context, d api.ToolDefinition, env map[string]string) (api.ToolDefinition, error) {
 			if d.Source.Digest == "" || d.Source.ArchiveDigest == "" {
@@ -157,8 +159,8 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.ErrorCode != api.OpCodeProbeFailed || failed.Phase != api.PhaseAwaitingCreds {
-		t.Fatalf("rejected credential did not reopen the form: phase=%q code=%q", failed.Phase, failed.ErrorCode)
+	if failed.ErrorCode != api.OpCodeProbeFailed || !failed.Awaiting(api.GateCredentials) {
+		t.Fatalf("rejected credential did not reopen the form: phase=%q code=%q", failed.NoticePhase(), failed.ErrorCode)
 	}
 	if reviews != 1 {
 		t.Fatalf("first admission reviewed %d times", reviews)
@@ -167,8 +169,8 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	if body["phase"] != api.PhaseAwaitingConfirm {
-		t.Fatalf("retry did not reach confirmation: %v", body)
+	if body["phase"] != api.PhaseEnabled {
+		t.Fatalf("retry did not complete to enabled: %v", body)
 	}
 	if reviews != 1 {
 		t.Fatalf("retry rebuilt the unchanged artifact: %d reviews", reviews)
@@ -237,10 +239,11 @@ func TestAuthFirstDeferredReviewCannotMutateStoredRecipe(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onboard-alias",
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
 		AdmissionPending: true, Definition: &draft, BrokerRequestID: "request_1",
-		Recipe: recipe, RecipeDigest: digest,
-	}
+		Recipe: recipe, RecipeDigest: digest}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +286,7 @@ func TestAuthFirstDeferredReviewCannotMutateStoredRecipe(t *testing.T) {
 	}
 }
 
-// Two owners racing the serialized admission path must converge on their own
+// Two owners racing independent admission paths must converge on their own
 // durable records: no cross-owner reads, no lost updates, distinct results.
 func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -349,16 +352,22 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 		if err := store.PutOnboarding(api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: owner.onboardingID,
 			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-			Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
-			AdmissionPending: true, Definition: &draft,
-		}); err != nil {
+			Mode:  api.OnboardingSelfInstall,
+			Stage: api.StagePending,
+			Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Revision: 1,
+			AdmissionPending: true, Definition: &draft}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: key, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	control := &ControlPlane{
 		Store: store, Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now,
 		AdmitWithCredentials: func(_ context.Context, d api.ToolDefinition, env map[string]string) (api.ToolDefinition, error) {
+			entered <- struct{}{}
+			<-release
 			admitted := d
 			admitted.Tools = []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}}
 			return admitted, nil
@@ -378,6 +387,24 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 		}()
 	}
 	for range owners {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("one owner's probe blocked another behind a global mutex")
+		}
+	}
+	duplicate, err := store.OnboardingFor(auths["alice"], "onboard-alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auths["alice"], &duplicate, "credential_alice"); err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.Stage != api.StagePending {
+		t.Fatal("duplicate did not observe existing admission lease")
+	}
+	unblock()
+	for range owners {
 		if err := <-results; err != nil {
 			t.Fatalf("concurrent admission failed: %v", err)
 		}
@@ -385,8 +412,10 @@ func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {
 	for _, owner := range owners {
 		auth := auths[owner.name]
 		record, err := store.OnboardingFor(auth, owner.onboardingID)
-		if err != nil || record.Phase != api.PhaseAwaitingConfirm || record.AdmissionPending {
-			t.Fatalf("%s admission did not converge: phase=%q err=%v", owner.name, record.Phase, err)
+		// Admission is the consent: the record completes straight to live
+		// instead of arming a second confirm click.
+		if err != nil || record.Stage != api.StageLive || record.AdmissionPending {
+			t.Fatalf("%s admission did not converge: phase=%q err=%v", owner.name, record.NoticePhase(), err)
 		}
 		if record.BrokerCredentialID != "credential_"+owner.name {
 			t.Fatalf("%s admission bound a foreign credential: %q", owner.name, record.BrokerCredentialID)

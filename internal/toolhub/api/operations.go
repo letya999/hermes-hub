@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ const (
 	OpIntentInstall     = "install"
 	OpIntentEnable      = "enable"
 	OpIntentDisable     = "disable"
+	OpIntentRevoke      = "revoke"
 	OpIntentReauth      = "reauth"
 	OpIntentAllowWrites = "allow_writes"
 	OpIntentRemove      = "remove"
@@ -59,8 +61,24 @@ const (
 	OpCodeUnsupportedAuth             = "unsupported_auth"
 	OpCodeProbeFailed                 = "probe_failed"
 	OpCodeCleanupIncomplete           = "cleanup_incomplete"
+	OpCodeDeliveryUnavailable         = "delivery_unavailable"
+	OpCodeAdmissionUnavailable        = "admission_unavailable"
 	OpCodeNotPermitted                = "not_permitted"
 	OpCodeQuota                       = "quota"
+	OpCodeNotFound                    = "not_found"
+	// OpCodeStalePolicy marks a target that exists but predates the caller's
+	// policy epoch — a dead state, not a missing record. The only legal
+	// transition is removal; manage verbs report it instead of a bare
+	// not-found so callers stop retrying reauth and take the cleanup path.
+	OpCodeStalePolicy = "stale_policy"
+)
+
+const (
+	PrepareDeliveryUnknown   = "unknown"
+	PrepareDeliveryQueued    = "queued"
+	PrepareDeliveryDelivered = "delivered"
+	PrepareDeliveryUncertain = "uncertain"
+	PrepareDeliveryNotQueued = "not_queued"
 )
 
 type OperationStep struct {
@@ -69,16 +87,32 @@ type OperationStep struct {
 }
 
 // OperationResult is the uniform connector_* tool result — the only shape
-// the agent ever sees. No nonces, URLs, tokens or prose instructions.
+// the agent ever sees. No nonces, URLs, tokens or prose instructions. State
+// and you_must carry the model vocabulary (model_contract.go); delivery is
+// channel-confirmed truth, never an outbox assumption.
 type OperationResult struct {
-	OperationID string               `json:"operation_id,omitempty"`
-	State       string               `json:"state"`
-	Code        string               `json:"code,omitempty"`
-	Summary     string               `json:"summary"`
-	LinkSent    bool                 `json:"link_sent,omitempty"`
-	Candidates  []OperationCandidate `json:"candidates,omitempty"`
-	Finalizers  []Finalizer          `json:"finalizers,omitempty"`
-	Receipt     string               `json:"receipt,omitempty"`
+	OperationID     string               `json:"operation_id,omitempty"`
+	State           string               `json:"state"`
+	Code            string               `json:"code,omitempty"`
+	Summary         string               `json:"summary"`
+	YouMust         string               `json:"you_must,omitempty"`
+	Delivery        string               `json:"delivery,omitempty"`
+	Channel         string               `json:"channel,omitempty"`
+	Candidates      []OperationCandidate `json:"candidates,omitempty"`
+	Finalizers      []Finalizer          `json:"finalizers,omitempty"`
+	Receipt         string               `json:"receipt,omitempty"`
+	ObservedAt      time.Time            `json:"observed_at,omitzero"`
+	ObservationCode string               `json:"observation_code,omitempty"`
+	// Progress projects the journal steps for the agent: the first pending
+	// step is the current one. ElapsedSeconds covers the whole operation;
+	// StepStartedAt is the last journal transition — how long the current
+	// step has been running.
+	CurrentStep    string    `json:"current_step,omitempty"`
+	StepIndex      int       `json:"step_index,omitempty"`
+	StepTotal      int       `json:"step_total,omitempty"`
+	StartedAt      time.Time `json:"started_at,omitzero"`
+	ElapsedSeconds int64     `json:"elapsed_seconds,omitempty"`
+	StepStartedAt  time.Time `json:"step_started_at,omitzero"`
 }
 
 // OperationCandidate is one selector match shown on ambiguity.
@@ -94,9 +128,16 @@ type OperationCandidate struct {
 	CredentialVisibility string    `json:"credential_visibility,omitempty"`
 	CredentialCheckedAt  time.Time `json:"credential_checked_at,omitempty"`
 	HealthCause          string    `json:"health_cause,omitempty"`
-	OnboardingPhase      string    `json:"onboarding_phase,omitempty"`
-	// Badge marks candidates the caller can use but does not own — today the
-	// only value is "team" for a member's team-owned connection.
+	// State and YouMust carry the model vocabulary — derived from the record,
+	// never the raw wire phase.
+	State           string    `json:"state,omitempty"`
+	YouMust         string    `json:"you_must,omitempty"`
+	ObservedAt      time.Time `json:"observed_at,omitzero"`
+	ObservationCode string    `json:"observation_code,omitempty"`
+	// Badge marks exceptional candidates: "team" for a member's team-owned
+	// connection the caller may use but never own, and "stale_policy" for an
+	// owned record that predates the caller's policy epoch — visible in the
+	// inventory but manageable only through remove, never manage verbs.
 	Badge string `json:"badge,omitempty"`
 }
 
@@ -140,7 +181,7 @@ func (o Operation) Validate() error {
 	if !identity.ValidID(o.PrincipalID) {
 		return fmt.Errorf("%w: operation principal", ErrInvalid)
 	}
-	if o.Target == "" || !slices.Contains([]string{OpIntentInstall, OpIntentEnable, OpIntentDisable, OpIntentReauth, OpIntentAllowWrites, OpIntentRemove}, o.Intent) {
+	if o.Target == "" || !slices.Contains([]string{OpIntentInstall, OpIntentEnable, OpIntentDisable, OpIntentRevoke, OpIntentReauth, OpIntentAllowWrites, OpIntentRemove}, o.Intent) {
 		return fmt.Errorf("%w: operation intent or target", ErrInvalid)
 	}
 	switch o.State {
@@ -156,11 +197,35 @@ func (o Operation) Validate() error {
 		seen[step.Name] = true
 	}
 	switch o.ErrorCode {
-	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeNotPermitted, OpCodeQuota:
+	case "", OpCodeAmbiguousTarget, OpCodeAmbiguousEntrypoint, OpCodeAmbiguousCredentialContract, OpCodeUnsupportedAuth, OpCodeProbeFailed, OpCodeCleanupIncomplete, OpCodeDeliveryUnavailable, OpCodeAdmissionUnavailable, OpCodeNotPermitted, OpCodeQuota, OpCodeNotFound, OpCodeStalePolicy:
 	default:
 		return fmt.Errorf("%w: operation error code", ErrInvalid)
 	}
 	return nil
+}
+
+// OperationProgress projects journal steps into the result fields. The first
+// pending step is current; a fully-done operation reports the last step.
+// StepStartedAt uses UpdatedAt — the timestamp of the last journal write,
+// which is the current step's start.
+func (r *OperationResult) OperationProgress(op Operation, now time.Time) {
+	if len(op.Steps) == 0 {
+		return
+	}
+	r.StepTotal = len(op.Steps)
+	r.StepIndex = r.StepTotal
+	r.CurrentStep = op.Steps[r.StepTotal-1].Name
+	for i, step := range op.Steps {
+		if step.State == OpStepPending {
+			r.StepIndex, r.CurrentStep = i+1, step.Name
+			break
+		}
+	}
+	r.StartedAt = op.CreatedAt
+	if !op.CreatedAt.IsZero() {
+		r.ElapsedSeconds = int64(now.Sub(op.CreatedAt).Seconds())
+	}
+	r.StepStartedAt = op.UpdatedAt
 }
 
 // OperationRequestKey derives the durable idempotency key from
@@ -168,5 +233,5 @@ func (o Operation) Validate() error {
 // same operation.
 func OperationRequestKey(auth identity.Envelope, intent, target string) string {
 	normalized := strings.ToLower(strings.TrimSpace(target))
-	return DeterministicID("opkey", auth.PrincipalID, intent, normalized)
+	return DeterministicID("opkey", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, auth.Environment, strconv.FormatUint(auth.Generation, 10), intent, normalized)
 }

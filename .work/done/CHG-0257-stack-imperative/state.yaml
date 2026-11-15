@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0257
+title: "M30.3 stack.yaml drives compose project, images and spawn"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R3.1, R3.2]
+depends_on: [CHG-0255]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: 452
+design_status: accepted
+implementation_status: done
+slices:
+  S3.1-compile-stack: done
+  S3.2-compose-plan: done
+  S3.3-build-set: done
+  S3.4-supervisor-selection: done
+validation:
+  documents: done
+  just_check: green_modulo_windows_toolchain_flakes
+  coverage_gate: 85.93_percent
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: done
+evidence:
+  - "2026-11-02: passport overlay landed — stack.Read applies identity.user/org and per-service modes from the effective revision; legacy features/organization keys are gone from emitted stack.yaml; artem_two re-migrated to r-32d4552c6e301551. Compose/build-plan slices still pending — compose renders from Settings, not the passport body."
+  - "2026-11-02: compose plan is imperative — Settings.PassportServices carries services.<instance>.mode into compose; plan gates emission (undeclared services filtered, declared-but-unrenderable fails via ComposeChecked inside RenderEnvironment); per-space cliproxy instances emit as cliproxy-<instance> with isolated cliproxy/<instance> bind dirs; shared modes render only on the infra space; -init/-ctl companions and hermes-runtime preserved. Migration derivedServices now maps emitted names to catalog instances (per-space) + depends_on closure (shared) + hermes-runtime supervised; dedicated cliproxy yields cliproxy-<user>: per-space and the models endpoint addresses that instance. Stale-passport masking fixed: profiles apply before the passport overlay, ReadBase exposes the intent view, private cliproxy credentials drop when the governed topology is shared. artem_two re-migrated to r-6da2f04578d20ae0 — stack.yaml now declares cliproxy-artem_two/egress-relay/model-relay/toolhub-relay per-space and models endpoint http://cliproxy-artem_two:8317/v1; compose.dev.yaml emits exactly that set; hubctl up --no-build recreated all four containers healthy."
+  - "2026-11-02: S3.3 — AgentImageRequired derives the agent-image need from the plan (infra with no rendered runtime, or declared hermes-runtime supervised); wired into hubctl build. S3.4 — ReadEnvironment selects supervisor execution (SupervisorURL + NativeCron disabled) when the passport declares hermes-runtime supervised and no legacy execution selection exists."
+  - "2026-11-02: applyConfirm re-renders generated/compose.<env>.yaml after publish and before reconcile (render-before-reconcile) — the first cliproxy-google-2 apply had failed with 'no such service' against the stale compose. Reconcile gained a remove action: a stack.services leaf with empty After plans one project-level `up --remove-orphans` sweep instead of an impossible rebuild. Live A3 verified on artem_two both directions: add cliproxy-google-2 → per-space → rebuild + container hermes-hub-artem_two-dev-cliproxy-google-2-1 Healthy; remove the entry → revision r-ad947ecbba3fb0a4, remove step applied, container gone, compose.dev.yaml emits exactly the four declared per-space services."
+  - "2026-11-02: gates — lint (vet/mod-tidy/staticcheck/gosec/format) green after removing pre-existing dead code (runtime.copyIfExists, modelHop.available; staticcheck U1000); docs-check green; every go package passes — two full covergo runs each lost 3-4 random packages to Windows toolchain flakes (link.exe/ld.lld/spawn 'Access is denied', TSan alloc), all victims pass standalone; coverage gate reached via unioned profile (full run + standalone sections for communication/compaction/cmd-supervisor/toolhub): 85.93% ≥85, per-package floor ≥75 satisfied."
+remaining:
+  - "docker_check not run (image-side Go code changed; runs in CI or via just docker-check locally)"
+
+limitations: []

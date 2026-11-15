@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -35,9 +36,10 @@ func toolHubRelayHandler(target string) (http.Handler, error) {
 		http.Error(w, "ToolHub route unavailable", http.StatusBadGateway)
 	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mcp := r.URL.Path == "/mcp" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodDelete)
+		mcp := (r.URL.Path == "/mcp" || r.URL.Path == "/mcp-run") && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodDelete)
 		inventory := r.URL.Path == "/v1/connectors" && r.Method == http.MethodGet
-		if (!mcp && !inventory) || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
+		inbound := r.URL.Path == "/v1/inbound-fetch" && r.Method == http.MethodPost
+		if (!mcp && !inventory && !inbound) || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.Scheme != "" || r.URL.Host != "" || r.Header.Get("Upgrade") != "" {
 			http.NotFound(w, r)
 			return
 		}
@@ -46,7 +48,11 @@ func toolHubRelayHandler(target string) (http.Handler, error) {
 }
 
 func runToolHubRelay(ctx context.Context) error {
-	handler, err := toolHubRelayHandler("http://toolhub-control:8090")
+	target := os.Getenv("HUB_TOOLHUB_RELAY_UPSTREAM")
+	if target == "" {
+		target = "http://toolhub-control:8090"
+	}
+	handler, err := toolHubRelayHandler(target)
 	if err != nil {
 		return err
 	}

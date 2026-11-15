@@ -47,9 +47,9 @@ func budgetPath(root string) string { return filepath.Join(root, "budget.json") 
 
 // loadBudget reads the persisted ledger; a corrupt file marks the spool's
 // admission broken (fail closed) rather than silently dropping demand.
-func loadBudget(root string) (*budgetLedger, error) {
+func loadBudget(fs spoolFS, root string) (*budgetLedger, error) {
 	ledger := &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}
-	body, err := os.ReadFile(budgetPath(root))
+	body, err := fs.ReadFile(budgetPath(root))
 	if errors.Is(err, os.ErrNotExist) {
 		return ledger, nil
 	}
@@ -69,7 +69,7 @@ func loadBudget(root string) (*budgetLedger, error) {
 }
 
 func (s *Spool) saveBudgetLocked() error {
-	return atomicJSON(budgetPath(s.root), s.budget)
+	return s.writeJSON(budgetPath(s.root), s.budget)
 }
 
 // bucketLocked returns the scope's counters, rolling settled totals into a
@@ -94,29 +94,40 @@ func (s *Spool) bucketLocked(scopeID string) *scopeBudget {
 const installationScope = "_install"
 
 // spoolLimits are host-only admission ceilings read from the environment at
-// open; agents cannot raise them. Zero disables a ceiling.
+// open; agents cannot raise them. Disk limits must be finite and positive.
 type spoolLimits struct {
 	MaxPendingPerScope int
 	MaxPendingTotal    int
 	ScopeTokenDaily    int64
 	MaxBytes           int64
+	MaxNextWrite       int64
+	LifecycleBytes     int64
+	MaxOwnedFiles      int
+	LifecycleFiles     int
 	// MaxDeliveries bounds ordinary pending outbox entries; control-plane
 	// deliveries claim a reserved lane and are exempt.
 	MaxDeliveries int
 	// MaxParallelPerContext caps conversation lanes held by one context;
-	// default 8 stays below the upstream Hermes max_concurrent_runs (10) so
-	// a pre-admission 429 is unreachable in steady state (ADR-0090 R3).
+	// A managed owner has five isolated runtime slots (ADR-0090 addendum).
 	MaxParallelPerContext int
 }
 
 func limitsFromEnv() spoolLimits {
+	lanes := intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 5)
+	if lanes <= 0 || lanes > 5 {
+		lanes = 5
+	}
 	return spoolLimits{
 		MaxPendingPerScope:    intFromEnv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", 16),
 		MaxPendingTotal:       intFromEnv("HUB_SPOOL_MAX_PENDING_TOTAL", 128),
 		ScopeTokenDaily:       int64(intFromEnv("HUB_SCOPE_TOKEN_DAILY", 0)),
 		MaxBytes:              int64(intFromEnv("HUB_SPOOL_MAX_BYTES", 256<<20)),
+		MaxNextWrite:          int64(intFromEnv("HUB_SPOOL_MAX_NEXT_WRITE_BYTES", 64<<20)),
+		LifecycleBytes:        int64(intFromEnv("HUB_SPOOL_LIFECYCLE_RESERVE_BYTES", 32<<20)),
+		MaxOwnedFiles:         intFromEnv("HUB_SPOOL_MAX_OWNED_FILES", 65536),
+		LifecycleFiles:        intFromEnv("HUB_SPOOL_LIFECYCLE_RESERVE_FILES", 128),
 		MaxDeliveries:         intFromEnv("HUB_SPOOL_MAX_DELIVERIES", 1024),
-		MaxParallelPerContext: intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 8),
+		MaxParallelPerContext: lanes,
 	}
 }
 
@@ -143,19 +154,9 @@ func (s *Spool) checkCeilingsLocked(scopeID string, estimate int64) error {
 			return fmt.Errorf("scope %s daily token budget exhausted", scopeID)
 		}
 	}
-	if s.limits.MaxBytes > 0 {
-		var bytes int64
-		entries, err := os.ReadDir(filepath.Join(s.root, "pending"))
-		if err != nil {
+	if s.storage != nil {
+		if err := s.storage.CheckAdmission(); err != nil {
 			return err
-		}
-		for _, entry := range entries {
-			if info, err := entry.Info(); err == nil {
-				bytes += info.Size()
-			}
-		}
-		if bytes >= s.limits.MaxBytes {
-			return fmt.Errorf("spool storage ceiling reached (%d bytes)", s.limits.MaxBytes)
 		}
 	}
 	return nil
@@ -253,7 +254,7 @@ func (s *Spool) reconcileBudgetLocked() error {
 		}
 		live := false
 		for _, dir := range []string{"pending", "running"} {
-			if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(jobID)+".json")); err == nil {
+			if _, err := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(jobID)+".json")); err == nil {
 				live = true
 			}
 		}
@@ -279,20 +280,4 @@ func (s *Spool) reconcileBudgetLocked() error {
 		return s.saveBudgetLocked()
 	}
 	return nil
-}
-
-// budgetScope returns the scope bucket for tests and inspection surfaces.
-func (s *Spool) budgetScope(scopeID string) scopeBudget {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if bucket, ok := s.budget.Scopes[scopeID]; ok {
-		return *bucket
-	}
-	return scopeBudget{}
-}
-
-func (s *Spool) reservationState(jobID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.budget.Reservations[jobID].State
 }

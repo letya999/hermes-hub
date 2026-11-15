@@ -97,6 +97,11 @@ func TestOperationForRequestKey(t *testing.T) {
 	if !ok || got.OperationID != op.OperationID {
 		t.Fatalf("request key lookup failed: %v %+v", ok, got)
 	}
+	rotated := auth
+	rotated.PolicyVersion = "policy-rotated"
+	if _, ok := store.OperationForRequestKey(rotated, api.OpIntentInstall, target); ok {
+		t.Fatal("rotated policy reused an onboarding owned by the previous policy")
+	}
 	if _, ok := store.OperationForRequestKey(auth, api.OpIntentRemove, target); ok {
 		t.Fatal("different intent matched")
 	}
@@ -146,12 +151,14 @@ func TestOperationValidate(t *testing.T) {
 }
 
 func m13P3Onboarding(auth identity.Envelope, suffix, definitionID, source, phase string) api.Onboarding {
-	return api.Onboarding{
+	o := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, suffix),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: definitionID, DefinitionVersion: "1.0.0",
-		SourceURL: source, Phase: phase, Revision: 1, CreatedAt: time.Now().UTC(),
+		SourceURL: source, Revision: 1, CreatedAt: time.Now().UTC(),
 	}
+	applyOnboardingPhase(&o, phase)
+	return o
 }
 
 // S3.2: deterministic selector — exact id → alias → source URL → basename →
@@ -162,7 +169,7 @@ func TestConnectorTargetSelector(t *testing.T) {
 	auth := m13P3Auth(t)
 	gh := m13P3Onboarding(auth, "gh", "github", "https://github.com/github/github-mcp-server", api.PhaseEnabled)
 	db := m13P3Onboarding(auth, "db", "dbhub", "https://github.com/bytebase/dbhub", api.PhaseEnabled)
-	removed := m13P3Onboarding(auth, "rm", "removed-def", "https://github.com/org/gone-mcp", api.PhaseRemoved)
+	removed := m13P3Onboarding(auth, "rm", "removed-def", "https://github.com/org/gone-mcp", "removed")
 	foreign := m13P3Onboarding(identity.TelegramEnvelope("bobuser", 8, "runtime", "policy-1"), "fb", "foreign-def", "https://github.com/org/foreign-mcp", api.PhaseEnabled)
 	for _, o := range []api.Onboarding{gh, db, removed, foreign} {
 		if err := store.PutOnboarding(o); err != nil {
@@ -248,10 +255,13 @@ func TestConnectorTargetRegistryAndFailed(t *testing.T) {
 	if err != nil || got.OnboardingID != conn.OnboardingID {
 		t.Fatalf("registry name did not resolve: %v %+v", err, got)
 	}
-	for _, target := range []string{"dead-mcp", "failed-def", failed.OnboardingID} {
+	for _, target := range []string{"dead-mcp", "failed-def"} {
 		if _, err := store.ResolveConnectorTarget(auth, target); err == nil {
 			t.Fatalf("failed target %q resolved", target)
 		}
+	}
+	if got, err := store.ResolveConnectorTarget(auth, failed.OnboardingID); err != nil || got.OnboardingID != failed.OnboardingID {
+		t.Fatal("exact owned failed onboarding must remain recoverable")
 	}
 }
 
@@ -270,6 +280,7 @@ func TestConnectorToolsProjection(t *testing.T) {
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +293,7 @@ func TestConnectorToolsProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{}
-	for _, name := range api.ConnectorTools {
+	for _, name := range connectorSurfaceTools {
 		want[name] = true
 	}
 	want["workspace_read"] = true // capability selection still projects
@@ -303,10 +314,10 @@ func TestConnectorToolsProjection(t *testing.T) {
 			t.Fatalf("legacy control op %q leaked into connector projection", legacy)
 		}
 	}
-	// invoke is the dispatch fallback for connector names absent from the
+	// tool_call is the dispatch fallback for connector names absent from the
 	// client's cached tools/list — the connectors bundle carries it (ADR-0089).
-	if !got["invoke"] {
-		t.Fatal("connector projection missing invoke")
+	if !got["tool_call"] {
+		t.Fatal("connector projection missing tool_call")
 	}
 }
 
@@ -382,7 +393,7 @@ func TestConnectorList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone {
+	if result.State != api.ModelStateDone {
 		t.Fatalf("list state: %+v", result)
 	}
 	if len(result.Candidates) != 2 {
@@ -424,13 +435,15 @@ func TestConnectorSearch(t *testing.T) {
 	if err := putProfile(t, store, profile); err != nil {
 		t.Fatal(err)
 	}
-	c := &ControlPlane{Store: store, Now: time.Now}
+	c := &ControlPlane{Store: store, Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		stubSourceCatalog{found: []api.DiscoveryCandidate{{Name: "unrelated", Source: api.ArtifactSource{Repository: "https://github.com/other/unrelated"}, Status: "registry-source"}}},
+	}}
 	result, err := c.InvokeConnector(context.Background(), auth, "connector_search", map[string]any{"query": "github"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone || len(result.Candidates) == 0 {
-		t.Fatalf("search found nothing: %+v", result)
+	if result.State != api.ModelStateDone || len(result.Candidates) != 1 {
+		t.Fatalf("github search should match only its catalog entry: %+v", result)
 	}
 	found := false
 	for _, candidate := range result.Candidates {
@@ -470,7 +483,7 @@ func TestConnectorSearchIncludesRegistryCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone || len(result.Candidates) == 0 {
+	if result.State != api.ModelStateDone || len(result.Candidates) == 0 {
 		t.Fatalf("registry candidate not surfaced: %+v", result)
 	}
 	found := false
@@ -505,14 +518,14 @@ func TestConnectorStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone {
+	if result.State != api.ModelStateReady {
 		t.Fatalf("enabled connector status: %+v", result)
 	}
 	result, err = c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"target": "gitlab"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateAwaitingUser {
+	if result.State != api.ModelStateWaitingYou {
 		t.Fatalf("awaiting-credentials connector status: %+v", result)
 	}
 	// operation_id lookups reach the journal.
@@ -527,7 +540,7 @@ func TestConnectorStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateAwaitingConfirm || result.OperationID != op.OperationID {
+	if result.State != api.ModelStateWaitingYou || result.OperationID != op.OperationID {
 		t.Fatalf("operation status: %+v", result)
 	}
 	// A foreign operation stays invisible.
@@ -551,7 +564,7 @@ func TestConnectorInstallJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.ModelStateWaitingYou || noticeDelivered(result) {
 		t.Fatalf("install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -565,12 +578,12 @@ func TestConnectorInstallJournal(t *testing.T) {
 	for _, step := range op.Steps {
 		stepStates[step.Name] = step.State
 	}
-	if stepStates[api.OpStepResolve] != api.OpStepDone || stepStates[api.OpStepFetchArtifact] != api.OpStepDone || stepStates[api.OpStepCollectCredentials] != api.OpStepDone {
+	if stepStates[api.OpStepResolve] != api.OpStepDone || stepStates[api.OpStepFetchArtifact] != api.OpStepDone || stepStates[api.OpStepCollectCredentials] != api.OpStepPending {
 		t.Fatalf("install journal steps: %+v", op.Steps)
 	}
 	// The onboarding really waits on the protected form.
 	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" {
+	if err != nil || !onboarding.Awaiting(api.GateCredentials) || onboarding.GateNonce(api.GateCredentials) == "" {
 		t.Fatalf("onboarding after install: %v %+v", err, onboarding)
 	}
 	// Same request key → same operation, no duplicate onboarding.
@@ -608,7 +621,14 @@ func TestConnectorInstallResumeCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	onboarding.Phase = api.PhaseEnabled
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Stage = api.StageLive
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +636,7 @@ func TestConnectorInstallResumeCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+	if resumed.OperationID != result.OperationID || resumed.State != api.ModelStateDone {
 		t.Fatalf("resumed install: %+v", resumed)
 	}
 	finished, err := store.OperationFor(auth, result.OperationID)
@@ -630,7 +650,7 @@ func TestConnectorInstallResumeCompletion(t *testing.T) {
 	}
 	// A third call reports the finished operation — no side effects rerun.
 	third, err := c.InvokeConnector(context.Background(), auth, "connector_install", map[string]any{"target": "google-work", "version": "2.0.0"})
-	if err != nil || third.State != api.OpStateDone {
+	if err != nil || third.State != api.ModelStateDone {
 		t.Fatalf("third install: %v %+v", err, third)
 	}
 }
@@ -673,7 +693,7 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.ModelStateDone {
 		t.Fatalf("cli catalog install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -681,7 +701,7 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
-	if err != nil || onboarding.Mode != api.OnboardingCatalog || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" {
+	if err != nil || onboarding.Mode != api.OnboardingCatalog || onboarding.Stage != api.StageLive || onboarding.BindingID == "" {
 		t.Fatalf("cli catalog onboarding: %v %+v", err, onboarding)
 	}
 }
@@ -703,9 +723,8 @@ func m13P3EnabledOnboarding(t *testing.T, store *Store, auth identity.Envelope) 
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "m13p3-enabled"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "2.0.0",
-		Phase: api.PhaseEnabled, BindingID: bound.ToolBindingID, ConnectionID: bound.ConnectionID,
-		Revision: 1, CreatedAt: time.Now(),
-	}
+		Stage: api.StageLive, BindingID: bound.ToolBindingID, ConnectionID: bound.ConnectionID,
+		Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +746,7 @@ func TestConnectorDisableEnableJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if disabled.OperationID == "" || disabled.State != api.OpStateDone {
+	if disabled.OperationID == "" || disabled.State != api.ModelStateDone {
 		t.Fatalf("disable result: %+v", disabled)
 	}
 	op, err := store.OperationFor(auth, disabled.OperationID)
@@ -738,19 +757,38 @@ func TestConnectorDisableEnableJournal(t *testing.T) {
 		t.Fatalf("disable operation intent: %+v", op)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseDisabled {
+	if err != nil || onboarding.Stage != api.StageLive {
 		t.Fatalf("onboarding after disable: %v %+v", err, onboarding)
 	}
 	reEnabled, err := c.InvokeConnector(context.Background(), auth, "connector_enable", map[string]any{"target": "google-work"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reEnabled.State != api.OpStateDone {
+	if reEnabled.State != api.ModelStateDone {
 		t.Fatalf("enable result: %+v", reEnabled)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseEnabled {
+	if err != nil || onboarding.Stage != api.StageLive {
 		t.Fatalf("onboarding after enable: %v %+v", err, onboarding)
+	}
+}
+
+func TestConnectorEditLegacyBundle(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(t.Context(), auth, "connector_edit", map[string]any{"action": "disable", "name": "google-work"})
+	if err != nil || result.State != api.ModelStateDone {
+		t.Fatalf("connector_edit legacy bundle: %+v %v", result, err)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Stage != api.StageLive {
+		t.Fatalf("onboarding after edit: %+v %v", onboarding, err)
 	}
 }
 
@@ -770,27 +808,27 @@ func TestConnectorRemoveJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.ModelStateWaitingYou || noticeDelivered(result) {
 		t.Fatalf("remove result: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.RemoveNonce == "" || onboarding.Phase == api.PhaseRemoved {
+	if err != nil || onboarding.GateNonce(api.GateRemove) == "" || onboarding.Removed() {
 		t.Fatalf("onboarding after remove preview: %v %+v", err, onboarding)
 	}
 	// The human clicks the link: the primitive remove executes the purge
 	// with the minted nonce — the same path serveRemove takes.
-	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.GateNonce(api.GateRemove)}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseRemoved {
+	if err != nil || !onboarding.Removed() {
 		t.Fatalf("onboarding after purge: %v %+v", err, onboarding)
 	}
 	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+	if resumed.OperationID != result.OperationID || resumed.State != api.ModelStateDone {
 		t.Fatalf("resumed remove: %+v", resumed)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -819,24 +857,60 @@ func TestConnectorReauthJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.ModelStateWaitingYou || noticeDelivered(result) {
 		t.Fatalf("reauth result: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.FormNonce == "" || onboarding.Phase != api.PhaseAwaitingCreds {
+	if err != nil || onboarding.GateNonce(api.GateCredentials) == "" || !onboarding.Awaiting(api.GateCredentials) {
 		t.Fatalf("onboarding after reauth: %v %+v", err, onboarding)
 	}
-	// The form is submitted out of band; the connector comes back enabled.
-	onboarding.Phase = api.PhaseEnabled
+	// The form and owner confirmation advance through the trusted phases.
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_reauth", map[string]any{"target": "google-work"})
+	onboarding.Stage = api.StageLive
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := c.connectorStatus(context.Background(), auth, "", result.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+	if resumed.OperationID != result.OperationID || resumed.State != api.ModelStateReady {
 		t.Fatalf("resumed reauth: %+v", resumed)
+	}
+}
+
+func TestConnectorReauthReopensInactiveCredential(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.BrokerCredentialID = "broker-stale"
+	onboarding.Locator = "broker-stale"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	connection, ok := store.connectionFor(onboarding.ConnectionID)
+	if !ok {
+		t.Fatal("connection missing")
+	}
+	connection.Status, connection.HealthCause, connection.CredentialVisibility, connection.CredentialCheckedAt = api.DegradedStatus, "credential_inactive", "inactive", time.Now()
+	connection.Revision++
+	store.connections[connection.ConnectionID] = connection
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.connectorReauth(t.Context(), auth, map[string]any{"target": "google-work"})
+	if err != nil || result.State != api.ModelStateWaitingYou {
+		t.Fatalf("reauth: %+v %v", result, err)
+	}
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || !got.Awaiting(api.GateCredentials) || got.BrokerRotateCredentialID != "broker-stale" || got.BrokerCredentialID != "" || got.Locator != "" || got.GateNonce(api.GateCredentials) == "" {
+		t.Fatalf("inactive credential was not reopened: phase=%s rotate=%t credential_present=%t locator_present=%t form_present=%t err=%v", got.NoticePhase(), got.BrokerRotateCredentialID != "", got.BrokerCredentialID != "", got.Locator != "", got.GateNonce(api.GateCredentials) != "", err)
 	}
 }
 
@@ -868,9 +942,8 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "m13p3-writes"),
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: connection.ConnectionID,
-		Revision: 1, CreatedAt: time.Now(),
-	}
+		Stage: api.StageLive, BindingID: binding.ToolBindingID, ConnectionID: connection.ConnectionID,
+		Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -889,40 +962,46 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+	if result.OperationID == "" || result.State != api.ModelStateWaitingYou || noticeDelivered(result) {
 		t.Fatalf("allow_writes result: %+v", result)
 	}
 	armed, err := store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || armed.ConfirmationNonce == "" || !armed.PendingWrites || armed.Phase != api.PhaseAwaitingConfirm {
+	if err != nil || armed.GateNonce(api.GateConfirmSetup) == "" || !armed.PendingWrites || !armed.Awaiting(api.GateConfirmSetup) {
 		t.Fatalf("onboarding after allow_writes: %v %+v", err, armed)
 	}
 	if armed.WizardNonce == "" || armed.WizardExpires.IsZero() {
 		t.Fatalf("allow_writes confirm did not arm the wizard link: %+v", armed)
 	}
-	// The human confirms on the protected page — same /confirm surface.
-	gateway := &Gateway{Control: c}
-	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+armed.OnboardingID+"?t="+armed.ConfirmationNonce)
-	gateway.serveConfirm(rec, req)
+	// Only the channel's verified actor can attest the exact write upgrade.
+	gateway := &Gateway{Store: store, Control: c, ControlToken: "synthetic-service-confirmation-bearer", Tokens: map[string]identity.Envelope{aliceToken: auth}}
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: armed.OnboardingID, Actor: auth, Nonce: armed.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(armed), ActionDigest: api.ConfirmationActionDigest(armed), ExpiresAt: armed.GateExpiry(api.GateConfirmSetup)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/confirmations", strings.NewReader(string(proof)))
+	req.Header.Set("Authorization", "Bearer "+gateway.ControlToken)
+	gateway.serveHumanConfirmation(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("writes confirm page status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	armed, err = store.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || !armed.WritesEnabled || armed.Phase != api.PhaseEnabled {
+	if err != nil || !armed.WritesEnabled || armed.Stage != api.StageLive {
 		t.Fatalf("onboarding after write confirm: %v %+v", err, armed)
 	}
 	if tools, err := store.ListProjectedTools(auth); err != nil || !slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
-		t.Fatalf("write tool missing after allow_writes: %v %v", tools, err)
+		t.Fatalf("confirmed allow_writes must project the self-install write tool: %v %v", tools, err)
 	}
 	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+	if resumed.OperationID != result.OperationID || resumed.State != api.ModelStateDone {
 		t.Fatalf("resumed allow_writes: %+v", resumed)
 	}
 	// off applies immediately — no link.
 	off, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": false})
-	if err != nil || off.State != api.OpStateDone {
+	if err != nil || off.State != api.ModelStateDone {
 		t.Fatalf("allow_writes off: %v %+v", err, off)
 	}
 	armed, err = store.OnboardingFor(auth, onboarding.OnboardingID)
@@ -1004,7 +1083,7 @@ func TestConnectorInstallPrepared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OperationID == "" || result.State != api.OpStateFailed {
+	if result.OperationID == "" || result.State != api.ModelStateBroken {
 		t.Fatalf("prepared install result: %+v", result)
 	}
 	op, err := store.OperationFor(auth, result.OperationID)
@@ -1037,6 +1116,7 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 		Backend:      api.RoutingBackend{},
 		Tokens:       map[string]identity.Envelope{"alice-principal-token-0000000000000": auth},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -1062,8 +1142,12 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 	}
 	operationID, _ := payload["operation_id"].(string)
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
-	if err != nil || onboarding.Phase != api.PhaseDisabled {
+	if err != nil || onboarding.Stage != api.StageLive {
 		t.Fatalf("onboarding after HTTP disable: %v %+v", err, onboarding)
+	}
+	w, payload = call(http.MethodPost, "/v1/connectors/"+enabled.OnboardingID+":enable", "", "control-plane-token-which-is-32-chars!", "alice")
+	if w.Code != http.StatusOK || payload["state"] != api.OpStateDone {
+		t.Fatalf("enable over HTTP: %d %v", w.Code, payload)
 	}
 	// /v1/operations/<id> returns the same journaled record.
 	w, payload = call(http.MethodGet, "/v1/operations/"+operationID, "", "control-plane-token-which-is-32-chars!", "alice")
@@ -1081,6 +1165,7 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 		{http.MethodPost, "/v1/connectors/x:disable", "", "alice"},
 		{http.MethodPost, "/v1/connectors/x:disable", "control-plane-token-which-is-32-chars!", ""},
 		{http.MethodPost, "/v1/connectors/x:disable", "mallory-token-00000000000000000000000", "alice"},
+		{http.MethodPost, "/v1/connectors/x:enable", "mallory-token-00000000000000000000000", "alice"},
 		{http.MethodGet, "/v1/operations/" + operationID, "control-plane-token-which-is-32-chars!", "mallory"},
 	} {
 		w, _ := call(tc.method, tc.path, "", tc.token, tc.principal)
@@ -1095,34 +1180,38 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 func TestStatusBodyTypedCodesOnly(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
 	phases := []api.Onboarding{
-		{OnboardingID: "o1", Phase: api.PhasePreparing},
-		{OnboardingID: "o2", Phase: api.PhaseFailed},
-		{OnboardingID: "o3", Phase: api.PhaseAwaitingCreds, AdmissionPending: true},
-		{OnboardingID: "o4", Phase: api.PhaseAwaitingConfirm, Error: "enable blew up"},
-		{OnboardingID: "o5", Phase: api.PhaseAwaitingOAuth},
-		{OnboardingID: "o6", Phase: api.PhaseConfirmed},
-		{OnboardingID: "o7", Phase: api.PhaseEnabled},
+		{OnboardingID: "o1", Stage: api.StagePending, PreparingStub: true},
+		{OnboardingID: "o2", Stage: api.StageFailed},
+		{OnboardingID: "o3", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, AdmissionPending: true},
+		{OnboardingID: "o4", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Error: "enable blew up"},
+		{OnboardingID: "o5", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateOAuth, Nonce: "", Expires: time.Time{}}},
+		{OnboardingID: "o6", Stage: api.StagePending, ConfirmationUsed: true, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}},
+		{OnboardingID: "o7", Stage: api.StageLive},
 	}
 	wantNext := map[string]string{
 		api.PhasePreparing: "poll_status", api.PhaseFailed: "retry", api.PhaseAwaitingCreds: "submit_credentials",
-		api.PhaseAwaitingConfirm: "confirm", api.PhaseAwaitingOAuth: "authorize", api.PhaseConfirmed: "enable",
+		api.PhaseAwaitingConfirm: "await_user_confirmation", api.PhaseAwaitingOAuth: "authorize", api.PhaseConfirmed: "enable",
 	}
 	for _, on := range phases {
 		body := control.statusBody(on, false)
 		if _, ok := body["instructions"]; ok {
-			t.Fatalf("%s body carries instructions prose: %v", on.Phase, body)
+			t.Fatalf("%s body carries instructions prose: %v", on.NoticePhase(), body)
 		}
-		if want := wantNext[on.Phase]; want != "" && body["next_action"] != want {
-			t.Fatalf("%s next_action=%v want %q", on.Phase, body["next_action"], want)
+		if want := wantNext[on.NoticePhase()]; want != "" && body["next_action"] != want {
+			t.Fatalf("%s next_action=%v want %q", on.NoticePhase(), body["next_action"], want)
 		}
 	}
 	// rotate keys off the typed code — the prose prefix alone no longer drives it.
-	rotate := control.statusBody(api.Onboarding{OnboardingID: "o8", Phase: api.PhaseAwaitingCreds,
+	rotate := control.statusBody(api.Onboarding{OnboardingID: "o8",
+		Stage:            api.StagePending,
+		Gate:             &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		AdmissionPending: true, BrokerContractID: "c1", ErrorCode: api.OpCodeProbeFailed, Error: "some failure"}, false)
 	if rotate["next_action"] != "rotate" {
 		t.Fatalf("probe_failed did not select rotate: %v", rotate)
 	}
-	proseOnly := control.statusBody(api.Onboarding{OnboardingID: "o9", Phase: api.PhaseAwaitingCreds,
+	proseOnly := control.statusBody(api.Onboarding{OnboardingID: "o9",
+		Stage:            api.StagePending,
+		Gate:             &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}},
 		AdmissionPending: true, BrokerContractID: "c1", Error: "Проверка не прошла. denied"}, false)
 	if proseOnly["next_action"] == "rotate" {
 		t.Fatalf("prose marker still drives the branch: %v", proseOnly)

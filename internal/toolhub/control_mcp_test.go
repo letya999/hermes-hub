@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	aliceToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	bobToken   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	aliceToken            = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bobToken              = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testHumanControlToken = "synthetic-service-confirmation-bearer"
 )
 
 func aliceAuth() identity.Envelope {
@@ -37,12 +38,45 @@ func TestControlToolContractDocumentsResumeSelector(t *testing.T) {
 	}
 }
 
+func TestAgentCannotConfirmItsOwnConsent(t *testing.T) {
+	description, _ := controlToolContract("confirm")
+	if !strings.Contains(description, "verified channel callback") {
+		t.Error("confirm description omits actor-bound channel consent")
+	}
+	fix := newControlFixture(t, fixtureReviewer(userMCPDefinition()))
+	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	alice := fix.session(t, aliceToken)
+	// An agent-side confirm needs a gate that survives the install request —
+	// prepare_source completes setup inline now, so the pending record is
+	// minted without that completion, like a legacy mid-flight record.
+	pending, _, err := fix.control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "agent-consent", catalogReadDefinition(), "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := pending.OnboardingID
+	status, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, fix.store, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["phase"] != api.PhaseAwaitingConfirm || status["next_action"] != "await_user_confirmation" {
+		t.Fatalf("agent confirmed consent: %v", status)
+	}
+	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": id}); err == nil {
+		t.Fatal("agent enabled before human confirmation")
+	}
+}
+
 func TestControlToolContractRoutesInstallBeforeLifecycle(t *testing.T) {
 	prepare, _ := controlToolContract("prepare_source")
 	if !strings.Contains(prepare, "call this first") || !strings.Contains(prepare, "GitHub repository URL") {
 		t.Fatalf("prepare_source does not own explicit install routing: %q", prepare)
 	}
-	if !strings.Contains(prepare, "resend") || !strings.Contains(prepare, "required_credentials") {
+	if !strings.Contains(prepare, "connector_edit action=resend") || !strings.Contains(prepare, "Status never renews links") {
 		t.Fatalf("prepare_source does not route resend/status requests to resume: %q", prepare)
 	}
 	for _, op := range []string{"disable", "revoke", "remove"} {
@@ -141,7 +175,7 @@ func TestSelfInstallReusesReviewedCommitOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || onboarding.Phase != api.PhaseAwaitingCreds {
+	if onboarding.DefinitionID != "mcp" || onboarding.CommitSHA != definition.Source.CommitSHA || !onboarding.Awaiting(api.GateCredentials) {
 		t.Fatalf("reused onboarding=%+v", onboarding)
 	}
 }
@@ -170,7 +204,8 @@ func newControlFixture(t *testing.T, reviewer api.SourceReviewer) *controlFixtur
 			calls.Add(1)
 			return api.BackendResult{Text: "ok"}, nil
 		}),
-		Control: control,
+		Control:      control,
+		ControlToken: testHumanControlToken,
 		Audit: func(_ string, fields map[string]string) {
 			copied := map[string]string{}
 			for k, v := range fields {
@@ -179,6 +214,7 @@ func newControlFixture(t *testing.T, reviewer api.SourceReviewer) *controlFixtur
 			fix.audit = append(fix.audit, copied)
 		},
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -235,6 +271,33 @@ func callControl(t *testing.T, session *mcp.ClientSession, op string, args map[s
 	return nil, errors.New("missing control status body")
 }
 
+func confirmViaTrustedChannel(t *testing.T, baseURL string, store *Store, id string) {
+	t.Helper()
+	onboarding := mustOnboarding(t, store, id)
+	if !onboarding.Awaiting(api.GateConfirmSetup) {
+		// Consent arrived upstream (credential submit, OAuth grant, install
+		// request): the record already completed without a second click.
+		return
+	}
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.GateNonce(api.GateConfirmSetup), Revision: api.ConfirmationRevision(onboarding), ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.GateExpiry(api.GateConfirmSetup)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/confirmations", strings.NewReader(string(proof)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testHumanControlToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("trusted channel confirmation status=%d", response.StatusCode)
+	}
+}
+
 func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	fix := newControlFixture(t, fixtureReviewer(userMCPDefinition()))
 	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
@@ -261,14 +324,14 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 			t.Fatalf("missing control operation %s", op)
 		}
 	}
-	if !have["invoke"] {
+	if !have["tool_call"] {
 		t.Fatal("missing stable projected-tool invoke operation")
 	}
 	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "cat-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["binding_id"] != "" {
+	if prepared["phase"] != api.PhaseEnabled || prepared["binding_id"] == "" {
 		t.Fatalf("prepare catalog=%v", prepared)
 	}
 	if _, err := callControl(t, alice, "prepare_source", map[string]any{"user_id": "bob", "definition_id": "catalog-read", "version": "1.0.0"}); err == nil {
@@ -285,7 +348,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 		}
 	}
 	status, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || status["phase"] != api.PhaseAwaitingConfirm {
+	if err != nil || status["phase"] != api.PhaseEnabled {
 		t.Fatalf("status=%v err=%v", status, err)
 	}
 	creds, err := callControl(t, alice, "required_credentials", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -296,9 +359,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if strings.Contains(string(encoded), "local://") || strings.Contains(strings.ToLower(string(encoded)), "token=") {
 		t.Fatalf("required_credentials leaked locator/secret: %s", encoded)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, prepared["onboarding_id"].(string))
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil || enabled["binding_id"] == "" || enabled["phase"] != api.PhaseEnabled {
 		t.Fatalf("enable=%v err=%v", enabled, err)
@@ -347,18 +408,12 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": self["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	selfConfirm, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": self["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, self["onboarding_id"])})
-	if err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, self["onboarding_id"].(string))
 	enabledSelf, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": self["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
 	}
 	userBinding, _ := enabledSelf["binding_id"].(string)
-	if userBinding == "" {
-		userBinding, _ = selfConfirm["binding_id"].(string)
-	}
 	if err := fix.store.PromoteToCatalog("user-mcp", "1.0.0", "operator"); err != nil {
 		t.Fatal(err)
 	}

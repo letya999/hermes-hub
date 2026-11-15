@@ -9,6 +9,16 @@ Workstream: Storage reliability MVP (local planning; GitHub records not created)
 Previous: CHG-0225. Next: приёмка завершает цепочку.
 Hard dependencies: CHG-0215, CHG-0216, CHG-0217, CHG-0218, CHG-0219, CHG-0220, CHG-0221, CHG-0222, CHG-0223, CHG-0224, CHG-0225.
 
+## Amendment 2026-10-31 (substrate)
+
+[ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md) /
+[SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) по
+инструкции владельца расширяют scope этого CHG: приёмка теперь покрывает
+три миграции — Broker → SQLCipher (SPEC-0087 R6), ToolHub → `store.db` и
+Communication → `spool.db` (SPEC-0090 R5/R6). Единый контракт:
+fence → backup → read-only import → сверка → atomic activation →
+dev acceptance → scoped retirement старого layout.
+
 ## Goal
 
 Явная миграция и итоговая приёмка ограниченного хранения. Результат этапа проверяется acceptance ниже; текущий работающий код

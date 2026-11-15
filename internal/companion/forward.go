@@ -89,7 +89,7 @@ func serveTCPForward(ctx context.Context, listener net.Listener, proxy, target s
 		}
 		go func() {
 			defer conn.Close()
-			upstream, err := connectViaProxy(ctx, proxy, target)
+			upstream, err := ConnectViaProxy(ctx, proxy, target)
 			if err != nil {
 				return
 			}
@@ -109,10 +109,10 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
-// connectViaProxy issues CONNECT host:port to the reviewed egress proxy and
+// ConnectViaProxy issues CONNECT host:port to the reviewed egress proxy and
 // returns the tunnel only for an affirmative response. The handshake is
 // bounded; the returned connection carries no deadline.
-func connectViaProxy(ctx context.Context, proxy, target string) (net.Conn, error) {
+func ConnectViaProxy(ctx context.Context, proxy, target string) (net.Conn, error) {
 	parsed, err := url.Parse(proxy)
 	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" {
 		return nil, fmt.Errorf("unsupported proxy url")

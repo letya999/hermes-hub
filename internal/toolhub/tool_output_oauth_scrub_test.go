@@ -2,7 +2,9 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,6 +54,7 @@ func TestToolOutputWithholdsLoopbackOAuthURL(t *testing.T) {
 		env, err := api.DecryptAuthorized(secrets, e)
 		return api.CredentialInjection{Environment: env}, err
 	}}
+	attachGatewayAudit(t, gateway)
 	result, err := gateway.CallAuthorized(context.Background(), auth, api.ProjectedToolName(d.DefinitionID, d.Version, "list"), map[string]any{"calendar_id": "primary"})
 	if err != nil || result == nil {
 		t.Fatal(err)
@@ -106,6 +109,7 @@ func TestToolOutputErrorWithholdsLoopbackOAuthURL(t *testing.T) {
 		env, err := api.DecryptAuthorized(secrets, e)
 		return api.CredentialInjection{Environment: env}, err
 	}}
+	attachGatewayAudit(t, gateway)
 	_, err = gateway.CallAuthorized(context.Background(), auth, api.ProjectedToolName(d.DefinitionID, d.Version, "list"), map[string]any{"calendar_id": "primary"})
 	if err == nil {
 		t.Fatal("expected backend error")
@@ -113,8 +117,8 @@ func TestToolOutputErrorWithholdsLoopbackOAuthURL(t *testing.T) {
 	if strings.Contains(err.Error(), "localhost") || strings.Contains(err.Error(), "oauth2callback") || strings.Contains(err.Error(), "accounts.google.com") {
 		t.Fatalf("loopback OAuth URL reached caller through error path: %v", err)
 	}
-	if !strings.Contains(err.Error(), "backend call failed") {
-		t.Fatalf("error text mangled: %v", err)
+	if !errors.Is(err, audit.ErrUncertain) {
+		t.Fatalf("backend error must be uncertain: %v", err)
 	}
 }
 

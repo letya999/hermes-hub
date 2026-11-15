@@ -28,7 +28,8 @@ func TestManifestRendered(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestManifestRendered(t *testing.T) {
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools = testTools("workspace", "telegram", "file=native", "web=toolhub", "notes=off")
 	settings.Ingress = testIngress("workspace", "telegram")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	seedGovernance(t, d, func(doc *api.Governance) {
@@ -96,16 +97,19 @@ func TestStablePromptRendered(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
 	if err := os.WriteFile(filepath.Join(d, "SOUL.md"), []byte("# Persona\nSpeak plainly."), 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.Tools = testTools("workspace", "telegram")
+	// The contract fragments are family-gated: files/routines/media/documents
+	// wishes drive the sections this test asserts verbatim.
+	settings.Tools = testTools("workspace", "telegram", "routines=toolhub", "files=toolhub", "documents=toolhub", "media=toolhub")
 	settings.Ingress = testIngress("workspace", "telegram")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
@@ -152,13 +156,14 @@ func TestRuntimeServiceMountsToolManifest(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Tools = testTools("workspace", "telegram")
 	settings.Ingress = testIngress("workspace", "telegram")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []string{"", "managed"} {
@@ -168,10 +173,16 @@ func TestRuntimeServiceMountsToolManifest(t *testing.T) {
 		if env["HUB_TOOL_MANIFEST"] != "/config/tool-manifest.json" {
 			t.Fatalf("mode=%q HUB_TOOL_MANIFEST=%v", mode, env["HUB_TOOL_MANIFEST"])
 		}
+		// A published workspace passport serves the manifest inside the
+		// /config view bind; without one the file mounts directly.
 		found := false
 		for _, v := range service["volumes"].([]any) {
 			volume, _ := v.(M)
 			if volume["target"] == "/config/tool-manifest.json" && volume["read_only"] == true {
+				found = true
+			}
+			if volume["target"] == "/config" && volume["read_only"] == true &&
+				strings.Contains(fmt.Sprint(volume["source"]), "config-view") {
 				found = true
 			}
 		}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/memory"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -35,18 +36,48 @@ type Job struct {
 	Text         string `json:"text,omitempty"`
 	InboundID    string `json:"inbound_id,omitempty"`
 	Sensitive    bool   `json:"sensitive"`
-	TextSHA256   string `json:"text_sha256,omitempty"`
+	// CaptureExpected marks jobs admitted after the ToolHub outbox was enabled;
+	// recovery never backfills pre-cutover history without this durable mark.
+	CaptureExpected bool   `json:"capture_expected,omitempty"`
+	TextSHA256      string `json:"text_sha256,omitempty"`
 	// GoalEpoch pins a goal-mode turn to the record epoch it was queued under;
 	// a claim whose epoch no longer matches the active goal no-ops (SPEC-0074).
 	GoalEpoch int64 `json:"goal_epoch,omitempty"`
+	// Untrusted/Probe are hub-stamped transport metadata for memory capture
+	// (SPEC-0085 R2.3): Untrusted marks forwarded/external content the channel
+	// reported at ingest; Probe marks schedule work with a probe attached.
+	// Body text can never set them — they are written by the hub at enqueue.
+	Untrusted bool `json:"untrusted,omitempty"`
+	Probe     bool `json:"probe,omitempty"`
 	// TokenEstimate prices the admission reservation when the caller knows
 	// the expected spend; zero takes the spool default, negative is rejected.
 	TokenEstimate int64     `json:"token_estimate,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// MemoryKind classifies the job for vault capture (SPEC-0085 R2.4): the
+// trigger names interactive turns; assignment/probe marks ride the job's
+// hub-stamped fields, never the body.
+func (job Job) MemoryKind() memory.Kind {
+	return memory.KindForTrigger(job.Trigger, job.AssignmentID != "", job.Probe)
+}
+
+// MemoryTurnProvenance stamps the turn's provenance at capture: forwarded/
+// external content the transport flagged is untrusted, owner-authored
+// instructions are owner, hub-fired background work is system.
+func (job Job) MemoryTurnProvenance() memory.Provenance {
+	return memory.ProvenanceForTurn(job.Untrusted, job.Trigger)
+}
+
+// MemoryAudience scopes the entry to the audience of the job's route —
+// private turns and group turns stay in separate capture slices.
+func (job Job) MemoryAudience() memory.Audience {
+	return memory.AudienceOf(job.ScopeID)
+}
+
 type Delivery struct {
 	BlockedBy        string `json:"blocked_by,omitempty"`
+	OwnerPrincipalID string `json:"owner_principal_id,omitempty"`
 	ID               string `json:"id"`
 	OccurrenceID     string `json:"occurrence_id,omitempty"`
 	JobID            string `json:"job_id"`
@@ -83,6 +114,8 @@ type Delivery struct {
 	// Voice is the run-requested spoken payload (upstream VOICE: marker). The
 	// synthesized audio is sent straight to the channel and never persisted.
 	Voice string `json:"voice,omitempty"`
+	// SpeechLang is the explicit language of a ToolHub-admitted speech request.
+	SpeechLang locale.Lang `json:"speech_lang,omitempty"`
 	// VoiceSent distinguishes accepted sendVoice from the intentional text fallback.
 	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
@@ -103,6 +136,8 @@ type Delivery struct {
 	// StreamPosition orders status updates so a replayed event can never move
 	// the rendered status backwards.
 	StreamPosition uint64 `json:"stream_position,omitempty"`
+	PrepareKey     string `json:"prepare_key,omitempty"`
+	PrepareVersion uint64 `json:"prepare_version,omitempty"`
 	// StatusClosed marks the run's status message finalized: late events must
 	// not resurrect or edit it.
 	StatusClosed bool `json:"status_closed,omitempty"`

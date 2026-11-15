@@ -44,6 +44,10 @@ type CompactOptions struct {
 	Args          CompactArgs
 	Now           func() time.Time
 	Summarize     func(ctx context.Context, model string, messages []map[string]any, focus string) (string, error)
+	// Flush, when set, receives the transcript head a summary compaction is
+	// about to drop — the vault capture writes those turns into the daily
+	// leaf before they are lost (SPEC-0085 R2.6). Nil disables.
+	Flush func(dropped []map[string]any)
 }
 
 // Compact runs the manual compaction pipeline for one session.
@@ -176,6 +180,11 @@ func Compact(ctx context.Context, o CompactOptions) (CompactResult, error) {
 		}
 		messages = dropped
 		method = MethodDropCheckpoint
+	}
+	if o.Flush != nil {
+		// The head is about to leave the transcript; capture it into the
+		// leaf first — summarization must never silently lose turn content.
+		o.Flush(head)
 	}
 	if _, err := sidecarApplyTranscript(ctx, o.SessionID, o.Holder, messages, &transcript.Watermark, len(tail)); err != nil {
 		result.FailureClass = "apply_failed"

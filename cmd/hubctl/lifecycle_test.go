@@ -44,18 +44,9 @@ func TestPruneDanglingImagesKeepsForeignContainersAndBoundsCache(t *testing.T) {
 
 func TestLifecycleAndFailurePropagation(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "space with spaces")
-	if err := stack.InitEnvironment(d, "owner", "dev"); err != nil {
-		t.Fatal(err)
-	}
-	s, _ := stack.Read(d)
-	s.Model = "test"
-	s.ModelURL = "http://model.invalid/v1"
-	save := func() {
-		if err := stack.WriteSpace(d, s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	save()
+	// Infra owner without a channel: the gateway stays undeployed so `chat`
+	// is legal, and the revision alone carries every consumer.
+	writeManagedSpaceDocs(t, d, "owner", managedInfraDocs("owner", false))
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -65,10 +56,13 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	script := "#!/bin/sh\nprintf 'ENV DOCKER_BUILDKIT=%s COMPOSE_BAKE=%s COMPOSE_DOCKER_CLI_BUILD=%s\\n' \"$DOCKER_BUILDKIT\" \"$COMPOSE_BAKE\" \"$COMPOSE_DOCKER_CLI_BUILD\" >> \"$HUB_TEST_LOG\"\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%~1\"==\"build\" if \"%HUB_FAIL_MATCH%\"==\"build\" exit /b 7\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
 	}
 	if runtime.GOOS == "windows" {
+		script = strings.Replace(script, "if not \"%~1\"==\"compose\" exit /b 0\r\n", "if \"%~1\"==\"network\" if \"%~2\"==\"inspect\" (echo true & exit /b 0)\r\nif not \"%~1\"==\"compose\" exit /b 0\r\n", 1)
 		script += "exit /b 0\r\n"
+	} else {
+		script += "if [ \"$1\" = network ] && [ \"$2\" = inspect ]; then printf 'true\\n'; fi\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -91,16 +85,25 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 			t.Fatal(op, err)
 		}
 	}
-	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "communication-hub", "toolhub"}); err != nil {
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "supervisor", "toolhub"}); err != nil {
 		t.Fatal(err)
 	}
 	beforeNoBuild, _ := os.ReadFile(log)
-	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build", "communication-hub", "toolhub"}); err != nil {
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build", "supervisor", "toolhub"}); err != nil {
 		t.Fatal(err)
 	}
 	afterNoBuild, _ := os.ReadFile(log)
-	if strings.Count(string(afterNoBuild), " build communication-hub toolhub") != strings.Count(string(beforeNoBuild), " build communication-hub toolhub") || !strings.Contains(string(afterNoBuild), "--no-build --no-deps communication-hub toolhub") {
-		t.Fatal("no-build up rebuilt images or followed dependencies")
+	scopedUp := strings.TrimPrefix(string(afterNoBuild), string(beforeNoBuild))
+	if strings.Count(string(afterNoBuild), " build supervisor toolhub") != strings.Count(string(beforeNoBuild), " build supervisor toolhub") || !strings.Contains(scopedUp, "--force-recreate --no-build --no-deps supervisor toolhub") || strings.Contains(scopedUp, "--remove-orphans") {
+		t.Fatal("scoped no-build up touched unrelated services")
+	}
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build"}); err != nil {
+		t.Fatal(err)
+	}
+	afterFullNoBuild, _ := os.ReadFile(log)
+	fullUp := strings.TrimPrefix(string(afterFullNoBuild), string(afterNoBuild))
+	if !strings.Contains(fullUp, "--remove-orphans --no-build") || strings.Contains(fullUp, "--force-recreate") {
+		t.Fatal("full no-build up forced unrelated service restarts")
 	}
 	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "--", "--no-cache"}); err == nil {
 		t.Fatal("compose option accepted as a service")
@@ -118,7 +121,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
 		t.Fatal("up skipped the shared model proxy alias check")
 	}
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--remove-orphans --no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "build --target prod-control") || !strings.Contains(string(b), "--no-deps supervisor toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {
@@ -133,8 +136,11 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		}
 	}
 	t.Setenv("HUB_FAIL_MATCH", "")
-	s.Ingress = append(s.Ingress, "telegram")
-	save()
+	// Publishing the gateway revision is the passport-path equivalent of
+	// adding telegram to the old feature list.
+	ownerDocs := managedInfraDocs("owner", true)
+	ownerDocs["stack"] = strings.Replace(ownerDocs["stack"], "  supervisor: {mode: shared}\n", "", 1)
+	writeManagedSpaceDocs(t, d, "owner", ownerDocs)
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -170,15 +176,11 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 	// compose build section produces the spawned-runtime tag. hubctl must
 	// build it explicitly, the same way it builds the cell images.
 	d := filepath.Join(t.TempDir(), "space")
-	if err := stack.InitEnvironment(d, "owner", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	s, _ := stack.Read(d)
-	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
-	s.Ingress = append(s.Ingress, "telegram")
-	if err := stack.WriteSpace(d, s); err != nil {
-		t.Fatal(err)
-	}
+	// The managed stack declares a supervised runtime: no compose service
+	// renders hermes-runtime, yet its image tag must still be built.
+	ownerDocs := managedInfraDocs("owner", true)
+	ownerDocs["stack"] = strings.Replace(ownerDocs["stack"], "  supervisor: {mode: shared}\n", "", 1)
+	writeManagedSpaceDocs(t, d, "owner", ownerDocs)
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,5 +206,38 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 	calls, _ := os.ReadFile(log)
 	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") {
 		t.Fatalf("supervisor render left the spawned-runtime tag unbuilt: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "communication-hub"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if strings.Contains(string(calls), " build communication-hub") || !strings.Contains(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") || strings.Contains(string(calls), "build --target prod-control") || strings.Contains(string(calls), "prune") {
+		t.Fatalf("service build also built unrelated images: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "communication-hub", "toolhub"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if strings.Count(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") != 1 || strings.Count(string(calls), "build --target prod-control -t hermes-hub:0.5.0-prod-control") != 1 || strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") || strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), " build toolhub") {
+		t.Fatalf("multi-service build missed or duplicated a target: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "--image", "runtime"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") || strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), "build --target cli-tools") || strings.Contains(string(calls), "prune") {
+		t.Fatalf("runtime-only build selected wrong images: %s", calls)
+	}
+	if run(context.Background(), []string{"build", "--dir", d, "--image", "runtime", "communication-hub"}) == nil {
+		t.Fatal("image-only build accepted a Compose service")
 	}
 }

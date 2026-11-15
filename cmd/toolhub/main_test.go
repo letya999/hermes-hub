@@ -29,6 +29,37 @@ func TestRunRequiresStore(t *testing.T) {
 	}
 }
 
+func TestRunRefusesForeignInstallationWitness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := toolhub.NewStore().Save(path); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(t.TempDir(), "toolhub-installation")
+	if err := os.WriteFile(witness, []byte("00ff00ff00ff00ff00ff00ff00ff00ff"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_TOOLHUB_IDENTITY_WITNESS", witness)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "witness") {
+			t.Fatalf("startup refused for the wrong reason: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("a store foreign to the surviving witness was served")
+	}
+}
+
 func TestRunWithContextStopsOnCancel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	if err := os.WriteFile(path, []byte(`{"schema":1,"definitions":[],"connections":[],"credential_references":[],"bindings":[],"workloads":[]}`), 0600); err != nil {
@@ -60,13 +91,53 @@ func TestRunWithContextStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestRunWiresDurableRestartState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := os.WriteFile(path, []byte(`{"schema":1,"definitions":[],"connections":[],"credential_references":[],"bindings":[],"workloads":[],"projection_revisions":{"alice\u0000alice\u0000runtime":2}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	posts := make(chan struct{}, 2)
+	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/restart-request" {
+			http.NotFound(w, r)
+			return
+		}
+		posts <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer supervisor.Close()
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "fixture-control")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	select {
+	case <-posts:
+	case err := <-done:
+		t.Fatalf("toolhub exited before restart: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("pending restart revision was primed away")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	oldInterval := removalRetryInterval
 	removalRetryInterval = 10 * time.Millisecond
 	defer func() { removalRetryInterval = oldInterval }()
 	path := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +146,31 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	}
 	var calls atomic.Int32
 	var allow atomic.Bool
+	var deleted atomic.Bool
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if !allow.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/events":
+			_, _ = w.Write([]byte(`{"events":[],"next_cursor":0}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/credentials/credential_1":
+			deleted.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
+			_, _ = w.Write([]byte(`{"id":"credential_1","connection_id":"connection_1","status":"active"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/connections/connection_1/credentials":
+			if deleted.Load() {
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				_, _ = w.Write([]byte(`[{"id":"credential_1","connection_id":"connection_1","status":"active"}]`))
+			}
+		default:
+			t.Errorf("unexpected Broker call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer broker.Close()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -124,7 +213,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 		if err == nil {
 			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
 			got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
-			if err == nil && got.Phase == api.PhaseRemoved {
+			if err == nil && got.Removed() {
 				cancel()
 				if err := <-done; err != nil {
 					t.Fatal(err)
@@ -270,7 +359,7 @@ func TestRemovalRetryLoopReportsFailure(t *testing.T) {
 func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -291,8 +380,8 @@ func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
 	got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
-	if err != nil || got.Phase != api.PhaseRemoved {
-		t.Fatalf("removal did not resume at startup: %v %s", err, got.Phase)
+	if err != nil || !got.Removed() {
+		t.Fatalf("removal did not resume at startup: %v %s", err, got.NoticePhase())
 	}
 }
 
@@ -375,9 +464,10 @@ func TestRunServesPublicSurface(t *testing.T) {
 		resp, err := client.Get("http://" + publicAddr + "/confirm/x?t=t")
 		if err == nil {
 			resp.Body.Close()
-			// Reaching the confirm handler with an unknown onboarding is a 401;
-			// a refused connection means the public listener never started.
-			if resp.StatusCode == http.StatusUnauthorized {
+			// Reaching the confirm handler with an unknown onboarding is the
+			// dead-link landing (410); a refused connection means the public
+			// listener never started.
+			if resp.StatusCode == http.StatusGone {
 				return
 			}
 			t.Fatalf("public surface status=%d", resp.StatusCode)

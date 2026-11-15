@@ -1,6 +1,6 @@
 ---
 description: "Какие данные где находятся и как добавить новый storage adapter."
-last_verified: "2026-10-20"
+last_verified: "2026-11-09"
 ---
 
 # Providers, файлы и изменяемое состояние
@@ -37,6 +37,28 @@ ENV выдаётся только runtime response. File plaintext создаё�
 Для state объявляются target directory и точный список файлов с bounds. Каждый binding имеет собственный
 snapshot. Файлы не загружаются целым архивом; path traversal, symlink и hardlink отвергаются.
 State snapshot хранится как отдельный provider Bundle, не как session JSON в metadata ledger.
+
+## Жизненный цикл provider-объектов
+
+Каждый физический объект имеет строку `object` в ledger: `intent → current → retired → pending-delete →
+deleted`, плюс `pinned` у версии, которой пользуется активный use или quiesced restore (SPEC-0087 R4).
+Провайдеры, реализующие `provider.RefWriter` (local), принимают заранее зарезервированный locator —
+Broker фиксирует `intent` с точным ref **до** записи, поэтому авария между записью и активацией оставляет
+объект принадлежащим, а не бесхозным. Провайдеры без `RefWriter` сохраняют пост-записный порядок —
+документированное окно unknown-orphan: неизвестный объект никогда не удаляется.
+
+Checkpoint дедуплицирует по каноническому digest содержимого: идентичный quiesced snapshot переиспользует
+текущую версию и не создаёт объект. Изменённый snapshot активирует замену и в той же мутации переводит
+предыдущую версию в `retired` (или `pinned`, если у неё живой pin). OAuth refresh всегда создаёт новую
+версию — rotating-токены не дедуплицируются по предположению.
+
+Удаление выполняет bounded-воркер `SweepObjects`: выбирает до `limit` подходящих строк (`retired`,
+`pinned` без живых пинов, `pending-delete` с истёкшим backoff, `intent` терминального request),
+фиксирует `pending-delete`, удаляет точные refs через provider (local стирает primary+recovery копии и
+fsync каталога) и только потом пишет receipt `deleted`. Ошибка удаления возвращает строку в очередь
+с backoff; maintenance-`Sweep` раз в секунду забирает батч до 64. Активация credential в той же
+мутации выводит потреблённые request-объекты (draft, verifier) в `retired`; удаление credential
+дочищает их по lineage, поэтому ничего физического за удалённым credential не остаётся.
 
 Плоские JSON session files поддержаны. Произвольные директории browser/CLI, SQLite/WAL-consistent backup,
 file watching, SSH agent и облачный STS не реализованы. Их нельзя объявить готовыми просто новым kind в JSON.

@@ -7,9 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // browserSpace renders a browser-enabled space's compose services.
@@ -192,7 +189,9 @@ func TestBrowserServersUseSidecarURL(t *testing.T) {
 }
 
 // SPEC-0082 R4.2: render materializes the per-space noVNC password once, and
-// meet seeds the node token the sidecar's upstream NodeServer serves.
+// The sidecar's x11vnc password materializes once, never rotates on
+// re-render, and meet node material stays absent while meet is sealed under
+// managed mode.
 func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	d := t.TempDir()
 	root := t.TempDir()
@@ -205,17 +204,15 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	seedGovernance(t, d, func(doc *api.Governance) {
-		activeToolGrant(t, doc, "alice", "native:meet", time.Hour)
-	})
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	settings.Tools, settings.Ingress = testTools("workspace", "meet"), testIngress("workspace", "meet")
-	if err := saveSpace(d, settings); err != nil {
+	settings.Tools, settings.Ingress = testTools("workspace", "browser"), testIngress("workspace", "browser")
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
@@ -233,18 +230,8 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	if len(strings.TrimSpace(string(body))) < 12 {
 		t.Fatal("noVNC password too short")
 	}
-	// Meet: the node token feeds upstream's NodeServer token_path, and the
-	// runtime-side registry seeds the approved sidecar entry so node='auto'
-	// resolves without a manual approve step.
-	tokenPath := filepath.Join(d, "meet-node-token.json")
-	tokBody, err := os.ReadFile(tokenPath)
-	if err != nil || !strings.Contains(string(tokBody), "\"token\"") {
-		t.Fatalf("meet node token file missing: %v", err)
-	}
-	nodes := filepath.Join(d, "hermes", "workspace", "meetings", "nodes.json")
-	nodesBody, err := os.ReadFile(nodes)
-	if err != nil || !strings.Contains(string(nodesBody), "ws://browser-alice:18789") {
-		t.Fatalf("node registry must seed the sidecar node: %v", err)
+	if _, err := os.Stat(filepath.Join(d, "meet-node-token.json")); !os.IsNotExist(err) {
+		t.Fatal("meet is sealed under managed mode — no node token may materialize")
 	}
 	// Render twice: secrets must be stable, never rotated by re-render.
 	passBefore, _ := os.ReadFile(passwd)
@@ -254,31 +241,6 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	passAfter, _ := os.ReadFile(passwd)
 	if string(passBefore) != string(passAfter) {
 		t.Fatal("re-render rotated the noVNC password")
-	}
-	// Browser-only spaces (no meet) still get the noVNC password — x11vnc
-	// never runs unauthenticated — but no meet node material.
-	db := t.TempDir()
-	if err := Init(db, "bob"); err != nil {
-		t.Fatal(err)
-	}
-	sb, err := Read(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sb.Model = "test"
-	sb.ModelURL = "http://model.invalid/v1"
-	sb.Tools, sb.Ingress = testTools("workspace", "browser"), testIngress("workspace", "browser")
-	if err := saveSpace(db, sb); err != nil {
-		t.Fatal(err)
-	}
-	if err := RenderEnvironment(db, root, "prod"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(db, "browser-novnc.passwd")); err != nil {
-		t.Fatalf("browser space missing noVNC password: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(db, "meet-node-token.json")); !os.IsNotExist(err) {
-		t.Fatal("browser-only space must not get meet node material")
 	}
 }
 

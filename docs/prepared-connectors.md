@@ -1,6 +1,6 @@
 ---
 description: Connector pipeline вЂ” review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-30
+last_verified: 2026-11-09
 ---
 
 # Prepared connectors
@@ -323,13 +323,13 @@ session stays in memory, goes Broker-only; `telegram_auth: false` disables;
 API pair via `telegram-auth.<env>.env` (`HUB_TELEGRAM_AUTH_API_ID/HASH`).
 Rotation: new device session + `rotate` + form; terminate the old device in
 Telegram yourself. Send upgrade: `prepare_source` `{"onboarding_id":вЂ¦,
-"telegram_send":true}` в†’ `read-only+send_message` re-review on the same pin,
+"upgrade_mode":"send"}` в†’ `read-only+send_message` re-review on the same pin,
 retains session, only `send_message` may be added; verify with a Saved
 Messages send (`chat_id:"me"`, unique `operation_id`). Event tools:
 `wait_for_new_message`/`wait_for_settled_message` bounded polls;
 `watch_chat_messages` is a non-consuming, paged read of chat text with
 `next_cursor` for deterministic source filters,
-`requeue_event` (id only), `incoming_feed_status` вЂ” `watch_subscribe`
+`requeue_event` (id only), `incoming_feed_status` вЂ” `watch_create`
 polls them; `delivery=stream` holds one outstanding bounded wait per
 subscription (seconds, no persistent workload); dedup via durable seen-set;
 no always-on push. Never copy `.session`/OTP/API hash into repo or chat.
@@ -384,6 +384,20 @@ state slot and hide the freshly checkpointed token from the MCP server.
 Protected form, confirmation and OAuth links arrive as new chat messages when
 issued. If a pending confirmation or OAuth link is lost, call ToolHub `status`
 with the onboarding ID and `resend: true`; the channel posts a fresh link.
+Repeating `connector_install` for the same target also renews an expired
+confirmation nonce on its existing operation and sends the replacement notice.
+The channel binds an outcome to a recent initiating message job; an old
+uncertain job cannot capture a later operator-initiated notice.
+The protected `/connect/` page displays confirmation status only. Human
+confirmation is a Telegram callback button. A confirmation notice must post
+a new keyboard message: editing an earlier status message sends text only
+and removes the button.
+The channel waits for ToolHub to finish the confirmed action. If admission
+fails after consent is durably recorded, the owner may resume enable on that
+same onboarding without another confirmation; ToolHub checks the stored
+action digest before retrying.
+`POST /v1/connectors/{onboarding_id}:enable` uses the same owner-scoped
+facade and operation journal as `connector_edit` for this retry.
 
 ### google-workspace
 

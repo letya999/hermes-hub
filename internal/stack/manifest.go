@@ -56,24 +56,15 @@ func writeToolManifest(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	return atomic(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json"), append(body, '\n'))
-}
-
-// readToolManifest loads the manifest written by the previous render; a
-// missing file means the space predates manifests (nothing to migrate).
-func readToolManifest(dir, environment string) (*ToolManifest, error) {
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "tool-manifest."+environment+".json"))
-	if os.IsNotExist(err) {
-		return nil, nil
+	if err := atomic(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json"), append(body, '\n')); err != nil {
+		return err
 	}
-	if err != nil {
-		return nil, err
+	// With a published passport, /config is a single read-only directory
+	// bind — the manifest rides inside the view (SPEC-0092 R5.2).
+	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
+		return atomicMode(filepath.Join(view, "tool-manifest.json"), append(body, '\n'), 0640)
 	}
-	var manifest ToolManifest
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return nil, fmt.Errorf("tool manifest: %w", err)
-	}
-	return &manifest, nil
+	return nil
 }
 
 // migrateToolhubBindings rolls this space's active ToolHub bindings and

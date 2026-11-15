@@ -170,8 +170,17 @@ func (m *Manager) removeOwnedSidecar(ctx context.Context, runtime Runtime) error
 	if !runtime.Managed || runtime.Container == "" || runtime.Generation == "" {
 		return nil
 	}
+	// The name addresses the relay, never authorizes it: resolve to the
+	// immutable ID first, then verify labels and remove through that ID —
+	// a same-name squat cannot be removed.
 	name := runtime.Container + "-ctl"
-	metadata, err := m.runtimeLabels(ctx, name)
+	out, err := m.command(ctx, "inspect", "--format", "{{.Id}}", name)
+	id := strings.TrimSpace(string(out))
+	decoded, decodeErr := hex.DecodeString(id)
+	if err != nil || decodeErr != nil || len(decoded) != 32 {
+		return nil
+	}
+	metadata, err := m.runtimeLabels(ctx, id)
 	if err != nil {
 		return nil
 	}
@@ -179,7 +188,7 @@ func (m *Manager) removeOwnedSidecar(ctx context.Context, runtime Runtime) error
 	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] != runtime.Generation || metadata["hermes-hub.role"] != "control-relay" {
 		return errors.New("control relay ownership mismatch")
 	}
-	if _, err := m.command(ctx, "rm", "-f", name); err != nil {
+	if _, err := m.command(ctx, "rm", "-f", id); err != nil {
 		return errors.New("owned control relay removal failed")
 	}
 	return nil

@@ -230,12 +230,12 @@ func TestReadOnlyToolNamesEmpty(t *testing.T) {
 	// Every write-effect tool of a capability is gated; read-effect tools of
 	// the same capability are not.
 	names := readOnlyToolNames(map[string]bool{"ssh": true})
-	for _, want := range []string{"ssh_exec", "ssh_write", "ssh_shell_open", "ssh_tunnel_open"} {
+	for _, want := range []string{"ssh_exec", "ssh_write", "ssh_shell", "ssh_tunnel"} {
 		if !names[want] {
 			t.Fatalf("ssh write tool %s not gated: %v", want, names)
 		}
 	}
-	if names["service_catalog"] {
+	if names["ssh_list"] {
 		t.Fatal("read-effect tool gated")
 	}
 }
@@ -276,5 +276,24 @@ func TestPrivateScratchExportPreservesBinaryAndScope(t *testing.T) {
 	}
 	if _, err := v.ExecCall(context.Background(), "file_write", map[string]any{"path": "docs/empty.bin", "export_base64": ""}, scope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The r5 schema types watch_create.args as an object — a model sending the
+// JSON object the schema advertises must reach the handler, not die in
+// decode because the wire shape matches the schema.
+func TestExecCallStructuredArgsReachHandler(t *testing.T) {
+	v := &Tools{}
+	_, err := v.ExecCall(context.Background(), "watch_create", map[string]any{
+		"id": "w1", "timezone": "UTC", "expression": "every:15m", "text": "watch it",
+		"tool": "connector_poll", "args": map[string]any{"chat_id": "123"},
+		"sources": []any{map[string]any{"tool": "poll", "args": map[string]any{"chat_id": "9"}}},
+		"needs":   []any{map[string]any{"tool": "file_read", "args": map[string]any{"path": "x"}}},
+		"steps":   []any{map[string]any{"op": "click", "target": "#go"}},
+	}, nil)
+	// The handler must see the arguments — any error here is the routine
+	// backend's, never a JSON-decode rejection of a schema-honest object.
+	if err != nil && strings.Contains(err.Error(), "executor arguments") {
+		t.Fatalf("object args died in decode: %v", err)
 	}
 }

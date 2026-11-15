@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,9 +41,8 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	// The credential-free install completed setup inline — the record is
+	// already live; enable stays the idempotent bind entry point.
 	first, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
@@ -125,9 +125,6 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if _, err := control2.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared2["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control2.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared2["onboarding_id"], "nonce": confirmNonceOf(t, store2, prepared2["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
 	args := map[string]any{"onboarding_id": prepared2["onboarding_id"]}
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -150,6 +147,83 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 		if resolveErr != nil || effective.Binding.Status != api.ActiveStatus {
 			t.Fatalf("stale authorization admitted: resolve=%v effective=%+v", resolveErr, effective)
 		}
+	}
+}
+
+func TestConfirmationConsumedOnceConcurrently(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	// An armed setup gate must outlive prepare: the concurrent-consumption
+	// guarantee under test lives in the confirm path itself, so the record
+	// is minted without the install request's inline completion.
+	pending, _, err := control.newOnboarding(aliceAuth(), api.OnboardingCatalog, "concurrent-human", definition, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := pending.OnboardingID
+	nonce := confirmNonceOf(t, store, id)
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.Store = store
+	entered, release := make(chan struct{}), make(chan struct{})
+	var readyCalls atomic.Int32
+	control.Ready = func(context.Context, api.EffectiveBinding) error {
+		if readyCalls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := control.confirm(context.Background(), aliceAuth(), map[string]any{"onboarding_id": id, "nonce": nonce})
+		first <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first confirmation did not reach readiness probe")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := control.confirm(context.Background(), aliceAuth(), map[string]any{"onboarding_id": id, "nonce": nonce})
+		second <- err
+	}()
+	var secondErr error
+	select {
+	case secondErr = <-second:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("second confirmation did not settle")
+	}
+	close(release)
+	if firstErr := <-first; firstErr != nil {
+		t.Fatalf("first confirmation: %v", firstErr)
+	}
+	if !errors.Is(secondErr, api.ErrUnauthorized) || readyCalls.Load() != 1 {
+		t.Fatalf("nonce consumed more than once: second=%v readiness=%d", secondErr, readyCalls.Load())
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := mustOnboarding(t, reloaded, id)
+	if !record.ConfirmationUsed {
+		t.Fatalf("durable confirmation state=%+v", record)
 	}
 }
 
@@ -178,11 +252,10 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	// The credential-free install completed inline: the readiness probe ran
+	// once during prepare's setup completion.
 	if admissions != 1 {
-		t.Fatalf("initial confirm admissions=%d", admissions)
+		t.Fatalf("initial setup admissions=%d", admissions)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "disable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
@@ -221,7 +294,7 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		}
 		return nil
 	}}
-	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm")
+	grantTestControlOperations(t, store, auth.PrincipalID, "prepare_source", "status", "confirm", "enable")
 	prepared, err := control.Invoke(t.Context(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "retry-readiness"})
 	if err != nil {
 		t.Fatal(err)
@@ -231,14 +304,14 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+	if err := control.SubmitCredentials(id, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
 	confirm := map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err == nil {
+	if _, err := control.Invoke(humanConsentContext(t, control, id), auth, "confirm", confirm); err == nil {
 		t.Fatal("failed admission was accepted")
 	}
 	if len(store.bindings) != 0 || len(store.connections) != 1 {
@@ -248,7 +321,11 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		t.Fatal("failed admission projected a tool")
 	}
 	admit = true
-	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err != nil {
+	control.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.bindings) != 1 || len(store.connections) != 1 {
@@ -279,7 +356,7 @@ func TestConfirmProbeFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-probe-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GRAFANA_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-probe-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)}, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "GRAFANA_TOKEN"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +367,7 @@ func TestConfirmProbeFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+	if !after.Awaiting(api.GateCredentials) || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("probe rejection did not reopen the credential form: %+v", after)
 	}
 	if after.Error == "" {
@@ -326,7 +403,7 @@ func TestConfirmDeliveryFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-delivery-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "MCP_HTTP_AUTH_TOKEN"}}, ConfirmationNonce: "nonce-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-delivery-reset", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1, Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce-1", Expires: time.Now().Add(time.Hour)}, Locator: "broker-cred-1", BrokerCredentialID: "broker-cred-1", BrokerRequestID: "r-dead", BrokerAuthorizationURL: "https://broker/connect/r-dead", Required: []api.CredentialHint{{Name: "MCP_HTTP_AUTH_TOKEN"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +414,7 @@ func TestConfirmDeliveryFailureReopensBrokerCredentialForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Phase != api.PhaseAwaitingCreds || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.ConfirmationNonce != "" {
+	if !after.Awaiting(api.GateCredentials) || after.BrokerRotateCredentialID != "broker-cred-1" || after.BrokerCredentialID != "" || after.Locator != "" || after.BrokerRequestID != "" || after.BrokerAuthorizationURL != "" || after.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("delivery failure did not reopen the credential form: %+v", after)
 	}
 	if after.Error == "" {
@@ -381,32 +458,38 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+	if err := control.SubmitCredentials(id, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err == nil {
+	if _, err := control.Invoke(humanConsentContext(t, control, id), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err == nil {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed {
-		t.Fatalf("confirm failure not recorded: %+v", stored)
+	// The submit was the consent — a failed bind keeps its marker so
+	// `enable` retries without a second ceremony, no gate re-arms.
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.HumanConsent == nil || stored.Awaiting(api.GateConfirmSetup) {
+		t.Fatalf("bind failure not recorded with consent: %+v", stored)
 	}
 	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "confirm" {
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "enable" {
 		t.Fatalf("status hides the recorded failure: %v", status)
 	}
 	admit = true
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
+	control.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != api.PhaseConfirmed {
+	if stored.Error != "" || stored.Stage != api.StageLive {
 		t.Fatalf("successful confirm kept stale error: %+v", stored)
 	}
 	if _, err := control.Invoke(t.Context(), auth, "disable", map[string]any{"onboarding_id": id}); err != nil {
@@ -417,7 +500,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed re-enable was accepted")
 	}
 	stored, _ = store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseDisabled {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Stage != api.StageLive {
 		t.Fatalf("enable failure not recorded: %+v", stored)
 	}
 	admit = true
@@ -425,7 +508,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
-	if stored.Error != "" || stored.Phase != api.PhaseEnabled {
+	if stored.Error != "" || stored.Stage != api.StageLive {
 		t.Fatalf("successful enable kept stale error: %+v", stored)
 	}
 }
@@ -465,15 +548,14 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": fmt.Sprintf("value-%02d", i)}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": fmt.Sprintf("value-%02d", i)}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — the record already bound inline;
+		// `enable` is an idempotent re-drive, not a consent step.
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
 		if err != nil {
 			t.Fatal(err)
@@ -525,13 +607,10 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": "ignored-unique"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "ignored-unique"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
@@ -589,9 +668,6 @@ func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})

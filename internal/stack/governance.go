@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -42,10 +43,8 @@ type toolGovernance struct {
 // governanceDocPath resolves the shared governance document: the
 // HUB_TOOL_GOVERNANCE pin wins; the infra space always resolves its own
 // runtime dir (the seed target and document authority); a secondary space
-// reaches the infra sibling's copy first, then its own leftover doc, then
-// any documented sibling, falling back to the space-local path as the seed
-// target. Alphabetical sibling order never outranks the infra marker — a
-// stale doc on a secondary space must not shadow the shared policy.
+// reaches the unique infra sibling's copy, falling back to its own path.
+// An unrelated sibling's document is never authority for this space.
 func governanceDocPath(spaceDir string) string {
 	if pinned := os.Getenv("HUB_TOOL_GOVERNANCE"); pinned != "" {
 		return pinned
@@ -54,48 +53,16 @@ func governanceDocPath(spaceDir string) string {
 	if spaceRendersInfra(spaceDir) {
 		return own
 	}
-	parent := filepath.Dir(spaceDir)
-	if filepath.Base(parent) == "spaces" {
-		if siblings, err := os.ReadDir(parent); err == nil {
-			names := []string{}
-			for _, sibling := range siblings {
-				if sibling.IsDir() {
-					names = append(names, sibling.Name())
-				}
-			}
-			slices.Sort(names)
-			fallback := ""
-			for _, name := range names {
-				if name == filepath.Base(spaceDir) {
-					continue
-				}
-				dir := filepath.Join(parent, name)
-				candidate := filepath.Join(dir, "runtime", "toolhub", "governance.json")
-				if _, err := os.Stat(candidate); err != nil {
-					continue
-				}
-				if spaceRendersInfra(dir) {
-					return candidate
-				}
-				if fallback == "" {
-					fallback = candidate
-				}
-			}
-			if _, err := os.Stat(own); err == nil {
-				return own
-			}
-			if fallback != "" {
-				return fallback
-			}
-		}
+	if infra := InfraSpaceDir(spaceDir); infra != spaceDir {
+		return filepath.Join(infra, "runtime", "toolhub", "governance.json")
 	}
 	return own
 }
 
 // InfraSpaceDir resolves which space owns the shared control plane for a
-// spaces/ layout: the caller itself when it renders infra, else the first
-// sibling that does, else the caller. Host-side callers (hubctl skill git)
-// must present the infra-owner's credentials to the shared controller.
+// spaces/ layout: the caller itself when it renders infra, else the unique
+// infra sibling. Ambiguous or absent ownership resolves to the caller so
+// host-side callers cannot present another space's credentials by accident.
 func InfraSpaceDir(dir string) string {
 	if spaceRendersInfra(dir) {
 		return dir
@@ -108,46 +75,133 @@ func InfraSpaceDir(dir string) string {
 	if err != nil {
 		return dir
 	}
-	names := []string{}
+	owner := ""
 	for _, sibling := range siblings {
-		if sibling.IsDir() {
-			names = append(names, sibling.Name())
+		if sibling.IsDir() && sibling.Name() != filepath.Base(dir) && spaceRendersInfra(filepath.Join(parent, sibling.Name())) {
+			if owner != "" {
+				return dir
+			}
+			owner = sibling.Name()
 		}
 	}
-	slices.Sort(names)
-	for _, name := range names {
-		if name != filepath.Base(dir) && spaceRendersInfra(filepath.Join(parent, name)) {
-			return filepath.Join(parent, name)
-		}
+	if owner != "" {
+		return filepath.Join(parent, owner)
 	}
 	return dir
 }
 
-// spaceRendersInfra peeks at a space's own files for the infra flag without
-// running Read — full settings load would recurse into governance
-// resolution. The flag lives in agent.yaml (split layout) or settings.yaml
-// (legacy single file); absence means the space renders the shared control
-// plane — Settings.RendersInfra semantics.
+// spaceRendersInfra peeks at a space's own passport authority for the infra
+// flag without running the full read — a settings load would recurse into
+// governance resolution. The published revision answers first; before the
+// first apply the authored stack passport is the pending claim. Absence
+// means the space does not render the shared control plane.
 func spaceRendersInfra(dir string) bool {
-	for _, name := range []string{"agent.yaml", "settings.yaml"} {
-		body, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
+	if _, err := passportview.Current(dir); err == nil {
+		eff, err := passportview.LoadEffective(dir)
+		if err != nil || eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir) {
+			return false
 		}
-		var probe struct {
-			Infra *bool `yaml:"infra"`
-		}
-		if err := yaml.Unmarshal(body, &probe); err != nil {
-			continue
-		}
-		return probe.Infra == nil || *probe.Infra
+		return eff.Stack.Identity.Infra != nil && *eff.Stack.Identity.Infra
 	}
-	return false
+	identity, err := authoredStackIdentity(dir)
+	if err != nil || identity.User != filepath.Base(dir) {
+		return false
+	}
+	return identity.Infra != nil && *identity.Infra
+}
+
+// authoredStackIdentity reads the identity block of the authored stack
+// passport — the pending claim before the first space apply publishes a
+// revision. It never falls back to retired files.
+type stackIdentity struct {
+	User         string `yaml:"user"`
+	Organization string `yaml:"organization"`
+	Kind         string `yaml:"kind"`
+	Infra        *bool  `yaml:"infra"`
+}
+
+func authoredStackIdentity(dir string) (stackIdentity, error) {
+	var probe struct {
+		Identity stackIdentity `yaml:"identity"`
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "passports", "stack.yaml")) // #nosec G304 G703 -- fixed passport in an operator-owned space
+	if err != nil {
+		return probe.Identity, err
+	}
+	if err := yaml.Unmarshal(body, &probe); err != nil {
+		return probe.Identity, err
+	}
+	return probe.Identity, nil
+}
+
+// SpaceRendersInfra exposes the infra-flag peek for compile-time inputs —
+// the same answer spaceRendersInfra gives governance without a full Read.
+func SpaceRendersInfra(dir string) bool { return spaceRendersInfra(dir) }
+
+// ReservedSiblingPorts reports the host ports sibling spaces already claim
+// (port -> space name): the published config passport is authoritative, and
+// sibling legacy port keys cover spaces not yet migrated. Compile consumes
+// the result so a new revision cannot bind a port already published on this
+// host (SPEC-0092 R4.1 — ports unique per host).
+func ReservedSiblingPorts(dir string) map[int]string {
+	out := map[int]string{}
+	parent := filepath.Dir(dir)
+	if filepath.Base(parent) != "spaces" {
+		return out
+	}
+	siblings, err := os.ReadDir(parent)
+	if err != nil {
+		return out
+	}
+	self := filepath.Base(dir)
+	for _, sibling := range siblings {
+		if !sibling.IsDir() || sibling.Name() == self {
+			continue
+		}
+		for _, p := range siblingPorts(filepath.Join(parent, sibling.Name())) {
+			out[p] = sibling.Name()
+		}
+	}
+	return out
+}
+
+// siblingPorts lists the host ports one space claims: its published config
+// passport first, the authored config passport before the first apply.
+func siblingPorts(dir string) []int {
+	if rev, err := passportview.Current(dir); err == nil {
+		var probe struct {
+			Ports map[string]int `yaml:"ports"`
+		}
+		if b, rerr := os.ReadFile(filepath.Join(dir, "generated", "passports", rev, "config.yaml")); rerr == nil && yaml.Unmarshal(b, &probe) == nil { // #nosec G304 -- operator-owned space dir
+			out := make([]int, 0, len(probe.Ports))
+			for _, p := range probe.Ports {
+				out = append(out, p)
+			}
+			return out
+		}
+	}
+	var probe struct {
+		Ports map[string]int `yaml:"ports"`
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "passports", "config.yaml")); err == nil && yaml.Unmarshal(b, &probe) == nil { // #nosec G304 -- operator-owned space dir
+		out := make([]int, 0, len(probe.Ports))
+		for _, p := range probe.Ports {
+			out = append(out, p)
+		}
+		return out
+	}
+	return nil
 }
 
 // sectionForEntry maps an enabled tools entry to its governance section.
 // mcp-raw targets a user-declared server on a personal space (user_mcp) or
 // the merged organization catalog (org_mcp).
+// SectionForEntry exposes the section an enabled tools entry projects into —
+// migration and audit consumers need the same mapping the renderer uses.
+func (s Settings) SectionForEntry(name string, e ToolEntry) string {
+	return s.sectionForEntry(name, e)
+}
+
 func (s Settings) sectionForEntry(name string, e ToolEntry) string {
 	switch e.Via {
 	case ToolViaNative:
@@ -403,5 +457,21 @@ func writeToolPolicySnapshot(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	// A published workspace passport turns /config into one read-only
+	// directory bind (SPEC-0092 R5.2): per-file mounts into it cannot create
+	// mountpoints, so the policy snapshot rides inside the view instead.
+	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
+		if err := atomicMode(filepath.Join(view, "tool-policy.json"), body, 0640); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

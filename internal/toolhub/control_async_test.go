@@ -27,6 +27,18 @@ func asyncFixture(t *testing.T, reviewer api.SourceReviewer) *ControlPlane {
 		ConfirmationTTL: 10 * time.Minute, PrepareSyncWindow: 50 * time.Millisecond}
 }
 
+func TestPreparedGitHubPrepareUsesReviewedDefinitionVersion(t *testing.T) {
+	entry, ok, err := api.PreparedForRepository("https://github.com/github/github-mcp-server", "")
+	if err != nil || !ok {
+		t.Fatal("GitHub prepared entry unavailable")
+	}
+	control := asyncFixture(t, nil)
+	_, config, err := control.resolveSelfInstallSource(t.Context(), aliceAuth(), entry.Source.Repository+"/commit/"+entry.Source.CommitSHA)
+	if err != nil || config.Version != entry.DefinitionVersion {
+		t.Fatalf("prepare version = %s, err = %v", config.Version, err)
+	}
+}
+
 func TestPrepareSourceCarriesConnectionRecipe(t *testing.T) {
 	seen := false
 	control := asyncFixture(t, func(ctx context.Context, _ api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
@@ -79,14 +91,16 @@ func TestPrepareSelfInstallAsyncReturnsPreparingThenCompletes(t *testing.T) {
 	close(release)
 	select {
 	case onboarding := <-notified:
-		if onboarding.Phase != api.PhaseAwaitingConfirm {
-			t.Fatalf("wake phase=%s", onboarding.Phase)
+		// A credential-free install completes inline: the setup gate no
+		// longer waits for a click once consent arrived with the request.
+		if onboarding.Stage != api.StageLive {
+			t.Fatalf("wake phase=%s", onboarding.NoticePhase())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("PrepareDone never fired")
 	}
 	st, err = control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": id})
-	if err != nil || st["phase"] != api.PhaseAwaitingConfirm {
+	if err != nil || st["phase"] != api.PhaseEnabled {
 		t.Fatalf("final status=%v err=%v", st, err)
 	}
 }
@@ -111,7 +125,7 @@ func TestPrepareSelfInstallURLContractStillAwaitsCredentials(t *testing.T) {
 		t.Fatalf("url-only contract skipped credentials phase: %v", body["phase"])
 	}
 	onboarding, ok := control.Store.FindOnboardingByKey(aliceAuth(), "url-contract")
-	if !ok || onboarding.Phase != api.PhaseAwaitingCreds || len(onboarding.Required) != 1 || onboarding.ConfirmationNonce != "" {
+	if !ok || !onboarding.Awaiting(api.GateCredentials) || len(onboarding.Required) != 1 || onboarding.GateNonce(api.GateConfirmSetup) != "" {
 		t.Fatalf("deadlocked onboarding persisted: %+v", onboarding)
 	}
 }
@@ -170,7 +184,7 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "intact" {
-				if calls.Load() != 0 || body["phase"] != api.PhaseAwaitingConfirm {
+				if calls.Load() != 0 || body["phase"] != api.PhaseEnabled {
 					t.Fatalf("intact contract not reused: calls=%d phase=%v", calls.Load(), body["phase"])
 				}
 				return
@@ -195,14 +209,14 @@ func TestPrepareSelfInstallAsyncFailureIsDurable(t *testing.T) {
 	close(release)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail"); ok && existing.Phase == api.PhaseFailed {
+		if existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail"); ok && existing.Stage == api.StageFailed {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	existing, ok := control.Store.FindOnboardingByKey(aliceAuth(), "async-fail")
-	if !ok || existing.Phase != api.PhaseFailed {
-		t.Fatalf("failed prepare left phase=%v ok=%v", existing.Phase, ok)
+	if !ok || existing.Stage != api.StageFailed {
+		t.Fatalf("failed prepare left phase=%v ok=%v", existing.NoticePhase(), ok)
 	}
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": existing.OnboardingID})
 	if err != nil || st["next_action"] != "retry" {
@@ -252,7 +266,7 @@ func TestNotifyPrepareDoneReachesSubscribedSession(t *testing.T) {
 	if err := session.SetLoggingLevel(context.Background(), &mcp.SetLoggingLevelParams{Level: "notice"}); err != nil {
 		t.Fatal(err)
 	}
-	fix.gateway.notifyPrepareDone(context.Background(), aliceAuth(), api.Onboarding{OnboardingID: "onboard-x", Phase: api.PhaseAwaitingConfirm, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp"})
+	fix.gateway.notifyPrepareDone(context.Background(), aliceAuth(), api.Onboarding{OnboardingID: "onboard-x", Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, DefinitionID: "user-mcp", SourceURL: "https://github.com/example/mcp"})
 	select {
 	case params := <-messages:
 		data, _ := json.Marshal(params.Data)
@@ -263,7 +277,7 @@ func TestNotifyPrepareDoneReachesSubscribedSession(t *testing.T) {
 		t.Fatal("no wake notification")
 	}
 	// A different owner's session is never woken for alice's onboarding.
-	fix.gateway.notifyPrepareDone(context.Background(), bobAuth(), api.Onboarding{OnboardingID: "onboard-y", Phase: api.PhaseFailed})
+	fix.gateway.notifyPrepareDone(context.Background(), bobAuth(), api.Onboarding{OnboardingID: "onboard-y", Stage: api.StageFailed})
 	select {
 	case params := <-messages:
 		t.Fatalf("foreign wake leaked: %v", params.Data)
@@ -314,13 +328,14 @@ func TestPrepareRequestKeyDedupeRefreshesExisting(t *testing.T) {
 
 func TestLatestPrepareRecordFindsBumpedSibling(t *testing.T) {
 	control := asyncFixture(t, nil)
-	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-stub", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhaseRemoved, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now().Add(-time.Hour)}
+	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-stub", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StageGone, Tombstone: api.TombstoneRemoved, SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k1", Revision: 1, CreatedAt: time.Now().Add(-time.Hour)}
 	if err := control.Store.PutOnboarding(stub); err != nil {
 		t.Fatal(err)
 	}
 	sibling := stub
 	sibling.OnboardingID = "onboard-real"
-	sibling.Phase = api.PhaseAwaitingConfirm
+	sibling.Stage = api.StagePending
+	sibling.ArmGate(api.GateConfirmSetup, "", time.Time{})
 	sibling.CreatedAt = time.Now()
 	if err := control.Store.PutOnboarding(sibling); err != nil {
 		t.Fatal(err)
@@ -376,7 +391,9 @@ func TestPrepareSelfInstallRetriesStalePreparing(t *testing.T) {
 	// A stub older than the background deadline belongs to a crashed prepare;
 	// the retry re-runs review+build instead of trusting it forever.
 	stale := api.Onboarding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		DefinitionID: "mcp", DefinitionVersion: "0.0.1"}
 	stale.OnboardingID = api.DeterministicID("onboard", "alice", "alice", "runtime", string(api.OnboardingSelfInstall)+":mcp@0.0.1:https://github.com/example/mcp:0123456789abcdef0123456789abcdef01234567")
@@ -405,7 +422,9 @@ func TestPrepareSourceRequestKeyRetriesStalePreparing(t *testing.T) {
 	// early return must skip the stale stub so the retry re-runs review instead
 	// of polling a dead "preparing" record forever.
 	stale := api.Onboarding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, Revision: 1, CreatedAt: time.Now().Add(-time.Hour),
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567",
 		DefinitionID: "mcp", DefinitionVersion: "0.0.1", IdempotencyKey: "k-stale"}
 	stale.OnboardingID = api.DeterministicID("onboard", "alice", "alice", "runtime", "k-stale")
@@ -462,18 +481,18 @@ func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st["phase"] == api.PhaseAwaitingConfirm || time.Now().After(deadline) {
+		if st["phase"] == api.PhaseEnabled || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if st["phase"] != api.PhaseAwaitingConfirm {
+	if st["phase"] != api.PhaseEnabled {
 		t.Fatalf("stub did not resolve to finished record: status=%v", st)
 	}
 	if st["onboarding_id"] == second["onboarding_id"] && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("status kept the superseded stub instead of the finished record: status=%v", st)
 	}
-	if a["phase"] == api.PhaseAwaitingConfirm && st["onboarding_id"] != a["onboarding_id"] {
+	if a["phase"] == api.PhaseEnabled && st["onboarding_id"] != a["onboarding_id"] {
 		t.Fatalf("concurrent callers disagree on the finished record: first=%v status=%v", a, st)
 	}
 }
@@ -481,7 +500,9 @@ func TestPrepareSelfInstallConcurrentCallsShareOneReview(t *testing.T) {
 func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 	store := NewStore()
 	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-reload", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now(),
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, Revision: 1, CreatedAt: time.Now(),
 		SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k-reload"}
 	if err := store.PutOnboarding(stub); err != nil {
 		t.Fatal(err)
@@ -497,7 +518,7 @@ func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := fresh.onboarding("onboard-reload")
-	if err != nil || onboarding.Phase != api.PhasePreparing {
+	if err != nil || !onboarding.PreparingStub {
 		t.Fatalf("reloaded onboarding=%+v err=%v", onboarding, err)
 	}
 	if _, ok := fresh.FindOnboardingByKey(aliceAuth(), "k-reload"); !ok {
@@ -508,10 +529,12 @@ func TestPreparingRecordSurvivesStoreReload(t *testing.T) {
 func TestStatusRejectsForeignSupersededPointer(t *testing.T) {
 	control := asyncFixture(t, nil)
 	real := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-real", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingConfirm, Revision: 1, CreatedAt: time.Now()}
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateConfirmSetup, Nonce: "", Expires: time.Time{}}, Revision: 1, CreatedAt: time.Now()}
 	stub := real
 	stub.OnboardingID = "onboard-stub"
-	stub.Phase = api.PhaseRemoved
+	stub.Retire(api.TombstoneRemoved)
 	stub.SupersededBy = "onboard-real"
 	for _, record := range []api.Onboarding{real, stub} {
 		if err := control.Store.PutOnboarding(record); err != nil {
@@ -526,5 +549,52 @@ func TestStatusRejectsForeignSupersededPointer(t *testing.T) {
 	st, err := control.Invoke(context.Background(), aliceAuth(), "status", map[string]any{"onboarding_id": "onboard-stub"})
 	if err != nil || st["onboarding_id"] != "onboard-real" || st["phase"] != api.PhaseAwaitingConfirm {
 		t.Fatalf("superseded status=%v err=%v", st, err)
+	}
+}
+
+func TestStatusForeignAndUnknownAreIndistinguishable(t *testing.T) {
+	control := &ControlPlane{Store: NewStore()}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-private", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, PreparingStub: true, Revision: 1, CreatedAt: time.Now()}
+	if err := control.Store.PutOnboarding(record); err != nil {
+		t.Fatal(err)
+	}
+	_, foreign := control.resolveOnboarding(bobAuth(), map[string]any{"onboarding_id": record.OnboardingID})
+	_, unknown := control.resolveOnboarding(bobAuth(), map[string]any{"onboarding_id": "onboard-unknown"})
+	if !errors.Is(foreign, api.ErrNotFound) || !errors.Is(unknown, api.ErrNotFound) || foreign.Error() != unknown.Error() {
+		t.Fatalf("status leaks object existence: foreign=%v unknown=%v", foreign, unknown)
+	}
+	var reason interface{ ReasonCode() string }
+	if !errors.As(foreign, &reason) || reason.ReasonCode() != "scope" {
+		t.Fatal("internal scope reason missing")
+	}
+	if !errors.As(unknown, &reason) || reason.ReasonCode() != "unknown" {
+		t.Fatal("internal unknown reason missing")
+	}
+}
+
+func TestStatusInternalVersionAndTerminalReasons(t *testing.T) {
+	control := &ControlPlane{Store: NewStore()}
+	for _, record := range []api.Onboarding{
+		{Schema: api.SchemaVersion, OnboardingID: "onboard-v1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", DefinitionID: "versioned", DefinitionVersion: "1.0.0", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, PreparingStub: true, Revision: 1, CreatedAt: time.Now()},
+		{Schema: api.SchemaVersion, OnboardingID: "onboard-removed", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", DefinitionID: "removed", DefinitionVersion: "1.0.0", Mode: api.OnboardingSelfInstall, Stage: api.StageGone, Tombstone: api.TombstoneRemoved, Revision: 1, CreatedAt: time.Now()},
+	} {
+		if err := control.Store.PutOnboarding(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		args   map[string]any
+		reason string
+	}{
+		{map[string]any{"definition_id": "missing"}, "unknown"},
+		{map[string]any{"definition_id": "versioned", "version": "2.0.0"}, "version"},
+		{map[string]any{"definition_id": "removed"}, "terminal"},
+		{map[string]any{"selector": "removed"}, "terminal"},
+	} {
+		_, err := control.resolveOnboarding(aliceAuth(), tc.args)
+		var reason interface{ ReasonCode() string }
+		if !errors.Is(err, api.ErrNotFound) || !errors.As(err, &reason) || reason.ReasonCode() != tc.reason {
+			t.Fatalf("internal status reason=%v, want %s", err, tc.reason)
+		}
 	}
 }

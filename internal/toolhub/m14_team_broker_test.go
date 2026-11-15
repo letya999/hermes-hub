@@ -410,7 +410,7 @@ func TestTeamBrokerGrantMintsThroughEndpointWiring(t *testing.T) {
 	if _, err := store.Enable(aliceAuth(), definition.DefinitionID, definition.Version); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewEndpointHandler(EndpointConfig{Token: aliceToken, Auth: aliceAuth(), Backend: envBackend, BrokerControl: &cfg, BrokerRuntime: &cfg}, store)
+	handler, err := endpointWithTestAudit(t, EndpointConfig{Token: aliceToken, Auth: aliceAuth(), Backend: envBackend, BrokerControl: &cfg, BrokerRuntime: &cfg}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestTeamBrokerRevokeWiredThroughEndpoint(t *testing.T) {
 	if _, err := store.RecordBrokerGrant(api.BrokerBindingGrant{BindingID: bob.ToolBindingID, ConnectionID: conn.ConnectionID, CredentialRefID: reference.CredentialRefID, ContextID: "ctx-team-ops", GrantID: "grant_member_1", PolicyVersion: "policy-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEndpointHandler(EndpointConfig{Token: aliceToken, Auth: aliceAuth(), Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+	if _, err := endpointWithTestAudit(t, EndpointConfig{Token: aliceToken, Auth: aliceAuth(), Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	}), BrokerControl: &cfg, BrokerRuntime: &cfg}, store); err != nil {
 		t.Fatal(err)
@@ -505,4 +505,51 @@ func (r *recordingEnvBackend) CallEnv(ctx context.Context, effective api.Effecti
 		return envOK.CallEnv(ctx, effective, spec, args, env)
 	}
 	return r.inner.Call(ctx, effective, spec, args)
+}
+
+func TestRecreateRetainsOnboardingAndBrokerReference(t *testing.T) {
+	store, definition, _ := teamBrokerFixture(t)
+	stub := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-recreate", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Stage: api.StagePending, PreparingStub: true, Revision: 1, CreatedAt: time.Now(), SourceURL: "https://github.com/example/mcp", CommitSHA: "0123456789abcdef0123456789abcdef01234567", IdempotencyKey: "k-recreate"}
+	if err := store.PutOnboarding(stub); err != nil {
+		t.Fatal(err)
+	}
+	conn, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "credential-broker", "cred_team_1", "ctx-team-ops", []string{"GOOGLE_TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.Enable(bobAuth(), definition.DefinitionID, definition.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := api.BrokerBindingGrant{BindingID: bob.ToolBindingID, ConnectionID: conn.ConnectionID, CredentialRefID: reference.CredentialRefID, ContextID: "ctx-team-ops", GrantID: "g_bob", PolicyVersion: "policy-1"}
+	if _, err := store.RecordBrokerGrant(grant); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(t.TempDir(), "original", "store.json")
+	if err := store.Save(original); err != nil {
+		t.Fatal(err)
+	}
+	recreated := filepath.Join(t.TempDir(), "recreated", "store.json")
+	if err := os.MkdirAll(filepath.Dir(recreated), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", ".initialized"} {
+		body, err := os.ReadFile(original + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(recreated+suffix, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := Load(recreated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := loaded.BrokerGrantFor(bob.ToolBindingID, reference.CredentialRefID); !ok || got != grant {
+		t.Fatalf("restored broker reference mismatch: ok=%v", ok)
+	}
+	if restored, err := loaded.onboarding(stub.OnboardingID); err != nil || !restored.PreparingStub {
+		t.Fatal("restored onboarding missing", err)
+	}
 }

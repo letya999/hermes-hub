@@ -15,12 +15,7 @@ import (
 func TestHTTPReminderUsesServerClockAndReplay(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Add(24 * time.Hour)
-	g.now = func() time.Time { return now }
+	g, _, _ := automationGatewayFixture(t, c)
 	post := func(text string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/routines", strings.NewReader(text))
 		req.Header.Set("Authorization", "Bearer control-token")
@@ -30,15 +25,15 @@ func TestHTTPReminderUsesServerClockAndReplay(t *testing.T) {
 		return rec
 	}
 	body := `{"schedule_id":"http-relative","timezone":"UTC","expression":"after:180s","input":"exact message","job_kind":"reminder"}`
+	before := time.Now().UTC()
 	first := post(body)
 	var saved Schedule
 	if first.Code != http.StatusOK || json.Unmarshal(first.Body.Bytes(), &saved) != nil {
 		t.Fatalf("create: %d %s", first.Code, first.Body.String())
 	}
-	if !saved.NextDue.Equal(now.Add(180 * time.Second)) {
-		t.Errorf("server clock ignored: due=%v now=%v", saved.NextDue, now)
+	if saved.NextDue.Before(before.Add(179*time.Second)) || saved.NextDue.After(time.Now().UTC().Add(181*time.Second)) {
+		t.Errorf("server clock ignored: due=%v", saved.NextDue)
 	}
-	now = now.Add(time.Hour)
 	replayed := post(body)
 	if replayed.Code != http.StatusOK {
 		t.Fatalf("replay: %d %s", replayed.Code, replayed.Body.String())

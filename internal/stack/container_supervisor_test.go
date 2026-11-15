@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -20,11 +22,43 @@ func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 	if _, ok := services["hermes-runtime"]; ok {
 		t.Fatal("resident user runtime")
 	}
-	if _, ok := svc["ports"]; ok {
-		t.Fatal("supervisor published host ports")
+	// The control endpoint may publish on loopback only — the operator reaches
+	// apply/respawn from the host where container IPs are not routable (Docker
+	// Desktop, WSL); any non-loopback publish exposes the docker-socket owner.
+	if ports, ok := svc["ports"]; ok {
+		if !reflect.DeepEqual(ports, []string{"127.0.0.1:8876:8876"}) {
+			t.Fatalf("supervisor publishes beyond loopback: %v", ports)
+		}
 	}
 	if svc["image"] != services["toolhub"].(M)["image"] || svc["read_only"] != true || svc["restart"] != "unless-stopped" {
 		t.Fatalf("supervisor contract: %#v", svc)
+	}
+	if svc["user"] != fmt.Sprintf("0:%d", max(0, os.Getgid())) {
+		t.Fatal("supervisor cannot maintain operator-owned bind permissions")
+	}
+	if !reflect.DeepEqual(svc["cap_drop"], []string{"ALL"}) || !reflect.DeepEqual(svc["cap_add"], []string{"SETUID", "SETGID", "SETPCAP", "FOWNER"}) ||
+		!reflect.DeepEqual(svc["security_opt"], []string{"no-new-privileges:true"}) {
+		t.Fatal("supervisor bootstrap capabilities changed")
+	}
+	entrypoint := svc["entrypoint"].([]string)
+	dockerGroup := fmt.Sprint(dockerSocketGID("/var/run/docker.sock"))
+	if !reflect.DeepEqual(entrypoint[:9], []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl"}) {
+		t.Fatal("supervisor must drop uid and all capabilities except FOWNER before starting")
+	}
+	if services["toolhub"].(M)["user"] != fmt.Sprintf("10001:%d", max(0, os.Getgid())) {
+		t.Fatal("operator uid leaked to ToolHub")
+	}
+	// ToolHub always joins the operator file group; the socket group is added
+	// only when it differs — the controller runs socket-group only.
+	wantToolhub := []string{fmt.Sprint(max(0, os.Getgid()))}
+	if dockerGroup != wantToolhub[0] {
+		wantToolhub = append(wantToolhub, dockerGroup)
+	}
+	if !reflect.DeepEqual(services["toolhub"].(M)["group_add"], wantToolhub) {
+		t.Fatalf("toolhub group_add = %v, want %v", services["toolhub"].(M)["group_add"], wantToolhub)
+	}
+	if !reflect.DeepEqual(services["workload-controller"].(M)["group_add"], []string{dockerGroup}) {
+		t.Fatalf("workload-controller lacks Docker socket group: %v", services["workload-controller"].(M)["group_add"])
 	}
 	if !reflect.DeepEqual(svc["networks"], []string{"default", sharedNetworkName, "supervisor-control"}) {
 		t.Fatal(svc["networks"])

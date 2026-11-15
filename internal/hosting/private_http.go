@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var privateHost = regexp.MustCompile(`^hosting-[a-z][a-z0-9-]{0,39}-(dev|prod)(-ctl)?$`)
+var privateHost = regexp.MustCompile(`^hosting-[a-z][a-z0-9_-]{0,39}-(dev|prod)(-ctl)?$`)
 var privateTransport = &http.Transport{
 	Proxy:        nil,
 	DialContext:  (&net.Dialer{Timeout: 5 * time.Second}).DialContext,

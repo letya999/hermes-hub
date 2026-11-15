@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passport"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -19,10 +21,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SupervisorContract uses its own provider so it can run beside the native and gateway gates.
@@ -44,18 +49,45 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	}
 	network := fmt.Sprintf("hermes-supervisor-%x", suffix)
 	userID := fmt.Sprintf("probe-%x", suffix)
+	agentNet := "hermes-hub-agent-" + userID + "-prod"
 	root, err := os.MkdirTemp("", "hermes-supervisor-smoke-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(root)
 	cleanup := func() {
+		_ = exec.Command("docker", "rm", "-f", network+"-model", network+"-toolhub").Run()
+		_ = exec.Command("docker", "network", "rm", agentNet).Run()
 		_ = exec.Command("docker", "network", "rm", network).Run()
 		_ = exec.Command("docker", "volume", "rm", "hermes-hub-"+userID+"-prod_broker-secrets-runtime").Run()
 	}
 	defer cleanup()
 	if err := exec.CommandContext(ctx, "docker", "network", "create", network).Run(); err != nil {
 		return err
+	}
+	if err := exec.CommandContext(ctx, "docker", "network", "create", "--internal", agentNet).Run(); err != nil {
+		return err
+	}
+	const toolhubFixture = `import json
+from http.server import BaseHTTPRequestHandler,HTTPServer
+class H(BaseHTTPRequestHandler):
+ def do_POST(self):
+  request=json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+  method=request.get('method','')
+  result={'protocolVersion':'2025-03-26','capabilities':{'tools':{}},'serverInfo':{'name':'toolhub-stub','version':'0.1'}} if method=='initialize' else {'tools':[]} if method=='tools/list' else {}
+  body=json.dumps({'jsonrpc':'2.0','id':request.get('id'),'result':result}).encode()
+  self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
+ def do_GET(self): self.send_response(200); self.end_headers()
+ def log_message(self,*args): pass
+HTTPServer(('0.0.0.0',8090),H).serve_forever()`
+	if err := dockerContract(ctx, "run", "-d", "--name", network+"-toolhub", "--network", agentNet, "--network-alias", "toolhub", "--entrypoint", "python", image, "-c", toolhubFixture); err != nil {
+		return fmt.Errorf("start synthetic ToolHub: %w", err)
+	}
+	if err := dockerContract(ctx, "run", "-d", "--name", network+"-model", "--network", agentNet, "--network-alias", "model-relay", "--add-host", "host.docker.internal:host-gateway", "-e", "HUB_MODEL_RELAY_MODEL=gpt-4o-mini", "-e", "HUB_MODEL_RELAY_UPSTREAMS=fixture="+providerURL, "--entrypoint", "hub-runtime", image, "model-relay"); err != nil {
+		return fmt.Errorf("start synthetic model relay: %w", err)
+	}
+	if err := dockerContract(ctx, "network", "connect", network, network+"-model"); err != nil {
+		return fmt.Errorf("connect synthetic model relay: %w", err)
 	}
 	// Layout mirrors production: <root>/spaces/<user> so that
 	// Dir(Dir(ContextRoot)) resolves to this root and hub plugin materialization
@@ -78,13 +110,73 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 			return err
 		}
 	}
-	auth := "context-auth-0123456789abcdef0123456789abcdef"
-	if err := os.WriteFile(filepath.Join(contextRoot, "settings.yaml"), []byte("schema: 1\nuser: "+userID+"\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, web]\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# synthetic supervisor persona\n"), 0644); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEnvironment(contextRoot, "prod")
+	auth := "context-auth-0123456789abcdef0123456789abcdef"
+	if err := stack.InitEnvironment(contextRoot, userID, "prod"); err != nil {
+		return err
+	}
+	for name, body := range map[string]string{
+		"stack":  "identity: {user: " + userID + ", infra: true}\nservices:\n  hermes-runtime: {mode: supervised}\n  model-relay: {mode: shared}\n  cliproxy: {mode: shared}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n  communication-hub: {mode: shared}\n  supervisor: {mode: shared}\n",
+		"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-contract}}\n",
+		"models": "default: gpt-4o-mini\nroutes: {gpt-4o-mini: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: " + providerURL + ", models: [{id: gpt-4o-mini}]}\n",
+		"tools":  "binding: {profile_id: " + userID + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n  web: {via: native}\nextended:\n  'native:terminal': {via: native}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(contextRoot, "passports", name+".yaml"), []byte(body), 0600); err != nil {
+			return err
+		}
+	}
+	catalogDocs, err := catalog.Generate()
 	if err != nil {
 		return err
+	}
+	revision, err := passport.CompileAuthored(contextRoot, "prod", time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(contextRoot), map[string][]string{})
+	if err != nil {
+		return err
+	}
+	if err := revision.Publish(contextRoot); err != nil {
+		return err
+	}
+	if err := stack.RenderEnvironment(contextRoot, root, "prod"); err != nil {
+		return err
+	}
+	checkTerminal := func(path string) error {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var config struct {
+			PlatformToolsets map[string][]string `yaml:"platform_toolsets"`
+			Agent            struct {
+				DisabledToolsets []string `yaml:"disabled_toolsets"`
+			} `yaml:"agent"`
+		}
+		if err := yaml.Unmarshal(body, &config); err != nil {
+			return err
+		}
+		if !slices.Contains(config.PlatformToolsets["api_server"], "terminal") {
+			return fmt.Errorf("synthetic supervisor %s lacks selected terminal", filepath.Base(path))
+		}
+		if slices.Contains(config.Agent.DisabledToolsets, "terminal") {
+			return fmt.Errorf("synthetic supervisor %s denies selected terminal", filepath.Base(path))
+		}
+		return nil
+	}
+	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes.prod.yaml")); err != nil {
+		return err
+	}
+	settings, err := stack.ReadEffective(contextRoot, "prod")
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(settings.NativeCarveouts(), "terminal") {
+		return errors.New("synthetic supervisor passport lost native terminal carveout")
+	}
+	if agent, ok := stack.Config(settings)["agent"].(stack.M); ok {
+		if disabled, ok := agent["disabled_toolsets"].([]string); ok && slices.Contains(disabled, "terminal") {
+			return errors.New("synthetic supervisor passport still disables native terminal")
+		}
 	}
 	settings.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
 	if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
@@ -97,7 +189,7 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err := os.WriteFile(filepath.Join(contextRoot, "runtime.prod.env"), []byte("OPENAI_API_KEY=probe-openai-key-0123456789\n"), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(contextRoot, "hermes.prod.yaml"), []byte("model:\n  provider: custom\n  default: gpt-4o-mini\n  base_url: "+providerURL+"\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(contextRoot, "managed-runtime.prod.env"), []byte("OPENAI_API_KEY=probe-openai-key-0123456789\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
 		return err
 	}
 	marker := filepath.Join(contextRoot, "workspace", "cold-restore-marker")
@@ -130,7 +222,14 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000}
 	var starts atomic.Int32
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
-		if len(args) != 0 && args[0] == "run" {
+		if len(args) != 0 && args[0] == "network" {
+			for i, arg := range args {
+				if arg == "hermes-hub-control" {
+					args[i] = network
+				}
+			}
+		}
+		if len(args) != 0 && args[0] == "run" && args[len(args)-1] == "serve" {
 			starts.Add(1)
 		}
 		output, err := exec.CommandContext(callCtx, "docker", args...).CombinedOutput()
@@ -149,6 +248,7 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 		defer cancel()
 		if runtime, _, err := m.Status(binding); err == nil {
 			if id, err := smokeOwnedContainerID(cleanupCtx, m, runtime); err == nil {
+				_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", runtime.Container+"-ctl").Run()
 				_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", id).Run()
 			}
 		}
@@ -156,6 +256,22 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	first, err := m.Ensure(ctx, binding)
 	if err != nil {
 		return err
+	}
+	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes-effective.prod.yaml")); err != nil {
+		return err
+	}
+	if id, err := smokeOwnedContainerID(ctx, m, first); err != nil {
+		return err
+	} else {
+		probe := "from gateway.run import _load_gateway_config; from hermes_cli.tools_config import _get_platform_tools; from model_tools import get_tool_definitions; c=_load_gateway_config(); p=c.get('platform_toolsets',{}).get('api_server',[]); d=c.get('agent',{}).get('disabled_toolsets',[]); g=sorted(_get_platform_tools(c, 'api_server')); n=[t['function']['name'] for t in get_tool_definitions(enabled_toolsets=g, disabled_toolsets=d, quiet_mode=True)]; print(int('terminal' in p),int('terminal' in d),int('terminal' in g),int('terminal' in n))"
+		out, err := dockerContractOutput(ctx, "exec", id, "python", "-c", probe)
+		flags := strings.Fields(string(out))
+		if err != nil || len(flags) != 4 || flags[0] != "1" || flags[1] != "0" || flags[2] != "1" || flags[3] != "1" {
+			if len(flags) != 4 {
+				return fmt.Errorf("synthetic supervisor Hermes loader probe failed: %w", err)
+			}
+			return fmt.Errorf("synthetic supervisor Hermes loader: configured=%t denied=%t selected=%t registered=%t err=%v", flags[0] == "1", flags[1] == "1", flags[2] == "1", flags[3] == "1", err)
+		}
 	}
 	if first.State != supervisor.Busy {
 		return fmt.Errorf("supervisor runtime not busy: %s", first.State)
@@ -246,12 +362,12 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if finalCount != 1 {
 		return fmt.Errorf("real stream final count=%d", finalCount)
 	}
-	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "events"))
+	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "run-events"))
 	if err != nil {
 		return err
 	}
 	for _, receipt := range receipts {
-		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "events", receipt.Name()))
+		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "run-events", receipt.Name()))
 		if err != nil || strings.Contains(string(body), "HUB_TOOL_SECRET_CANARY") {
 			return fmt.Errorf("real tool arguments/output leaked into delivery receipts")
 		}
@@ -424,7 +540,8 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	runner.URL, runner.Resume = server.URL, true
 	recovered, err := runner.RunOutcome(ctx, interruptedJob)
 	if err == nil || recovered.Status != "interrupted" || recovered.RunID != admitted.RunID || recovered.RuntimeGeneration != replacement.Generation {
-		return fmt.Errorf("original run recovery across generation failed: status=%s error=%v", recovered.Status, err)
+		mapping, _, _ := spool.Mapping(interruptedJob.ID)
+		return fmt.Errorf("original run recovery across generation failed: interrupted=%t event_interrupted=%t run_same=%t generation_same=%t mapping_interrupted=%t mapping_event_interrupted=%t mapping_run_same=%t mapping_generation_same=%t uncertain=%t", recovered.Status == "interrupted", recovered.LastEvent == "run.interrupted", recovered.RunID == admitted.RunID, recovered.RuntimeGeneration == replacement.Generation, mapping.Status == "interrupted", mapping.LastKnownEvent == "run.interrupted", mapping.RunID == admitted.RunID, mapping.RuntimeGeneration == replacement.Generation, errors.Is(err, communication.ErrUncertain))
 	}
 	staleApproval := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: interruptedJob.Envelope, JobID: interruptedJob.ID, OrganizationID: interruptedJob.OrganizationID, UserID: interruptedJob.UserID, ActorID: interruptedJob.ActorID, ScopeID: interruptedJob.ScopeID, Channel: interruptedJob.Channel, Trigger: interruptedJob.Trigger, IdempotencyKey: interruptedJob.IdempotencyKey}, RunID: admitted.RunID, SessionID: admitted.SessionID, RuntimeGeneration: before.Generation}, Action: "approve", RequestID: admitted.ApprovalID, Choice: "once"}
 	staleBody, _ := json.Marshal(staleApproval)

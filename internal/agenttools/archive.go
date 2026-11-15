@@ -32,6 +32,9 @@ func (t *Tools) archiveCreate(ws *os.Root, r Input) (map[string]any, error) {
 	if r.archiveOutput != nil {
 		output, outputPath = r.archiveOutput, r.archiveOutputPath
 	}
+	if err := t.guardWritable(output, outputPath); err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	for _, p := range r.Paths {
 		if !safe(p) || seen[p] {
@@ -105,6 +108,9 @@ func (t *Tools) archiveUnpack(ws *os.Root, r Input) (map[string]any, error) {
 		return nil, errors.New("name must be a single safe path segment")
 	}
 	target := "artifacts/unpacked/" + r.Name
+	if err := t.guardWritable(ws, target); err != nil {
+		return nil, err
+	}
 	if _, err := ws.Lstat(target); err == nil {
 		return nil, errors.New("unpack target already exists")
 	} else if !os.IsNotExist(err) {

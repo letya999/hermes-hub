@@ -577,7 +577,12 @@ func modelCommand(ctx context.Context, user User, text string) string {
 // an in-place enrollment update is picked up without a gateway restart.
 func modelRelayFor(principal string) (base, admin string) {
 	if env := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL")); env != "" {
-		return env, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
+		owner := strings.TrimSpace(os.Getenv("HUB_USER_ID"))
+		if owner == "" || principal == "" || principal == owner {
+			return env, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
+		}
+		// The env pair is the owning space's contract; siblings keep their
+		// enrolled per-principal routing through the admins file.
 	}
 	path := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMINS_FILE"))
 	if path == "" || principal == "" {

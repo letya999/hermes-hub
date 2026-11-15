@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -24,8 +25,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "version":
 		_, e := fmt.Fprintln(out, version)
 		return e
-	case "migrate-recovery":
-		fs := flag.NewFlagSet("migrate-recovery", flag.ContinueOnError)
+	case "store-migrate", "store-activate", "store-normalize":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(out)
 		path := fs.String("config", "", "absolute configuration path")
 		if e := fs.Parse(args[1:]); e != nil {
@@ -38,7 +39,103 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		if e != nil {
 			return e
 		}
-		if e := app.MigrateRecovery(cfg); e != nil {
+		migrate := app.MigrateStore
+		done := "Store migration staged."
+		switch args[0] {
+		case "store-activate":
+			migrate = app.ActivateStore
+			done = "Store activated."
+		case "store-normalize":
+			migrate = app.NormalizeStore
+			done = "Store normalized."
+		}
+		if e := migrate(cfg); e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, done)
+		return e
+	case "store-retain":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		destroy := fs.Bool("destroy", false, "delete exported rows after archive verification")
+		records := fs.Bool("records", false, "rotate the records history prefix instead of audit")
+		keep := fs.Int64("keep-bytes", 0, "retained hot suffix bound for --records")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		var rep any
+		if *records {
+			r, re := app.RetainRecords(cfg, *destroy, *keep)
+			if re != nil {
+				return re
+			}
+			rep = r
+		} else {
+			r, re := app.RetainAudits(cfg, *destroy)
+			if re != nil {
+				return re
+			}
+			rep = r
+		}
+		report, e := json.Marshal(rep)
+		if e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, string(report))
+		return e
+	case "store-sweep":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		n, e := app.SweepObjects(cfg)
+		if e != nil {
+			return e
+		}
+		report, e := json.Marshal(struct {
+			Swept int `json:"swept"`
+		}{Swept: n})
+		if e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, string(report))
+		return e
+	case "migrate-recovery", "migrate-head":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		migrate := app.MigrateRecovery
+		if args[0] == "migrate-head" {
+			migrate = app.MigrateHead
+		}
+		if e := migrate(cfg); e != nil {
 			return e
 		}
 		_, e = fmt.Fprintln(out, "Recovery migration complete.")

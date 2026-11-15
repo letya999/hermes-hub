@@ -13,7 +13,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -71,6 +70,79 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	}
 	if again, err := store.ProjectionRevision(auth); err != nil || again != revision {
 		t.Fatalf("idempotent registration changed projection: %d -> %d: %v", revision, again, err)
+	}
+}
+
+func TestAgentToolsRegistrationRetriesStaleStoreSnapshot(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "store.db")
+	seed := toolhub.NewStore()
+	if err := seed.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	_ = seed.CloseDB()
+	previous := loadOperatorStore
+	calls := 0
+	loadOperatorStore = func(path string) (*toolhub.Store, error) {
+		store, err := toolhub.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		calls++
+		if calls == 1 {
+			other, err := toolhub.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := agenttools.HubToolsDefinition()
+			old.Version = "1.3.0"
+			if err := other.RegisterDefinition(old); err != nil {
+				t.Fatal(err)
+			}
+			if err := other.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			_ = other.CloseDB()
+		}
+		return store, nil
+	}
+	t.Cleanup(func() { loadOperatorStore = previous })
+	if err := runCapability([]string{"--kind", "agent-tools", "--toolhub-store", p, "--principal", "alice", "--context", "alice", "--runtime", "alice", "--policy-version", "policy-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatal("stale registration did not reload the store")
+	}
+}
+
+func TestAgentToolsExplicitVersionPinsStoredDefinition(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	pinned := agenttools.HubToolsDefinition()
+	pinned.Version = "1.3.0"
+	pinned.Tools = slices.DeleteFunc(pinned.Tools, func(tool api.ToolSpec) bool { return tool.Name == "routine_get" })
+	if err := store.RegisterDefinition(pinned); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCapability([]string{"--kind", "agent-tools", "--version", "1.3.0", "--toolhub-store", storePath, "--principal", "alice", "--context", "alice", "--runtime", "alice", "--policy-version", "policy-new"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "test", DeliveryTargetID: "test", PolicyVersion: "policy-new"}
+	tools, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("pinned version projected no tools")
+	}
+	if slices.ContainsFunc(tools, func(v api.ProjectedTool) bool { return v.Tool.Name == "routine_get" }) {
+		t.Fatal("compiled catalog leaked into pinned-version projection")
 	}
 }
 
@@ -253,203 +325,9 @@ func TestCapabilityCLIConnectorsManifest(t *testing.T) {
 	}
 }
 
-// --kind tools is the operator surface over the unified `tools:` map: it
-// lists the backend vocabulary, prints the compiled plan for a settings.yaml,
-// requires --confirm to write, and re-validates through the spawn parser.
-func TestCapabilityCLITools(t *testing.T) {
-	out := captureOutput(t, func() error {
-		return runCapability([]string{"--kind", "tools"})
-	})
-	for _, want := range []string{"native", "toolhub", "mcp", "off", "terminal", "memory"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("tools vocabulary missing %q: %s", want, out)
-		}
-	}
-	dir := t.TempDir()
-	settingsPath := filepath.Join(dir, "settings.yaml")
-	managed := "schema: 1\nuser: alice\ncapability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nmemory: false\n"
-	if err := os.WriteFile(settingsPath, []byte(managed), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Native toolsets are deny-by-default (SPEC-0083 R3.1): the host admits
-	// the sections this test selects, the same rules an operator writes with
-	// hubctl governance --kind rule.
-	allowNative := func(id, section string) api.PolicyRule {
-		return api.PolicyRule{RuleID: id, Scope: api.ScopeUser, Subject: "alice", Section: section, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1}
-	}
-	seedTestGovernance(t, dir,
-		allowNative("allow-terminal-alice", "native:terminal"),
-		allowNative("allow-memory-alice", "native:memory"),
-		allowNative("allow-todo-alice", "native:todo"))
-	// Without --set the compiled plan prints and nothing changes.
-	plan := captureOutput(t, func() error {
-		return runCapability([]string{"--kind", "tools", "--settings", settingsPath})
-	})
-	if !strings.Contains(plan, `"plan"`) {
-		t.Fatalf("plan output missing: %s", plan)
-	}
-	// Grant without --confirm prints the diff and refuses.
-	args := []string{"--kind", "tools", "--settings", settingsPath, "--set", "terminal=native,memory=native"}
-	if err := runCapability(args); err == nil || !strings.Contains(err.Error(), "not confirmed") {
-		t.Fatalf("unconfirmed grant committed: %v", err)
-	}
-	if body, _ := os.ReadFile(settingsPath); strings.Contains(string(body), "terminal: native") {
-		t.Fatal("unconfirmed grant changed settings")
-	}
-	if err := runCapability(append(args, "--confirm")); err != nil {
-		t.Fatal(err)
-	}
-	settings, err := stack.Read(settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"terminal", "memory"} {
-		if settings.Tools[name].Via != "native" {
-			t.Fatalf("grant for %q not applied: %+v", name, settings.Tools)
-		}
-	}
-	// Upsert adds an entry without dropping the existing ones; the written
-	// form stays a compact scalar map and other settings lines survive.
-	if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", "todo=native,browser=mcp:playwright", "--confirm"}); err != nil {
-		t.Fatal(err)
-	}
-	settings, err = stack.Read(settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if settings.Tools["todo"].Via != "native" || settings.Tools["browser"].Via != "mcp" || settings.Tools["browser"].Server != "playwright" {
-		t.Fatalf("upsert lost entries: %+v", settings.Tools)
-	}
-	if settings.Tools["terminal"].Via != "native" || settings.Tools["memory"].Via != "native" {
-		t.Fatalf("upsert dropped earlier grants: %+v", settings.Tools)
-	}
-	body, _ := os.ReadFile(settingsPath)
-	if !strings.Contains(string(body), "capability_mode: managed") || !strings.Contains(string(body), "tools:") {
-		t.Fatalf("surgical write corrupted settings:\n%s", body)
-	}
-	// A non-reviewed native name and an unknown backend are refused before
-	// the file is touched.
-	before, _ := os.ReadFile(settingsPath)
-	for _, set := range []string{"delegation=native", "file=bogus", "not-a-pair"} {
-		if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", set, "--confirm"}); err == nil {
-			t.Fatalf("invalid --set %q accepted", set)
-		}
-	}
-	if after, _ := os.ReadFile(settingsPath); !slices.Equal(before, after) {
-		t.Fatal("refused --set changed the file")
-	}
-	// Empty backends remove entries; emptying the map revokes everything.
-	if err := runCapability([]string{"--kind", "tools", "--settings", settingsPath, "--set", "terminal=,memory=,todo=,browser=", "--confirm"}); err != nil {
-		t.Fatal(err)
-	}
-	settings, err = stack.Read(settingsPath)
-	if err != nil || len(settings.Tools) != 0 {
-		t.Fatalf("revoke left grants: %+v %v", settings.Tools, err)
-	}
-	// tools: is the universal surface — unmanaged settings accept it too.
-	plain := filepath.Join(dir, "plain.yaml")
-	if err := os.WriteFile(plain, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nmemory: false\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runCapability([]string{"--kind", "tools", "--settings", plain, "--set", "terminal=native", "--confirm"}); err != nil {
-		t.Fatalf("tools write rejected on plain settings: %v", err)
-	}
-	settings, err = stack.Read(plain)
-	if err != nil || settings.Tools["terminal"].Via != "native" {
-		t.Fatalf("plain settings lost the grant: %+v %v", settings.Tools, err)
-	}
-}
-
-// seedTestGovernance writes a valid host policy document and pins it via
-// HUB_TOOL_GOVERNANCE: the staged-write validation re-reads the settings pair
-// from a scratch dir, so only the pin reaches every read path.
-func seedTestGovernance(t *testing.T, spaceDir string, rules ...api.PolicyRule) {
-	t.Helper()
-	doc := api.NewGovernance()
-	doc.Rules = append(doc.Rules, rules...)
-	path := filepath.Join(spaceDir, "runtime", "toolhub", "governance.json")
-	if err := api.SaveGovernance(path, doc); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_TOOL_GOVERNANCE", path)
-}
-
-// The same CLI edits a split space: --settings resolves a directory to its
-// workspace.yaml, the write is staged against agent.yaml, validated as a
-// pair and swapped atomically; access/mcp-raw suffixes land in the entry.
-func TestCapabilityCLIToolsSplitSpace(t *testing.T) {
-	dir := t.TempDir()
-	s := stack.Settings{
-		Schema: 3, User: "alice", Environment: "prod", Model: "synthetic",
-		ModelURL: "http://model-relay:8318/v1", Timezone: "UTC",
-		BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
-		Tools: map[string]stack.ToolEntry{"memory": {Via: "native"}},
-		MCP:   map[string]stack.MCPServer{"gitea": {URL: "https://gitea.example/mcp"}},
-	}
-	if err := stack.WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
-	// mcp-raw onto a user-declared server is the user_mcp section — denied by
-	// default; the host admits it for this principal before the edit. The
-	// fixture's native memory selection needs its own allow under R3.1.
-	seedTestGovernance(t, dir,
-		api.PolicyRule{RuleID: "allow-usermcp-alice", Scope: api.ScopeUser, Subject: "alice", Section: api.SectionUserMCP, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
-		api.PolicyRule{RuleID: "allow-memory-alice", Scope: api.ScopeUser, Subject: "alice", Section: "native:memory", Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
-	agentBefore, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A bare directory resolves to workspace.yaml for the tools surface.
-	plan := captureOutput(t, func() error {
-		return runCapability([]string{"--kind", "tools", "--settings", dir})
-	})
-	if !strings.Contains(plan, "memory") {
-		t.Fatalf("dir plan missing native entries: %s", plan)
-	}
-	// Unconfirmed edits print the plan and leave both files untouched.
-	args := []string{"--kind", "tools", "--settings", dir, "--set", "file=toolhub+ro,gitea=mcp-raw:gitea"}
-	if err := runCapability(args); err == nil || !strings.Contains(err.Error(), "not confirmed") {
-		t.Fatalf("unconfirmed split edit committed: %v", err)
-	}
-	if err := runCapability(append(args, "--confirm")); err != nil {
-		t.Fatal(err)
-	}
-	back, err := stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if back.Tools["file"].Access != "ro" || back.Tools["file"].Via != "toolhub" {
-		t.Fatalf("+ro access lost: %+v", back.Tools["file"])
-	}
-	if back.Tools["gitea"].Via != "mcp-raw" || back.Tools["gitea"].Server != "gitea" {
-		t.Fatalf("mcp-raw server lost: %+v", back.Tools["gitea"])
-	}
-	// The write touched workspace.yaml only — agent.yaml is byte-identical.
-	agentAfter, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(agentBefore, agentAfter) {
-		t.Fatal("tools edit modified agent.yaml")
-	}
-	// Pointing at workspace.yaml directly resolves the same target.
-	if err := runCapability([]string{"--kind", "tools", "--settings", filepath.Join(dir, "workspace.yaml"), "--set", "file=", "--confirm"}); err != nil {
-		t.Fatal(err)
-	}
-	back, err = stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := back.Tools["file"]; ok {
-		t.Fatalf("removal left entry: %+v", back.Tools)
-	}
-	// An edit that would invalidate the pair refuses before swapping.
-	wsBefore, _ := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
-	if err := runCapability([]string{"--kind", "tools", "--settings", dir, "--set", "memory=native+ro", "--confirm"}); err == nil {
-		t.Fatal("ro on native accepted")
-	}
-	if wsAfter, _ := os.ReadFile(filepath.Join(dir, "workspace.yaml")); !slices.Equal(wsBefore, wsAfter) {
-		t.Fatal("invalid edit changed workspace.yaml")
+func TestCapabilityRejectsRetiredToolsWriter(t *testing.T) {
+	if err := runCapability([]string{"--kind", "tools", "--settings", t.TempDir(), "--set", "web=native", "--confirm"}); err == nil {
+		t.Fatal("retired workspace.yaml writer remains available")
 	}
 }
 

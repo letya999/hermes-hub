@@ -84,13 +84,11 @@ func (c *ControlPlane) NewReconciler() *Reconciler {
 		}
 		switch kind {
 		case "reauth":
-			onboarding.Phase = api.PhaseAwaitingCreds
-			onboarding.FormNonce = api.RandomNonce()
-			onboarding.FormExpires = c.now().Add(c.ttl())
+			onboarding.Stage = api.StagePending
+			onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		case "drift":
-			onboarding.Phase = api.PhaseAwaitingConfirm
-			onboarding.ConfirmationNonce = api.RandomNonce()
-			onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+			onboarding.Stage = api.StagePending
+			onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 			onboarding.ConfirmationUsed = false
 		default:
 			return nil

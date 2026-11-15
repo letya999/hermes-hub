@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,16 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 		}
 		return nil, nil
 	}, nil)
+	m.cfg.Image = "runtime-without-daemons"
+	m.cfg.ScriptImage = "script-core"
+	for range cap(m.sem) {
+		m.sem <- struct{}{}
+	}
+	defer func() {
+		for range cap(m.sem) {
+			<-m.sem
+		}
+	}()
 	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: `emit("hello")`}, DueAt: time.Now()}
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -50,13 +62,16 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 		t.Fatalf("cleanup missing: %v", commands)
 	}
 	args := commands[0]
+	if !slices.Contains(args, "script-core") || slices.Contains(args, "runtime-without-daemons") {
+		t.Fatalf("script helper did not use the daemon image: %v", args)
+	}
 	options := map[string]string{}
 	for i := 1; i+1 < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
 			options[args[i]] = args[i+1]
 		}
 	}
-	for key, want := range map[string]string{"--network": "none", "--user": "10001:10001", "--cap-drop": "ALL", "--security-opt": "no-new-privileges:true", "--memory": "128m", "--memory-swap": "128m", "--pids-limit": "16", "--log-driver": "none", "--entrypoint": "communication-hub"} {
+	for key, want := range map[string]string{"--network": "none", "--user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop": "ALL", "--security-opt": "no-new-privileges:true", "--memory": "128m", "--memory-swap": "128m", "--pids-limit": "16", "--log-driver": "none", "--entrypoint": "communication-hub"} {
 		if options[key] != want {
 			t.Errorf("unbounded option %s=%q", key, options[key])
 		}
@@ -92,6 +107,39 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 	runErr = errors.New("killed")
 	if got := call(string(body), "secret"); got.Code != 502 {
 		t.Fatalf("failure=%d", got.Code)
+	}
+}
+
+func TestScriptProbeEnforcesAdmissionEpoch(t *testing.T) {
+	calls := 0
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			calls++
+			return []byte(`[]`), nil
+		}
+		return nil, nil
+	}, nil)
+	for _, tc := range []struct {
+		active bool
+		epoch  uint64
+		status int
+	}{{false, 0, 409}, {true, 2, 409}, {false, 2, 200}} {
+		m.holds[holdKey("alice", "alice")] = AdministrativeHold{Active: tc.active, Epoch: 2}
+		request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", Text: "pass", OperationalEpoch: tc.epoch}, DueAt: time.Now()}
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/v1/script", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		m.Handler().ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("active=%v epoch=%d: status=%d want=%d", tc.active, tc.epoch, w.Code, tc.status)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("stale or held script executed: %d", calls)
 	}
 }
 
@@ -310,7 +358,7 @@ func TestM10IdleDeadlineStartsAfterActivityFinishes(t *testing.T) {
 	if err = m.Reap(context.Background(), now.Add(m.cfg.WarmTTL)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 1 {
+	if removes != 2 {
 		t.Fatalf("idle runtime not reaped: %d", removes)
 	}
 }

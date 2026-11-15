@@ -54,5 +54,9 @@ just serve /tmp/credential-broker-demo/config.json
 
 Порог покрытия — **85% statement coverage суммарно и в каждом production-пакете**, без исключения
 неудобных веток. Это проверяемый gate, не утверждение о безопасности по одному проценту.
+Ветки журнала на SQLCipher попадают в gate только когда слинкован настоящий кодек:
+`just check` надо запускать с `GOFLAGS="-tags=libsqlite3"` и `CGO_CFLAGS="-I<каталог с sqlite3.h от sqlcipher>"`
+(в CI шаг `credential-broker` ставит `libsqlcipher-dev`; на хосте без кодека engine-тесты пропускаются
+и покрытие `internal/journal` честно не проходит порог — это ожидаемый отказ, а не регрессия).
 Архив содержит исходники, а не production-бинарник. Независимый аудит и живое подключение к
 Hermes/ToolHive/Google в этой поставке не выполнялись; границы проверки указаны в отчёте.

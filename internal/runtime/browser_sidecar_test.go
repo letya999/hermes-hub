@@ -33,6 +33,8 @@ func captureCommands(t *testing.T) (spawned *[]spawnedCmd, restore func()) {
 	t.Setenv("HUB_TEST_HELPER", "1")
 	oldState, oldCommand := state, command
 	oldNotify, oldStop, oldProbe := signalNotify, signalStop, displayProbe
+	oldLocks := displayLockPaths
+	displayLockPaths = []string{filepath.Join(t.TempDir(), "X99-lock"), filepath.Join(t.TempDir(), "X99")}
 	state = t.TempDir()
 	var mu sync.Mutex
 	var list []spawnedCmd
@@ -52,6 +54,7 @@ func captureCommands(t *testing.T) (spawned *[]spawnedCmd, restore func()) {
 		defer mu.Unlock()
 		state, command = oldState, oldCommand
 		signalNotify, signalStop, displayProbe = oldNotify, oldStop, oldProbe
+		displayLockPaths = oldLocks
 	}
 }
 
@@ -141,12 +144,18 @@ func TestBrowserSidecarCommandTree(t *testing.T) {
 	if !strings.Contains(argvs[persistent], "browser-alice:8931") {
 		t.Fatalf("persistent endpoint must allow its alias:port Host header:\n%s", argvs[persistent])
 	}
+	if !strings.Contains(argvs[persistent], "--timeout-action 15000") {
+		t.Fatalf("persistent endpoint needs the browser action budget: %s", argvs[persistent])
+	}
 	guest := slices.IndexFunc(argvs, func(a string) bool { return strings.Contains(a, "--port 8932") })
 	if guest < 0 || !strings.Contains(argvs[guest], "--isolated") || !strings.Contains(argvs[guest], "--executable-path") {
 		t.Fatalf("guest playwright-mcp must launch isolated system chromium:\n%s", joined)
 	}
 	if !strings.Contains(argvs[guest], "browser-alice:8932") {
 		t.Fatalf("guest endpoint must allow its alias:port Host header:\n%s", argvs[guest])
+	}
+	if !strings.Contains(argvs[guest], "--timeout-action 15000") {
+		t.Fatalf("guest endpoint needs the browser action budget: %s", argvs[guest])
 	}
 	if strings.Contains(argvs[guest], filepath.Join(state, "browser")) || strings.Contains(argvs[guest], "--cdp-endpoint") {
 		t.Fatalf("guest must not reach the owner profile or its CDP session:\n%s", argvs[guest])

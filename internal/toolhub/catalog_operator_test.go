@@ -49,11 +49,13 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	if err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
+	rightsDoc, rightsLedger := s.RightsDoc, s.RightsLedger
 	var loadErr error
 	s, loadErr = Load(p)
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
+	s.RightsDoc, s.RightsLedger = rightsDoc, rightsLedger
 	before, _ := os.ReadFile(p)
 	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("implicit ceiling widening: %v", err)
@@ -75,6 +77,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	loaded.RightsDoc, loaded.RightsLedger = rightsDoc, rightsLedger
 	tools, err := loaded.ListProjectedTools(auth)
 	if err != nil {
 		t.Fatal(err)
@@ -101,16 +104,24 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	if len(loaded.capabilityProfiles[auth.CapabilityProfile].Selections) != len(profile.Selections)+1 {
 		t.Fatal("duplicate catalog selection")
 	}
-	// A second writer must lose the disk fence without changing its memory.
+	// A real catalog update must lose the disk fence for a stale writer.
+	second := d
+	second.Version = "2.0.0"
+	if err := loaded.RegisterDefinition(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.PromoteToCatalog(second.DefinitionID, second.Version, "operator"); err != nil {
+		t.Fatal(err)
+	}
 	stale, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loaded.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); err != nil {
+	if _, err := loaded.EnableCatalog(auth, second.DefinitionID, second.Version, "operator", true); err != nil {
 		t.Fatal(err)
 	}
 	revision := stale.capabilityProfiles[auth.CapabilityProfile].Revision
-	if _, err := stale.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrConflict) {
+	if _, err := stale.EnableCatalog(auth, second.DefinitionID, second.Version, "operator", true); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("stale writer accepted: %v", err)
 	}
 	if stale.capabilityProfiles[auth.CapabilityProfile].Revision != revision {
@@ -121,6 +132,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 func TestCatalogEnableSelectsCanonicalToolNames(t *testing.T) {
 	s, auth, _, _ := managedStore(t)
 	d := api.CLICatalogDefinitions()[1]
+	d.Tools = append(d.Tools, api.ToolSpec{Name: "session_list", CapabilityID: "sessions.list", Requires: []string{"sessions.list"}, Effect: api.ReadEffect, Audience: api.AudienceModel, Executor: "runtime:sessions"})
 	if err := s.RegisterDefinition(d); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +154,54 @@ func TestCatalogEnableSelectsCanonicalToolNames(t *testing.T) {
 		if !seen[tool.Name] {
 			t.Fatalf("catalog tool %q missing from selections", tool.Name)
 		}
+	}
+}
+
+func TestCatalogEnableReplacesVersionWithoutWideningPathScope(t *testing.T) {
+	s, auth, _, _ := managedStore(t)
+	old := api.CLICatalogDefinitions()[1]
+	if err := s.RegisterDefinition(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnableCatalog(auth, old.DefinitionID, old.Version, "operator", true); err != nil {
+		t.Fatal(err)
+	}
+	profile := s.capabilityProfiles[auth.CapabilityProfile]
+	for i := range profile.Selections {
+		if profile.Selections[i].DefinitionID == old.DefinitionID {
+			profile.Selections[i].PathScopes = []string{"/workspace/work"}
+		}
+	}
+	profile.Revision++
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	next := old
+	next.Version = "9.9.9"
+	next.Tools[0].Description += " Updated version."
+	if err := s.RegisterDefinition(next); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := s.EnableCatalog(auth, next.DefinitionID, next.Version, "operator", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := s.capabilityProfiles[auth.CapabilityProfile]
+	count := 0
+	for _, selection := range updated.Selections {
+		if selection.DefinitionID != next.DefinitionID {
+			continue
+		}
+		count++
+		if selection.DefinitionVersion != next.Version || len(selection.PathScopes) != 1 || selection.PathScopes[0] != "/workspace/work" {
+			t.Fatalf("catalog upgrade widened or retained stale selection: %+v", selection)
+		}
+	}
+	if count != 1 || updated.Revision <= profile.Revision || updated.PolicyRevision <= profile.PolicyRevision {
+		t.Fatalf("catalog upgrade revisions/selections: count=%d profile=%d policy=%d", count, updated.Revision, updated.PolicyRevision)
+	}
+	if binding.Status != api.ActiveStatus || updated.Validate() != nil {
+		t.Fatal("upgraded binding or profile invalid")
 	}
 }
 

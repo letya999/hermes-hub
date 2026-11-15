@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
@@ -51,12 +53,15 @@ func (e *Engine) WatchPath(id string) string {
 	return filepath.Join(e.root, "watchers", commodel.FileID(id)+".json")
 }
 
-func (e *Engine) LoadWatchStateLocked(id string) (WatchState, error) {
+// LoadWatchState reads the durable watch record (synthesizing the
+// creation-time baseline when no record exists yet). Lock-free — atomic
+// writes guarantee whole-record snapshots under any caller lock.
+func (e *Engine) LoadWatchState(id string) (WatchState, error) {
 	var st WatchState
-	schedule, scheduleErr := e.LoadScheduleLocked(id)
-	b, err := os.ReadFile(e.WatchPath(id))
+	schedule, scheduleErr := e.LoadSchedule(id)
+	b, err := e.readFile(e.WatchPath(id))
 	if os.IsNotExist(err) || (err == nil && json.Unmarshal(b, &st) == nil && scheduleErr == nil && st.ProbeRevision != schedule.ProbeRevision) {
-		if schedule, err := e.LoadScheduleLocked(id); err == nil && schedule.InitialProbeValue != nil {
+		if schedule, err := e.LoadSchedule(id); err == nil && schedule.InitialProbeValue != nil {
 			value := *schedule.InitialProbeValue
 			return WatchState{ScheduleID: id, ProbeRevision: schedule.ProbeRevision, Baseline: WatchHash(value), Value: value, LastSuccess: schedule.UpdatedAt}, nil
 		}
@@ -79,10 +84,15 @@ func (e *Engine) SeedWatchBaseline(id string, value string, now time.Time) error
 	return e.atomicJSON(e.WatchPath(id), WatchState{ScheduleID: id, Baseline: WatchHash(value), Value: value})
 }
 
-// taskProbeValueLocked resolves a task: probe under the schedule owner's
+// TaskProbeValue resolves a task: probe under the schedule owner's
 // principal — a foreign or missing id is an error, never a synthetic state.
-func (e *Engine) TaskProbeValueLocked(principal, taskID string) (string, error) {
-	task, err := e.deps.LoadTask(principal, taskID)
+func (e *Engine) TaskProbeValue(principal, taskID string) (string, error) {
+	return e.taskProbeValueLocked(principal, taskID)
+}
+
+// taskProbeValueLocked is TaskProbeValue's critical section; callers hold e.mu.
+func (e *Engine) taskProbeValueLocked(principal, taskID string) (string, error) {
+	task, err := e.deps.Dispatch.LoadTask(principal, taskID)
 	if err != nil {
 		return "", err
 	}
@@ -110,53 +120,80 @@ func (e *Engine) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, 
 	e.mu.Lock()
 	e.resetAcquireBurstLocked()
 	e.mu.Unlock()
-	return e.ProcessProactive(ctx, "probing", func(o commodel.RoutineOccurrence) { e.probeOne(ctx, o, now, authorize, fetch, toolCall, serviceCall) })
+	var mu sync.Mutex
+	var failures []error
+	err := e.ProcessProactive(ctx, "probing", func(o commodel.RoutineOccurrence) {
+		if probeErr := e.probeOne(ctx, o, now, authorize, fetch, toolCall, serviceCall); probeErr != nil {
+			mu.Lock()
+			failures = append(failures, probeErr)
+			mu.Unlock()
+		}
+	})
+	return errors.Join(append(failures, err)...)
 }
 
-func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now time.Time, authorize func(commodel.Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error), serviceCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error)) {
+func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now time.Time, authorize func(commodel.Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error), serviceCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error)) error {
 	if o.RetryAfter.After(now) {
-		return // bounded check retry waiting out its backoff (R1.1)
+		return nil // bounded check retry waiting out its backoff (R1.1)
 	}
 	e.mu.Lock()
-	schedule, err := e.LoadScheduleLocked(o.ScheduleID)
-	current := e.OccurrenceCurrentLocked(o) && (authorize == nil || authorize(o.Job) == nil)
+	schedule, err := e.LoadSchedule(o.ScheduleID)
+	current := e.OccurrenceCurrent(o) && (authorize == nil || authorize(o.Job) == nil)
 	e.mu.Unlock()
 	if !current {
 		o.State = "cancelled"
 		_ = e.atomicJSON(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"), o)
-		return
+		return nil
 	}
 	if err != nil || schedule.Probe == nil {
-		return
+		return nil
+	}
+	if o.JobKind == "event" && e.deps.Events.ResumeEvents != nil {
+		if handled, err := e.deps.Events.ResumeEvents(o, schedule, now, authorize); handled || err != nil {
+			return err
+		}
 	}
 	receipt := filepath.Join(e.root, "occurrences", occurrenceID(o)+".probe-result")
-	if body, err := os.ReadFile(receipt); err == nil {
+	if info, err := e.lstat(receipt); err == nil {
+		if !info.Mode().IsRegular() || info.Size() > 4<<20 {
+			return errors.New("unsafe probe receipt")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if body, err := e.readFile(receipt); err == nil {
 		var result ProbeResult
-		if json.Unmarshal(body, &result) != nil {
-			return
+		decoder := json.NewDecoder(strings.NewReader(string(body)))
+		decoder.DisallowUnknownFields()
+		if len(body) > 4<<20 || decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF {
+			return errors.New("invalid probe receipt")
+		}
+		saved := result.Occurrence
+		if occurrenceID(saved) != occurrenceID(o) || saved.Job.ID != o.Job.ID || saved.Job.IdempotencyKey != o.Job.IdempotencyKey || commodel.JobFingerprint(saved.Job) != commodel.JobFingerprint(o.Job) || saved.Job.ChatID != o.Job.ChatID || saved.Job.TaskID != o.Job.TaskID || saved.Job.TopicID != o.Job.TopicID || saved.Job.AssignmentID != o.Job.AssignmentID || saved.Job.AssignmentPlanRevision != o.Job.AssignmentPlanRevision || result.Watch.ScheduleID != o.ScheduleID {
+			return errors.New("probe receipt source mismatch")
+		}
+		if authorize != nil && authorize(saved.Job) != nil {
+			return errors.New("probe receipt owner unavailable")
 		}
 		e.mu.Lock()
-		_ = e.ApplyProbeResultLocked(result)
+		err = e.applyProbeResultAtLocked(result, now)
 		e.mu.Unlock()
-		return
+		return err
 	} else if !os.IsNotExist(err) {
-		return
+		return nil
 	}
 	if schedule.Probe.Kind == "command" {
 		// File-state watcher: no fetch — the isolated script reads the
 		// owner's mounted watch/ dir and emits the compared value (SPEC-0059).
 		if e.probeScript() == nil {
-			e.SettleProbe(o, schedule, "", "", now, errors.New("command probe runtime unavailable"), authorize)
-			return
+			return e.SettleProbe(o, schedule, "", "", now, errors.New("command probe runtime unavailable"), authorize)
 		}
 		needs, needsErr := prefetchNeeds(ctx, o.Job.PrincipalID, schedule.Probe, toolCall)
 		if needsErr != nil {
-			e.SettleProbe(o, schedule, "", "", now, needsErr, authorize)
-			return
+			return e.SettleProbe(o, schedule, "", "", now, needsErr, authorize)
 		}
 		value, valueErr := e.probeScript()(ctx, o, schedule.Probe.Script, "", true, needs)
-		e.SettleProbe(o, schedule, value, WatchHash(value), now, valueErr, authorize)
-		return
+		return e.SettleProbe(o, schedule, value, WatchHash(value), now, valueErr, authorize)
 	}
 	var body []byte
 	var fetchErr error
@@ -164,11 +201,10 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		// Hub-internal predicate: the compared value is the owner's task
 		// state, resolved under the schedule owner's principal (R1.3).
 		e.mu.Lock()
-		state, taskErr := e.TaskProbeValueLocked(o.Job.PrincipalID, strings.TrimPrefix(schedule.Probe.URL, "task:"))
+		state, taskErr := e.taskProbeValueLocked(o.Job.PrincipalID, strings.TrimPrefix(schedule.Probe.URL, "task:"))
 		e.mu.Unlock()
 		if taskErr != nil {
-			e.SettleProbe(o, schedule, "", "", now, taskErr, authorize)
-			return
+			return e.SettleProbe(o, schedule, "", "", now, taskErr, authorize)
 		}
 		body = []byte(state)
 	} else if schedule.Probe.Kind == "mcp_tool" {
@@ -176,6 +212,8 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		// the hub only sees the flattened tool text (SPEC-0054 R3.2).
 		if toolCall == nil {
 			fetchErr = errors.New("tool-call probe path unavailable")
+		} else if o.JobKind == "event" && e.deps.Events.AcquireEvents != nil {
+			body, fetchErr = e.deps.Events.AcquireEvents(ctx, o, schedule, toolCall)
 		} else {
 			body, fetchErr = toolCall(ctx, o.Job.PrincipalID, schedule.Probe)
 		}
@@ -193,7 +231,7 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 				body = []byte(`{"events":[]}`)
 			} else {
 				e.SettleHookIdle(o, now, authorize)
-				return
+				return nil
 			}
 		}
 	} else if schedule.Probe.Kind == "render" || schedule.Probe.Kind == "service" {
@@ -211,11 +249,11 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		e.mu.Lock()
 		if loc, lerr := time.LoadLocation(schedule.Timezone); lerr == nil {
 			if next, nerr := NextSchedule(schedule, loc, now); nerr == nil {
-				e.AcquireSubscribeLocked(o.Job.PrincipalID, schedule.Probe.URL, schedule.ScheduleID, next.Sub(now), now)
+				e.acquireSubscribeLocked(o.Job.PrincipalID, schedule.Probe.URL, schedule.ScheduleID, next.Sub(now), now)
 			}
 		}
 		key := acquireKey(o.Job.PrincipalID, schedule.Probe.URL)
-		cached, hit := e.AcquirePeekLocked(o.Job.PrincipalID, schedule.Probe.URL, now)
+		cached, hit := e.acquirePeekLocked(o.Job.PrincipalID, schedule.Probe.URL, now)
 		blocked := false
 		var flight *acquireFlight
 		leader := false
@@ -258,11 +296,11 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 			e.mu.Lock()
 			flight.err = fetchErr
 			if fetchErr == nil {
-				_ = e.AcquireRecordLocked(o.Job.PrincipalID, schedule.Probe.URL, body, now)
+				_ = e.acquireRecordLocked(o.Job.PrincipalID, schedule.Probe.URL, body, now)
 			} else {
 				var ra *RetryAfterError
 				if errors.As(fetchErr, &ra) {
-					e.AcquireBackoffLocked(o.Job.PrincipalID, schedule.Probe.URL, now.Add(ra.Delay), now)
+					e.acquireBackoffLocked(o.Job.PrincipalID, schedule.Probe.URL, now.Add(ra.Delay), now)
 				}
 			}
 			if e.acquireInflight[key] == flight {
@@ -273,7 +311,8 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		}
 	}
 	if o.JobKind == "event" {
-		for _, ev := range e.deps.SettleEvents(o, schedule, body, now, fetchErr, authorize) {
+		overflowed, err := e.deps.Events.SettleEvents(o, schedule, body, now, fetchErr, authorize)
+		for _, ev := range overflowed {
 			// Best-effort requeue to the connector: the call carries only
 			// the event's native identifier, never owner content (R5.3).
 			if toolCall != nil && schedule.Probe.RequeueTool != "" {
@@ -284,66 +323,123 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 				_, _ = toolCall(ctx, o.Job.PrincipalID, &commodel.WatchProbe{Kind: "mcp_tool", Tool: schedule.Probe.RequeueTool, Args: args})
 			}
 		}
-		return
+		return err
 	}
 	if fetchErr != nil {
-		e.SettleProbe(o, schedule, "", "", now, fetchErr, authorize)
-		return
+		return e.SettleProbe(o, schedule, "", "", now, fetchErr, authorize)
 	}
 	if schedule.Probe.Kind == "script" {
 		// Isolated-script probe: the fetched body is the script's input; its
 		// single emitted value is the compared watch value (SPEC-0059).
 		if e.probeScript() == nil {
-			e.SettleProbe(o, schedule, "", "", now, errors.New("script probe runtime unavailable"), authorize)
-			return
+			return e.SettleProbe(o, schedule, "", "", now, errors.New("script probe runtime unavailable"), authorize)
 		}
 		input := body
 		if len(schedule.Probe.Extract) > 0 {
 			fragment, extractErr := ExtractValue(schedule.Probe, body)
 			if extractErr != nil {
-				e.SettleProbe(o, schedule, "", "", now, extractErr, authorize)
-				return
+				return e.SettleProbe(o, schedule, "", "", now, extractErr, authorize)
 			}
 			input = []byte(fragment)
 		}
 		needs, needsErr := prefetchNeeds(ctx, o.Job.PrincipalID, schedule.Probe, toolCall)
 		if needsErr != nil {
-			e.SettleProbe(o, schedule, "", "", now, needsErr, authorize)
-			return
+			return e.SettleProbe(o, schedule, "", "", now, needsErr, authorize)
 		}
 		value, valueErr := e.probeScript()(ctx, o, schedule.Probe.Script, string(input), false, needs)
-		e.SettleProbe(o, schedule, value, WatchHash(value), now, valueErr, authorize)
-		return
+		return e.SettleProbe(o, schedule, value, WatchHash(value), now, valueErr, authorize)
 	}
 	value, valueErr := ExtractValue(schedule.Probe, body)
 	if valueErr != nil {
-		e.SettleProbe(o, schedule, "", "", now, valueErr, authorize)
-		return
+		return e.SettleProbe(o, schedule, "", "", now, valueErr, authorize)
 	}
-	e.SettleProbe(o, schedule, value, WatchHash(value), now, nil, authorize)
+	return e.SettleProbe(o, schedule, value, WatchHash(value), now, nil, authorize)
 }
 
 // settleProbe persists the tick outcome: silent baseline seed, no_change,
 // changed + one delivery, or failed — and lands the occurrence in a terminal
 // state. The watch state write and the occurrence write share the lock.
 type ProbeResult struct {
+	Job        *commodel.Job              `json:"job,omitempty"`
 	Watch      WatchState                 `json:"watch"`
 	Occurrence commodel.RoutineOccurrence `json:"occurrence"`
 	Delivery   *commodel.Delivery         `json:"delivery,omitempty"`
 }
 
-func (e *Engine) ApplyProbeResultLocked(result ProbeResult) error {
+// ApplyProbeResult settles a staged probe receipt at the current time.
+func (e *Engine) ApplyProbeResult(result ProbeResult) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.applyProbeResultAtLocked(result, time.Now().UTC())
+}
+
+func (e *Engine) applyProbeResultAtLocked(result ProbeResult, now time.Time) error {
 	o := result.Occurrence
-	if !e.OccurrenceCurrentLocked(o) {
+	if !e.OccurrenceCurrent(o) {
 		o.State = "cancelled"
 		return e.atomicJSON(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"), o)
 	}
+	if result.Job != nil {
+		j := *result.Job
+		schedule, err := e.LoadSchedule(o.ScheduleID)
+		if err != nil {
+			return err
+		}
+		retiredOnce := !schedule.Enabled && schedule.Paused && schedule.NextDue.IsZero() && strings.HasPrefix(strings.TrimSpace(schedule.Expression), "once:")
+		if (!retiredOnce && (!schedule.Enabled || schedule.Paused)) || schedule.SnoozedUntil.After(now) {
+			return errors.New("watcher admission paused")
+		}
+		expected := o.Job
+		expected.Envelope.ConversationID = RoutineConversation(o.ScheduleID)
+		expected.Text = j.Text
+		if j.ID != o.Job.ID || j.IdempotencyKey != o.Job.IdempotencyKey || commodel.JobFingerprint(expected) != commodel.JobFingerprint(j) || j.AssignmentID != schedule.AssignmentID || j.AssignmentPlanRevision != schedule.AssignmentPlanRevision || j.ChatID != o.Job.ChatID || j.TopicID != o.Job.TopicID || j.TaskID != o.Job.TaskID {
+			return errors.New("watcher job intent binding mismatch")
+		}
+		admitted := false
+		if e.deps.Dispatch.LoadMapping != nil {
+			m, err := e.deps.Dispatch.LoadMapping(j.ID)
+			if err == nil {
+				check := j
+				check.OperationalEpoch = m.OperationalEpoch
+				if !m.MatchesJob(check) {
+					return errors.New("watcher admission mapping mismatch")
+				}
+				admitted = true
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		if !admitted {
+			allowed := true
+			if j.AssignmentID != "" {
+				allowed, err = e.reserveAssignmentWakeLocked(j.AssignmentID, j.ID, now, j.AssignmentPlanRevision)
+				if err != nil {
+					return err
+				}
+			}
+			if allowed {
+				if _, err := e.deps.Dispatch.EnqueueJob(j); err != nil {
+					return err
+				}
+			} else {
+				o.State = "capped"
+			}
+		}
+		if o.State != "capped" && j.AssignmentID != "" {
+			if err := e.settleAssignmentWakeLocked(j.AssignmentID, j.ID, j.AssignmentPlanRevision); err != nil {
+				return err
+			}
+		}
+	}
+	if d := result.Delivery; d != nil && (d.OccurrenceID != o.Job.ID || d.JobID != "" || d.Channel != o.Job.Channel || d.ConversationID != o.Job.ConversationID || d.DeliveryTargetID != o.Job.DeliveryTargetID || d.ChatID != o.Job.ChatID || d.TaskID != o.Job.TaskID || d.TopicID != o.Job.TopicID || d.SlackChannel != o.Job.SlackChannel || d.SlackThread != o.Job.SlackThread) {
+		return errors.New("probe delivery audience mismatch")
+	}
 	if result.Delivery != nil {
-		if err := e.deps.EnqueueDelivery(*result.Delivery); err != nil {
+		if err := e.deps.Delivery.EnqueueDelivery(*result.Delivery); err != nil {
 			return err
 		}
 	}
-	live, err := e.LoadWatchStateLocked(o.ScheduleID)
+	live, err := e.LoadWatchState(o.ScheduleID)
 	if err != nil {
 		return err
 	}
@@ -362,7 +458,7 @@ func (e *Engine) SettleHookIdle(o commodel.RoutineOccurrence, now time.Time, aut
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
-	body, err := os.ReadFile(path)
+	body, err := e.readFile(path)
 	if err != nil {
 		return
 	}
@@ -370,7 +466,7 @@ func (e *Engine) SettleHookIdle(o commodel.RoutineOccurrence, now time.Time, aut
 	if json.Unmarshal(body, &live) != nil || live.State != "probing" {
 		return
 	}
-	if !e.OccurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
+	if !e.OccurrenceCurrent(live) || (authorize != nil && authorize(live.Job) != nil) {
 		live.State = "cancelled"
 		_ = e.atomicJSON(path, live)
 		return
@@ -379,26 +475,29 @@ func (e *Engine) SettleHookIdle(o commodel.RoutineOccurrence, now time.Time, aut
 	_ = e.atomicJSON(path, live)
 }
 
-func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Schedule, value, hash string, now time.Time, probeErr error, authorize func(commodel.Job) error) {
+func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Schedule, value, hash string, now time.Time, probeErr error, authorize func(commodel.Job) error) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
-	body, err := os.ReadFile(path)
+	body, err := e.readFile(path)
 	if err != nil {
-		return
+		return err
 	}
 	var live commodel.RoutineOccurrence
-	if json.Unmarshal(body, &live) != nil || live.State != "probing" {
-		return
+	if json.Unmarshal(body, &live) != nil {
+		return errors.New("invalid probe occurrence")
 	}
-	if !e.OccurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
+	if live.State != "probing" {
+		return nil
+	}
+	if !e.OccurrenceCurrent(live) || (authorize != nil && authorize(live.Job) != nil) {
 		live.State = "cancelled"
 		_ = e.atomicJSON(path, live)
-		return
+		return err
 	}
-	st, err := e.LoadWatchStateLocked(live.ScheduleID)
+	st, err := e.LoadWatchState(live.ScheduleID)
 	if err != nil {
-		return
+		return err
 	}
 	result := ProbeResult{Watch: st, Occurrence: live}
 	if probeErr == nil && strings.TrimSpace(value) == "" {
@@ -423,7 +522,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 			live.RetryAfter = now.Add(time.Duration(live.RetryCount) * time.Minute).UTC()
 			_ = e.atomicJSON(e.WatchPath(live.ScheduleID), st)
 			_ = e.atomicJSON(path, live)
-			return
+			return err
 		}
 		live.State = "failed"
 	} else {
@@ -482,11 +581,6 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				// quiet window suppresses it outright — capped, same as the
 				// daily-limit suppression above.
 				live.State = "capped"
-			} else if schedule.AssignmentID != "" && !e.admitAssignmentWakeLocked(schedule.AssignmentID, now, schedule.AssignmentPlanRevision) {
-				// Assignment-owned wakes are fenced at admission: paused,
-				// cancelled or over-budget assignments never reach the model
-				// (SPEC-0080 R2.2).
-				live.State = "capped"
 			} else {
 				// Semantic escalation is opt-in per revision: the change
 				// evidence reaches the model flagged untrusted, through the
@@ -496,13 +590,13 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				admitted.Envelope.ConversationID = RoutineConversation(live.ScheduleID)
 				instruction := schedule.WakePrompt
 				if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
-					assignment, _ := e.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision)
-					instruction = fmt.Sprintf("Standing assignment %s (revision %d), trigger job %s.\nOwner intent: %s\nSpecialist instructions: %s\nProgress: %s\nNext step: %s\nAfter handling this trigger, call assignment_get then assignment_progress with this job ID, current expected_revision, summary, optional finding and next_step; complete only when the owner's completion condition is met.", assignment.AssignmentID, assignment.Revision, admitted.ID, assignment.Intent, instruction, assignment.Progress.Summary, assignment.Progress.NextStep)
+					assignment, _ := e.AssignmentForWake(schedule.AssignmentID, schedule.AssignmentPlanRevision)
+					instruction = fmt.Sprintf("Standing assignment %s (revision %d), trigger job %s.\nOwner intent: %s\nSpecialist instructions: %s\nProgress: %s\nNext step: %s\nAfter handling this trigger, call assignment_read then assignment_edit action=progress with this job ID, current expected_revision, summary, optional finding and next_step; complete only when the owner's completion condition is met.", assignment.AssignmentID, assignment.Revision, admitted.ID, assignment.Intent, instruction, assignment.Progress.Summary, assignment.Progress.NextStep)
 				}
 				admitted.Text = instruction + "\n[untrusted watcher evidence] " + text
-				if _, err := e.deps.EnqueueJob(admitted); err != nil {
-					return
-				}
+				admitted.AssignmentID = schedule.AssignmentID
+				admitted.AssignmentPlanRevision = schedule.AssignmentPlanRevision
+				result.Job = &admitted
 			}
 		} else if notify {
 			prefix := "watch-"
@@ -513,25 +607,32 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 			if schedule.DeliverMode == "artifact" {
 				// The emitted value is the file body; staging rides the
 				// artifact blob path channels already drain (SPEC-0037).
-				blob, blobErr := e.deps.WriteDeliveryBlob(d.ID, schedule.ArtifactName, []byte(value))
+				blob, blobErr := e.deps.Delivery.WriteDeliveryBlob(d.ID, schedule.ArtifactName, []byte(value))
 				if blobErr != nil {
-					return
+					return err
 				}
 				d.Artifacts = []hubruntime.ArtifactRef{{Name: schedule.ArtifactName, Blob: blob}}
 			}
 			nd, err := e.normalizeDelivery(d)
 			if err != nil {
-				return
+				return err
 			}
 			result.Delivery = &nd
 		}
 	}
 	result.Watch, result.Occurrence = st, live
 	receipt := filepath.Join(e.root, "occurrences", occurrenceID(o)+".probe-result")
-	if e.atomicJSON(receipt, result) != nil {
-		return
+	encoded, encodeErr := json.Marshal(result)
+	if encodeErr != nil {
+		return encodeErr
 	}
-	_ = e.ApplyProbeResultLocked(result)
+	if len(encoded) > 4<<20 {
+		return errors.New("probe receipt exceeds record limit")
+	}
+	if err := e.atomicJSON(receipt, result); err != nil {
+		return err
+	}
+	return e.applyProbeResultAtLocked(result, now)
 }
 
 // notifyProbeFailureLocked surfaces a dead probe to the owner once per
@@ -539,7 +640,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 // routine job failures and blocked notices. Without it a broken source
 // looks like a quiet watch forever. e.mu must be held.
 func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason string, now time.Time) {
-	item, err := e.LoadScheduleLocked(o.ScheduleID)
+	item, err := e.LoadSchedule(o.ScheduleID)
 	if err != nil {
 		return
 	}
@@ -554,9 +655,9 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 	// never silences the next identical failure.
 	item.PendingFailureSHA256 = digest
 	item.UpdatedAt = now.UTC()
-	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
+	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, Kind: "routine-failure", OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
 	if nd, err := e.normalizeDelivery(d); err == nil {
-		_ = e.deps.EnqueueDelivery(nd)
+		_ = e.deps.Delivery.EnqueueDelivery(nd)
 	}
 	_ = e.atomicJSON(e.SchedulePath(item.ScheduleID), item)
 }
@@ -564,7 +665,7 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 // clearProbeFailureLocked drops the stored failure digest after a probe
 // success so the next failure episode notifies again. e.mu must be held.
 func (e *Engine) clearProbeFailureLocked(scheduleID string) {
-	item, err := e.LoadScheduleLocked(scheduleID)
+	item, err := e.LoadSchedule(scheduleID)
 	if err != nil || (item.LastFailureSHA256 == "" && item.PendingFailureSHA256 == "") {
 		return
 	}

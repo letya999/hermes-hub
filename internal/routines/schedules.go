@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,11 @@ import (
 
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
 var errScheduleExists = errors.New("schedule already exists or is unreadable")
+
+// ScheduleAuthorizationFailure carries only a safe, fixed reason code into durable schedule state.
+type ScheduleAuthorizationFailure struct{ Code string }
+
+func (e *ScheduleAuthorizationFailure) Error() string { return "schedule authorization failed" }
 
 // ErrRoutineRevision rejects a mutation whose expected revision is stale —
 // the caller re-reads current state before retrying.
@@ -36,15 +42,28 @@ func EffectiveNextDue(item commodel.Schedule) time.Time {
 	return item.NextDue
 }
 
+func ScheduleState(item commodel.Schedule) string {
+	if item.BlockedReason != "" {
+		return "blocked"
+	}
+	if !item.Enabled && item.NextDue.IsZero() {
+		return "completed"
+	}
+	if item.Paused {
+		return "paused"
+	}
+	return "active"
+}
+
 // A replay returns current state, never the enabled state at creation.
 // Retired IDs are never replayed or reactivated; their tombstones conflict.
 // Foreign-owner collisions and unreadable or legacy records fail closed
 // without exposing a receipt or the conflict kind.
-func (e *Engine) CreationReplayLocked(in commodel.Schedule, caller identity.Envelope) (commodel.Schedule, bool, error) {
-	item, err := e.LoadScheduleLocked(in.ScheduleID)
+func (e *Engine) CreationReplay(in commodel.Schedule, caller identity.Envelope) (commodel.Schedule, bool, error) {
+	item, err := e.LoadSchedule(in.ScheduleID)
 	retired := false
 	if os.IsNotExist(err) {
-		b, readErr := os.ReadFile(e.CancelPath(in.ScheduleID))
+		b, readErr := e.readFile(e.CancelPath(in.ScheduleID))
 		if os.IsNotExist(readErr) {
 			return commodel.Schedule{}, false, nil
 		}
@@ -62,6 +81,28 @@ func (e *Engine) CreationReplayLocked(in commodel.Schedule, caller identity.Enve
 		return commodel.Schedule{}, true, ErrScheduleConflict
 	}
 	return item, true, nil
+}
+
+// CheckCreationReplay is the side-effect-free half of creation. It uses the
+// same destination binding and intent normalization as CreateScheduleAt, so
+// an existing check can be returned before probing its source again.
+func (e *Engine) CheckCreationReplay(in commodel.Schedule, caller identity.Envelope, routingUser ...commodel.User) (commodel.Schedule, bool, error) {
+	in = NormalizeScheduleDraft(in)
+	if err := ValidateScheduleDraft(in, caller, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, false, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
+		var err error
+		in, err = e.bindRoutineDestinationLocked(in, caller, routingUser[0])
+		if err != nil {
+			return commodel.Schedule{}, false, err
+		}
+		caller = in.Envelope
+	}
+	in.OriginJobID, in.DestinationTaskID = "", ""
+	return e.CreationReplay(in, caller)
 }
 
 func (e *Engine) CreateSchedule(in commodel.Schedule, caller identity.Envelope, nativeCron string) (commodel.Schedule, error) {
@@ -87,14 +128,14 @@ func (e *Engine) CreateScheduleAt(in commodel.Schedule, caller identity.Envelope
 func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...commodel.User) (commodel.Schedule, error) {
 	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
 		var err error
-		in, err = e.BindRoutineDestinationLocked(in, caller, routingUser[0])
+		in, err = e.bindRoutineDestinationLocked(in, caller, routingUser[0])
 		if err != nil {
 			return commodel.Schedule{}, err
 		}
 		caller = in.Envelope
 	}
 	in.OriginJobID, in.DestinationTaskID = "", ""
-	if item, found, err := e.CreationReplayLocked(in, caller); found || err != nil {
+	if item, found, err := e.CreationReplay(in, caller); found || err != nil {
 		return item, err
 	}
 	requested, intent := in.Expression, ScheduleIntent(in)
@@ -135,10 +176,10 @@ func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.En
 	in.UpdatedAt = now
 	in.Creation = &commodel.ScheduleCreation{RequestedExpression: requested, ResolvedDueAt: next, CreatedAt: now, IntentSHA256: intent}
 	path := e.SchedulePath(in.ScheduleID)
-	if _, err := os.Stat(e.CancelPath(in.ScheduleID)); !os.IsNotExist(err) {
+	if _, err := e.lstat(e.CancelPath(in.ScheduleID)); !os.IsNotExist(err) {
 		return commodel.Schedule{}, errors.New("schedule id was retired; use a new id")
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := e.lstat(path); err == nil {
 		return commodel.Schedule{}, errors.New("schedule already exists")
 	}
 	if err := e.atomicJSON(path, in); err != nil {
@@ -150,7 +191,7 @@ func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.En
 func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	entries, err := e.readDir(filepath.Join(e.root, "schedules"))
 	if os.IsNotExist(err) {
 		return []commodel.Schedule{}, nil
 	}
@@ -158,11 +199,11 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 		return nil, err
 	}
 	out := []commodel.Schedule{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(e.root, "schedules", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "schedules", name))
 		if err != nil {
 			return nil, err
 		}
@@ -173,8 +214,11 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 		if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
 			continue
 		}
+		if item.ScheduleID == SystemDreamingID {
+			continue
+		}
 		if item.JobKind == "reminder" && item.LastOccurrenceID != "" {
-			item.LastOccurrenceState, item.LastDeliveryState = e.ReminderStateLocked(item)
+			item.LastOccurrenceState, item.LastDeliveryState = e.ReminderState(item)
 		}
 		out = append(out, item)
 		out[len(out)-1].NextDue = EffectiveNextDue(item)
@@ -185,12 +229,15 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 func (e *Engine) UpdateSchedule(id string, caller identity.Envelope, expression, input string, enabled *bool) (commodel.Schedule, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(id)
+	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return commodel.Schedule{}, ErrRoutineNotOwned
+		}
 		return commodel.Schedule{}, err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return commodel.Schedule{}, errors.New("schedule not owned")
+		return commodel.Schedule{}, ErrRoutineNotOwned
 	}
 	if expression != "" {
 		item.Expression = expression
@@ -226,15 +273,198 @@ func (e *Engine) UpdateSchedule(id string, caller identity.Envelope, expression,
 	return item, nil
 }
 
+// ErrRoutineNotOwned reports a routine id outside the caller's
+// principal/context — the same error the owner's edit surface returns.
+var ErrRoutineNotOwned = errors.New("routine not found in this context")
+
+// EditOptions carries the owner-verified context a destination move needs:
+// the caller's bound user record and the pre-fetched probe baseline the
+// owner measured outside the engine lock.
+type EditOptions struct {
+	User     commodel.User
+	Baseline *string
+}
+
+// EditRoutine applies one owner patch as a single read-modify-write under
+// the engine lock: expected_revision fencing, destination move, probe
+// baseline swap, draft revalidation and the revision bump that clears the
+// blocked marker and re-arms the next due.
+func (e *Engine) EditRoutine(id string, caller identity.Envelope, patch map[string]json.RawMessage, resume bool, now time.Time, options ...EditOptions) (commodel.Schedule, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadSchedule(id)
+	if err != nil || item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
+		return commodel.Schedule{}, ErrRoutineNotOwned
+	}
+	var expected uint64
+	if _, move := patch["destination_task_id"]; move {
+		if err := json.Unmarshal(patch["expected_revision"], &expected); err != nil || expected == 0 {
+			return commodel.Schedule{}, errors.New("destination edit requires positive expected_revision")
+		}
+	}
+	if raw, ok := patch["expected_revision"]; ok {
+		if err := json.Unmarshal(raw, &expected); err != nil {
+			return commodel.Schedule{}, err
+		}
+		if expected != item.Revision {
+			return commodel.Schedule{}, ErrRoutineRevision
+		}
+	}
+	oldKind := item.JobKind
+	var opts EditOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	rawDestination, move := patch["destination_task_id"]
+	if _, hasOrigin := patch["origin_job_id"]; hasOrigin && !move {
+		return commodel.Schedule{}, errors.New("origin_job_id requires destination_task_id")
+	}
+	if move {
+		previousEnvelope := item.Envelope
+		var target, origin string
+		if err := json.Unmarshal(rawDestination, &target); err != nil || target == "" {
+			return commodel.Schedule{}, errors.New("destination_task_id must be a nonempty string")
+		}
+		if raw, ok := patch["origin_job_id"]; ok {
+			if err := json.Unmarshal(raw, &origin); err != nil {
+				return commodel.Schedule{}, err
+			}
+		}
+		item.DestinationTaskID, item.OriginJobID = target, origin
+		item, err = e.bindRoutineDestinationLocked(item, caller, opts.User)
+		if err != nil {
+			return commodel.Schedule{}, err
+		}
+		item.DestinationTaskID, item.OriginJobID = "", ""
+		if !previousEnvelope.Equal(item.Envelope) && !slices.ContainsFunc(item.PriorEnvelopes, previousEnvelope.Equal) {
+			item.PriorEnvelopes = append(item.PriorEnvelopes, previousEnvelope)
+		}
+	}
+	timingChanged, err := PatchRoutineFields(&item, patch)
+	if err != nil {
+		return commodel.Schedule{}, err
+	}
+	if _, changed := patch["probe"]; changed || oldKind != item.JobKind {
+		item.ProbeRevision = item.Revision + 1
+		item.InitialProbeValue = nil
+		item.InitialProbeValue = opts.Baseline
+	}
+	if err := ValidateScheduleDraft(item, item.Envelope, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, err
+	}
+	if timingChanged || resume {
+		if timingChanged {
+			item.IntervalAnchor = now
+		}
+		loc, err := time.LoadLocation(item.Timezone)
+		if err != nil {
+			return commodel.Schedule{}, err
+		}
+		next, err := NextSchedule(item, loc, now)
+		if err != nil {
+			return commodel.Schedule{}, err
+		}
+		item.NextDue = next
+		item.SnoozedUntil = time.Time{}
+	}
+	if resume {
+		item.Enabled, item.Paused = true, false
+	}
+	// A successful owner edit is the documented unblock path: the schedule
+	// rejoins the tick on its next due.
+	item.BlockedReason, item.BlockedAt = "", time.Time{}
+	item.Revision++
+	item.UpdatedAt = now
+	if err := e.atomicJSON(e.SchedulePath(id), item); err != nil {
+		return commodel.Schedule{}, err
+	}
+	return item, nil
+}
+
+// PatchRoutineFields decodes the editable patch keys onto the schedule and
+// reports whether a timing field changed. A kind conversion clears the old
+// kind's action settings so a converted routine never carries a stale probe
+// or source list.
+func PatchRoutineFields(item *commodel.Schedule, patch map[string]json.RawMessage) (bool, error) {
+	timingChanged := false
+	if raw, ok := patch["job_kind"]; ok {
+		var kind string
+		if err := json.Unmarshal(raw, &kind); err != nil {
+			return false, err
+		}
+		if kind != item.JobKind {
+			item.Probe, item.InitialProbeValue = nil, nil
+			item.Expect, item.NotifyMode = "", ""
+			item.MaxRetries = 0
+			item.Sink, item.Delivery = "", ""
+			item.SourceIDs = nil
+		}
+	}
+	for key, raw := range patch {
+		if (key == "input" || key == "expression" || key == "timezone" || key == "job_kind") && strings.TrimSpace(string(raw)) == "null" {
+			return false, errors.New("required routine field cannot be null: " + key)
+		}
+		var target any
+		switch key {
+		case "destination_task_id", "origin_job_id", "expected_revision":
+			continue
+		case "input":
+			target = &item.Input
+		case "expression":
+			target = &item.Expression
+			timingChanged = true
+		case "timezone":
+			target = &item.Timezone
+			timingChanged = true
+		case "timing":
+			target = &item.Timing
+			timingChanged = true
+		case "job_kind":
+			target = &item.JobKind
+		case "source_ids":
+			target = &item.SourceIDs
+		case "sink":
+			target = &item.Sink
+		case "delivery":
+			target = &item.Delivery
+		case "probe":
+			target = &item.Probe
+		case "expect":
+			target = &item.Expect
+		case "max_retries":
+			target = &item.MaxRetries
+		case "notify_mode":
+			target = &item.NotifyMode
+		case "quiet_from":
+			target = &item.QuietFrom
+		case "quiet_to":
+			target = &item.QuietTo
+		case "daily_limit":
+			target = &item.DailyLimit
+		case "catch_up_window_ns":
+			target = &item.CatchUpWindow
+		default:
+			return false, errors.New("unknown or read-only routine field: " + key)
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			return false, err
+		}
+	}
+	return timingChanged, nil
+}
+
 func (e *Engine) PauseSchedule(id string, caller identity.Envelope, expected ...uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(id)
+	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	item.Paused = true
 	if len(expected) > 0 && expected[0] != item.Revision {
@@ -254,12 +484,15 @@ func (e *Engine) DeleteSchedule(id string, caller identity.Envelope, expected ..
 // deleteScheduleLocked is DeleteSchedule's critical section (orphaned
 // assignment artifacts are removed inside the reconcile section).
 func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expected ...uint64) error {
-	item, err := e.LoadScheduleLocked(id)
+	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	item.Enabled, item.Paused = false, true
 	if len(expected) > 0 && expected[0] != item.Revision {
@@ -271,18 +504,21 @@ func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expec
 	if err := e.atomicJSON(e.CancelPath(id), item); err != nil {
 		return err
 	}
-	return os.Remove(e.SchedulePath(id))
+	return e.removeOwned(e.SchedulePath(id))
 }
 
 func (e *Engine) SnoozeSchedule(id string, caller identity.Envelope, until time.Time, expected ...uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(id)
+	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	if !until.After(time.Now().UTC()) {
 		return errors.New("snooze must be in the future")
@@ -317,7 +553,7 @@ func (e *Engine) CancelPath(id string) string {
 func (e *Engine) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(scheduleID)
+	item, err := e.LoadSchedule(scheduleID)
 	if os.IsNotExist(err) {
 		return true, nil
 	}
@@ -341,7 +577,7 @@ func (e *Engine) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 func (e *Engine) MarkRoutineFailurePending(scheduleID, digest string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(scheduleID)
+	item, err := e.LoadSchedule(scheduleID)
 	if os.IsNotExist(err) {
 		return true, nil
 	}
@@ -362,7 +598,7 @@ func (e *Engine) MarkRoutineFailurePending(scheduleID, digest string) (bool, err
 func (e *Engine) ReleaseRoutineFailurePending(scheduleID, digest string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(scheduleID)
+	item, err := e.LoadSchedule(scheduleID)
 	if err != nil || digest == "" || item.PendingFailureSHA256 != digest {
 		return err
 	}
@@ -376,7 +612,7 @@ func (e *Engine) ReleaseRoutineFailurePending(scheduleID, digest string) error {
 func (e *Engine) ClearRoutineFailure(scheduleID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	item, err := e.LoadScheduleLocked(scheduleID)
+	item, err := e.LoadSchedule(scheduleID)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -391,24 +627,40 @@ func (e *Engine) ClearRoutineFailure(scheduleID string) error {
 	return e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
-func (e *Engine) OccurrenceCurrentLocked(o commodel.RoutineOccurrence) bool {
-	if _, err := os.Stat(e.CancelPath(o.ScheduleID)); !os.IsNotExist(err) {
+// OccurrenceRetired requires an owned deletion record; an unavailable or paused
+// schedule alone must not discard retryable work.
+func (e *Engine) OccurrenceRetired(o commodel.RoutineOccurrence) bool {
+	b, err := e.readFile(e.CancelPath(o.ScheduleID))
+	if err != nil {
 		return false
 	}
-	schedule, err := e.LoadScheduleLocked(o.ScheduleID)
+	var item commodel.Schedule
+	return json.Unmarshal(b, &item) == nil && item.ScheduleID == o.ScheduleID &&
+		item.Envelope.PrincipalID == o.Job.PrincipalID && item.Envelope.ContextID == o.Job.ContextID &&
+		!item.Enabled && item.Paused && item.Revision > o.Revision
+}
+
+// OccurrenceCurrent reports whether the occurrence's schedule still exists
+// at its recorded revision and envelope. Lock-free durable read — safe
+// under any owner lock.
+func (e *Engine) OccurrenceCurrent(o commodel.RoutineOccurrence) bool {
+	if _, err := e.lstat(e.CancelPath(o.ScheduleID)); !os.IsNotExist(err) {
+		return false
+	}
+	schedule, err := e.LoadSchedule(o.ScheduleID)
 	if os.IsNotExist(err) {
 		return true // PutOccurrence also accepts externally owned recurrence clocks.
 	}
 	return err == nil && schedule.Revision == o.Revision && schedule.Envelope.Equal(o.Job.Envelope)
 }
 
-func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(commodel.Job) error) error {
+func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(scheduleID string, job commodel.Job) error) error {
 	if nativeCron == "unmigrated" {
 		return nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	entries, err := e.readDir(filepath.Join(e.root, "schedules"))
 	if err != nil {
 		return err
 	}
@@ -416,16 +668,16 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 	// schedules/quarantine and the tick continues, reporting the failure after
 	// every other schedule had its pass.
 	var errs []error
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		item, err := e.LoadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
+		item, err := e.LoadSchedule(strings.TrimSuffix(name, ".json"))
 		if err != nil {
-			if qerr := e.quarantineScheduleLocked(filepath.Join(e.root, "schedules", entry.Name())); qerr != nil {
+			if qerr := e.quarantineScheduleLocked(filepath.Join(e.root, "schedules", name)); qerr != nil {
 				return qerr
 			}
-			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(entry.Name(), ".json"), err))
+			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(name, ".json"), err))
 			continue
 		}
 		if item.BlockedReason != "" || now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
@@ -441,13 +693,13 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		}
 		if item.LastOccurrenceID != "" {
 			if !commodel.IDPattern.MatchString(item.LastOccurrenceID) || len(item.LastOccurrenceID) > 160 {
-				if err := e.BlockScheduleLocked(&item, "invalid last occurrence reference", now); err != nil {
+				if err := e.blockScheduleLocked(&item, "invalid last occurrence reference", now); err != nil {
 					return err
 				}
 				continue
 			}
 			lastPath := filepath.Join(e.root, "occurrences", item.LastOccurrenceID+".json")
-			body, err := os.ReadFile(lastPath)
+			body, err := e.readFile(lastPath)
 			if err == nil {
 				var last commodel.RoutineOccurrence
 				if json.Unmarshal(body, &last) != nil || last.Job.ID != item.LastOccurrenceID {
@@ -468,14 +720,14 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 					outstanding = now.Sub(last.DueAt) <= window
 				}
 				if last.State == "dispatched" && last.JobKind == "agent" {
-					mapping, mappingErr := e.deps.LoadMapping(last.Job.ID)
+					mapping, mappingErr := e.deps.Dispatch.LoadMapping(last.Job.ID)
 					if mappingErr != nil && !os.IsNotExist(mappingErr) {
 						return mappingErr
 					}
 					outstanding = mappingErr == nil && !commodel.TerminalStatus(mapping.Status)
 					if os.IsNotExist(mappingErr) {
 						for _, dir := range []string{"pending", "running"} {
-							_, statErr := os.Stat(filepath.Join(e.root, dir, commodel.FileID(last.Job.ID)+".json"))
+							_, statErr := e.lstat(filepath.Join(e.root, dir, commodel.FileID(last.Job.ID)+".json"))
 							if statErr == nil {
 								outstanding = true
 							}
@@ -500,15 +752,28 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 			window = DefaultCatchUp
 		}
 		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron", AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AssignmentPlanRevision}
+		if e.deps.Dispatch.PrepareJob != nil && item.JobKind != "dreaming" {
+			if err := e.deps.Dispatch.PrepareJob(&job); err != nil {
+				return err
+			}
+		}
 		occ := commodel.RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue
 		}
-		if authorize != nil && authorize(occ.Job) != nil {
-			if err := e.BlockScheduleLocked(&item, "owner authorization failed", now); err != nil {
-				return err
+		if authorize != nil {
+			authErr := authorize(item.ScheduleID, occ.Job)
+			if authErr != nil {
+				reason := "owner authorization failed"
+				var failure *ScheduleAuthorizationFailure
+				if errors.As(authErr, &failure) && (failure.Code == "owner_rights_unavailable" || failure.Code == "channel_binding_unavailable") {
+					reason += ": " + failure.Code
+				}
+				if err := e.blockScheduleLocked(&item, reason, now); err != nil {
+					return err
+				}
+				continue
 			}
-			continue
 		}
 		occ.DueAt = due.UTC()
 		occ.State = "pending"
@@ -520,7 +785,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		occ.Job.Trigger = "cron"
 		occ.Job.CreatedAt = due.UTC()
 		occPath := filepath.Join(e.root, "occurrences", occ.Job.ID+".json")
-		if _, err := os.Stat(occPath); err == nil {
+		if _, err := e.lstat(occPath); err == nil {
 			item.LastOccurrenceID = occ.Job.ID
 			if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 				return err
@@ -529,7 +794,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		}
 		found := false
 		for _, dir := range []string{"receipts", "archive", "quarantine"} {
-			_, statErr := os.Stat(filepath.Join(e.root, "occurrences", dir, occ.Job.ID+".json"))
+			_, statErr := e.lstat(filepath.Join(e.root, "occurrences", dir, occ.Job.ID+".json"))
 			if statErr == nil {
 				found = true
 				break
@@ -555,17 +820,23 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 // scan so the tick keeps serving every other owner.
 func (e *Engine) quarantineScheduleLocked(path string) error {
 	dir := filepath.Join(e.root, "schedules", "quarantine")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := e.mkdirOwned(dir, true); err != nil {
 		return err
 	}
-	return os.Rename(path, filepath.Join(dir, filepath.Base(path)))
+	return e.renameOwned(path, filepath.Join(dir, filepath.Base(path)))
 }
 
-// blockScheduleLocked marks a schedule the tick can no longer advance: the
-// state is visible as "blocked" in routine_get and the owner gets exactly one
+// BlockSchedule marks a schedule the tick can no longer advance: the state
+// is visible as "blocked" in routine_get and the owner gets exactly one
 // outbox notification per normalized reason, deduped by LastFailureSHA256.
-// s.mu must be held.
-func (e *Engine) BlockScheduleLocked(item *commodel.Schedule, reason string, now time.Time) error {
+func (e *Engine) BlockSchedule(item *commodel.Schedule, reason string, now time.Time) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.blockScheduleLocked(item, reason, now)
+}
+
+// blockScheduleLocked is BlockSchedule's critical section; callers hold e.mu.
+func (e *Engine) blockScheduleLocked(item *commodel.Schedule, reason string, now time.Time) error {
 	item.BlockedReason = reason
 	item.BlockedAt = now.UTC()
 	item.UpdatedAt = now.UTC()
@@ -583,7 +854,7 @@ func (e *Engine) BlockScheduleLocked(item *commodel.Schedule, reason string, now
 		}
 		d, err := e.normalizeDelivery(d)
 		if err == nil {
-			if err := e.deps.EnqueueDelivery(d); err != nil {
+			if err := e.deps.Delivery.EnqueueDelivery(d); err != nil {
 				return err
 			}
 			e.deps.Signal()
@@ -624,8 +895,10 @@ func (e *Engine) SchedulePath(id string) string {
 	return filepath.Join(e.root, "schedules", commodel.FileID(id)+".json")
 }
 
-func (e *Engine) LoadScheduleLocked(id string) (commodel.Schedule, error) {
-	b, err := os.ReadFile(e.SchedulePath(id))
+// LoadSchedule reads one durable schedule record. Lock-free — atomic
+// writes guarantee whole-record snapshots under any caller lock.
+func (e *Engine) LoadSchedule(id string) (commodel.Schedule, error) {
+	b, err := e.readFile(e.SchedulePath(id))
 	if err != nil {
 		return commodel.Schedule{}, err
 	}

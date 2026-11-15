@@ -1,6 +1,6 @@
 ---
 description: Telegram bot channel — adapter contract, file/usage/voice surfaces, QR auth page, limits.
-last_verified: 2026-10-30
+last_verified: 2026-11-08
 ---
 
 # Channel: Telegram (bot API)
@@ -26,6 +26,9 @@ token lives solely in communication-hub env. Contract: internal/channel
 ## Inbound files
 
 A Telegram file job carries a trusted staged ID separate from user text.
+The channel accepts an individual incoming file up to 20 MiB; larger files
+are rejected before the agent run. Image inspection uses a bounded derivative
+when several source images would exceed the model request budget.
 The runtime resolves it through the owner's `inbox_fetch` ToolHub grant
 *before* admitting the run — a failed download/save never starts a
 fileless run. Extraction/receipt semantics: docs/tools.md §Contract notes.
@@ -61,6 +64,9 @@ runtime answers, stage into the outbox, and arrive as photos/documents/
 videos with per-artifact progress (SPEC-0037). `MEDIA:`/`VOICE:` reply
 markers: docs/tools.md. `ErrUncertain` records uncertainty instead of a
 duplicate-retry; cancellation cannot recall a Telegram-accepted message.
+Generated document and image artifacts may be up to 20 MiB each; videos
+retain their separate 48 MiB bound. Photo upload falls back to document
+delivery if Telegram rejects the photo form.
 Unknown run outcomes are observed without replaying input. After the recovery
 budget expires and its one-time uncertainty notice is durable in the outbox,
 automatic observation stops; the outcome stays unknown, including when the

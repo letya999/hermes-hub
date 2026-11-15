@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -285,13 +286,42 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 		// Rendered as the supervisor bearer so communication-hub can list a
 		// principal's connectors without holding that principal's token.
-		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		ControlToken:     strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		SpacePrincipal:   strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
+		PassportRoot:     strings.TrimSpace(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL")),
+		InboxRoots:       strings.TrimSpace(os.Getenv("HUB_INBOX_BY_PRINCIPAL")),
+		CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")),
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
 		Governance: NewGovernanceStore(api.EnvOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
 		// Job-end cell release shares the controller release channel.
 		CLIRelease: config.CLIRelease,
 	}
+	if gateway.Governance != nil {
+		// The PDP's live ledger is the same governance document every other
+		// control path mutates — grants and revokes reach Decide on reload.
+		store.RightsLedger = gateway.Governance.Load
+	}
+	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
+		gateway.acquireRuntime = gateway.acquireAgentRuntime
+	}
+	if root := strings.TrimSpace(os.Getenv("HUB_VAULTS_BY_PRINCIPAL")); root != "" {
+		// Server-owned enrollment: the rendered mount view plus the published
+		// passport root are the only authority that may open a vault. A
+		// malformed bindings root fails the endpoint before it serves.
+		resolver, err := NewVaultResolver(root, gateway.PassportRoot)
+		if err != nil {
+			return nil, err
+		}
+		gateway.Vaults = resolver
+		if err := gateway.recoverMemoryProposals(); err != nil {
+			return nil, errors.New("memory proposal recovery unavailable")
+		}
+	}
+	// The lifecycle authority is the supervisor job record over the same
+	// control channel the restart notifier uses; unconfigured leaves Runs nil
+	// and the memory run gate denies every claim — fail closed by absence.
+	gateway.Runs = api.RunAuthorityFromEnv()
 	var secrets credstore.Backend
 	var injector api.CredentialInjector
 	var err error
@@ -373,40 +403,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		if err != nil {
 			return nil, err
 		}
-		gateway.AuditWrite = func(event string, fields map[string]string) error {
-			record := audit.NewEvent("tool-call", fields["principal_id"], fields["outcome"])
-			if event == "admin.diagnostics" {
-				record.PrincipalID, record.Outcome, record.Name = fields["admin"], "read", fields["target"]
-			}
-			record.ContextID = fields["context_id"]
-			record.RuntimeID = fields["runtime_id"]
-			record.ConnectionID = fields["connection_id"]
-			record.SenderID = fields["sender_id"]
-			record.TeamID = fields["team_id"]
-			record.BindingID = fields["binding_id"]
-			record.PolicyRevision = fields["policy_version"]
-			record.JobID = fields["job_id"]
-			record.HermesRunID = fields["hermes_run_id"]
-			record.ToolCallID = fields["tool_call_id"]
-			record.CorrelationID = fields["correlation_id"]
-			record.Receipt = fields["receipt"]
-			record.CapabilityID = fields["capability_id"]
-			record.CapabilityProfile = fields["capability_profile"]
-			record.ImplementationDigest = fields["implementation_digest"]
-			record.Environment = fields["environment"]
-			record.Generation, _ = strconv.ParseUint(fields["generation"], 10, 64)
-			record.CapabilityPolicyRevision, _ = strconv.ParseUint(fields["capability_policy_revision"], 10, 64)
-			record.CapabilityProfileRevision, _ = strconv.ParseUint(fields["capability_profile_revision"], 10, 64)
-			if fields["credential_revision"] != "" {
-				n, _ := strconv.ParseUint(fields["credential_revision"], 10, 64)
-				record.CredentialRevision = n
-			}
-			if fields["projection_rev"] != "" {
-				n, _ := strconv.ParseUint(fields["projection_rev"], 10, 64)
-				record.ProjectionRevision = n
-			}
-			return ledger.Append(record)
-		}
+		gateway.AuditWrite = LedgerAuditWriter(ledger)
 	}
 	handler, err := gateway.Handler()
 	if err != nil {
@@ -420,6 +417,28 @@ type projectionEndpoint struct {
 	gateway *Gateway
 }
 
+func (e *projectionEndpoint) ConfigureResearch(root, jobURL, token, jobPath string) error {
+	if jobURL == "" || token == "" {
+		return errors.New("research backend is not configured")
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return errors.New("research storage unavailable")
+	}
+	h, err := newResearchHost(root, httpResearchRunner{URL: jobURL, Token: token, Path: jobPath}, e.EnrolledAuth, e.gateway.Store)
+	if err != nil {
+		return err
+	}
+	e.gateway.Research = h
+	return nil
+}
+
+func (e *projectionEndpoint) ResearchTick(context.Context) error {
+	if e.gateway.Research == nil {
+		return nil
+	}
+	return e.gateway.Research.tick(e.EnrolledPrincipals())
+}
+
 func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
 	return e.gateway.Control.ResumeRemovals(ctx)
 }
@@ -431,6 +450,17 @@ func (e *projectionEndpoint) Reconcile(ctx context.Context) error {
 	return e.gateway.Control.NewReconciler().ScanOnce(ctx)
 }
 
+func (e *projectionEndpoint) ReconcileOnboardings(ctx context.Context) {
+	g := e.gateway
+	g.mu.Lock()
+	var enrolled []identity.Envelope
+	for _, auth := range g.Tokens {
+		enrolled = append(enrolled, auth)
+	}
+	g.mu.Unlock()
+	g.Control.LifecyclePass(ctx, enrolled)
+}
+
 // PublicHandler is the opt-in public listener surface — only human-action
 // routes, no control or gateway paths.
 func (e *projectionEndpoint) PublicHandler() http.Handler {
@@ -438,6 +468,64 @@ func (e *projectionEndpoint) PublicHandler() http.Handler {
 }
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
+
+func (e *projectionEndpoint) EnrolledPrincipals() []string {
+	g := e.gateway
+	g.mu.Lock()
+	seen := make(map[string]bool, len(g.Tokens))
+	for _, auth := range g.Tokens {
+		seen[auth.PrincipalID] = true
+	}
+	g.mu.Unlock()
+	principals := make([]string, 0, len(seen))
+	for principal := range seen {
+		principals = append(principals, principal)
+	}
+	slices.Sort(principals)
+	return principals
+}
+
+// CallReadTool is the in-process automation probe path. The principal must
+// resolve to one enrolled envelope; the shared read projection is checked
+// again at the call boundary.
+func (e *projectionEndpoint) CallReadTool(ctx context.Context, principal, name string, arguments map[string]any) ([]byte, error) {
+	auth, err := e.EnrolledAuth(principal)
+	if err != nil {
+		return nil, err
+	}
+	result, err := e.gateway.callReadTool(ctx, auth, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	if result.IsError {
+		return nil, errors.New("tool probe failed")
+	}
+	return flattenToolText(result), nil
+}
+
+func (e *projectionEndpoint) EnrolledAuth(principal string) (identity.Envelope, error) {
+	if !identity.ValidID(principal) {
+		return identity.Envelope{}, api.ErrUnauthorized
+	}
+	g := e.gateway
+	g.mu.Lock()
+	var auth identity.Envelope
+	for _, candidate := range g.Tokens {
+		if candidate.PrincipalID != principal {
+			continue
+		}
+		if auth.PrincipalID != "" && !auth.Equal(candidate) {
+			g.mu.Unlock()
+			return identity.Envelope{}, api.ErrUnauthorized
+		}
+		auth = candidate
+	}
+	g.mu.Unlock()
+	if auth.PrincipalID == "" {
+		return identity.Envelope{}, api.ErrUnauthorized
+	}
+	return auth, nil
+}
 
 type workloadReadiness func(context.Context, api.EffectiveBinding, map[string]string) error
 
@@ -478,6 +566,7 @@ func nonLoopbackListen(address string) bool {
 // fails closed.
 func agentBackendFromEnv() api.ToolBackend {
 	docker := api.EnvOr("HUB_DOCKER_BIN", "docker")
+	settings := settingsBackend(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), os.Getenv("HUB_COMMUNICATION_AUTH"))
 	// The docker socket sees every host container; scope checks keep exec,
 	// inspect and lifecycle ops inside this stack's own project.
 	api.SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
@@ -490,10 +579,10 @@ func agentBackendFromEnv() api.ToolBackend {
 	}
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
 		resolve := api.FixedAgentContainer(container)
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve))}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve)), Terminal: api.DockerTerminalExec([]string{docker}, resolve), Settings: settings}
 	}
 	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer))}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer)), Terminal: api.DockerTerminalExec([]string{docker}, api.ManagedAgentContainer), Settings: settings}
 	}
 	return nil
 }

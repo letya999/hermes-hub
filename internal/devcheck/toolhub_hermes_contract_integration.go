@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +62,15 @@ func ToolHubHermesContract(ctx context.Context) error {
 			return err
 		}
 	}
+	auditDir, err := os.MkdirTemp("", "hermes-contract-audit-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(auditDir)
+	ledger, err := audit.Open(filepath.Join(auditDir, "audit.jsonl"))
+	if err != nil {
+		return err
+	}
 	gatewayToken := os.Getenv("TOOLHUB_GATEWAY_TOKEN")
 	if gatewayToken == "" {
 		gatewayToken = strings.Repeat("h", 32)
@@ -67,7 +78,7 @@ func ToolHubHermesContract(ctx context.Context) error {
 	backend := &countingBackend{backend: api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN")}}
 	var activeGateway *toolhub.Gateway
 	newGateway := func(port int) (string, *http.Server, net.Listener, int, error) {
-		activeGateway = &toolhub.Gateway{Store: store, Backend: backend, Tokens: map[string]identity.Envelope{gatewayToken: auth}, DisableLocalhostProtection: true}
+		activeGateway = &toolhub.Gateway{AuditWrite: toolhub.LedgerAuditWriter(ledger), Store: store, Backend: backend, Tokens: map[string]identity.Envelope{gatewayToken: auth}, DisableLocalhostProtection: true}
 		handler, err := activeGateway.Handler()
 		if err != nil {
 			return "", nil, nil, 0, err
@@ -344,9 +355,9 @@ func nativeToolHubProvider(projectedName string, modelToolCalls *atomic.Int32, a
 			}
 		}
 		mcpToolName := "mcp__toolhub__" + strings.NewReplacer("-", "_", ".", "_", "/", "_").Replace(projectedName)
-		searchComplete := lastTool == "tool_search" && toolSearchHit(lastToolResult, mcpToolName)
-		searchMiss := lastTool == "tool_search" && toolReturned && !searchComplete
-		actualResult := lastTool == "tool_call" && toolReturned
+		searchComplete := lastTool == "mcp__toolhub__tool_search" && toolSearchHit(lastToolResult, mcpToolName)
+		searchMiss := lastTool == "mcp__toolhub__tool_search" && toolReturned && !searchComplete
+		actualResult := lastTool == "mcp__toolhub__tool_call" && toolReturned
 		if strings.Contains(input, "active-run") && actualResult {
 			activeRunOnce.Do(func() { close(activeRunEntered) })
 			select {
@@ -356,10 +367,10 @@ func nativeToolHubProvider(projectedName string, modelToolCalls *atomic.Int32, a
 			}
 		}
 		if strings.Contains(input, "toolhub") && request.Stream && !actualResult && !searchMiss {
-			callName := "tool_search"
-			callArguments, _ := json.Marshal(map[string]any{"queries": []string{mcpToolName}})
+			callName := "mcp__toolhub__tool_search"
+			callArguments, _ := json.Marshal(map[string]any{"query": mcpToolName})
 			if searchComplete {
-				callName = "tool_call"
+				callName = "mcp__toolhub__tool_call"
 				callArguments, _ = json.Marshal(map[string]any{"name": mcpToolName, "arguments": map[string]any{}})
 				modelToolCalls.Add(1)
 			}

@@ -1,12 +1,12 @@
 package routines
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +15,6 @@ import (
 )
 
 type watcherTestDeps struct {
-	mu         *sync.Mutex
 	jobs       []commodel.Job
 	deliveries []commodel.Delivery
 	mappings   []string
@@ -28,30 +27,36 @@ func newWatcherTest(t *testing.T) (*Engine, *watcherTestDeps, string) {
 			t.Fatal(err)
 		}
 	}
-	d := &watcherTestDeps{mu: &sync.Mutex{}}
-	e := NewEngine(root, d.mu, Deps{
-		WriteJSONAtomic: func(path string, value any) error {
-			b, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(path, b, 0600)
+	d := &watcherTestDeps{}
+	e := NewEngine(root, Deps{
+		Storage: StoragePort{
+			WriteJSONAtomic: func(path string, value any) error {
+				b, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(path, b, 0600)
+			},
 		},
 		ChannelFor: func(string) OccurrenceChannel { return stubChannel{} },
-		LoadMapping: func(id string) (commodel.JobMapping, error) {
-			d.mappings = append(d.mappings, id)
-			return commodel.JobMapping{}, os.ErrNotExist
+		Dispatch: DispatchPort{
+			LoadMapping: func(id string) (commodel.JobMapping, error) {
+				d.mappings = append(d.mappings, id)
+				return commodel.JobMapping{}, os.ErrNotExist
+			},
+			EnqueueJob: func(j commodel.Job) (bool, error) {
+				d.jobs = append(d.jobs, j)
+				return true, nil
+			},
 		},
-		EnqueueJob: func(j commodel.Job) (bool, error) {
-			d.jobs = append(d.jobs, j)
-			return true, nil
+		Delivery: DeliveryPort{
+			EnqueueDelivery: func(dv commodel.Delivery) error {
+				d.deliveries = append(d.deliveries, dv)
+				return nil
+			},
+			NormalizeDelivery: func(dv commodel.Delivery) (commodel.Delivery, error) { return dv, nil },
 		},
-		EnqueueDelivery: func(dv commodel.Delivery) error {
-			d.deliveries = append(d.deliveries, dv)
-			return nil
-		},
-		NormalizeDelivery: func(dv commodel.Delivery) (commodel.Delivery, error) { return dv, nil },
-		Signal:            func() {},
+		Signal: func() {},
 	})
 	return e, d, root
 }
@@ -123,7 +128,7 @@ func TestProbeFailureNotifiesOncePerError(t *testing.T) {
 		t.Fatalf("repeated same error must stay silent, got %d deliveries", len(d.deliveries))
 	}
 	settle("ok", nil, 2)
-	st, err := e.LoadWatchStateLocked("w-fail")
+	st, err := e.LoadWatchState("w-fail")
 	if err != nil || st.LastError != "" {
 		t.Fatalf("success must clear last_error, got %q err=%v", st.LastError, err)
 	}
@@ -146,7 +151,7 @@ func TestProbeEmptyValueFails(t *testing.T) {
 	if got := readOccurrence(t, root, o).State; got != "failed" {
 		t.Fatalf("empty value must fail the occurrence, got %q", got)
 	}
-	st, err := e.LoadWatchStateLocked("w-empty")
+	st, err := e.LoadWatchState("w-empty")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +170,18 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	loud := commodel.Schedule{ScheduleID: "w-loud", Revision: 1, Envelope: env, Channel: "telegram_bot", Input: "zen", Timezone: "UTC", NotifyMode: "agent", Probe: &commodel.WatchProbe{URL: "https://example.com"}}
 	now := time.Date(2026, 10, 18, 21, 30, 0, 0, time.UTC)
 	for _, item := range []commodel.Schedule{quiet, loud} {
+		item.Enabled = true
+		if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+			t.Fatal(err)
+		}
 		if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID, Baseline: "old", Value: "old"}); err != nil {
 			t.Fatal(err)
 		}
 		o := watchOccurrence(item.ScheduleID, "watcher", 1, env, now)
 		putOccurrenceState(t, e, root, o, "probing")
-		e.SettleProbe(o, item, "new value", WatchHash("new value"), now, nil, nil)
+		if err := e.SettleProbe(o, item, "new value", WatchHash("new value"), now, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	quietLive := readOccurrence(t, root, watchOccurrence("w-quiet", "watcher", 1, env, now))
 	if quietLive.State != "capped" {
@@ -181,6 +192,53 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	}
 	if len(d.deliveries) != 0 {
 		t.Fatalf("agent mode must not fall back to delivery, got %+v", d.deliveries)
+	}
+}
+
+func TestOneShotWatcherFinishesProbeAfterScheduleRetires(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	item := commodel.Schedule{ScheduleID: "w-once", Revision: 1, Envelope: env, Channel: "telegram_bot", Expression: "once:2026-10-18T12:00:00Z", Timezone: "UTC", Paused: true, NotifyMode: "agent", DeliverMode: "content", JobKind: "watcher", Probe: &commodel.WatchProbe{Kind: "http", URL: "https://example.com"}}
+	if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID}); err != nil {
+		t.Fatal(err)
+	}
+	o := watchOccurrence(item.ScheduleID, "watcher", item.Revision, env, now)
+	putOccurrenceState(t, e, root, o, "probing")
+	if err := e.SettleProbe(o, item, "verified page", WatchHash("verified page"), now, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readOccurrence(t, root, o).State; got != "dispatched" || len(d.jobs) != 1 {
+		t.Fatalf("retired one-shot lost its in-flight probe: state=%s jobs=%d", got, len(d.jobs))
+	}
+}
+
+func TestAssignmentWatcherWakeUsesCurrentToolNames(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	assignment := commodel.Assignment{AssignmentID: "asg-watch", Envelope: env, Intent: "report changes", State: "active", AppliedRev: 1, Plan: &commodel.AssignmentPlan{Revision: 1}}
+	if _, _, err := e.CreateAssignment(assignment, env); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	item := commodel.Schedule{ScheduleID: "w-assignment", Revision: 1, Envelope: env, Channel: "telegram_bot", Timezone: "UTC", Enabled: true, NotifyMode: "agent", AssignmentID: assignment.AssignmentID, AssignmentPlanRevision: 1, Probe: &commodel.WatchProbe{URL: "https://example.com"}}
+	if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID, Baseline: "old", Value: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	o := watchOccurrence(item.ScheduleID, "watcher", 1, env, now)
+	o.Job.AssignmentID, o.Job.AssignmentPlanRevision = assignment.AssignmentID, 1
+	putOccurrenceState(t, e, root, o, "probing")
+	if err := e.SettleProbe(o, item, "new", WatchHash("new"), now, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.jobs) != 1 || !strings.Contains(d.jobs[0].Text, "call assignment_read then assignment_edit action=progress") || strings.Contains(d.jobs[0].Text, "call assignment_get") {
+		t.Fatalf("assignment watcher did not use the current tool contract: jobs=%d", len(d.jobs))
 	}
 }
 
@@ -252,5 +310,44 @@ func TestHookProbeValidates(t *testing.T) {
 	in.Probe.URL = "https://example.com"
 	if err := ValidateScheduleDraft(in, caller, hooks); err == nil {
 		t.Fatal("hook probe must reject a fetchable URL")
+	}
+}
+
+func TestProbeReceiptCannotCrossItsSourceOccurrence(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	now := time.Now().UTC()
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	source := commodel.Schedule{ScheduleID: "source-a", Revision: 1, Envelope: env, Enabled: true, JobKind: "watcher", NotifyMode: "agent", Probe: &commodel.WatchProbe{Kind: "http", URL: "https://example.invalid/a"}}
+	foreign := source
+	foreign.ScheduleID = "source-b"
+	for _, s := range []commodel.Schedule{source, foreign} {
+		if err := e.atomicJSON(e.SchedulePath(s.ScheduleID), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := watchOccurrence(source.ScheduleID, "watcher", 1, env, now)
+	putOccurrenceState(t, e, root, original, "probing")
+	other := watchOccurrence(foreign.ScheduleID, "watcher", 1, env, now)
+	putOccurrenceState(t, e, root, other, "dispatched")
+	job := other.Job
+	job.Envelope.ConversationID = RoutineConversation(foreign.ScheduleID)
+	job.Text = "foreign fixture"
+	r := ProbeResult{Occurrence: other, Watch: WatchState{ScheduleID: foreign.ScheduleID, Generation: 1}}
+	body, _ := json.Marshal(r)
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		t.Fatal("fixture")
+	}
+	payload["job"] = job
+	path := filepath.Join(root, "occurrences", OccurrenceID(original)+".probe-result")
+	if err := e.atomicJSON(path, payload); err != nil {
+		t.Fatal(err)
+	}
+	err := e.ProbeDueOccurrencesContext(context.Background(), now, nil, func(context.Context, string) ([]byte, error) {
+		t.Fatal("receipt recovery fetched source")
+		return nil, nil
+	}, nil, nil)
+	if err == nil || len(d.jobs) != 0 {
+		t.Fatal("foreign source receipt admitted an unrelated job")
 	}
 }

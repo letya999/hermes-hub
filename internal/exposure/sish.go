@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -28,6 +29,7 @@ type ProviderOptions struct {
 	Broker            credentialbroker.Config
 	Auth              identity.Envelope
 	Public            string
+	Proxy             string
 }
 
 // SishProvider implements Provider as an in-process SSH remote forward —
@@ -77,9 +79,13 @@ func (p *SishProvider) Open(ctx context.Context, spec Spec) (string, error) {
 		return "", err
 	}
 	defer cleanup()
-	dialer := net.Dialer{Timeout: 15 * time.Second}
 	addr := p.cfg.Relay.Address()
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	var conn net.Conn
+	if p.opts.Proxy != "" {
+		conn, err = companion.ConnectViaProxy(ctx, p.opts.Proxy, addr)
+	} else {
+		conn, err = (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%w: relay dial: %v", ErrUnavailable, err)
 	}
