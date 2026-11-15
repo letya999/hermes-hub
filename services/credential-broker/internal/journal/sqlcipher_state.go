@@ -299,7 +299,7 @@ func (j *Journal) AuditFloor() (uint64, error) {
 	if err := j.sql.db.QueryRow("SELECT MIN(seq) FROM r.audit").Scan(&min); err != nil {
 		return 0, ErrUnavailable
 	}
-	if min.Valid && uint64(min.Int64) > floor {
+	if min.Valid && min.Int64 > 0 && uint64(min.Int64) > floor {
 		floor = uint64(min.Int64)
 	}
 	return floor, nil
