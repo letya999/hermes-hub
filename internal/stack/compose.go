@@ -3,7 +3,9 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"os"
@@ -38,23 +40,44 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
 
+func voiceServicesEnabled(s Settings) bool {
+	if s.Has("transcription") {
+		return true
+	}
+	if s.PassportConfig != nil {
+		for _, ch := range s.PassportConfig.Channels {
+			if ch.Voice.In != "" || ch.Voice.Out != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// regularFile reports a present, non-symlinked regular file; render only
+// ever keys substrate switches on real files the migration wrote.
+func regularFile(path string) bool {
+	info, err := os.Lstat(path) // #nosec G703 -- operator-owned compose input path
+	return err == nil && info.Mode().IsRegular()
+}
+
 func managedAgentNetwork(s Settings) string {
 	return "hermes-hub-agent-" + s.User + "-" + s.Environment
 }
+
+func ManagedAgentNetwork(s Settings) string { return managedAgentNetwork(s) }
 
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
 	stateVolumes := []any{
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime")), "target": "/state"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
+		M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "google")), "target": "/state/google"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "cache")), "target": "/state/cache"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "archive")), "target": "/archive", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
+
 		// Hermes reads the effective SOUL — persona plus the rendered channel
 		// contract — not the owner's raw file (SPEC-0053 R1.8/D7).
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
@@ -62,14 +85,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// read-only over the agent-writable state dir: mcp_servers must come
 		// from ToolHub onboarding, never from terminal edits inside the runtime.
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-		// The executor's compiled governance extract: written host-side,
-		// mounted read-only, consumed by `hubctl tools`/tools-exec via
-		// HUB_TOOL_POLICY.
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-		// The render-time expectation for the runtime tool surface; the
-		// runtime's /v1/health probe reads it via HUB_TOOL_MANIFEST and can
-		// never write it (read-only bind, agent-writable /state stays clean).
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+	}
+	if s.PassportWorkspace == nil {
+		stateVolumes = append(stateVolumes,
+			// The executor's compiled governance extract: written host-side,
+			// mounted read-only, consumed by `hubctl tools`/tools-exec via
+			// HUB_TOOL_POLICY. A published workspace passport carries it
+			// inside the /config view bind instead.
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
+			// The render-time expectation for the runtime tool surface; the
+			// runtime's /v1/health probe reads it via HUB_TOOL_MANIFEST and can
+			// never write it (read-only bind, agent-writable /state stays clean).
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+		)
 	}
 	if s.CapabilityMode == "managed" {
 		// The managed workspace is a durable bind, not tmpfs: admitted file,
@@ -77,32 +105,59 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// which are the supervisor's normal lifecycle under managed mode.
 		stateVolumes = []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "hermes")), "target": "/state/hermes"},
+			M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "workspace")), "target": "/workspace"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		}
-	}
-	if s.Has("ssh") {
-		// The whole SSH capability — host bindings, pinned host keys and any
-		// file: credentials — is operator-owned and read-only inside the runtime.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
-	}
-	if s.Has("exposure") {
-		// The reviewed exposure config — provider, relay, endpoints and any
-		// file: key — is operator-owned and read-only inside the runtime.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "exposure")), "target": "/state/exposure", "read_only": true})
-	}
-	for _, m := range s.Workspace.Mounts {
-		source, readOnly, err := s.resolveMount(m)
-		if err != nil {
-			continue // validate() already rejected it; render stays total
+		if s.PassportWorkspace == nil {
+			stateVolumes = append(stateVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+			)
 		}
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
+	}
+	// The workspace passport owns the container filesystem once a revision
+	// is published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /vault, /skills and every /shared/* mount come from the
+	// MountPlan. Component renders without a workspace still select the
+	// published /config directory; startup cannot use raw config files.
+	wsBase := dir
+	if s.CapabilityMode == "managed" {
+		wsBase = filepath.Join(dir, "managed", s.Environment)
+	}
+	if s.PassportWorkspace != nil {
+		for _, pm := range MountPlan(dir, s.Environment, wsBase, s, *s.PassportWorkspace) {
+			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(pm.Source), "target": pm.Target, "read_only": pm.ReadOnly})
+		}
+	} else {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(wsBase, "workspace")), "target": "/workspace"})
+		stateVolumes = append(stateVolumes, configMounts(dir, s.Environment)...)
+	}
+	connections := RuntimeConnections(s, dir)
+	for _, connection := range connections {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(connection.Source), "target": connection.Target, "read_only": true})
+	}
+	if s.CapabilityMode == "managed" {
+		// M31.8 S4: platform_usage reads the merged models.yaml limits and
+		// the relay's reserved-usage meter — both mounted read-only so the
+		// agent can report consumption but never rewrite its own counters.
+		stateVolumes = append(stateVolumes,
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment, "models.yaml")), "target": "/run/model-config/models.yaml", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state", "read_only": true},
+		)
+	}
+	// Declared mounts are part of the MountPlan when a workspace passport is
+	// published; the legacy loop runs only for spaces without a revision.
+	if s.PassportWorkspace == nil {
+		for _, m := range s.Workspace.Mounts {
+			source, readOnly, err := s.resolveMount(m)
+			if err != nil {
+				continue // validate() already rejected it; render stays total
+			}
+			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
+		}
 	}
 	ports := []string{}
 	// SPEC-0082 R4.2: the noVNC publish lives on the browser sidecar, not the
@@ -129,10 +184,28 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
+	// The SQLite substrate activates when the verified store.db exists and
+	// the legacy store.json has been retired by store-activate (SPEC-0090
+	// R5.1): only then does the rendered path switch backends.
+	toolhubStoreEnv := "/state/toolhub/store.json"
+	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
+		toolhubStoreEnv = "/state/toolhub/store.db"
+	}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json", "HUB_MODEL_USAGE_FILE": "/run/model-state/model-select.json.usage.json", "HUB_MODEL_REGISTRY_FILE": "/run/model-config/models.yaml"}
+	for _, connection := range connections {
+		runtimeEnv[connection.EnvKey] = connection.ConfigPath
+	}
+	if s.Has("ssh") {
+		runtimeEnv["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
+		runtimeEnv["HUB_SSH_SHELL"] = fmt.Sprint(s.Has("ssh_shell"))
+		runtimeEnv["HUB_SSH_TUNNEL"] = fmt.Sprint(s.Has("ssh_tunnel"))
+	}
 	if s.Workspace.Goal != "" {
 		runtimeEnv["HUB_BOOTSTRAP_GOAL"] = s.Workspace.Goal
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
+	}
+	if cfg := s.PassportConfig; cfg != nil && cfg.Runtime.Locale != "" {
+		runtimeEnv["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
 	}
 	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
 	if s.Has("browser") || s.Has("meet") {
@@ -140,7 +213,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// browser_cdp tool and health probe attach over the internal alias.
 		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
 	}
-	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
+	if s.ScopeKind == string(GroupScope) {
 		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
 	}
 	if s.ExecutionMode != "supervisor" {
@@ -148,7 +221,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 	if s.CapabilityMode == "managed" {
+		// R9.1: defense-in-depth for non-gateway Hermes entrypoints inside the
+		// managed runtime — the same context-file fence the gateway renders.
+		runtimeEnv["HERMES_IGNORE_RULES"] = "1"
+	}
+	if s.CapabilityMode == "managed" {
 		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
+		runtimeEnv["HUB_PASSPORT_REVISION"] = s.PassportRevision
 		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
 		runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
@@ -184,6 +263,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
 			}
 		}
+		// Same contract for the hub-side subsystem flags: pseudo-toolset
+		// wishes (memory_vault) are `via: native` markers that
+		// never join the carve-out list, so their reviewed admission rides
+		// its own env bits for the in-container replay.
+		if s.managedMemoryVaultFlag() {
+			runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
+		}
 	}
 	// The declared context-control section rides env so the materialized
 	// effective config and the in-container attestation reconstruct identical
@@ -198,8 +284,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	// The mounted dir is the read-only effective view materialized by
 	// Render: platform > org > user, with gated platform skills absent
-	// entirely when the feature is off.
-	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	// entirely when the feature is off. A published workspace passport
+	// already carries /skills through the MountPlan.
+	if s.PassportWorkspace == nil {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	}
 	// R5.1: the owner store is writable beside the read-only view; env tells
 	// the executor which path is which. Drafts never touch /skills.
 	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"})
@@ -308,7 +397,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// FAL_KEY itself. Secondary spaces reach the one deployed instance over
 	// the shared network, exactly like toolhub.
 	if s.Has("image_gen") {
-		runtimeEnv["HUB_MEDIA_URL"] = "http://hub-media:8090"
+		runtimeEnv["HUB_MEDIA_URL"] = "http://" + mediaServiceName(s) + ":8090"
 		if infra {
 			runtimeService["env_file"] = append(runtimeEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 		}
@@ -375,13 +464,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
+	// M32/#520: the open-knowledge data plane is retired — ToolHub owns the
+	// vault, so no service may mount it and upstream OK cannot act as a
+	// governed client. knowledge_ui stays a valid feature but renders
+	// nothing until an adapted governed-API surface exists (ADR-0095 D2).
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
 	dockerSock := M{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}
+	dockerGroup := fmt.Sprint(dockerSocketGID("/var/run/docker.sock"))
 	hostRoot := "/state=" + hostRuntimeDir
 	brokerMaterializedVolume := "hermes-hub-" + s.User + "-" + s.Environment + "-broker-materialized"
 	brokerMaterializedMount := M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized"}
+	var cliproxySessionVolumes []string
 	// Per-call credential material (credentials.env, <name>.secret) stages on
 	// tmpfs shared by ToolHub and the workload controller — it must never
 	// reach the persistent state bind or the host disk.
@@ -411,8 +506,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
 		svc := cloneMap(controlCommon)
+		// Drop to the shared service uid, retaining only host-file mode authority.
+		svc["user"] = fmt.Sprintf("0:%d", max(0, os.Getgid()))
+		svc["cap_add"] = []string{"SETUID", "SETGID", "SETPCAP", "FOWNER"}
 		svc["build"] = imageBuild(s.Environment + "-control")
-		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["entrypoint"] = []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
 			// Opt-in authorities stay disabled unless the operator provisions
 			// them: admin holds need a separate authority token; the personal
@@ -424,18 +522,29 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// Run-budget knobs are operator-tunable for drills and squeeze
 			// tests; empty resolves to the code defaults (30m / 60s).
 			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",
-			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}"}
+			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}",
+			// Rights PDP: runtime-facing routes decide against this
+			// deployment's ToolHub — one control plane serves every space,
+			// and the store's profile set is the cross-space boundary, so
+			// the address is the shared alias, not a per-space pattern.
+			"HUB_TOOLHUB_URL_PATTERN": "http://toolhub-control:8090"}
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/.local/supervisor.log"}}
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/.local/diagnostics"}}
 		svc["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
+		// Operator-side apply/respawn reaches the supervisor from the host;
+		// container IPs are not routable there (Docker Desktop, WSL), so the
+		// control endpoint publishes on loopback like toolhub and the broker.
+		svc["ports"] = []string{"127.0.0.1:8876:8876"}
 		svc["stop_grace_period"] = "30s"
 		services["supervisor"] = svc
 	}
 	var egressHosts []string
+	var exposureRelay string
 	if s.CapabilityMode == "managed" {
 		egressHosts = managedEgressHosts(s, dir)
+		exposureRelay = managedExposureRelay(s, dir)
 	}
 	if s.CapabilityMode == "managed" {
 		modelRelay := cloneMap(coreCommon)
@@ -453,6 +562,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
 			"HUB_MODEL_RELAY_OWNER":    s.User,
 			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+			"HUB_ENVIRONMENT":          s.Environment,
+			// Rights PDP (SPEC-0092 R2.2): model-relay PEPs decide against
+			// this space's toolhub through the control-plane bearer. A
+			// secondary space shares the infra toolhub — its own
+			// toolhub-<user> alias never exists there.
+			"HUB_TOOLHUB_URL":     toolhubDecideURL(infra, s.User),
+			"HUB_TOOLHUB_CONTROL": "${HUB_SUPERVISOR_AUTH:-}",
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
 			modelRelay["environment"].(M)[key] = value
@@ -478,13 +594,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
 		services["toolhub-relay"] = toolhubRelay
-		if len(egressHosts) > 0 {
+		if len(egressHosts) > 0 || exposureRelay != "" {
 			// The managed agent network has no default route; the reviewed
 			// web/sibling reachability for the runtime goes through this
 			// allowlisted forward proxy and nowhere else.
 			egressRelay := cloneMap(coreCommon)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
-			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
+			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": exposureRelay}
 			egressRelay["extra_hosts"] = M{}
 			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
 			services["egress-relay"] = egressRelay
@@ -499,7 +615,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment}
 		if s.CapabilityMode == "managed" {
 			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -521,6 +637,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			toolhubEnv["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
 			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
+			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = supervisorURL
+		} else {
+			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = "http://hermes-runtime:8080"
+			toolhubEnv["HUB_AUTOMATION_JOB_PATH"] = "/v1/execute"
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 			toolhubEnv[key] = value
@@ -528,6 +648,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
 			toolhubEnv[key] = value
 		}
+		toolhubEnv["HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE"] = "/run/broker-runtime-secrets/runtime.private"
 		dockerScope := "hermes-hub-" + s.User + "-" + s.Environment
 		toolhubEnv["HUB_DOCKER_SCOPE"] = dockerScope
 		// Bounded-cli owner registration: bare command names the owner may
@@ -538,9 +659,23 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
 		toolhubEnv["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
 		toolhubEnv["HUB_SKILLS_STORE"] = "/skills-store"
-		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"),
+			M{"type": "volume", "source": "broker-secrets-runtime", "target": "/run/broker-runtime-secrets", "read_only": true},
+			brokerMaterializedMount, credStagingMount,
+			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
+		if info, err := os.Lstat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed filename under the operator-selected space root
+			adminFile := filepath.Join(dir, "model-relay-admins.json")
+			toolhubEnv["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(adminFile), "target": "/config/model-relay-admins.json", "read_only": true})
+		}
+		if info, err := os.Lstat(filepath.Join(dir, "automation-routing")); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- dir is the operator-selected space root; Lstat rejects a symlink
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation-routing")), "target": "/automation-routing", "read_only": true})
+		}
+		if info, err := os.Lstat(filepath.Join(dir, "automation", s.Environment)); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- fixed subpath under the operator-selected space root
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation", s.Environment)), "target": "/automation-owners/" + s.User})
+		}
 		// Per-principal skill leases (R8.3): a shared toolhub resolves each
 		// caller's index+store under per-principal read-only roots — sibling
 		// credentials never come from the owner's mounts. Spaces without a
@@ -548,18 +683,64 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
 			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
+			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
+			toolhubEnv["HUB_INBOX_BY_PRINCIPAL"] = "/inboxes-by"
+			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
+			toolhubEnv["HUB_NIGHT_RELAY_CALLERS"] = "/model-relay-callers"
+			toolhubEnv["HUB_MODEL_USAGE_BY"] = "/model-state-by"
+			toolhubEnv["HUB_MODEL_REGISTRY_BY"] = "/model-config-by"
 			if siblings, err := os.ReadDir(parent); err == nil {
 				for _, sibling := range siblings {
-					if !sibling.IsDir() {
+					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
 						continue
 					}
+					if sibling.Name() != s.User {
+						ownerRoot := filepath.Join(parent, sibling.Name(), "automation", s.Environment)
+						if info, err := os.Lstat(ownerRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- sibling is a validated directory entry under the operator-owned spaces root
+							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(ownerRoot), "target": "/automation-owners/" + sibling.Name()})
+						}
+					}
+					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
+					if info, err := os.Lstat(published); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
+					}
+					inbox := filepath.Join(parent, sibling.Name(), "managed", s.Environment, "workspace", "inbox")
+					if info, err := os.Lstat(inbox); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(inbox), "target": "/inboxes-by/" + sibling.Name()})
+					}
+					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
+					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
+						enabled := sibling.Name() == s.User && s.PassportRevision != "" && s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled
+						if !enabled && (sibling.Name() != s.User || s.PassportRevision == "") {
+							effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name()))
+							enabled = err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment
+						}
+						if enabled {
+							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
+						}
+					}
+					callerAuth := filepath.Join(parent, sibling.Name(), "model-relay-caller.auth")
+					if info, err := os.Lstat(callerAuth); err == nil && info.Mode().IsRegular() { // #nosec G703 -- sibling is a validated directory entry under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(callerAuth), "target": "/model-relay-callers/" + sibling.Name() + "/model-relay-caller.auth", "read_only": true})
+					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
-					if info, err := os.Stat(view); err == nil && info.IsDir() {
+					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
 					}
 					store := filepath.Join(parent, sibling.Name(), "skills")
-					if info, err := os.Stat(store); err == nil && info.IsDir() {
+					if info, err := os.Stat(store); err == nil && info.IsDir() { // #nosec G703 -- fixed generated store beneath the sibling space
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name(), "read_only": true})
+					}
+					// platform_usage resolves the caller's relay meter and
+					// models.yaml under per-principal roots — read-only, so a
+					// caller can report consumption but never rewrite it.
+					modelState := filepath.Join(parent, sibling.Name(), "managed", s.Environment, "model-relay")
+					if info, err := os.Lstat(modelState); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(modelState), "target": "/model-state-by/" + sibling.Name(), "read_only": true})
+					}
+					modelConfig := filepath.Join(parent, sibling.Name(), "generated", "model-registry", s.Environment)
+					if info, err := os.Lstat(modelConfig); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(modelConfig), "target": "/model-config-by/" + sibling.Name(), "read_only": true})
 					}
 				}
 			}
@@ -572,26 +753,39 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_DIAGNOSTICS_PROJECT"] = "hermes-hub-" + s.User + "-" + s.Environment
 			toolhubEnv["HUB_DIAGNOSTICS_AGENT_NET"] = managedAgentNetwork(s)
 			toolhubEnv["HUB_DIAGNOSTICS_OWNER"] = s.User
+			// The store sits inside the /state bind; the diagnostics host
+			// bind is the only writable mount on an independent filesystem
+			// location, so the installation witness lives there.
+			toolhubEnv["HUB_TOOLHUB_IDENTITY_WITNESS"] = "/diagnostics/.toolhub-installation"
 			toolhubVolumes = append(toolhubVolumes,
 				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "diagnostics")), "target": "/diagnostics"},
-				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/diagnostics/supervisor.log", "read_only": true})
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/diagnostics/host", "read_only": true})
 		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.
-		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil { // #nosec G703 -- fixed operator-owned token file
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/run/toolhub-tokens.json", "read_only": true})
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
 		toolhub := cloneMap(controlCommon)
 		toolhub["build"] = imageBuild(s.Environment + "-control")
 		toolhub["entrypoint"] = []string{"toolhub"}
-		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
+		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"}}
+		toolhubEnv["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
 		toolhub["environment"] = toolhubEnv
 		toolhub["volumes"] = toolhubVolumes
+		groups := []string{fmt.Sprint(max(0, os.Getgid()))}
+		if s.usesDockerSocket() && dockerGroup != groups[0] {
+			groups = append(groups, dockerGroup)
+		}
+		toolhub["group_add"] = groups
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
 		toolhub["networks"] = sharedNetworks
 		if s.CapabilityMode == "managed" || supervisorURL != "" {
-			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control"}}}
+			// toolhub-<user> is the rights-PDP address sibling services
+			// (supervisor, model-relay) call; the flat toolhub-control alias
+			// stays for the gateway's legacy URL.
+			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control", "toolhub-" + s.User}}}
 		}
 		// Bounded-cli children share this cgroup: the admission receipt can
 		// claim cpu/memory/pid bounds only when the measured container cap is
@@ -612,6 +806,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind}
 		if s.usesDockerSocket() {
 			controllerVolumes = append(controllerVolumes, dockerSock)
+			controller["group_add"] = []string{dockerGroup}
 		}
 		controller["volumes"] = controllerVolumes
 		controller["ports"] = []string{"127.0.0.1:8545:8545"}
@@ -636,13 +831,68 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// after the owner so its implicit Compose aliases can never collide
 	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
-		cliproxy := cloneMap(coreCommon)
-		cliproxy["build"] = coreBuild
-		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
-		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-		name := "cliproxy-" + s.User
-		cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
-		services[name] = cliproxy
+		names := newComposePlan(s).cliproxyNames()
+		if names == nil {
+			names = []string{"cliproxy-" + s.User}
+		}
+		cliproxySessionVolumes = []string{}
+		for _, name := range names {
+			bindDir := hostCliproxyDir
+			if name != "cliproxy-"+s.User {
+				bindDir = filepath.ToSlash(filepath.Join(dir, "cliproxy", name))
+			}
+			sessionVol := "cliproxy-session-" + name
+			cfgVol := "cliproxy-cfg-" + name
+			cliproxySessionVolumes = append(cliproxySessionVolumes, sessionVol, cfgVol)
+			cliproxy := cloneMap(coreCommon)
+			cliproxy["build"] = coreBuild
+			// The init companion renders the operator config plus the
+			// instance's proxy_access key into this tmpfs — the bind never
+			// carries credential material.
+			cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/run/cliproxy-cfg/config.yaml"}
+			// The instance bind carries operator config and static assets
+			// only; auth-dir is a dedicated tmpfs the init companion fills
+			// with the Broker-materialized session files this space owns —
+			// one <ref>.json per enrolled OAuth session (R7.2).
+			cliproxy["volumes"] = []any{
+				M{"type": "bind", "source": bindDir, "target": "/cliproxy"},
+				M{"type": "volume", "source": sessionVol, "target": "/cliproxy/auths"},
+				M{"type": "volume", "source": cfgVol, "target": "/run/cliproxy-cfg"},
+			}
+			// The tmpfs volumes exist only while a live container holds their
+			// mounts: a completed init would drop them before the service could
+			// attach, so the companion stays up holding the mounts and reports
+			// readiness through its healthcheck.
+			cliproxy["depends_on"] = M{name + "-init": M{"condition": "service_healthy"}}
+			cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
+			services[name] = cliproxy
+			init := cloneMap(coreCommon)
+			// Broker may not be ready when a sibling space starts; retry this
+			// same companion until its grant can be materialized.
+			init["restart"] = "on-failure"
+			// Materialize, then hold the tmpfs mounts open for the service's
+			// lifetime — an exiting companion would destroy the volumes.
+			init["entrypoint"] = []string{"sh", "-c", "hub-runtime cliproxy-materialize && exec sleep infinity"}
+			init["healthcheck"] = M{"test": []string{"CMD-SHELL", "test -f /run/cliproxy-cfg/config.yaml && ls /cliproxy/auths/*.json >/dev/null 2>&1"}, "interval": "2s", "timeout": "5s", "retries": 30}
+			init["environment"] = M{"HUB_CLIPROXY_INSTANCE": name, "HUB_USER_ID": s.User}
+			for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CLIPROXY_", "cliproxy", "hermes-cliproxy-session") {
+				init["environment"].(M)[key] = value
+			}
+			init["volumes"] = []any{
+				// The init only reads the lease's materialized files —
+				// the shared view stays read-only to it.
+				M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized", "read_only": true},
+				M{"type": "volume", "source": sessionVol, "target": "/cliproxy/auths"},
+				M{"type": "volume", "source": cfgVol, "target": "/run/cliproxy-cfg"},
+				M{"type": "bind", "source": bindDir, "target": "/cliproxy-base", "read_only": true},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated")), "target": "/run/model-gen", "read_only": true},
+				brokerSecrets("cliproxy"),
+			}
+			// The companion resolves Broker grants over the shared runtime
+			// network; default only attaches it to the project network.
+			init["networks"] = M{"default": M{}, sharedNetworkName: M{}}
+			services[name+"-init"] = init
+		}
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
@@ -655,7 +905,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
 		if s.Has("telegram_auth") {
 			authEnv := filepath.Join(dir, "telegram-auth."+s.Environment+".env")
-			if info, err := os.Stat(authEnv); err == nil && info.Mode().IsRegular() {
+			if info, err := os.Stat(authEnv); err == nil && info.Mode().IsRegular() { // #nosec G703 -- operator-owned auth envelope path
 				gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(authEnv), "format": "raw"})
 			}
 		}
@@ -666,7 +916,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			gatewayRuntimeURL = supervisorURL
 		}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		if cfg := s.PassportConfig; cfg != nil {
+			if cfg.Runtime.Locale != "" {
+				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
+			}
+			if cfg.Runtime.Context.ParallelLanes > 0 {
+				gatewayEnvironment["HUB_CONTEXT_MAX_PARALLEL"] = fmt.Sprint(cfg.Runtime.Context.ParallelLanes)
+			}
+		}
 		if s.Has("telegram") {
 			gatewayEnvironment["HUB_TELEGRAM_AUTH_ENABLED"] = fmt.Sprint(s.Has("telegram_auth"))
 		}
@@ -681,11 +939,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
-		if s.CapabilityMode == "managed" {
-			gatewayEnvironment["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
-			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
-		}
-		if s.Has("transcription") {
+		// config.channels.*.voice is the imperative voice contract: any
+		// channel carrying an in/out block wires the same service endpoints
+		// the legacy transcription feature does (SPEC-0092 R4.2).
+		channelsVoice := voiceServicesEnabled(s)
+		if channelsVoice {
 			// SPEC-0082 R2: voice is service-only — the gateway talks to the
 			// dedicated hub-stt/hub-tts services or reports voice unavailable.
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
@@ -705,6 +963,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
+			gatewayEnvironment["HUB_AUTOMATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
 		// The skillgit ExecCell posts to the controller /cli-exec derived
@@ -729,19 +988,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.
 		usersFile := filepath.Join(dir, "communication.users.yaml")
-		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned users file
 			gatewayEnvironment["HUB_COMMUNICATION_CONFIG"] = "/config/communication.users.yaml"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(usersFile), "target": "/config/communication.users.yaml", "read_only": true})
 		}
 		// Sibling runtimes authenticate control calls (credential forms,
 		// prepare-outcome, routines) with their own enrolled tokens.
-		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned token file
 			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
 		}
 		// Per-principal relay routing for /model: the shared gateway resolves
 		// the caller's own relay URL + admin bearer from this enrolled file.
-		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned admin file
 			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
 		}
@@ -759,7 +1018,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						continue
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
-					if info, err := os.Stat(view); err == nil && info.IsDir() {
+					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
 						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
 					}
 					// /v1/skill-git resolves the caller's store here; publish
@@ -767,7 +1026,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					// mount stays writable — drafts and .sources mirrors are
 					// created in place so the runtime sees them instantly.
 					store := filepath.Join(parent, sibling.Name(), "skills")
-					if info, err := os.Stat(store); err == nil && info.IsDir() {
+					if info, err := os.Stat(store); err == nil && info.IsDir() { // #nosec G703 -- fixed generated store beneath the sibling space
 						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name()})
 					}
 				}
@@ -789,7 +1048,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// mounts or user spaces. HUB_MEDIA_ENGINE=remote with
 		// HUB_MEDIA_UPSTREAM points a service at any OpenAI-compatible
 		// upstream (Groq, Speaches, a self-hosted whisperx, NVIDIA NIM).
-		if s.Has("transcription") {
+		if channelsVoice {
 			mediaAuth := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"}}
 			for _, role := range []string{"stt", "tts"} {
 				name := "hub-" + role
@@ -840,7 +1099,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// credential broker (media keypair in broker-secrets-media). With no grant
 	// configured the engines fall back to env keys — meaningful only outside
 	// the rendered stack, since compose no longer mounts a media env file.
-	if infra && s.Has("image_gen") {
+	privateMedia := !infra && s.PassportServices["hub-media"] == "per-space"
+	if s.Has("image_gen") && (infra || privateMedia) {
 		mediaSvc := cloneMap(coreCommon)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
 		mediaEnv := M{
@@ -869,17 +1129,35 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": "hub-media",
 			"HOME": "/tmp", "TZ": s.Timezone,
 		}
-		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MEDIA_", "media", "hermes-media") {
-			mediaEnv[key] = value
+		if privateMedia {
+			mediaEnv["HUB_MEDIA_UPSTREAM"] = "http://model-relay-" + s.User + ":8318"
+			mediaEnv["HUB_MEDIA_IMAGE_MODEL"] = s.ImageGen.Model
+			mediaEnv["HUB_MEDIA_IMAGE_MODELS"] = s.ImageGen.Model
+			mediaEnv["HUB_MEDIA_MODEL_ROUTES"] = s.ImageGen.Model + "=remote:image"
+			mediaEnv["HUB_MEDIA_CHAT_MODELS"] = "image"
+			mediaEnv["HUB_MEDIA_BROKER_GRANT"] = ""
+		} else {
+			for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MEDIA_", "media", "hermes-media") {
+				mediaEnv[key] = value
+			}
 		}
 		mediaSvc["environment"] = mediaEnv
 		mediaSvc["env_file"] = []any{
 			M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"},
 		}
-		mediaSvc["volumes"] = []any{M{"type": "volume", "source": "hub-media-data", "target": "/data"}, brokerSecrets("media")}
+		mediaSvc["volumes"] = []any{M{"type": "volume", "source": "hub-media-data", "target": "/data"}}
+		if privateMedia {
+			mediaSvc["env_file"] = append(mediaSvc["env_file"].([]any), M{"path": filepath.ToSlash(filepath.Join(dir, "media-relay.auth")), "format": "raw"})
+		} else {
+			mediaSvc["volumes"] = append(mediaSvc["volumes"].([]any), brokerSecrets("media"))
+		}
 		mediaSvc["networks"] = sharedNetworks
 		mediaSvc["healthcheck"] = M{"test": []string{"CMD", "hub-media", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
-		services["hub-media"] = mediaSvc
+		if privateMedia {
+			// The upstream PDP denies calls while space apply holds its recovery journal.
+			mediaSvc["healthcheck"] = M{"test": []string{"CMD", "hub-media", "health-local"}, "interval": "30s", "timeout": "5s", "retries": 3}
+		}
+		services[mediaServiceName(s)] = mediaSvc
 	}
 	if includeGateway && !infra {
 		// Secondary spaces never keep a resident runtime: their gateway jobs
@@ -897,6 +1175,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	for _, name := range cliproxySessionVolumes {
+		volumes[name] = M{"driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=8m,uid=10001,gid=10001,mode=0700"}}
+	}
+	if len(cliproxySessionVolumes) > 0 {
+		volumes["broker-secrets-cliproxy"] = M{}
+		if !infra {
+			// The shared Broker materializes leases inside its own infra
+			// project volume; a sibling's session-init reads it there. The
+			// volume is named after the infra owner, not this space.
+			infraOwner := filepath.Base(InfraSpaceDir(dir))
+			volumes["broker-materialized"] = M{"external": true, "name": "hermes-hub-" + infraOwner + "-" + s.Environment + "-broker-materialized"}
+		}
+	}
 	if s.Has("hosting") {
 		hostingVolumes := runtimeService["volumes"].([]any)
 		addHosting(services, volumes, s, dir, common, runtimeEnv, &hostingVolumes)
@@ -909,6 +1200,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.CapabilityMode == "managed" {
 		volumes["broker-secrets-model"] = M{}
+	}
+	if includeGateway {
+		// The stack passport bounds the emitted set: services map modes
+		// decide what renders locally; undeclared emission is dropped (R3.2).
+		services = newComposePlan(s).filter(services)
 	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if composeSecrets != nil {
@@ -930,7 +1226,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
-		if s.Has("transcription") {
+		if voiceServicesEnabled(s) {
 			volumes["hub-stt-data"] = M{}
 			volumes["hub-tts-data"] = M{}
 		}
@@ -938,6 +1234,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			volumes["hub-media-data"] = M{}
 			volumes["broker-secrets-media"] = M{}
 		}
+	}
+	if privateMedia && s.Has("image_gen") {
+		volumes["hub-media-data"] = M{}
 	}
 	// The shared runtime network is operator-owned infrastructure: it is
 	// created once (docker network create hermes-hub-runtime), outlives any
@@ -1026,4 +1325,20 @@ var cliRegistryHosts = map[string][]string{
 	"npm":   {"registry.npmjs.org"},
 	"cargo": {"index.crates.io", "static.crates.io", "crates.io"},
 	"go":    {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
+}
+
+// /config is always the published view; missing publication cannot select raw files.
+func configMounts(dir, env string) []any {
+	view := filepath.Join(dir, "generated", "config-view", env)
+	return []any{M{"type": "bind", "source": filepath.ToSlash(view), "target": "/config", "read_only": true}}
+}
+
+// toolhubDecideURL is the rights-PDP address for a space's out-of-process
+// PEPs: the infra space's own ToolHub answers at toolhub-<user>; secondary
+// spaces share that control plane through its stable toolhub-control alias.
+func toolhubDecideURL(infra bool, user string) string {
+	if infra {
+		return "http://toolhub-" + user + ":8090"
+	}
+	return "http://toolhub-control:8090"
 }

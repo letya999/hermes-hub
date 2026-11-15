@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -322,11 +321,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestManagedRestartMaterializesChangedDisplayOverlay(t *testing.T) {
+func TestManagedRestartIgnoresRetiredDisplayOverlay(t *testing.T) {
 	t.Setenv("HUB_ENV", "prod")
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"scheduled":true}`) }))
 	defer api.Close()
 	var configPath string
+	var baseline []byte
 	checked := false
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "inspect" {
@@ -334,8 +334,8 @@ func TestManagedRestartMaterializesChangedDisplayOverlay(t *testing.T) {
 		}
 		if args[0] == "restart" {
 			body, err := os.ReadFile(configPath)
-			if err != nil || !strings.Contains(string(body), "long_running_notifications: false") {
-				t.Error("managed restart did not materialize the changed display overlay", err)
+			if err != nil || !bytes.Equal(body, baseline) {
+				t.Error("retired display overlay changed managed config", err)
 			}
 			checked = true
 		}
@@ -347,6 +347,10 @@ func TestManagedRestartMaterializesChangedDisplayOverlay(t *testing.T) {
 	}
 	writeManagedFixtures(t, root)
 	configPath, err = m.materializeHermesConfig(binding(root), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err = os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}

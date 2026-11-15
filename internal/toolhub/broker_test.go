@@ -90,7 +90,7 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-test", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-test", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +101,10 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != api.PhaseAwaitingConfirm || stored.Locator != "credential_1" {
-		t.Fatalf("broker request did not become ready: %+v", stored)
-	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
+	// The submitted credential is the consent — the record binds straight
+	// through to live with the consent marker instead of arming a click.
+	if stored.Stage != api.StageLive || !stored.ConfirmationUsed || stored.HumanConsent == nil || stored.Locator != "credential_1" {
+		t.Fatalf("broker request did not complete to live: %+v", stored)
 	}
 	stored, err = store.OnboardingFor(auth, stored.OnboardingID)
 	if err != nil {
@@ -126,18 +125,17 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	reinstall, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
+	reinstall, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := control.ensureBrokerRequest(t.Context(), auth, &reinstall, definition); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 || reinstall.BrokerCredentialID != "credential_1" || reinstall.Phase != api.PhaseAwaitingConfirm {
-		t.Fatal("reinstall created new enrollment")
-	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": reinstall.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
+	// The slot attaches a repeat install to the live record: the broker
+	// enrollment and binding are reused, no second record or confirm exists.
+	if requests != 1 || reinstall.OnboardingID != onboarding.OnboardingID || !reinstall.ConfirmationUsed {
+		t.Fatalf("reinstall created new enrollment: requests=%d reinstall=%s/%s want=%s", requests, reinstall.OnboardingID, reinstall.Stage, onboarding.OnboardingID)
 	}
 	reinstalled, _ := store.OnboardingFor(auth, reinstall.OnboardingID)
 	if reinstalled.BindingID != stored.BindingID || len(store.connections) != 1 {
@@ -149,12 +147,11 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if requests != 2 {
 		t.Fatal("rotation did not request Broker form")
 	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": confirmNonceOf(t, store, reinstall.OnboardingID)}); err != nil {
-		t.Fatal(err)
-	}
+	// The rotated request is already ready — the broker grant is the consent,
+	// so rotation binds inline without a confirm click.
 	reinstalled, _ = store.OnboardingFor(auth, reinstall.OnboardingID)
 	if grantRevocations != 1 || len(store.connections) != 1 || reinstalled.ConnectionID != stored.ConnectionID || reinstalled.CredentialRefID == stored.CredentialRefID {
-		t.Fatal("rotation did not replace same connection revision")
+		t.Fatalf("rotation did not replace same connection revision: revocations=%d connections=%d stage=%s gate=%v conn=%s want=%s ref=%s want!=%s err=%q", grantRevocations, len(store.connections), reinstalled.Stage, reinstalled.Gate, reinstalled.ConnectionID, stored.ConnectionID, reinstalled.CredentialRefID, stored.CredentialRefID, reinstalled.Error)
 	}
 	if err := injection.Cleanup(); err != nil {
 		t.Fatal(err)
@@ -426,10 +423,10 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 		Schema: api.SchemaVersion, OnboardingID: "onboard_broker_status", PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingCatalog, DefinitionID: "github-work", DefinitionVersion: "1.0.0",
-		Phase: api.PhaseAwaitingCreds, Required: []api.CredentialHint{{Name: "TOKEN", Type: "token"}},
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "", Expires: time.Time{}}, Required: []api.CredentialHint{{Name: "TOKEN", Type: "token"}},
 		BrokerRequestID: "request_1", BrokerAuthorizationURL: "https://broker.example/connect/request_1",
-		Revision: 1, CreatedAt: time.Now(),
-	}
+		Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +544,7 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-regen", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-regen", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +631,7 @@ func TestCredentialBrokerMissingRequestRegeneratesAndNotifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-missing", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-missing", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +692,7 @@ func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-pending", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-pending", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +768,7 @@ func TestCredentialBrokerPendingRequestRemainsUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-dying", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-dying", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +840,7 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -921,7 +918,7 @@ func TestStatusQRIntakeKeepsSignInURLWithStaleError(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1270,9 +1267,17 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 			if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 				t.Fatal(err)
 			}
+			path := filepath.Join(t.TempDir(), "toolhub", "store.json")
+			if err := store.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			store, err = Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 			control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-			onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
+			onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1280,12 +1285,14 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "active" {
-				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Phase != api.PhaseAwaitingConfirm {
+				// Reuse binds straight through — the install request is the
+				// consent; no second confirm step is armed.
+				if requests != 0 || onboarding.BrokerCredentialID != "credential_1" || onboarding.Awaiting(api.GateConfirmSetup) || onboarding.Awaiting(api.GateCredentials) {
 					t.Fatalf("live credential was not reused: requests=%d onboarding=%+v", requests, onboarding)
 				}
 				return
 			}
-			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Phase == api.PhaseAwaitingConfirm {
+			if requests != 1 || onboarding.BrokerRequestID != "request_2" || onboarding.BrokerCredentialID == "credential_1" || onboarding.Awaiting(api.GateConfirmSetup) {
 				t.Fatalf("revoked credential was reused: requests=%d onboarding=%+v", requests, onboarding)
 			}
 		})

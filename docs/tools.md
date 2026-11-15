@@ -1,6 +1,6 @@
 ---
-description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-10-31"
+description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
+last_verified: "2026-11-15"
 ---
 
 # Tool surface
@@ -10,9 +10,89 @@ capability profile decide what exists (docs/rbac.md). A tool absent from the
 list is denied, not hidden-by-convention. Two MCP servers carry everything:
 `toolhub` (`mcp__toolhub__*`, control plane) and the hub executor — configured
 as `mcp_servers.hub` (`mcp__hub__*`, implementation name `hermes-hub-tools`;
-the `hub:tools` governance section) for workspace/user tools. Every tool declares read or
-write effect; write effects additionally need the active write path
-(described per group).
+the `hub:tools` governance section) for workspace/user tools. Every tool
+declares read or write effect; write effects additionally need the active
+write path (described per group).
+
+Catalog release 5 (ADR-0094) names every model tool `<noun>_<verb>` under one
+of 21 first-party families plus the pinned `platform` family — 97 callable
+tools total. Each family is a placeable toolset under its logical name
+(`tools.yaml` `tools:`/`core:`/`extended:` entries); `via` selects the route
+(`toolhub`, `native`, `mcp`, `mcp-raw`, `off`) and `executor` names the
+backend behind the PEP (`handler:<family>`, `connector:<name>`,
+`flow:<name>`, `runtime:<api>`, `native`, `off`).
+
+## Platform catalogs (ADR-0092 D3, ADR-0094)
+
+The platform vocabulary every space contract references is generated — never
+hand-edited — into immutable release directories:
+
+- `platform/catalogs/<release>/capabilities.yaml` — executor capabilities
+  (`<family>.<verb>`) with their full operation/resource vocabulary, worst-case
+  effect, `call|path` scope, issuer, admitted executor (`via`), member tools,
+  plus the control-plane operations and governance sections.
+- `platform/catalogs/<release>/toolsets.yaml` — placeable surfaces keyed by
+  logical name: the 20 families plus pinned `platform` (`kind: family`,
+  `via: toolhub`, member tools + `tools:` aliases), connector surfaces under
+  bare names (`github`, `gitlab`, `google`, `slack`, `atlassian`,
+  `telegram_user` — `kind: connector`, `via: mcp`,
+  members projected dynamically by the connector owner), the raw-MCP
+  surfaces `user_mcp`/`org_mcp` (`kind: connector`, `via: mcp-raw`,
+  `uncurated`, extended-only), and the upstream/pseudo vocabulary under
+  `native:<name>` (`via: native`, `carveout` marks managed re-enablement).
+  Denied-by-design upstream names carry no section and no `via`; an ad-hoc
+  `mcp-raw:<server>` is never a toolset — it cannot mint a section.
+- `platform/catalogs/<release>/services.yaml` — `features:` (owner-enabled
+  connectors: requires/depends_on/self_service) and `infra:` platform service
+  kinds with instance cardinality and allowed dependency edges.
+- `manifest.yaml` binds each release with sha256 file digests.
+
+- `platform/catalogs/<release>/rights.yaml` — the RBAC vocabulary
+  (SPEC-0092 R2, SPEC-0093 R2): fundamental rights domains (`workspace`,
+  `memory`, `models`, `sessions`, `tasks`, `ssh`, `exposure`, `research`,
+  `browser`, `platform`, `exec`, `web`, `context`, `goals`, `tools`,
+  `skills`, `connectors`, `agents`, `users`, `stack`, `config`, `channels`,
+  `observability`) with every operation's subject (self|cross), scope kind,
+  issuers, PEP enforcement sites, effect class and norm description.
+  `grants.yaml` allows are subsets of this vocabulary — a domain or
+  operation absent from `rights.yaml` cannot be granted, and a catalog
+  member without a resolvable right fails the catalog build.
+
+`devcheck catalog-emit` regenerates the current release; it refuses to
+overwrite drifted bytes — a vocabulary change must bump `catalog.Release`
+and land as a new directory. `internal/catalog`'s parity test proves the
+catalogs match the real handlers, sections, compose services and this file;
+a space loads only a pinned release (`catalog.Load`) and every unknown
+capability, operation, toolset, service or release fails closed. M32 keeps
+track 2's immutable releases 14–16; track 1 emitted a different release 14
+at `8cb598fb`, whose original bytes remain in that commit.
+Release 20 adds `memory_open` and pairs with `hub-agent-tools@18.0.2`.
+Release 21 pairs with `hub-agent-tools@18.1.0`, renames the ToolHub `web`
+family to `web_search`, adds provider and cache operations, and removes the
+unused `desktop` and `drafts` companion connectors.
+Release 22 pairs with `hub-agent-tools@18.2.0` and wires `runtime:sessions`
+to communication's owner task registry and Hermes transcript.
+Release 23 pairs with `hub-agent-tools@18.3.2` and adds the managed speech calls.
+Release 24 pairs with `hub-agent-tools@18.3.3`: the platform default selects
+`web_search`, `sessions`, `memory` and `media` through ToolHub, web provider
+failure is a failed MCP call, and the local STT worker preserves measured
+segments. Native toolsets remain available for explicit future selection.
+Release 25 pairs with `hub-agent-tools@18.3.4`: `site_list` returns allocated
+slot names and published sites; unallocated names fail before publish throttling.
+Context status defaults to the active turn, preview reports `would_method` and
+uses null for an unknown post-preview message count. Session create/switch
+report `effective_from=next_turn`; watch sampling requires an existing watch.
+Release 26 pairs with `hub-agent-tools@18.3.5`: a failed `site_publish` request
+remains an error on idempotent replay, so `state=failed` cannot look successful.
+Release 27 pairs with `hub-agent-tools@18.3.6`: `media_transcribe` accepts an
+audio path relative to the admitted workspace or the same path under
+`/workspace/`; traversal and paths outside that root remain forbidden.
+Release 28 pairs with `hub-agent-tools@18.3.7`: `skill_edit install_local`
+returns its draft diff, lint and scan, and the tool description names the
+`file_write` staging step and `/workspace`-relative path.
+Release 29 pairs with `hub-agent-tools@18.3.8`: `routine_remove` keeps a one-time reminder active until `routine_read` confirms delivery when cleanup was requested after firing. `hub-agent-tools@18.3.10` on the same release clarifies: `assignment_plan` requires a candidate `sources[].schedule` plan and checks structure only; `assignment_edit` saves that plan before apply and records progress only from a real trigger job. An owner-requested plan-first order takes precedence over the default draft-first workflow; standalone watches are not assignment substitutes. A one-time first HTTP read uses `watcher` with `deliver_mode=content`; `check expect=unchanged` skips the first tick without a baseline. The completing job's verified response can still be sent after its source retires; owner deletion and revoked delivery rights remain fences. `hub-agent-tools@18.3.11` makes the settings edit restart risk explicit: publication may respawn the current managed runtime and interrupt the caller's turn; when the owner requires a same-turn restore or uninterrupted chat, the agent stops after `settings_read` and reports that limit.
+Release 30 pairs with `hub-agent-tools@18.3.12`: `exposure_list` returns sorted declared endpoint names and safe target classes alongside live tunnels; `hub_public_listener` is the onboarding surface, not a test site. Release 31 pairs with `hub-agent-tools@18.3.13`: owner inventory includes stale orphan onboarding IDs; confirmed remove reclaims owned connections across policy epochs and reports incomplete cleanup until Broker deletion is verified. Release 32 paired with `hub-agent-tools@18.3.14` for the initial reconciliation/resend fix. Release 33 pairs with `hub-agent-tools@18.3.15`: connector status is a saved read; Broker events, durable notice intent, action revisions and bounded per-onboarding admissions own progress — a queued notice is not a delivery receipt. Release 34 pairs with `hub-agent-tools@18.3.16`: explicit reauth reopens credential entry during unfinished setup and after previous reauth cycles; `connector_edit action=revoke` exposes authorization revocation independently of removal. System contract rendering preserves Unicode boundaries and rejects invalid UTF-8.
+Release 35 pairs with `hub-agent-tools@18.3.17`: research jobs persist under the owning ToolHub state and expose queued/running/terminal status plus the report through `research_read`; a queued job is not a completed result. Release 36 pairs with `hub-agent-tools@18.3.18`: connector status reports the channel outbox receipt — `link_sent` is queued, `delivered` the channel ack, `uncertain` unconfirmed, `unknown` unreadable. Release 37 pairs with `hub-agent-tools@18.3.19`: a denial on a declared selection's arguments, scope or rights reports an authorization denial, not record-not-found, with a bounded `reason` class (`not-found`, `denied`, `invalid`, `error`), never argument values. `settings_read.manageable_keys` is the complete reviewed key set; chat language is `/language`; an authoritative inventory answer ends the search. Release 39 pairs with `hub-agent-tools@18.5.0`: the connector contract collapses `next_action`, `onboarding_phase`, `link_sent` and `pending_action` into derived `state`, `you_must` and channel-confirmed `delivery`+`channel` — `sent` means the named channel acknowledged the send, never user read or click. Release 38 pairs with `hub-agent-tools@18.4.0`: `tool_search` accepts `toolset` and reports the `toolsets`/`sources` inventory blocks, and the upstream deferred-tool bridge renders `tools.tool_search.enabled: off` unless the `native:tool_search` pseudo-toolset is selected. Release 40 pairs with `hub-agent-tools@18.6.0`: a `toolsets` row carrying `state:pending` is an authored connector toolset whose selections are not materialized yet — the tools are not callable, and `connector_status` owns the onboarding stage and next step. Release 41 pairs with `hub-agent-tools@18.7.0`: journaled connector operations project durable progress into the result — `current_step`, `step_index`/`step_total` over the frozen ladder, `started_at`, `elapsed_seconds` and `step_started_at` (the last journal transition, surviving restarts) — so a running install reports its position instead of a bare `working`. Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights; memory writes need a verified owner assignment and owner-confirmed edits.
 
 ## mcp__toolhub__ — control plane
 
@@ -25,68 +105,266 @@ profile's `control_operations` allowlist:
 | `prepare_source` | Prepare a source (GitHub repo URL, catalog entry) into a reviewable definition |
 | `status` | Onboarding/connection status incl. stuck cleanup step |
 | `required_credentials` | Credential hints for a prepared definition |
-| `confirm` | Execute the confirmed step behind a `?t=` link |
+| `confirm` | Read confirmation status; verified channel callback supplies human consent |
 | `enable` / `disable` / `revoke` / `remove` | Lifecycle transitions |
 | `rotate` | Re-issue a connection's credential via broker |
 | `diagnostics` | Caller-scoped, bounded, redacted log lines + workload health — the only agent-visible log surface |
 | `grant_request` | Request a grant the profile does not yet carry |
 | `install_shared` | Install a shared/team connection |
 
-Three further tools sit beside the allowlist (ADR-0089):
+For Telegram onboarding, `you_must=click_link` means a protected link needs the owner
+to press the confirmation button in the original chat. Other channels currently
+cannot complete this step. A protected page shows the
+requested action, permissions, effects and status but cannot confirm it. The
+callback binds the human actor, action digest, revision and expiry. A model
+tool call, including `confirm` with a nonce, only reads status; enablement
+waits for the verified callback. An uncertain ToolHub operation keeps its
+`operation_id` for reconciliation before any repeat.
+
+### Core and extended projection (ADR-0092 D6, ADR-0094 D5)
+
+`tools.yaml` in a space's six-passport revision groups whole toolsets into
+`core` and `extended`. Core carries at most 20 selected tools; a toolset that
+would overflow moves to `extended` wholesale — no family is ever split — and
+ordering follows the pinned `toolsets.yaml` release so a catalog bump is a
+visible revision diff, never silent growth. The `platform` family is pinned:
+always in core, never selectable or removable. Only core names receive a
+direct MCP schema; extended tools stay reachable through `tool_search` and
+`tool_call`, and every call — direct or invoked — re-resolves admission in
+the fixed order toolset → rights → scope → executor, so the boundary hides
+schemas, not authority. A declared selection denied on arguments or rights
+reports a denial, unlike an undeclared name's not-found. Per-toolset `rules`
+(`include` xor `exclude`, `access: read`, `scope`, per-tool rules) compile
+only for toolhub-routed
+toolsets; a native or raw-MCP surface that cannot provably enforce them fails
+closed at compile.
+The same document carries `binding: {profile_id, generation}` for a managed
+space. The compiler validates both fields, and runtime/ToolHub use the
+published binding rather than values in `agent.yaml`.
+
+## platform — the pinned layer
+
+Six tools are always projected, never operator-selectable or removable
+(`executor: runtime:toolhub`):
 
 | Tool | Purpose |
 |---|---|
-| `system_guide` | Static reference document — concepts and formats, no account data; always projected |
-| `tools_list` | Live caller-scoped inventory — exact admitted names re-read on every call, including tools enabled in this or another session. Compact `{name, definition, effect}` entries plus `controls`; `query` filters names, `name` returns one full spec with `input_schema`. Always projected |
-| `invoke` | Dispatch one admitted projected tool by exact `{tool, arguments}` through the same `AuthorizeProjectedCall` admission — for names the client's cached tools/list has not yet refreshed. Projected with the connectors bundle (`connectors` = `personal`/`personal+team`) or an explicit `invoke` grant |
+| `platform_guide` | Orientation: channels, active families, working directory |
+| `platform_status` | Own health and diagnostics — allowlisted safe fields only |
+| `platform_bootstrap` | Pending first-run setup steps; idempotent completion |
+| `platform_usage` | Own consumption per model/period against models.yaml limits |
+| `tool_search` | Search the extended inventory by name, description, params, definition or authored `toolset`; the `toolsets` block answers which toolsets are selected (authored core/extended names with live admitted counts, `state:pending` on an authored connector set whose selections are not materialized yet), `sources` groups admitted tools by definition |
+| `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call; core/visible names are rejected and must be invoked directly |
 
-## connector_* — unified facade
+Upstream's own deferred-tool bridge (`tool_search`/`tool_describe`/`tool_call` meta-tools grouping the deferred catalog by transport source) renders `tools.tool_search.enabled: off` in managed and unmanaged configs: ToolHub's pair is the only default discovery surface, so upstream source grouping cannot re-label the projected inventory. The reviewed pseudo-toolset `native:tool_search` (`via: native`) re-enables it — the name maps to the upstream config flag, never an upstream toolset.
+Selection in `tools.yaml` and rights in `grants.yaml` are independent. On
+apply, first-party `toolhub` family members in the published revision replace
+that definition's selections in the bound capability profile, pinned to the
+revision the profile's active binding already consents to — a rebuilt binary
+never upgrades the implementation mid-apply. Only `hubctl catalog-enable`
+moves a profile to a newer catalog version, deriving the matching capability
+rules in the same write; a publish repinning a selection past rules still
+pinned to another implementation digest is refused. The profile's core bound
+controls direct schemas, including an empty core; an open session re-reads
+the profile for list and call admission. A tool with no active `tools.use`
+or domain grant remains unavailable: `tool_search` reports it under
+`unavailable` with its `missing_right`; a selection the capability rules
+deny (expired, explicit deny, or a repin the rules never followed) reports
+`reason=capability_rules` — an operator repair state, not a grantable gap.
+For the `files` handler, selected `scope.paths` narrow the admitted path
+before dispatch and reach the executor's filesystem root. Supported roots
+are `/workspace`, `/archive` and `/organization`; unsupported path roots,
+host/URL scopes and tools without a path argument refuse apply. Per-tool
+path rules intersect with their toolset scope. Apply also refuses a selected
+first-party family when the pinned ToolHub definition has not been
+registered.
+Managed calls, including `tool_call` and self-installed connector tools,
+require a live `tools.use` grant plus the selected tool's own operation right.
+`tools.configure` authorizes changing the selection and grants no invocation.
+The authored grants passport may only publish rights already issued in
+ToolHub's protected ledger; editing the passport cannot issue a right.
+Prepared MCP connectors publish discovered members as immutable
+`connector.tool.<digest>` capabilities; enabling updates the owner's bound
+profile and calls dispatch to that connector's MCP server.
 
-Nine tools (ADR-0055, `api.ConnectorTools`), shown when the profile's
-`connectors` mode is `personal` or `personal+team`:
+## First-party families
 
-`connector_list`, `connector_search`, `connector_status`,
-`connector_install`, `connector_enable`, `connector_disable`,
-`connector_reauth`, `connector_remove`, `connector_allow_writes`.
+All 97 model tools, grouped by family (each family's governance section is
+`hub:<family>`; `native:` sections govern the upstream surface of the same
+word where one exists):
 
-Writes are double-gated: the tool itself is a write effect, and
-`connector_allow_writes` only arms a protected confirm link that flips the
-connection's `writes_enabled` — writes default off per connection.
+| Family | Tools | Executor | Notes |
+|---|---|---|---|
+| files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
+| terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded agent-image command over an admitted workspace snapshot (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); scratch writes are ephemeral and network is disabled; background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
+| documents | `document_extract`, `document_create`, `document_edit`, `document_convert`, `document_remove` | handler:documents | txt, md, csv, html, pdf, xlsx, pptx inside the admitted scope |
+| media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media; runtime:channels for speech | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; `media_transcribe` uploads an admitted audio file to hub-stt from a relative path or its `/workspace/` equivalent and optionally returns measured timestamp segments; `media_speak` requires a live run and queues speech to its recorded channel, returning `delivery_id` and `status=queued`; queued is not a sent receipt; missing services report unavailable |
+| skills | `skill`, `skill_search`, `skill_edit` | handler:skills | `skill` activates by `name` plus optional inner `path` (Agent Skills convention); `skill_search` with empty query lists all (honest `eligible`/`missing`/`stats` inventory); `skill_edit` writes drafts only — publication is the owner's approval card |
+| routines | `routine_list`, `routine_read`, `routine_create`, `routine_edit`, `routine_remove` | handler:routines | five-tool surface; `routine_edit` action update\|apply\|pause\|resume\|snooze; `args`/`steps`/`needs`/`extract`/`patch` are typed object/array, never JSON strings; see docs/routines.md |
+| watches | `watch_list`, `watch_create`, `watch_edit`, `watch_remove`, `watch_sample` | handler:watches | event subscriptions; `watch_edit` action pause\|resume; `filter` Starlark `input()`→emit keep\|drop\|urgent; `sources`/`args` are typed array/object, never JSON strings; `sources` fans one watch over ≤32 inputs; `watch_sample` dry-runs a bounded probe; see docs/routines.md |
+| assignments | `assignment_list`, `assignment_read`, `assignment_plan`, `assignment_create`, `assignment_edit`, `assignment_remove` | handler:assignments | durable multi-source mandates; `assignment_edit` action update\|apply\|pause\|resume\|progress\|cancel\|complete — cancel ends work, remove deletes the record; `plan` is a typed object, never a JSON string |
+| goals | `goal_status`, `goal_edit`, `goal_remove` | handler:goals | persistent per-conversation goal; `goal_edit` action set\|pause\|resume |
+| context | `context_status`, `context_edit` | handler:context | threshold/journal/live token estimate; `context_edit` action=compact runs turn-boundary compaction |
+| settings | `settings_read`, `settings_edit` | handler:settings in ToolHub control plane | `settings_read` returns the active config passport revision, published values and `manageable_keys` — the complete reviewed allowlist: an absent key cannot be changed through any tool, and chat language lives in the `/language` channel command, not ToolHub settings; `settings_edit` requires `key`, `base_revision` and the current issued plus published `config.edit_own` right, then publishes and reconciles a new six-passport revision; an omitted/empty `value` removes that authored leaf; stale base or unpublished draft refuses without changing effective state; rollback and interrupted-publication recovery retry only stale SQLite snapshot conflicts, at most three times under the apply lock; secrets are never shown |
 
-## hub:tools — workspace and user tools
+Goal and context calls release ToolHub registry admission before invoking the owner runtime, then recheck the binding — their supervisor/model-relay callbacks may re-enter ToolHub for rights, so holding admission would stall the request.
+| ssh | `ssh_list`, `ssh_read`, `ssh_write`, `ssh_exec`, `ssh_shell`, `ssh_tunnel` | handler:ssh | declared hosts only; `ssh_shell` action open\|send\|read\|close, `ssh_tunnel` action open\|list\|close; write/shell/tunnel need their own grant |
+| exposure | `exposure_list`, `exposure_create`, `exposure_remove` | handler:exposure | list declared names and target classes plus live tunnels; open only a reviewed endpoint by name |
+| sites | `site_list`, `site_publish`, `site_remove` | handler:sites | own hosted sites (was hosting); publish/remove are `request_id` + `expected_revision` fenced |
+| web_search | `web_search`, `web_fetch`, `web_providers`, `web_search_multi`, `web_cache` | handler:web_search | ToolHub admits each call, then the owning runtime invokes the pinned Hermes web provider or hub-web plugin through its private sidecar; configured provider allowlists, URL safety and cache policy stay upstream; a total provider failure returns an MCP error, while partial results retain their provider status; `web_cache` requires its separate mutation right |
+| connectors | `connector_search`, `connector_list`, `connector_status`, `connector_install`, `connector_edit` | runtime:connectors | control surface (see below); credentials never travel args/results |
+| research | `research_create`, `research_read`, `research_list` | flow:deep_research | owner-scoped durable model jobs: create returns `job_id` and `queued`; read returns actual status and final report; list omits report bodies. Supervisor/provider failures never count as completed research |
+| browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | handler:browser | ToolHub admits each call; the private owning runtime connects to its Playwright sidecar, with owner-bound session IDs and user/guest grants checked on each operation. `browser_open` creates a tab and `close` closes that tab. `browser_act` with `action=wait` interprets numeric `value` as seconds (>0, ≤30), otherwise waits for visible text |
+| models | `model_list`, `model_switch` | runtime:models | ToolHub routes each admitted call to that owner's Model Relay; the relay rechecks the current list/switch right and model ladder; no second model state is kept in ToolHub |
+| sessions | `session_list`, `session_search`, `session_read`, `session_create`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | Telegram task IDs from communication are the session handles; create/reuse activates a named task; search covers titles and retained model replies; read maps an owned task to a bounded Hermes user/assistant transcript via supervisor; archive/restore and switch use the existing task pointer; remove deletes task routing but retains the upstream transcript for audit; foreign IDs are opaque |
+| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private or owner assignment run verified against the supervisor job record |
+| memory | `memory_read` | runtime:toolhub | exact-id full text for an own `memory_search` hit, with its evidence and untrusted flag; same current `memory.search` right, memory switch and live private or owner assignment run; unknown, foreign and forgotten IDs are opaque `not_found` unless `history:true` permits an own forgotten entry |
+| memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|propose), executed inside ToolHub as the sole writer — edits to existing memory (`propose` with inner=truth\|merge\|forget) land only on the owner's verified confirmation; there is no `root=vault` file root and no local vault fallback |
+| memory | `memory_open` | runtime:toolhub | from a live private owner run, mint a one-hour bearer link to ToolHub's read-only private-memory view; each page request rechecks published `memory.enabled`, the selected tool and current `memory.search` right; no upstream OpenKnowledge vault mount or UI write path |
 
-Grouped by capability resource (internal/agenttools/capability.go):
+An enabled prepared connector can expose a reviewed upgrade mode through
+`prepare_source` with its exact `onboarding_id` and `upgrade_mode` (for
+example Telegram `send`). ToolHub reuses the owner's Broker credential,
+probes the new surface, rejects drift outside the prepared catalog, and
+requires the normal owner confirmation and enable before replacing the old
+binding. New write tools remain gated by the current selection and grants.
 
-| Group | Tools | Notes |
-|---|---|---|
-| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded; `root=skills` opens the read-only effective skills view |
-| services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
-| settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
-| context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
-| goals | `goal_set`, `goal_status`, `goal_pause`, `goal_resume`, `goal_clear` | persistent per-conversation goal record — same durable record `/goal` manages; bounded continuation loop with verified completion |
-| routines | `routine_create`, `routine_list`, `routine_get`, `routine_edit`, `routine_delete` | five-tool public surface; see docs/routines.md |
-| watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_resume`, `watch_delete`, `watch_sample` | event subscriptions (job_kind=event, mcp_tool probe only); `sink=notify|agent`, `delivery=stream` (bounded wait for wait-style tools; poll-style tools need `min_interval_seconds` 5–3600), `sources` fans one watch over ≤32 inputs; `cursor_arg` feeds `next_cursor` back per source after settlement; `filter` Starlark `input()`→emit keep\|drop\|urgent per event; `watch_sample` returns up to four raw events per source without waking; see docs/routines.md |
-| assignments | `assignment_plan`, `assignment_create`, `assignment_list`, `assignment_get`, `assignment_update`, `assignment_apply`, `assignment_pause`, `assignment_resume`, `assignment_cancel`, `assignment_complete`, `assignment_progress` | durable multi-source mandates (SPEC-0080); CAS via expected_revision; `assignment_progress` requires a running trigger job and stores bounded findings/next step/completion; owner-only grant widening; create a draft before source checks; plan updates retain unavailable references/reasons. Public Telegram URLs normalize to usernames; invite/discussion URLs are rejected. |
-| exposure | `exposure_list`, `exposure_status`, `exposure_open`, `exposure_close` | live public tunnels on this runtime; open/close act on declared endpoints only |
-| documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |
-| images | `image_inspect`, `images_inspect`, `image_convert`; `image_generate`, `image_edit` | generate/edit absent until the `image_gen` grant is active; png/jpeg/webp |
-| artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
-| inbox | `inbox_fetch` | materialize a user-sent file into `inbox/`; zips unpack from memory |
-| knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
-| ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
-| hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
-| exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
-| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` is the honest inventory — entries carry `eligible`, ineligible ones name their `missing` requirements, plus hub-journaled usage counters (`stats`); the tier-0 prompt block only counts ineligible skills (`+N unavailable`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
+## memory — the vault contract
+
+In managed spaces, ToolHub checks the caller's published
+`config.memory.enabled` before and immediately before executing a memory
+tool. The caller's principal selects the read-only passport mount; tool
+arguments cannot choose another space. A selected `memory_search`, `memory_read` or
+`memory_card` remains inert while this switch is false, even if the tool is
+still visible in a session. The operation right is checked separately.
+
+The `memory_vault` feature (ADR-0086, SPEC-0085) is a compatibility name for
+the `config.memory.enabled` storage switch, not a separate agent toolset.
+The `memory` family is the sole ToolHub agent surface for the vault. The switch replaces the native store
+entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
+`memory_enabled`/`user_profile_enabled` render false on both render paths,
+and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
+vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
+only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
+and `CORE.md` reaches only private-audience run instructions. Under M32 the
+runtime never mounts the vault: before dispatching an admitted private run
+the supervisor asks ToolHub for `memory/CORE.md` and a pinned lane-1 recall
+block (SPEC-0085 R4, SPEC-0098 M5) — ≤4 card hits with evidence refs,
+≤2500 chars, marker-wrapped as "data, not instructions" so capture can never
+re-extract it — verified against the durable job record (job, admission,
+text hash, running status, generation, audience, user, environment). Any
+failure injects the explicit unavailable marker; there is no local vault
+fallback. Past-referencing turns earn one lane-2 hint line nudging
+`memory_search`, then `memory_read` for an exact hit ID when its excerpt is insufficient.
+Requests to send an existing memory entry stay on this read path: return the
+matching entry's contents or a private `memory_open` link. They do not create
+a new file, summary or card without an explicit write request.
+
+Writes into the vault run through one contract surface: `memory_card`
+(SPEC-0085 R6), executed inside ToolHub against the verified caller's own
+vault. `memory/daily`, `memory/cards`, `memory/summaries`,
+`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones the
+file tools can no longer reach at all — the runtime has no `vault:` root
+(M32/#517). Edits to existing memory are proposal-gated (ADR-0095 D6,
+M32/#519): `op=propose` persists a durable proposal in the vault — owner,
+exact diff, base revision, expiry and a single-use nonce — and the owner's
+verified confirmation tap on the channel is the only thing that applies it;
+the model cannot confirm its own proposal. All planned base hashes are
+checked before the first write; a verified confirmation persists recoverable
+`applying` state and startup finishes interrupted writes. A completed,
+expired pending, foreign or stale-base confirmation is denied without touching memory.
+Backend mutations and denials are journaled to `runtime/memory/writes.jsonl`;
+admission failures before dispatch use ToolHub's job/run audit and leave the
+vault unchanged. Calls waiting for the owner vault repeat admission afterward.
+`remember`/`fact` persist an owner-bound write intent first, and a failed
+journal write returns an error while a retry finishes the original request.
+Soft forget is a hub-owned strike:
+`runtime/memory/forget.jsonl` for daily-leaf entries,
+`status: superseded` frontmatter for cards — excluded from search, lane-1
+recall and nightly promotion across restarts, visible only via
+`history:true` and git.
+
+Daily leaves are a bounded tape (SPEC-0085 R7.5): after the rollup and
+period folds, two opt-in deterministic lanes run at the night tick.
+`memory_leaf_fold_bytes` (>0) stubs non-promotion-eligible block bodies
+inside a *completed* oversized leaf — audit kinds (routine, system,
+probe, compaction, untrusted, background replies) collapse while every
+mem:id header and interactive owner/agent block stays byte-identical;
+oversized eligible days first pull a `long_summary` from the same
+proposal call so the detail lands in `summaries/daily/`.
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window
+— `git rm` + prov.db row drop — but only once the day-state is complete
+*and* the daily summary exists; unverified days are kept and reported,
+never deleted. Both lanes go through the governed writer (owner edits
+win the hash check), journal to `memory/REVIEW.md` under
+`## prune <day>`, and merge into the localized morning digest —
+housekeeping is never silent. `hubctl memory prune` dry-runs the same
+report; `--apply` executes. Expired bytes remain in vault git history;
+true erasure is a separate history-rewrite decision.
+
+With `knowledge_ui` on, no `open-knowledge` container or
+`mcp__open_knowledge__*` surface renders (M32/#520): ToolHub owns the
+vault, so no service may mount it and upstream OpenKnowledge cannot act as
+a governed-API client — the flag stays valid but does not launch the
+upstream editor, and `hubctl doctor` reports that limitation. The agent can
+call `memory_open` in a private run to return a one-hour ToolHub link for
+search/read. The link is a bearer capability: anyone holding it can view that
+owner's private memory until expiry or revocation, so send it only in the
+owner's private channel. Knowledge reads and edits otherwise go
+through the governed ToolHub tools instead: `memory_search`/`memory_read` for memory
+content and `memory_card op=propose` plus owner confirmation for edits.
+`knowledge_ui_write` stays deferred and refused at validation until a
+governed knowledge surface exists — `memory_card` remains the only agent
+write path.
+
+## connectors — the control surface
+
+Five tools (catalog r5 consolidates the nine r4 verbs into `connector_edit`
+actions): `connector_search`, `connector_list`, `connector_status`,
+`connector_install`, `connector_edit` (actions enable, disable, allow_writes,
+reauth, resend, revoke, remove). Writes are double-gated: the tool itself is a write effect,
+and `allow_writes` only arms a protected confirm link that flips the
+connection's `writes_enabled`. `install`/`reauth` queue protected-form notices —
+credential values never appear in tool arguments or results.
+`connector_list` and `connector_search` return their candidate IDs in the
+model-visible text as well as structured content. `connector_status` accepts
+an operation ID in `name`, an exact onboarding ID, a listed connection ID, or a reviewed catalog name
+without onboarding; status reads saved state without provider calls or mutations and includes state, you_must and observed_at/observation_code. A valid consumed human approval can resume a transient binding failure with you_must=enable; the spent nonce is never renewed. The background controller consumes Broker credential.ready events, repairs event-feed gaps and resumes bounded admissions after restart. `state=working` covers accepted credentials being checked and bounded retries — pending work, not missing input. An ambiguous name returns candidate IDs and states; a missing name returns a failed result. `connector_edit action=resend` accepts an owned onboarding or operation ID plus the standard connector selector and durably queues a new notice for the current protected setup link; only this explicit write may renew an expired form. For an enabled browser connector, resend sends the viewer link. `reauth` explicitly opens credential entry even before setup confirmation and after a completed reauth cycle. `resend` repeats the current pending action; it does not replace submitted credentials. Neither verb resurrects a dead record — a failed or unfulfillable target returns `you_must` `retry` (a fresh install generation) or `remove` for unfinished cleanup; reauth never mutates a record it cannot collect credentials into. `disable` retains credentials; `revoke` cuts authorization, including a pending rotation target, without deleting the record. A missing old Broker credential cannot prevent an explicitly requested separate owner-scoped intake; its unknown status stays unknown. Never request secrets in chat. The effective system contract must be valid UTF-8; failed materialization preserves the previous readable file. Confirmation action revisions exclude delivery metadata. The exact notice version reports `delivery`: `not_sent`, `queued`, `sent` or `uncertain`, plus the `channel` name. `uncertain` returns code `delivery_unavailable` and `you_must` `retry`; an unreadable receipt reports `uncertain` with `you_must` `wait`. A queued notice does not prove channel delivery. `connector_edit
+action=remove` accepts an exact owner connection or old-policy orphan onboarding, arms protected owner confirmation, then fences access before retryable cleanup.
+`connector_list` names each record's lifecycle in `state` and its awaited human step in `you_must` — `waiting_you`+`click_link` (an armed protected link), `retry` (an expired link or a retryable failure — a broken install is retried by re-issuing `connector_install` on the same target, which mints the next operation generation while the dead record stays addressable), `remove` (a dead record's only exit), `wait` (background work) or `enable` (verified consent ready to apply) — so the model can state what the owner must do rather than narrating raw phases. It exposes old-policy records to that owner marked `badge:"stale_policy"` — visible because removal is the one transition still legal on them. Manage verbs on a stale-epoch target return a failed result with `code:"stale_policy"` and `you_must:"remove"` — a dead state, not a missing record — while a truly absent target returns `code:"not_found"`. Typed domain failures reach the model as failed tool results, never protocol errors, so repeated not-found or invalid-argument responses cannot strike the client circuit breaker or masquerade as backend downtime. Broker deletion must be verified before a completed removal receipt; unknown cleanup stays incomplete.
+Catalog search matches connector names and repository basenames; an explicit repository URL matches its full source. A generic GitHub host does not match every connector hosted there.
+An exact reviewed catalog name resolves locally before optional registries.
+
+## Internal and removed surfaces
+
+`inbox_fetch` is `audience: internal` — the runtime asks ToolHub's authenticated
+`POST /v1/inbound-fetch` route to materialize a staged owner file before
+Hermes admission. The route rechecks the current owner binding and
+`workspace.read` right, then writes through ToolHub's owner-specific inbox
+mount. The agent's inbox mount stays read-only. The tool is never projected,
+placeable or searchable.
+Removed r4 surfaces: `service_*` (absorbed by `connector_*`), `hh_*`
+(job-board connector retired), `archive_*`/`artifact_remove`/`knowledge_*`
+(absorbed by `file_*` roots), `ssh_shell_*`/`ssh_tunnel_*` split tools
+(absorbed by `ssh_shell`/`ssh_tunnel` actions), `exposure_open`/`exposure_close`
+/`exposure_status` (absorbed by `exposure_*` trio), `image_*`/`video_*`/`stt`/`tts`
+(absorbed by `media_*`), `code_exec`/`code_job_*` (absorbed by `terminal_*`),
+`context_compact` (absorbed by `context_edit`), `goal_*` split verbs (absorbed
+by `goal_*` trio), `skills_list`/`skills_search`/`skill_view`/`skill_manage`
+(absorbed by `skill_search`/`skill_edit`), `settings_get`/`settings_set`
+(absorbed by `settings_*`), `site_*` split verbs + `hosting` (absorbed by
+`sites`), `system_guide`/`diagnostics`/`tools_list`/`invoke` (absorbed by the
+`platform_*`/`tool_*` pinned layer).
 
 ## Contract notes (bounds that surprise)
 
-- **skills:**: the file tools take `root=skills` as a fourth read-only root —
-  the effective skills view (`/skills`), never writable; `document_extract`
-  and `image_inspect` reach it as a `skills:<name>/<path>` path prefix.
+- **skills**: the file tools take `root=skills` as a read-only root — the
+  effective skills view (`/skills`), never writable; `document_extract`
+  and `media_inspect` reach it as a `skills:<name>/<path>` path prefix.
   Copying a skill resource into the workspace stays an explicit `file_write`
   on the workspace root. Scripts under `skills:` are data: they carry no
   exec bits and run only from a scratch copy inside a cell.
-- **skill_manage**: every action (create/patch/edit/write_file/remove_file/
+- **skill_edit**: every action (create/patch/edit/write_file/remove_file/
   delete/archive/restore/propose_to_org) creates a draft — the live tree under
   `/skills` never changes from a tool call. The reply carries diff/lint/scan
   plus `confirm_url` to a nonce-protected approval card the owner clicks;
@@ -121,28 +399,31 @@ Grouped by capability resource (internal/agenttools/capability.go):
   inbox download, an unpacked archive or a checkout: `path` names the
   workspace-relative directory, zip or standalone `SKILL.md`/markdown file
   (for a package holding several skills, point `path` at the intended
-  root); `name` overrides the frontmatter-derived draft name. It runs the
+  root); create a new local `SKILL.md` with `file_write` first. Paths are
+  relative to `/workspace`: `work/example/SKILL.md` names
+  `/workspace/work/example/SKILL.md`. If import cannot find the path, verify
+  the staged file before retrying; `action=create` is a different workflow.
+  `name` overrides the frontmatter-derived draft name. It runs the
   same import pipeline — dot-prefixed paths (repo plumbing like `.github`,
   `.claude`) are dropped and reported in `dropped_dot_paths`/draft notes,
   foreign resource links that resolve inside the tree are admitted and
   audited in `notes`, binaries survive — and lands as an `imported` draft
-  with the same owner approval card.
-- **skill usage telemetry**: `skill()` activations and `skill_view` file
-  reads are journaled by the hub into the owner store's `.state/usage/`
-  (uses, helped, failed, trigger misses, last_used — bounded counters, no
-  content). The agent has no write path to these events; `skills_list`
-  exposes the counters as `stats` and `hubctl skill stats --name <skill>`
-  prints them. `evals/triggers.json` + `evals/evals.json` ship inside a
-  skill for `hubctl skill eval` — an isolated temp-space run scored through
-  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); `--id <draft>` scores an
-  unpublished draft tree for the pre-publish check. Unavailable models are
-  reported, not fabricated.
-- **code_exec `skill` arg + credentials**: `skill()` reports
+  with `diff`, `lint`, `scan` and the same owner approval card.
+- **skill usage telemetry**: `skill()` activations are journaled by the hub
+  into the owner store's `.state/usage/` (uses, helped, failed, trigger
+  misses, last_used — bounded counters, no content). The agent has no write
+  path to these events; `skill_search` exposes the counters as `stats` and
+  `hubctl skill stats --name <skill>` prints them. `evals/triggers.json` +
+  `evals/evals.json` ship inside a skill for `hubctl skill eval` — an
+  isolated temp-space run scored through an operator eval endpoint
+  (`HUB_SKILL_EVAL_URL`); `--id <draft>` scores an unpublished draft tree for
+  the pre-publish check. Unavailable models are reported, not fabricated.
+- **terminal_exec `skill` arg + credentials**: `skill()` reports
   `readiness.setup_needed` with a `form_url` to the protected credential form
   when declared `requires.credentials` lack stored values; a hard requirement
   (`hard: true`) makes the skill ineligible until stored. Submitted values
   persist under the owner store's `.state/credentials/<skill>.json` bound to
-  (principal, skill) — never `self-env.json`. A `code_exec` call carrying
+  (principal, skill) — never `self-env.json`. A `terminal_exec` call carrying
   `skill:"<name>"` leases exactly the declared names into that one sandbox
   call's env through the stdin exec protocol — never argv, container config,
   tool results, logs or audit. Declared names are the only ones leased;
@@ -152,11 +433,15 @@ Grouped by capability resource (internal/agenttools/capability.go):
   the lease resolves through the same allowlist-checked self-env file and a
   stored per-skill value still wins.
   `metadata.hermes.config` declares non-secret per-user settings that
-  `skill()` surfaces effective (stored-or-default); `skill_manage`
+  `skill()` surfaces effective (stored-or-default); `skill_edit`
   `configure` writes them to `.state/settings`.
-- **inbox_fetch**: an incoming transfer lands in `inbox/<id>/files/`; ZIPs
-  extract there and a `inbox/<id>/receipt.json` is stored *before* the staged
-  copy is acknowledged — retry reuses the receipt, never re-downloads.
+- **inbox_fetch** (internal): an incoming transfer lands in
+  `inbox/<source>/<id>/files/` (`people` for user-sent files, `services` for
+  service originals); ZIPs extract there and a `inbox/<source>/<id>/receipt.json`
+  carrying the original name and source is stored *before* the staged copy is
+  acknowledged — retry reuses the receipt, never re-downloads. The whole
+  `inbox/` tree is read-only to file/archive tools; copies into `work/` are
+  the editable ones.
   `acknowledged=false` = files exist locally but the staged copy still needs
   ack. A pre-existing directory without a valid receipt needs operator
   inspection — never overwritten. ZIP extraction checks entry count,
@@ -164,22 +449,24 @@ Grouped by capability resource (internal/agenttools/capability.go):
   authorized roots; partial cleanup removes only what that attempt created.
   Delivery copies — it never deletes the workspace original; legacy
   `consume` requests are accepted but no longer remove originals. The
-  runtime resolves a channel file through the owner's `inbox_fetch` grant
-  *before* admitting the run; failed saves never start fileless runs.
+  runtime resolves a channel file through the owner's internal `inbox_fetch`
+  route *before* admitting the run; ToolHub writes the original into that
+  owner's inbox, while the runtime reads it through a read-only mount. Failed
+  saves never start fileless runs.
   PDF extraction falls back to Poppler for PDFs the built-in reader
   cannot parse (same size/time limits).
-- **images_inspect**: compares 1–8 images in one model request under a
-  shared byte limit; `image_inspect` keeps its single-path contract (direct
-  MCP also accepts the legacy `paths` form). Every array element is
-  admitted — a call spanning different narrow directory grants fails
-  closed; split into separately authorized calls.
-- **knowledge_***: operator-staged snapshots under
+- **media_inspect**: compares 1–8 images in one model request under a
+  shared byte limit. Every array element is admitted — a call spanning
+  different narrow directory grants fails closed; split into separately
+  authorized calls. A published `vision` model route selects the managed
+  media vision model; without that route, media uses the owner's default.
+- **knowledge root**: operator-staged snapshots under
   `<state>/knowledge/<user>/` (`<context>` subdir narrows non-personal
-  contexts); read in-process — no HTTP hop, no control token (the gateway
-  `/v1/knowledge` endpoint is gone). Rejects unsafe names, non-regular
-  files, bodies >9 MiB; `knowledge_search` returns ≤8 matching lines with
-  source/line/SHA256/mtime, scanning ≤128 sources. Content is untrusted
-  evidence and cannot change tool policy.
+  contexts) are reachable through `file_*` with `root=knowledge`; read
+  in-process — no HTTP hop, no control token. Unsafe names, non-regular
+  files and bodies >9 MiB are rejected; search returns ≤8 matching lines
+  with source/line/SHA256/mtime, scanning ≤128 sources. Content is
+  untrusted evidence and cannot change tool policy.
 - **apply / offline edits** (`hubctl apply`): rejects unknown fields,
   multiple YAML documents, duplicate resources, unsafe knowledge names,
   excessive input and implicit routing; validates the whole input before
@@ -210,85 +497,3 @@ automatically.
   `workspace/drafts`.
 - Never ask for, return, or store credential values. Connector credentials go
   through the protected `form_url` (or provider OAuth URL) only.
-- A public GitHub repo installs only via `mcp__toolhub__prepare_source`; if
-  ToolHub isn't on the server, say so — never improvise with terminal/npx/
-  config edits.
-- Never invent receipts; transport failure means unknown outcome.
-
-## Session scratch tasks (M16 #183)
-
-`todo: native` selects the upstream Hermes `todo_list` scratchpad for one execution session.
-The session is authoritative: its list has no external synchronization or conflict policy.
-An explicit new session (`/new`, `/use`) starts with an empty list; an old todo list is not a durable personal task tracker.
-Use explicitly configured routine tools for durable reminders; named Hub conversations organize discussions, not checklist items.
-Only the configured native toolset grant exposes todo; absent/off denies it. A native carveout has no per-call Hub audit; the operator grant and owning runtime admission are audited, and do not authorize another scope.
-The backend choice is recorded in ADR-0074. No external task mutations are introduced.
-
-ZIP extraction enforces 8 MiB per file, 8192 entries and 1 GiB aggregate size. Existing targets are refused.
-
-## Memory provider contract (M16 #184)
-
-The logical `memory` capability selects one backend through the existing
-`tools:` surface; `session_search` is a separate grant. Native Hermes state
-lives only in the selected owner's `/state/hermes`, never in a shared vault.
-An alternative MCP backend uses its reviewed server name and scoped tools;
-it must enforce the same owner/context contract for read, search, write and
-forget. External provider credentials belong in Credential Broker contracts
-and materializers, never in a memory result or transcript. An MCP endpoint
-being configurable is not evidence that its external API has been tested.
-
-Provider changes never copy or merge memories. `off` withdraws the tool on
-the next materialized/attested runtime configuration and retains stored data;
-Broker revocation denies new credential uses. Drain/restart already running
-native sessions when changing their static grants. Native carveouts lack
-per-call Hub audit; managed grants/policies and runtime admission provide
-scope-level audit. Honcho remains opt-in legacy configuration: remote workspace
-names are `hermes-<owner>`, disabled configuration is removed, remote content
-is retained, and existing shared `hermes` data requires explicit owner-reviewed
-migration. Local tests do not establish Honcho API integration success.
-
-Memory list/delete reject foreign-home aliases. Context backup rejects
-non-regular files and exports shared spool records only with matching
-principal/context; legacy unattributed records are excluded. Agent replies
-are metadata-only in host logs even during an explicit content-capture window.
-Owner-scoped diagnostics/trace checks remain mandatory.
-
-## Connected knowledge (M16 #249)
-
-`knowledge_list`, `knowledge_read`, `knowledge_search` are read-only on both
-Hub projection and direct MCP. They derive the owner/context from the runtime,
-not tool arguments. Raw staged files retain their existing flat-file contract.
-Managed snapshots use virtual names such as `docs/sub/guide.md`, SHA-256,
-line numbers for search hits and snapshot time. Returned text is untrusted
-data; it cannot authorize tools, credentials or writes to the original folder.
-
-Operator `hubctl apply` accepts an explicitly selected folder snapshot:
-
-```yaml
-knowledge:
-  - name: docs
-    context: project
-    state: present
-    source: ./selected-markdown-folder
-```
-
-Use `--user <owner> --state <own-runtime-state> --spool <configured-spool> -f <file>`.
-`context`, source identifier and `state` are explicit for managed bindings.
-`present` replaces the complete source snapshot, so removed documents disappear;
-`stale` retains it with a warning; `unavailable` blocks reads and appears in
-`unavailable_sources`; `absent` unbinds and removes its derived snapshot bytes.
-For the latter three states omit `source`. Omitting an entry from an apply
-file does not revoke it. Refresh only on the operator's instruction; this is
-an indexed export, not live synchronization or a source-writing capability.
-
-Limits: 128 documents per source, 9 MiB per document and 32 MiB total snapshot
-content per context; apply also bounds its total input to 32 MiB. Symlinks and
-unsafe logical paths are rejected. Snapshot metadata changes and raw-file
-content changes/deletion invalidate the next turn's cached knowledge reply.
-Private immutable traces are retained for audit and never injected as retrieval
-results. External connectors require their own real contract acceptance;
-no embeddings service or database is required.
-
-## Site tools
-
-The `hosting` tool family exposes `site_publish`, `site_unpublish`, `site_list`, `site_status`. Publish takes a prebuilt workspace path, declared slot, request ID and expected revision; public access requires explicit authorization. Owner/env, image and runtime are trusted configuration. See [hosting workflow](services/hosting.md).

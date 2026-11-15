@@ -34,15 +34,27 @@ func NextCron(expr string, loc *time.Location, from time.Time) (time.Time, error
 	}
 	t := from.In(loc).Truncate(time.Minute).Add(time.Minute)
 	limit := t.Add(400 * 24 * time.Hour)
+	matches := func(local time.Time, h, m int) bool {
+		if !minute[m] || !hour[h] || !month[int(local.Month())] {
+			return false
+		}
+		if fields[2] != "*" && fields[4] != "*" {
+			return dom[local.Day()] || dow[int(local.Weekday())]
+		}
+		return (fields[2] == "*" || dom[local.Day()]) && (fields[4] == "*" || dow[int(local.Weekday())])
+	}
 	for !t.After(limit) {
-		if minute[t.Minute()] && hour[t.Hour()] && month[int(t.Month())] {
-			if fields[2] != "*" && fields[4] != "*" {
-				if dom[t.Day()] || dow[int(t.Weekday())] {
-					return t.UTC(), nil
+		local, prev := t.In(loc), t.Add(-time.Minute).In(loc)
+		if local.YearDay() == prev.YearDay() && local.Year() == prev.Year() {
+			before, after := prev.Hour()*60+prev.Minute(), local.Hour()*60+local.Minute()
+			for missing := before + 1; missing < after; missing++ {
+				if matches(local, missing/60, missing%60) {
+					return t.UTC(), nil // first valid instant after a spring DST gap
 				}
-			} else if (fields[2] == "*" || dom[t.Day()]) && (fields[4] == "*" || dow[int(t.Weekday())]) {
-				return t.UTC(), nil
 			}
+		}
+		if matches(local, local.Hour(), local.Minute()) {
+			return t.UTC(), nil
 		}
 		t = t.Add(time.Minute)
 	}

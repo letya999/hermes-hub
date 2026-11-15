@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func TestHeaderCorrelationAcceptsChannelJobIDsWithinBound(t *testing.T) {
+	jobID := "mock-" + strings.Repeat("a", 64)
+	if got := HeaderCorrelation(jobID, "run-1").JobID; got != jobID {
+		t.Fatalf("mock channel job ID was discarded: length=%d", len(jobID))
+	}
+	if got := HeaderCorrelation(strings.Repeat("x", 257), "run-1").JobID; got != "" {
+		t.Fatal("oversized correlation ID admitted")
+	}
+}
+
 func TestProjectionAndMiscHelpers(t *testing.T) {
 	def := ToolDefinition{Tools: []ToolSpec{{Name: "a", Effect: ReadEffect}, {Name: "b", Effect: WriteEffect}, {Name: "c", Effect: ReadEffect}}}
 	if names := ToolNames(def); len(names) != 3 || names[0] != "a" {

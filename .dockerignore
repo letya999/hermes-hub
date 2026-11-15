@@ -8,6 +8,7 @@ internal/.local/
 !services/credential-broker/
 !services/credential-broker/**
 !docker/**
+!platform/catalogs/
 **/node_modules
 **/__pycache__
 **/.ruff_cache

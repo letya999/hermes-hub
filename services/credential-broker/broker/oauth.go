@@ -185,7 +185,7 @@ func (b *Broker) StartOAuth(ctx context.Context, id, raw, csrf string) (string, 
 	}
 	state := seal.Random()
 	verifier := seal.Random()
-	verifierRef, e := b.cfg.Providers.Put(ctx, c.Storage, provider.Bundle{"verifier": []byte(verifier)})
+	verifierRef, e := b.putObject(ctx, r.Actor, c.Storage, "request", id, "oauth.verifier", provider.Bundle{"verifier": []byte(verifier)})
 	if e != nil {
 		return "", ErrUnavailable
 	}
@@ -266,7 +266,7 @@ func (b *Broker) CompleteOAuth(ctx context.Context, raw, state, code string) err
 		}
 		return e
 	}
-	ref, e := b.cfg.Providers.Put(ctx, c.Storage, values)
+	ref, e := b.putObject(ctx, r.Actor, c.Storage, "request", r.View.ID, "oauth.activate", values)
 	if e != nil {
 		// Exchanged codes are not retried, even if storage failed after provider success.
 		current.View.Status = "authorizing"
@@ -321,24 +321,35 @@ func (b *Broker) AccessToken(ctx context.Context, u Use) (string, error) {
 		return "", b.requireReauthorization(u.CredentialID, c.View.Revision)
 	}
 	mergeTokens(values, tokens, b.now())
-	ref, e := b.cfg.Providers.Put(ctx, b.catalog[c.ContractKey].Storage, values)
+	b.mu.Lock()
+	ref, e := b.putObject(ctx, identityFromCredential(c), b.catalog[c.ContractKey].Storage, "credential", u.CredentialID, "oauth.refresh", values)
 	if e != nil {
+		b.mu.Unlock()
 		// A rotating refresh token might already be consumed at the provider.
 		// Never retry with an old token after losing its replacement.
 		return "", b.requireReauthorization(u.CredentialID, c.View.Revision)
 	}
-	b.mu.Lock()
 	current := b.credentials[u.CredentialID]
 	if !b.live() || current.View.Revision != c.View.Revision || current.View.Status != "active" || current.TokenRevision != c.TokenRevision {
 		b.mu.Unlock()
 		return "", ErrDenied
 	}
+	now := b.now()
+	objs := []objectRecord{{ID: objectID(ref), OwnerKind: "credential", OwnerID: current.View.ID, Ref: ref, State: "current", Op: "oauth.refresh", CreatedAt: now, UpdatedAt: now}}
+	if o, ok := b.objects[objectID(current.Ref)]; ok && o.State == "current" {
+		if b.pins[o.ID] > 0 {
+			o.State = "pinned"
+		} else {
+			o.State = "retired"
+		}
+		o.UpdatedAt = now
+		objs = append(objs, o)
+	}
 	current.Ref = ref
 	current.TokenRevision++
-	current.OwnedRefs = append(current.OwnedRefs, ref)
 	ev := b.audit("oauth.refreshed", identityFromCredential(current))
 	ev.CredentialID = current.View.ID
-	_, e = b.commit(mutation{Audit: ev, Credential: &current})
+	_, e = b.commit(mutation{Audit: ev, Credential: &current, Objects: objs})
 	b.mu.Unlock()
 	if e != nil {
 		return "", e

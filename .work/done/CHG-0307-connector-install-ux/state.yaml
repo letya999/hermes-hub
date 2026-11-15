@@ -1,0 +1,56 @@
+id: CHG-0307
+title: connector-install-ux
+status: done
+scope:
+  - internal/toolhub/control.go
+  - internal/toolhub/control_broker.go
+  - internal/toolhub/control_credentials.go
+  - internal/toolhub/control_prepare.go
+  - internal/toolhub/cli_prepare.go
+  - internal/toolhub/cli_artifact.go
+  - internal/toolhub/connector_upgrade.go
+  - internal/toolhub/remote_admit.go
+  - internal/toolhub/onboarding_state.go
+  - internal/toolhub/remote_oauth.go
+  - internal/toolhub/prepared_oauth.go
+  - internal/toolhub/api/prepare_followup.go
+  - internal/toolhub/api/confirmation.go
+  - internal/toolhub/api/operations.go
+  - internal/toolhub/api/artifact_build.go
+  - internal/toolhub/connector_journal.go
+  - internal/toolhub/connector_facade.go
+  - internal/toolhub/operations_store.go
+  - internal/communication/prepare_outcome.go
+  - internal/locale/strings_en.go
+  - internal/locale/strings_ru.go
+  - internal/locale/strings_kk.go
+  - internal/locale/strings_es.go
+  - internal/stack/prompt_contract.go
+  - internal/agenttools/capability.go
+  - internal/catalog/catalog.go
+  - platform/catalogs/41/
+  - docs/tools.md
+  - docs/routines.md
+  - docs/services/toolhub.md
+last_verified: "2026-11-14"
+notes: >
+  B+C of the install-UX plan: notices fire only with a usable action URL;
+  pending broker-request notices are re-delivered; credential
+  submission/OAuth grant/device approval/bare install (catalog, remote,
+  bounded-CLI, upgrade) now completes setup without a second confirm click.
+  allow_writes/remove/drift gates unchanged.
+  A done: OperationResult carries current_step/step_index/step_total/
+  started_at/elapsed_seconds/step_started_at (journal write stamps UpdatedAt
+  via putOperation); prepare emits step-artifact/step-admit/step-bind events
+  that edit the one status message in place; catalog bumped to release 41 /
+  hub-agent-tools@18.7.0.
+  D done (instrumentation slice): toolhub prepare phase=artifact seconds +
+  reused=true, build phase=topology/buildctl seconds in the journal logs.
+  Reuse levers already existed (reusableSelfInstallDefinition skip,
+  HUB_BUILD_CACHE=1 persistent BuildKit state); npm-layer caching inside
+  one-shot builders needs the shared cache flag — no code change.
+  E done: existing machinery verified — RefreshProjection diffs the store on
+  a 5s tick and emits tools/list_changed to open sessions (regression test
+  TestGatewayProjectsNewBindingIntoOpenSession); binding writes bump
+  ProjectionRevision so RuntimeRestartNotifier covers closed streams.
+  Remains: final verification (affected package tests + just check).

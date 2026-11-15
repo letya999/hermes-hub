@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,10 +69,10 @@ func TestInboxFetch(t *testing.T) {
 	}
 	ws := v.Workspace
 	root := ws.Name()
-	if body, err := os.ReadFile(filepath.Join(root, "inbox", "in-zip", "files", "a.txt")); err != nil || string(body) != "one" {
+	if body, err := os.ReadFile(filepath.Join(root, "inbox", "people", "in-zip", "files", "a.txt")); err != nil || string(body) != "one" {
 		t.Fatalf("unpacked file missing: %v %q", err, body)
 	}
-	if body, err := os.ReadFile(filepath.Join(root, "inbox", "in-zip", "files", "sub", "b.txt")); err != nil || string(body) != "two" {
+	if body, err := os.ReadFile(filepath.Join(root, "inbox", "people", "in-zip", "files", "sub", "b.txt")); err != nil || string(body) != "two" {
 		t.Fatalf("nested unpacked file missing: %v %q", err, body)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "inbox", "pack.zip")); !os.IsNotExist(err) {
@@ -85,14 +86,28 @@ func TestInboxFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc fetch: %v", err)
 	}
-	if res["path"] != "inbox/in-doc/files/note.txt" {
+	if res["path"] != "inbox/people/in-doc/files/note.txt" {
 		t.Fatalf("doc path: %v", res)
 	}
-	if body, err := os.ReadFile(filepath.Join(root, "inbox", "in-doc", "files", "note.txt")); err != nil || string(body) != "hello" {
+	if body, err := os.ReadFile(filepath.Join(root, "inbox", "people", "in-doc", "files", "note.txt")); err != nil || string(body) != "hello" {
 		t.Fatalf("fetched file missing: %v %q", err, body)
 	}
 	if !consumed["in-doc"] {
 		t.Fatal("staged doc not consumed")
+	}
+	// The durable receipt carries original filename and source so later
+	// consumers can distinguish people originals from service originals
+	// without re-fetching (R4.2 filename metadata).
+	receipt, err := os.ReadFile(filepath.Join(root, "inbox", "people", "in-doc", "receipt.json"))
+	if err != nil {
+		t.Fatalf("receipt missing: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(receipt, &meta); err != nil {
+		t.Fatalf("receipt not readable json: %v", err)
+	}
+	if meta["name"] != "note.txt" || meta["source"] != "people" {
+		t.Fatalf("receipt metadata: %v", meta)
 	}
 
 	// A second file sharing the same name must not overwrite the first.
@@ -109,10 +124,10 @@ func TestInboxFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("name collision fetch: %v", err)
 	}
-	if res["path"] == "inbox/in-doc/files/note.txt" {
+	if res["path"] == "inbox/people/in-doc/files/note.txt" {
 		t.Fatal("second file overwrote the first")
 	}
-	if body, err := os.ReadFile(filepath.Join(root, "inbox", "in-doc", "files", "note.txt")); err != nil || string(body) != "hello" {
+	if body, err := os.ReadFile(filepath.Join(root, "inbox", "people", "in-doc", "files", "note.txt")); err != nil || string(body) != "hello" {
 		t.Fatalf("first file clobbered: %v %q", err, body)
 	}
 

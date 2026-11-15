@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "source_pin": "869228cab4a8276d3b4c78da9d9939670c47bd0f",
-  "inventory_sha256": "fbbec23d3a93c1c572b795c3b9dfeca1072aead123fd644d13f149d70561045c",
+  "inventory_sha256": "c70d35fb925713a2b0dbdc98cf1454b27a69eeef8b0c9eb000d41486c5014cc9",
   "platforms": [
     "api_server",
     "bluebubbles",

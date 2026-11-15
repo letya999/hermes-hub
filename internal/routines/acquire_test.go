@@ -20,27 +20,27 @@ func TestAcquirePoolSharesWithinBoundary(t *testing.T) {
 	e := testEngine(t)
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	url := "https://example.com/feed"
-	e.AcquireSubscribeLocked("alice", url, "sched-a", 5*time.Minute, now)
-	e.AcquireSubscribeLocked("alice", url, "sched-b", 10*time.Minute, now)
-	if err := e.AcquireRecordLocked("alice", url, []byte("body-1"), now); err != nil {
+	e.acquireSubscribeLocked("alice", url, "sched-a", 5*time.Minute, now)
+	e.acquireSubscribeLocked("alice", url, "sched-b", 10*time.Minute, now)
+	if err := e.acquireRecordLocked("alice", url, []byte("body-1"), now); err != nil {
 		t.Fatal(err)
 	}
-	body, ok := e.AcquirePeekLocked("alice", url, now.Add(time.Minute))
+	body, ok := e.acquirePeekLocked("alice", url, now.Add(time.Minute))
 	if !ok || string(body) != "body-1" {
 		t.Fatalf("pool body must be shared inside the sweep: %q ok=%v", body, ok)
 	}
 	e.resetAcquireBurstLocked()
-	if _, ok := e.AcquirePeekLocked("alice", url, now.Add(time.Minute)); ok {
+	if _, ok := e.acquirePeekLocked("alice", url, now.Add(time.Minute)); ok {
 		t.Fatal("a new sweep must never see the previous body")
 	}
-	if _, ok := e.AcquirePeekLocked("mallory", url, now.Add(time.Minute)); ok {
+	if _, ok := e.acquirePeekLocked("mallory", url, now.Add(time.Minute)); ok {
 		t.Fatal("pool must never cross the principal boundary")
 	}
-	if err := e.AcquireRecordLocked("alice", url, []byte("body-2"), now); err != nil {
+	if err := e.acquireRecordLocked("alice", url, []byte("body-2"), now); err != nil {
 		t.Fatal(err)
 	}
-	e.AcquireBackoffLocked("alice", url, now.Add(15*time.Minute), now)
-	if _, ok := e.AcquirePeekLocked("alice", url, now.Add(2*time.Minute)); ok {
+	e.acquireBackoffLocked("alice", url, now.Add(15*time.Minute), now)
+	if _, ok := e.acquirePeekLocked("alice", url, now.Add(2*time.Minute)); ok {
 		t.Fatal("backoff must suppress reuse until retry-after elapses")
 	}
 }
@@ -167,11 +167,11 @@ func TestHookIntakeDrainsInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deliveries []commodel.Delivery
-	e.deps.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
+	e.deps.Delivery.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
 	var settled [][]byte
-	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event {
+	e.deps.Events.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error) {
 		settled = append(settled, body)
-		return nil
+		return nil, nil
 	}
 	o := watchOccurrence("w-hook-1", "event", sched.Revision, env, now.Add(-time.Minute))
 	putOccurrenceState(t, e, e.root, o, "probing")
@@ -207,7 +207,7 @@ func TestHookIdleTickSettlesQuietly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deliveries []commodel.Delivery
-	e.deps.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
+	e.deps.Delivery.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
 	o := watchOccurrence("w-hook-idle", "watcher", sched.Revision, env, now.Add(-time.Minute))
 	putOccurrenceState(t, e, e.root, o, "probing")
 	if err := e.ProbeDueOccurrencesContext(context.Background(), now, nil, func(context.Context, string) ([]byte, error) { return nil, errors.New("must not fetch") }, nil, nil); err != nil {
@@ -252,10 +252,10 @@ func TestHookIdleEventTickSettlesQuietly(t *testing.T) {
 	}
 	var settled [][]byte
 	var errs []error
-	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event {
+	e.deps.Events.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error) {
 		settled = append(settled, body)
 		errs = append(errs, probeErr)
-		return nil
+		return nil, nil
 	}
 	o := watchOccurrence("w-hook-evt-idle", "event", sched.Revision, env, now.Add(-time.Minute))
 	putOccurrenceState(t, e, e.root, o, "probing")

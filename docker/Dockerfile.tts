@@ -4,7 +4,7 @@
 # `remote` proxies to any OpenAI-compatible TTS upstream (Speaches
 # piper/kokoro, OpenAI, bespoke model servers); `sherpa` needs the
 # -tags sherpa build with the native library.
-FROM golang:1.27.3-bookworm AS go_build
+FROM golang:1.27.4-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker ./services/credential-broker
@@ -31,6 +31,7 @@ RUN for i in 1 2 3 4; do \
       if [ "$i" = 4 ]; then exit 1; fi; sleep 10; \
     done
 ENV TORCH_HOME=/opt/torch
+RUN python -c "import torch; assert torch.version.cuda is None, 'TTS requires the CPU-only torch wheel'"
 # The model download is a single large stream; a truncated archive raises a
 # PyTorch zip error, so retry with a cleared hub cache before giving up.
 RUN for i in 1 2 3 4; do \
@@ -55,4 +56,6 @@ COPY docker/media/tts-worker /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/tts-worker
 RUN useradd -r -u 10001 -m tts && mkdir -p /data && chown -R 10001:10001 /data /opt/torch /voices
 USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 ENTRYPOINT ["hub-tts"]

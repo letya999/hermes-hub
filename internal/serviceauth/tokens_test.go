@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 func TestParseTokenEnvelopes(t *testing.T) {
@@ -76,5 +78,20 @@ func TestReadTokenEnvelopes(t *testing.T) {
 	entries, err := ReadTokenEnvelopes(path)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+}
+
+func TestEnrolledPolicyAcceptsOrgContextAndRejectsAmbiguity(t *testing.T) {
+	env := identity.Envelope{PrincipalID: "bob", ContextID: "team", RuntimeID: "bob", PolicyVersion: "policy-current"}
+	entries := map[string]identity.Envelope{"one": env}
+	if got, ok := EnrolledPolicy(entries, "bob", "bob"); !ok || got != "policy-current" {
+		t.Fatal("org-scoped enrollment was not selected")
+	}
+	entries["two"] = env
+	if _, ok := EnrolledPolicy(entries, "bob", "bob"); ok {
+		t.Fatal("ambiguous enrollment accepted")
+	}
+	if _, ok := EnrolledPolicy(map[string]identity.Envelope{"one": env}, "bob", "alice"); ok {
+		t.Fatal("foreign runtime accepted")
 	}
 }

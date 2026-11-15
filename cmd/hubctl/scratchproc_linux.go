@@ -44,7 +44,7 @@ func scratchTreeGone(pid int) bool {
 					continue
 				}
 				fields := strings.Fields(s[i+1:])
-				if len(fields) > 2 && fields[2] == target {
+				if len(fields) > 2 && fields[2] == target && fields[0] != "Z" && fields[0] != "X" {
 					alive = true
 					break
 				}

@@ -1,5 +1,5 @@
 {
-  "go_production": "go1.27.3",
+  "go_production": "go1.27.4",
   "go_language_minimum": "1.23.0",
   "just": "1.58.0",
   "python_minimum": "3.10",

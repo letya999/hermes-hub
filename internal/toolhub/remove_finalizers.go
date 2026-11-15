@@ -4,8 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"slices"
 	"sort"
 	"strings"
+
+	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	brokerclient "github.com/letya999/credential-broker/client"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -34,7 +40,12 @@ func newRemoveLadder() []api.Finalizer {
 }
 
 func (c *ControlPlane) confirmedRemoveInProgress(onboarding api.Onboarding) bool {
-	if onboarding.Phase == api.PhaseCleanupIncomplete {
+	if onboarding.CleanupIncomplete() {
+		return true
+	}
+	// A revoked record runs its removal ladder in place on gone — the stage
+	// never enters failed, so pending finalizers are the only in-flight mark.
+	if onboarding.Stage == api.StageGone && slices.ContainsFunc(onboarding.Finalizers, func(f api.Finalizer) bool { return f.State != api.FinalizerDone }) {
 		return true
 	}
 	connection, ok := c.Store.connectionFor(onboarding.ConnectionID)
@@ -50,6 +61,7 @@ func (c *ControlPlane) ResumeRemovals(ctx context.Context) error {
 		all = append(all, onboarding)
 	}
 	c.Store.mu.RUnlock()
+	var failures []error
 	for _, onboarding := range all {
 		if !c.confirmedRemoveInProgress(onboarding) {
 			continue
@@ -59,10 +71,10 @@ func (c *ControlPlane) ResumeRemovals(ctx context.Context) error {
 			RuntimeID: onboarding.RuntimeID, PolicyVersion: onboarding.PolicyVersion,
 			ConversationID: "reconciler", DeliveryTargetID: "reconciler"}
 		if _, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // labelFootprint counts the Docker objects carrying the connection's
@@ -114,7 +126,7 @@ func (c *ControlPlane) runRemoveFinalizer(ctx context.Context, onboarding api.On
 		if shared {
 			return nil
 		}
-		return c.revokeBrokerCredential(onboarding)
+		return c.deleteBrokerCredentials(ctx, onboarding)
 	case api.FinalizerCiphertext:
 		if shared {
 			return nil
@@ -137,30 +149,7 @@ func (c *ControlPlane) runRemoveFinalizer(ctx context.Context, onboarding api.On
 		}
 		return nil
 	case api.FinalizerWorkspace:
-		if onboarding.BindingID == "" {
-			return nil
-		}
-		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
-			definition, _ := c.definitionOf(onboarding)
-			effective := api.EffectiveBinding{Binding: binding, Definition: definition}
-			if binding.ConnectionID != "" {
-				auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ContextID: onboarding.ContextID}
-				if conn, _, err := c.Store.OwnedConnection(auth, binding.ConnectionID); err == nil {
-					effective.Connection = &conn
-				}
-			}
-			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
-				return err
-			}
-			// Credential staging may live on a separate tmpfs root; the binding
-			// workspace there is credential material, so it goes too.
-			if staging := c.CredentialStagingRoot; staging != "" && staging != c.WorkloadRoot {
-				if err := api.RemoveBindingWorkspace(staging, effective); err != nil {
-					return err
-				}
-			}
-		}
-		return c.Store.RemoveBindingRecords(onboarding.BindingID)
+		return c.removeOwnedWorkspace(onboarding, shared)
 	case api.FinalizerImageRef:
 		// Images are shared per recipe digest — removing one connector never
 		// deletes them; the store keeps no per-connection image record.
@@ -187,6 +176,131 @@ func (c *ControlPlane) runRemoveFinalizer(ctx context.Context, onboarding api.On
 			return fmt.Errorf("%w: %s", api.ErrStale, strings.Join(leftovers, ", "))
 		}
 		return nil
+	}
+	return nil
+}
+
+func (c *ControlPlane) removeOwnedWorkspace(onboarding api.Onboarding, shared bool) error {
+	bindingIDs := []string{}
+	if shared || onboarding.ConnectionID == "" {
+		if onboarding.BindingID != "" {
+			bindingIDs = append(bindingIDs, onboarding.BindingID)
+		}
+	} else {
+		c.Store.mu.RLock()
+		for id, binding := range c.Store.bindings {
+			if binding.ConnectionID == onboarding.ConnectionID {
+				bindingIDs = append(bindingIDs, id)
+			}
+		}
+		c.Store.mu.RUnlock()
+		sort.Strings(bindingIDs)
+	}
+	for _, id := range bindingIDs {
+		binding, err := c.Store.binding(id)
+		if errors.Is(err, api.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		definition, err := c.Store.Definition(binding.DefinitionID, binding.DefinitionVersion)
+		if err != nil {
+			definition = api.ToolDefinition{DefinitionID: binding.DefinitionID}
+			definition.Workload.Class = binding.WorkloadClass
+		}
+		effective := api.EffectiveBinding{Binding: binding, Definition: definition}
+		if connection, ok := c.Store.connectionFor(binding.ConnectionID); ok {
+			effective.Connection = &connection
+		}
+		if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
+			return err
+		}
+		if c.CredentialStagingRoot != "" && c.CredentialStagingRoot != c.WorkloadRoot {
+			if err := api.RemoveBindingWorkspace(c.CredentialStagingRoot, effective); err != nil {
+				return err
+			}
+		}
+		if err := c.Store.RemoveBindingRecords(id); err != nil {
+			return err
+		}
+	}
+	if shared || onboarding.ConnectionID == "" {
+		return nil
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID,
+		ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID,
+		RuntimeID: onboarding.RuntimeID, PolicyVersion: onboarding.PolicyVersion,
+		ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID}
+	return c.Store.RemoveOwnedConnectionRecords(auth, onboarding.ConnectionID)
+}
+
+func (c *ControlPlane) deleteBrokerCredentials(ctx context.Context, onboarding api.Onboarding) error {
+	if c.Broker == nil || !c.Broker.Enabled() {
+		if onboarding.BrokerCredentialID != "" || onboarding.BrokerRequestID != "" {
+			return fmt.Errorf("%w: credential broker unavailable", api.ErrCredentialVisibilityUnknown)
+		}
+		return nil
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID,
+		ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID,
+		RuntimeID: onboarding.RuntimeID, PolicyVersion: onboarding.PolicyVersion,
+		ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID}
+	control, err := c.brokerControl(auth, c.onboardingShared(onboarding))
+	if err != nil {
+		return err
+	}
+	connectionID := onboarding.ConnectionID
+	if onboarding.BrokerRequestID != "" {
+		request, err := control.Request(ctx, onboarding.BrokerRequestID)
+		if err != nil && !brokerclient.IsNotFound(err) {
+			return err
+		}
+		if err == nil {
+			if connectionID != "" && connectionID != request.ConnectionID {
+				return fmt.Errorf("%w: broker request connection mismatch", api.ErrCredentialVisibilityUnknown)
+			}
+			connectionID = request.ConnectionID
+			if request.Status != "ready" && request.Status != "canceled" {
+				if err := control.Do(ctx, http.MethodPost, "/v1/requests/"+url.PathEscape(request.ID)+"/cancel", nil, nil); err != nil {
+					return err
+				}
+			}
+		} else if connectionID == "" {
+			return fmt.Errorf("%w: broker request not visible", api.ErrCredentialVisibilityUnknown)
+		}
+	}
+	if connectionID == "" {
+		if onboarding.BrokerCredentialID == "" {
+			return nil
+		}
+		var credential brokerv1.Credential
+		if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(onboarding.BrokerCredentialID), nil, &credential); err != nil {
+			return fmt.Errorf("%w: broker credential not visible: %v", api.ErrCredentialVisibilityUnknown, err)
+		}
+		connectionID = credential.ConnectionID
+	}
+	path := "/v1/connections/" + url.PathEscape(connectionID) + "/credentials"
+	var credentials []brokerv1.Credential
+	if err := control.Do(ctx, http.MethodGet, path, nil, &credentials); err != nil {
+		return err
+	}
+	for _, credential := range credentials {
+		if credential.Status == "deleted" {
+			continue
+		}
+		if err := control.Do(ctx, http.MethodDelete, "/v1/credentials/"+url.PathEscape(credential.ID), nil, nil); err != nil {
+			return err
+		}
+	}
+	credentials = nil
+	if err := control.Do(ctx, http.MethodGet, path, nil, &credentials); err != nil {
+		return err
+	}
+	for _, credential := range credentials {
+		if credential.Status != "deleted" {
+			return fmt.Errorf("%w: broker credential remains", api.ErrCredentialVisibilityUnknown)
+		}
 	}
 	return nil
 }

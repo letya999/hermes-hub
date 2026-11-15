@@ -5,13 +5,54 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+func TestShareGeneratedRuntimeViewsGroupWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions")
+	}
+	dir := t.TempDir()
+	generated := filepath.Join(dir, "generated")
+	roots := []string{GeneratedSkillsDir(dir), GeneratedEffectiveSkillsDir(dir), GeneratedSkillsMetaDir(dir), GeneratedPluginsDir(dir)}
+	for _, root := range roots {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plugin := filepath.Join(GeneratedPluginsDir(dir), "hub-web", "__init__.py")
+	if err := os.MkdirAll(filepath.Dir(plugin), 0700); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(GeneratedSkillsMetaDir(dir), "viewmeta.json")
+	for _, file := range []string{plugin, meta} {
+		if err := os.WriteFile(file, []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := shareGeneratedRuntimeViews(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range append([]string{generated}, roots...) {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm()&0020 == 0 {
+			t.Fatalf("supervisor group cannot write %s: %v", path, err)
+		}
+	}
+	for _, file := range []string{plugin, meta} {
+		info, err := os.Stat(file)
+		if err != nil || info.Mode().Perm()&0060 != 0060 {
+			t.Fatalf("supervisor group cannot update %s: %v", file, err)
+		}
+	}
+}
 
 // writeStoreSkill drops a minimal valid skill into a store root.
 func writeStoreSkill(t *testing.T, root, name, desc string) {
@@ -384,6 +425,35 @@ func TestSoulEffectiveTier0CapsDescription(t *testing.T) {
 	}
 }
 
+func TestSoulEffectiveUTF8(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	description := strings.Repeat("a", 199) + "я" + strings.Repeat("🚋", 100)
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "multilingual", description)
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
+	body, err := os.ReadFile(path)
+	if err != nil || !utf8.Valid(body) || !strings.Contains(string(body), strings.Repeat("a", 199)+"я\n") || !strings.Contains(string(body), contractOnboarding) {
+		t.Fatalf("multilingual catalog lost its UTF-8 or channel contract: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte{0xff}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err == nil {
+		t.Fatal("invalid persona must stop materialization")
+	}
+	preserved, err := os.ReadFile(path)
+	if err != nil || string(preserved) != string(body) {
+		t.Fatal("failed materialization replaced the last readable contract")
+	}
+}
+
 // A credential ref resolves against the owner's configured self-env keys at
 // render: the shared PAT satisfies the requirement without a per-skill
 // duplicate (R8.2).
@@ -659,7 +729,8 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,9 +739,10 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	s.ExecutionMode = "supervisor"
 	s.SupervisorURL = "http://localhost:8876"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0123456789abcdef")
 	selection := `{"schema":1,"user":"me","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(d, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
 		t.Fatal(err)
@@ -700,6 +772,7 @@ func TestOrganizationInitCreatesUnifiedSkillsStore(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
 	s, err := ReadEnvironment(space, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -717,13 +790,14 @@ func TestRenderMigratesLegacyHermesSkillsIntoStore(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model, s.ModelURL = "test", "http://model-relay:8318/v1"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -777,13 +851,14 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(d, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishOrgRevision(t, d, "alice", "acme", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model, s.ModelURL = "test", "http://model-relay:8318/v1"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -792,8 +867,24 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 	repo := t.TempDir()
 	_ = os.Mkdir(filepath.Join(repo, "config"), 0700)
 	_ = os.WriteFile(filepath.Join(repo, "config", "SOUL.md"), []byte("original"), 0600)
+	plugin := filepath.Join(repo, "config", "plugins", "other-plugin", "__init__.py")
+	if err := os.MkdirAll(filepath.Dir(plugin), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plugin, []byte("# test plugin"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := RenderEnvironment(d, repo, "prod"); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{"plugins", filepath.Join("plugins", "other-plugin"), filepath.Join("plugins", "other-plugin", "__init__.py")} {
+			path := filepath.Join(d, "generated", name)
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm()&0020 == 0 {
+				t.Fatalf("rendered plugin not writable by supervisor group: %s: %v", path, err)
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(orgDir, "skills", "org-legacy", "SKILL.md")); err != nil {
 		t.Fatalf("legacy org skill not migrated into the org store: %v", err)
@@ -808,6 +899,7 @@ func TestInitCreatesUnifiedSkillsStore(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	if info, err := os.Stat(filepath.Join(d, "skills")); err != nil || !info.IsDir() {
 		t.Fatalf("init did not create the unified skills store: %v", err)
 	}
@@ -839,11 +931,9 @@ func TestSkillGovernanceSections(t *testing.T) {
 	if !ok || read.Default != api.RuleAllow || !read.Official {
 		t.Fatalf("hub:skills section missing or wrong: %+v", read)
 	}
-	manage, ok := inventory["hub:skills_manage"]
-	if !ok || manage.Default != api.RuleAllow || !manage.Official {
-		t.Fatalf("hub:skills_manage section missing or wrong: %+v", manage)
-	}
-	if ToolHubCapabilityID("skills") != "skills" || ToolHubCapabilityID("skills_manage") != "skills_manage" {
+	// Catalog r5 has one skills family; the legacy skills_manage entry name
+	// is an alias onto it (SPEC-0093 R5.2).
+	if ToolHubCapabilityID("skills") != "skills" || ToolHubCapabilityID("skills_manage") != "skills" {
 		t.Fatal("toolhub capability map missing skills families")
 	}
 }

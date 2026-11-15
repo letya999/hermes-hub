@@ -1,5 +1,5 @@
 #!/usr/local/bin/python3
-"""TTS worker for the hub-tts command engine: text on stdin, OGG/Opus out.
+"""TTS worker: text on stdin, OGG/Opus out (WAV for the sidecar engine).
 
 Backends (ordered by HUB_TTS_BACKENDS, default "silero,piper,espeak"):
   silero — snakers4 Silero TTS (torch.hub, baked into the image): the best
@@ -140,6 +140,9 @@ def main() -> int:
         ogg = os.path.join(tmp, "voice.ogg")
         if not synthesize_wav(text, voice, wav):
             return 1
+        if env("HUB_TTS_OUTPUT_FORMAT") == "wav":
+            sys.stdout.buffer.write(open(wav, "rb").read())
+            return 0
         encode = subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", ogg],
             capture_output=True, timeout=25)

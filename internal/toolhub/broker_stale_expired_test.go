@@ -68,7 +68,7 @@ func TestRefreshBrokerRequestHealsExpiredRequest(t *testing.T) {
 	}
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "expired-request", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "expired-request", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

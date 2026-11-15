@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,6 +102,16 @@ func TestConfigValidateAndMediaServices(t *testing.T) {
 	cfg, err = ConfigFromEnv()
 	if err != nil || cfg.Workers != 7 || cfg.SpoolRetention != 48*time.Hour || cfg.STTURL != "http://stt.local" || cfg.TelegramToken != "tok" {
 		t.Fatalf("ConfigFromEnv yaml path: %v %+v", err, cfg)
+	}
+	if err := os.WriteFile(yamlPath, []byte(strings.Replace(body, "spool_dir: "+filepath.ToSlash(filepath.Join(dir, "s2"))+"\n", "", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadYAML(yamlPath); err == nil {
+		t.Fatal("standalone YAML without spool_dir accepted")
+	}
+	cfg, err = ConfigFromEnv()
+	if err != nil || cfg.SpoolDir != filepath.Join(dir, "envspool") {
+		t.Fatalf("ConfigFromEnv must fill spool_dir before validation: %v", err)
 	}
 
 	os.Unsetenv("HUB_COMMUNICATION_CONFIG")

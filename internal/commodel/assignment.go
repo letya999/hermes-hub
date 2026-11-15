@@ -100,14 +100,16 @@ type AssignmentGrants struct {
 // AssignmentCheckpoint is the durable measurement card: wakes, model calls
 // (a wake IS a model call), notices and the last observed wake latency.
 type AssignmentCheckpoint struct {
-	LastWakeAt        time.Time `json:"last_wake_at,omitempty"`
-	LastWakeLatencyMs int64     `json:"last_wake_latency_ms,omitempty"`
-	WakeDay           string    `json:"wake_day,omitempty"`
-	WakesToday        int       `json:"wakes_today,omitempty"`
-	LLMCalls          int       `json:"llm_calls,omitempty"`
-	NotifyDay         string    `json:"notify_day,omitempty"`
-	NoticesToday      int       `json:"notices_today,omitempty"`
-	LastError         string    `json:"last_error,omitempty"`
+	// Unsettled wake reservations survive enqueue failure and owner-day rollover.
+	WakeOperations    map[string]uint64 `json:"wake_operations,omitempty"`
+	LastWakeAt        time.Time         `json:"last_wake_at,omitempty"`
+	LastWakeLatencyMs int64             `json:"last_wake_latency_ms,omitempty"`
+	WakeDay           string            `json:"wake_day,omitempty"`
+	WakesToday        int               `json:"wakes_today,omitempty"`
+	LLMCalls          int               `json:"llm_calls,omitempty"`
+	NotifyDay         string            `json:"notify_day,omitempty"`
+	NoticesToday      int               `json:"notices_today,omitempty"`
+	LastError         string            `json:"last_error,omitempty"`
 }
 
 // AssignmentProgress is the specialist's bounded durable memory between

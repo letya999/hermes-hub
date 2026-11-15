@@ -30,13 +30,16 @@ func TestPrepareContinuationOAuthPointsAtNotice(t *testing.T) {
 	}
 }
 
-// A wizard link fronts every step on one page: the agent must point back at
-// that single link instead of inventing a separate confirm message or button.
-func TestPrepareContinuationWizardPointsAtSameLink(t *testing.T) {
+// The wizard link fronts every setup page, while Telegram confirmation still
+// uses the protected button in the original chat.
+func TestPrepareContinuationWizardNamesCurrentAction(t *testing.T) {
 	for _, phase := range []string{"awaiting-credentials", "awaiting-confirm", "awaiting-oauth"} {
 		text := prepareContinuation(prepareOutcomeRequest{OnboardingID: "onboard-w", Phase: phase, Repository: "https://github.com/taylorwilsdon/google_workspace_mcp", FormURL: "http://127.0.0.1:8090/connect/onboard-w?k=wiz-1"}, locale.LangEN)
-		if !strings.Contains(text, "same link") || !strings.Contains(text, "resend=true") || strings.Contains(text, "separate message") || strings.Contains(text, "wiz-1") {
+		if !strings.Contains(text, "setup page link") || !strings.Contains(text, "connector_edit action=resend") || strings.Contains(text, "wiz-1") {
 			t.Fatalf("%s: wizard continuation misdirects the agent: %q", phase, text)
+		}
+		if phase == "awaiting-confirm" && !strings.Contains(text, "protected confirmation button") {
+			t.Fatalf("%s: human confirmation omitted: %q", phase, text)
 		}
 	}
 }

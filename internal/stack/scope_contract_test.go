@@ -19,18 +19,17 @@ func TestPeerScopeHomesAndCollisionRules(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(user, "artem", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	for _, check := range []struct {
-		path string
-		kind string
-		id   string
-	}{
-		{org, "organization", "acme"},
-		{user, "user", "artem"},
-	} {
-		body, err := os.ReadFile(filepath.Join(check.path, "scope.yaml"))
-		if err != nil || !strings.Contains(string(body), "kind: "+check.kind) || !strings.Contains(string(body), "id: "+check.id) {
-			t.Fatal(check, err, string(body))
-		}
+	publishManagedRevision(t, user, "artem", "r-0000000000000001")
+	// The organization keeps its own scope.yaml; the member space's scope
+	// claim now lives in its authored stack passport (identity.user +
+	// identity.organization, kind defaults to user).
+	body, err := os.ReadFile(filepath.Join(org, "scope.yaml"))
+	if err != nil || !strings.Contains(string(body), "kind: organization") || !strings.Contains(string(body), "id: acme") {
+		t.Fatal(org, err, string(body))
+	}
+	stack, err := os.ReadFile(filepath.Join(user, "passports", "stack.yaml"))
+	if err != nil || !strings.Contains(string(stack), "user: artem") || !strings.Contains(string(stack), "organization: acme") {
+		t.Fatal(user, err, string(stack))
 	}
 	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "connections", "workspace", "archive", "generated"} {
 		if info, err := os.Stat(filepath.Join(user, name)); err != nil || !info.IsDir() {

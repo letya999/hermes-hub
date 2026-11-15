@@ -380,7 +380,7 @@ func TestEnqueueUsesFreshAdmissionEpoch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = g.enqueueChannelJob(t.Context(), user, task, "telegram_bot", "new-job", "new-key", 11, 0, "hello", 11, "")
+			err = g.enqueueChannelJob(t.Context(), user, task, "telegram_bot", "new-job", "new-key", 11, 0, "hello", 11, "", false)
 			job, claimErr := g.spool.ClaimJob()
 			if claimErr != nil {
 				t.Fatal(claimErr)

@@ -63,7 +63,7 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	definition.Tools = nil
 	definition.Source.ToolContractDigest = ""
 	definition.Source.ToolContractSource = ""
-	onboarding.Phase = api.PhaseAwaitingCreds
+	onboarding.Stage = api.StagePending
 	onboarding.Required = hints
 	onboarding.AdmissionPending = true
 	onboarding.Error = api.PublicPrepareError(errors.New(review.AdmissionDetail))
@@ -85,14 +85,11 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	}
 	onboarding.ReviewDigest = ""
 	if brokerGate {
-		onboarding.FormNonce = ""
-		onboarding.FormExpires = time.Time{}
+		onboarding.ArmGate(api.GateCredentials, "", time.Time{})
 	} else {
-		onboarding.FormNonce = api.RandomNonce()
-		onboarding.FormExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	}
-	onboarding.ConfirmationNonce = ""
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
@@ -393,20 +390,20 @@ func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.En
 	if err != nil {
 		return nil, err
 	}
-	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+	if err := c.regenerateBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
+	if err := c.refreshBrokerRequest(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	body := c.statusBody(onboarding, true)
-	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
+	if onboarding.Awaiting(api.GateCredentials) && onboarding.GateNonce(api.GateCredentials) != "" && c.now().Before(onboarding.GateExpiry(api.GateCredentials)) {
 		body["input"] = "localhost-form"
 	}
-	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
+	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Awaiting(api.GateCredentials) {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
 	}
@@ -420,42 +417,48 @@ func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.En
 // loopback link expires. The old nonce is replaced, so an old URL cannot be
 // replayed while the same request key still identifies the onboarding.
 func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
+	if onboarding == nil || !onboarding.Awaiting(api.GateCredentials) {
 		return nil
 	}
 	if onboarding.BrokerRequestID != "" || onboarding.AdmissionPending && onboarding.BrokerCredentialID != "" {
 		return nil
 	}
 	now := c.now()
-	if onboarding.FormNonce != "" && now.Before(onboarding.FormExpires) {
+	if onboarding.GateNonce(api.GateCredentials) != "" && now.Before(onboarding.GateExpiry(api.GateCredentials)) {
 		return nil
 	}
-	onboarding.FormNonce = api.RandomNonce()
-	onboarding.FormExpires = now.Add(c.ttl())
+	onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), now.Add(c.ttl()))
 	c.armWizard(onboarding)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(*onboarding); err != nil {
 		return err
 	}
-	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, onboarding)
 	return nil
 }
 
 func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+	if onboarding == nil || onboarding.GateKind() != api.GateConfirmSetup || onboarding.ConfirmationUsed || (!onboarding.ConfirmationUsed && onboarding.GateNonce(api.GateConfirmSetup) != "" && c.now().Before(onboarding.GateExpiry(api.GateConfirmSetup))) {
 		return nil
 	}
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 	onboarding.ConfirmationUsed = false
 	c.armWizard(onboarding)
+	expected := onboarding.Revision
 	onboarding.Revision++
-	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+	if err := c.Store.PutOnboardingIfRevision(*onboarding, expected); err != nil {
+		if errors.Is(err, api.ErrStale) {
+			current, readErr := c.Store.OnboardingFor(auth, onboarding.OnboardingID)
+			if readErr == nil && current.GateKind() == api.GateConfirmSetup && current.GateNonce(api.GateConfirmSetup) != "" && c.now().Before(current.GateExpiry(api.GateConfirmSetup)) {
+				*onboarding = current
+				return nil
+			}
+		}
 		return err
 	}
 	// A fresh nonce means a fresh link — the channel must carry it because the
 	// tool result never will.
-	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	c.deliverOutcomeNotice(ctx, auth, onboarding)
 	return nil
 }
 
@@ -476,13 +479,13 @@ func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[
 	if onboarding.AdmissionPending && onboarding.Definition != nil && onboarding.Definition.CredentialContractID != "" {
 		return fmt.Errorf("%w: contracted credentials must be submitted to Broker", api.ErrUnauthorized)
 	}
-	if onboarding.FormNonce == "" || nonce != onboarding.FormNonce {
+	if onboarding.GateNonce(api.GateCredentials) == "" || nonce != onboarding.GateNonce(api.GateCredentials) {
 		return fmt.Errorf("%w: form nonce", api.ErrUnauthorized)
 	}
-	if onboarding.FormExpires.IsZero() || c.now().After(onboarding.FormExpires) {
+	if onboarding.GateExpiry(api.GateCredentials).IsZero() || c.now().After(onboarding.GateExpiry(api.GateCredentials)) {
 		return fmt.Errorf("%w: expired form", api.ErrUnauthorized)
 	}
-	if onboarding.Phase != api.PhaseAwaitingCreds && onboarding.Phase != api.PhaseAwaitingConfirm {
+	if onboarding.GateKind() != api.GateCredentials {
 		return fmt.Errorf("%w: credentials not expected", api.ErrUnauthorized)
 	}
 	filtered, err := filterSubmittedCredentials(onboarding.Required, values)
@@ -590,15 +593,19 @@ func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[
 	}
 	onboarding.Locator = locator
 	onboarding.CredentialOwner = owner
-	onboarding.FormNonce = ""
-	onboarding.FormExpires = time.Time{}
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
-	onboarding.ConfirmationUsed = false
-	c.armWizard(&onboarding)
+	onboarding.Stage = api.StagePending
+	onboarding.ClearGate()
 	onboarding.Revision++
-	return c.Store.PutOnboarding(onboarding)
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return err
+	}
+	// The form submission is itself the consent — bind straight through to
+	// live instead of arming a second confirm click. A bind failure persists
+	// its own failure state; the saved credential stays for the next retry.
+	if err := c.completeSetup(context.Background(), authEnv, &onboarding, "credential_submission"); err != nil {
+		log.Printf("toolhub onboarding %s: complete setup after credential submit: %v", onboarding.OnboardingID, err)
+	}
+	return nil
 }
 
 // errCredentialSaved marks a failure after the loopback secret is already stored.
@@ -614,14 +621,11 @@ func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, n
 	if err := c.submitCredentials(onboardingID, nonce, values, lang); err != nil {
 		return err
 	}
-	if err := c.finishAuthorization(ctx, onboardingID); err != nil {
-		if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
-			notify := latest
-			notify.Error = err.Error()
-			api.DeliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
-		}
-		return fmt.Errorf("%w: %w", errCredentialSaved, err)
+	onboarding, err := c.Store.onboarding(onboardingID)
+	if err != nil {
+		return err
 	}
+	c.deliverOutcomeNotice(ctx, onboardingEnvelope(onboarding), &onboarding)
 	return nil
 }
 

@@ -55,6 +55,22 @@ func TestPlatformSkillsPassLint(t *testing.T) {
 	}
 }
 
+func TestDeepResearchSkillNamesManagedTools(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "config", "skills", "deep-research-embedded", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, name := range []string{"web_fetch", "routine_edit", "browser_open"} {
+		if !strings.Contains(text, "`"+name+"`") {
+			t.Errorf("managed tool %s missing", name)
+		}
+	}
+	if strings.Contains(text, "`routine_pause`") {
+		t.Error("skill refers to a tool that is not projected")
+	}
+}
+
 // R12.2/R12.4: every platform skill ships a valid trigger suite — ~20
 // queries, a 60/40 split, ≥1 run and a sane threshold — so `hubctl skill
 // eval` can gate release on it.

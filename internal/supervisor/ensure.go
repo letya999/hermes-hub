@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,12 +40,16 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
-	managedSettings, managedErr := stack.Read(binding.ContextRoot)
+	managedSettings, managedErr := stack.ReadEffectiveSpace(binding.ContextRoot)
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
 	managed := managedErr == nil && managedSettings.CapabilityMode == "managed"
-	if managed && (!selected || selection.Mode != "supervisor") {
+	// The stack passport is the spawn contract (SPEC-0092 R3.2): a declared
+	// supervised hermes-runtime selects the supervisor even when the rollout
+	// execution file was never written. A file that picks another executor
+	// was already rejected above.
+	if managed && selection.Mode != "supervisor" && managedSettings.PassportServices["hermes-runtime"] != "supervised" {
 		return Runtime{}, errors.New("managed capability mode requires supervisor execution selection")
 	}
 	m.mu.Lock()
@@ -286,13 +291,24 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		// the name; remove it only when it is verifiably ours and stale.
 		m.reclaimStaleRuntime(ctx, binding, container, logical.Generation)
 	}
+	var spawnFilesLock *sync.Mutex
+	if managed {
+		preparation := binding
+		preparation.RuntimeMode = "spawn-files"
+		spawnFilesLock = m.lockFor(runtimeKey(preparation))
+		spawnFilesLock.Lock()
+	}
 	args, err := m.runArgsWithGeneration(binding, container, port, logical.Generation)
 	if err != nil {
+		if managed {
+			spawnFilesLock.Unlock()
+		}
 		m.markDegraded(key)
 		return Runtime{}, fmt.Errorf("prepare runtime launch: %w", err)
 	}
 	if managed {
 		if err := m.ensureManagedInfra(ctx, binding, managedSettings, container, port, logical.Generation); err != nil {
+			spawnFilesLock.Unlock()
 			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 			m.markDegraded(key)
 			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
@@ -301,7 +317,11 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			return Runtime{}, fmt.Errorf("managed topology: %w", err)
 		}
 	}
-	if out, runErr := m.command(ctx, args...); runErr != nil {
+	out, runErr := m.command(ctx, args...)
+	if managed {
+		spawnFilesLock.Unlock()
+	}
+	if runErr != nil {
 		m.markDegraded(key)
 		// Docker may have created the container before its acknowledgement was lost.
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
@@ -403,7 +423,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.ReadEnvironment(abs, m.environment())
+	settings, settingsErr := stack.ReadEffective(abs, m.environment())
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
 	}
@@ -415,7 +435,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return Binding{}, errors.New("runtime env file is unavailable")
 	}
-	for _, file := range []string{"hermes." + m.environment() + ".yaml", "SOUL.md"} {
+	for _, file := range []string{filepath.Join("generated", "hermes."+m.environment()+".yaml"), "SOUL.md"} {
 		info, err := os.Lstat(filepath.Join(abs, file))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Binding{}, errors.New("runtime input file unavailable")
@@ -434,6 +454,9 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
 	if managed {
 		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
+		if binding.RuntimeMode != "gateway" {
+			dirs = append(dirs, "managed/"+m.environment()+"/runtime/"+binding.RuntimeMode)
+		}
 	}
 	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
@@ -470,9 +493,14 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	env := m.environment()
 	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
 	// dev port offsets, execution selection) must match the rendered compose.
-	settings, settingsErr := stack.ReadEnvironment(binding.ContextRoot, env)
+	settings, settingsErr := stack.ReadEffective(binding.ContextRoot, env)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
+	}
+	if settingsErr == nil {
+		if err := stack.ValidateRuntimeConnections(settings, binding.ContextRoot); err != nil {
+			return nil, err
+		}
 	}
 	if settingsErr == nil && settings.CapabilityMode == "managed" {
 		return m.managedRunArgs(binding, settings, container, generation)
@@ -482,14 +510,14 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// Spawned runtimes join the single shared runtime network where the shared
 	// control plane (toolhub, credential-broker, cliproxy, communication-hub)
 	// resolves; per-user isolation lives in mounts and principal-scoped auth.
-	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
+	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
 	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+env+".env")); err == nil && info.Mode().IsRegular() {
 		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+env+".env"))
 	}
 	args = append(args, "--env-file", binding.EnvFile)
 	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
 	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/scope,readonly")
-	if settings, err := stack.ReadEnvironment(binding.ContextRoot, env); err == nil {
+	if settings, err := stack.ReadEffective(binding.ContextRoot, env); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)
 		for key := range service["environment"].(stack.M) {
@@ -500,7 +528,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
 		}
 	}
-	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
+	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"archive", "/archive"}} {
 		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
 		if mount.target == "/archive" {
 			value += ",readonly"
@@ -513,10 +541,28 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// improvises installs through terminal instead of ToolHub control ops.
 	// The mount is the per-space filtered copy materialized at spawn so
 	// feature gating applies even when Render was not rerun after a toggle.
-	spawnSettings, serr := stack.ReadEnvironment(binding.ContextRoot, env)
+	spawnSettings, serr := stack.ReadEffective(binding.ContextRoot, env)
 	if serr != nil {
 		spawnSettings = stack.Settings{}
 	}
+	// The workspace passport owns the container filesystem once a revision is
+	// published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /skills and /shared/* come from the MountPlan —
+	// identical to the rendered Compose service. Without a revision the
+	// space keeps the legacy workspace bind and raw /config mounts.
+	if spawnSettings.PassportWorkspace != nil {
+		for _, pm := range stack.MountPlan(binding.ContextRoot, env, binding.ContextRoot, spawnSettings, *spawnSettings.PassportWorkspace) {
+			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
+			if pm.ReadOnly {
+				value += ",readonly"
+			}
+			args = append(args, "--mount", value)
+		}
+	} else {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
+	}
+	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, spawnSettings)
+	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, spawnSettings)
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
 		// Same contract as RenderEnvironment: a defaulted platform catalog is
@@ -528,7 +574,10 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, spawnSettings); err != nil {
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// A published workspace passport carries /skills through the MountPlan.
+	if spawnSettings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	}
 	// Post-publish rebuild contract: the platform tier and the render
 	// snapshot mount read-only; the view gets a second writable bind so
 	// /v1/skill-apply can recompose it in place without a respawn.
@@ -562,6 +611,22 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
 		}
 	}
+	// The published passport view is the runtime's whole /config: a stable
+	// read-only directory bind, never per-file mounts (SPEC-0092 S1.4). A
+	// space without a published revision keeps the legacy raw mounts — its
+	// heal path still reads them. A published workspace passport already
+	// carries /config through the MountPlan.
+	if spawnSettings.PassportWorkspace == nil {
+		if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
+			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
+		} else {
+			for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+				if _, err := os.Stat(file.source); err == nil {
+					args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
+				}
+			}
+		}
+	}
 	// Materialize the effective Hermes config host-side and mount it read-only
 	// over the agent-writable state dir: mcp_servers must come from ToolHub
 	// onboarding, never from terminal edits inside the runtime.
@@ -580,13 +645,20 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if err != nil {
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	// A published workspace passport owns /config as one read-only directory
+	// bind: nested per-file mounts cannot create mountpoints under it, so the
+	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
+	if spawnSettings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	}
 	// The render-time tool-surface expectation, mounted read-only like the
 	// policy snapshot; the runtime's /v1/health probe reads it and nothing
 	// inside the container can rewrite it.
-	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	if spawnSettings.PassportWorkspace == nil {
+		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+		}
 	}
 	// The rendered effective SOUL — persona plus channel contract — is what
 	// Hermes reads at $HERMES_HOME/SOUL.md. Without it (pre-R1.8 space) the
@@ -597,11 +669,6 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
-	}
-	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
-		if _, err := os.Stat(file.source); err == nil {
-			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
-		}
 	}
 	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
@@ -634,14 +701,33 @@ const controlNetworkName = "hermes-hub-control"
 // executable import path under HERMES_HOME.
 var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"}
 
+func appendHostingRuntimeMount(args []string, root, env string, settings stack.Settings) []string {
+	if !settings.Has("hosting") {
+		return args
+	}
+	return append(args, "--mount", "type=bind,src="+filepath.Join(root, "runtime", "hosting."+env+".key")+",dst=/run/hosting.key,readonly")
+}
+
+func appendConnectionRuntimeMounts(args []string, root string, settings stack.Settings) []string {
+	for _, connection := range stack.RuntimeConnections(settings, root) {
+		args = append(args, "--mount", "type=bind,src="+connection.Source+",dst="+connection.Target+",readonly")
+	}
+	return args
+}
+
 // managedRunArgs mirrors the managed Compose service: private managed state
 // layout, read-only effective config, scratch workspace, sealed extension
 // roots and the agent network only. No published port (internal network), no
 // broker secrets, no shared mounts, no host gateway.
 func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, container string, generation string) ([]string, error) {
 	env := m.environment()
+	m.prepareSpawnFiles(binding, env)
 	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
-	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
+	runtimeDir := filepath.Join(managedDir, "runtime")
+	if binding.RuntimeMode != "gateway" {
+		runtimeDir = filepath.Join(runtimeDir, binding.RuntimeMode)
+	}
+	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
 	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
 	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
 		if envMap, ok := service["environment"].(stack.M); ok {
@@ -655,9 +741,27 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 			}
 		}
 	}
-	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
-		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
+	for _, mount := range []struct{ source, target string }{{runtimeDir, "/state"}, {filepath.Join(managedDir, "hermes"), "/state/hermes"}, {filepath.Join(managedDir, "home"), "/state/home"}, {filepath.Join(managedDir, "cache"), "/state/cache"}} {
+		args = append(args, "--mount", "type=bind,src="+mount.source+",dst="+mount.target)
 	}
+	// The workspace passport owns the container filesystem once a revision is
+	// published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /skills and /shared/* come from the MountPlan —
+	// identical to the rendered Compose service. Without a revision the
+	// space keeps the legacy workspace bind.
+	if settings.PassportWorkspace != nil {
+		for _, pm := range stack.MountPlan(binding.ContextRoot, env, managedDir, settings, *settings.PassportWorkspace) {
+			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
+			if pm.ReadOnly {
+				value += ",readonly"
+			}
+			args = append(args, "--mount", value)
+		}
+	} else {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
+	}
+	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, settings)
+	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, settings)
 	// Same skill contract as unmanaged spawns: the hub-built effective view
 	// mounts read-only at /skills and a failed build refuses the spawn.
 	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
@@ -669,7 +773,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// A published workspace passport carries /skills through the MountPlan.
+	if settings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	}
 	// Post-publish rebuild contract: the platform tier and the render
 	// snapshot mount read-only; the view gets a second writable bind so
 	// /v1/skill-apply can recompose it in place without a respawn.
@@ -683,6 +790,21 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
 	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
 		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
+	}
+	// Same contract for hub plugins as unmanaged and Compose renders: a
+	// feature-filtered copy materialized at spawn mounts read-only into
+	// upstream's bundled plugins dir.
+	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), settings); err != nil {
+		log.Printf("supervisor plugins materialization skipped: %v", err)
+	}
+	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
+			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
+		}
 	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
 	if err != nil {
@@ -699,10 +821,15 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if err != nil {
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
-	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	// A published workspace passport owns /config as one read-only directory
+	// bind: nested per-file mounts cannot create mountpoints under it, so the
+	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
+	if settings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+		}
 	}
 	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	for _, name := range managedExtensionRootTmpfs {
@@ -720,6 +847,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
+	}
+	current, err := stack.ReadEffective(binding.ContextRoot, env)
+	if err != nil || current.PassportRevision != settings.PassportRevision {
+		return nil, fmt.Errorf("managed runtime passport activation changed during spawn")
 	}
 	args = append(args, image, "serve")
 	return args, nil

@@ -14,18 +14,22 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
 	DefaultEndpointPath = "/mcp"
+	RunEndpointPath     = "/mcp-run"
 	maxGatewayBodyBytes = 4 << 20
 	legacyMCPVersion    = "2025-11-25"
 )
 
 type Gateway struct {
-	Store                      *Store
-	Backend                    api.ToolBackend
+	Store   *Store
+	Backend api.ToolBackend
+	// acquireRuntime warms and holds an agent executor outside the registry fence.
+	acquireRuntime             func(context.Context, api.EffectiveBinding) (func(), error)
 	Tokens                     map[string]identity.Envelope
 	primaryToken               string
 	tokensFile                 string
@@ -34,11 +38,12 @@ type Gateway struct {
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   api.CredentialInjector
-	// OAuthRefresh mints a new access token for a connection whose remote
-	// call was rejected, then reports whether a retry may carry a fresh
-	// bearer. Nil disables refresh-retry.
+	// OAuthRefresh restores a token only after a trusted backend proves setup
+	// authentication failed before tools/call dispatch. It never retries an
+	// uncertain business operation. Nil disables this setup recovery.
 	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
 	Control      *ControlPlane
+	Research     *researchHost
 	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.
@@ -47,6 +52,26 @@ type Gateway struct {
 	// read a principal's connector inventory via X-Hub-Principal. Principal
 	// bearers always pin their own envelope and never use the header.
 	ControlToken string
+
+	// SpacePrincipal is this deployment's space user id: control-token
+	// /v1/rights/decide calls may only assert it — cross-space assertions
+	// refuse (SPEC-0092 R2.2). Empty disables asserted decisions.
+	SpacePrincipal string
+	// PassportRoot contains one read-only published revision per principal.
+	// Memory admission resolves it from the authenticated envelope only.
+	PassportRoot string
+	// InboxRoots is the control-only writable inbox mount per principal.
+	InboxRoots       string
+	CommunicationURL string
+	ModelHTTP        *http.Client
+	// Vaults resolves a verified principal/environment to that principal's
+	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
+	// Nil when no bindings root is rendered — memory stays unavailable.
+	Vaults             *VaultResolver
+	proposalAfterWrite func(int) error // fault seam for interrupted multi-file commits
+	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
+	// the exact-run gate for model-facing memory calls. Nil fails closed.
+	Runs api.RunAuthority
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error
@@ -58,15 +83,20 @@ type Gateway struct {
 	// a restart forgives the budget, which matches the per-run contract.
 	runCalls map[string]int
 	runCap   int
+	// loadGate holds the overload state; built lazily by gate().
+	loadGate atomic.Pointer[loadGate]
 }
 
 type gatewayProjection struct {
-	auth     identity.Envelope
-	server   *mcp.Server
-	handler  http.Handler
-	mu       sync.Mutex
-	tools    map[string]api.ToolSpec
-	controls map[string]bool
+	auth        identity.Envelope
+	server      *mcp.Server
+	handler     http.Handler
+	runHandler  http.Handler
+	refreshMu   sync.Mutex
+	mu          sync.Mutex
+	tools       map[string]api.ToolSpec
+	controls    map[string]bool
+	fingerprint [32]byte
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -99,19 +129,34 @@ func (g *Gateway) Handler() (http.Handler, error) {
 				SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
 			}),
+			runHandler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+				Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes,
+				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
+			}),
+		}
+		if fingerprint, cacheable, err := g.projectionFingerprint(auth); err == nil && cacheable {
+			g.projections[token].fingerprint = fingerprint
 		}
 	}
 	mux := http.NewServeMux()
-	mux.Handle(DefaultEndpointPath, g.protect())
+	mux.Handle(DefaultEndpointPath, g.gate().interactive(g.protect(DefaultEndpointPath)))
+	mux.Handle(RunEndpointPath, g.gate().interactive(g.protect(RunEndpointPath)))
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/v1/connectors:install", http.HandlerFunc(g.serveConnectorInstall))
+	mux.Handle("/v1/connectors:invoke", http.HandlerFunc(g.serveConnectorInvoke))
 	mux.Handle("/v1/connectors/", http.HandlerFunc(g.serveConnectorVerb))
 	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
-	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
+	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
+	mux.Handle("/v1/tool-call", g.gate().interactive(http.HandlerFunc(g.serveToolCall)))
+	mux.Handle("/v1/inbound-fetch", http.HandlerFunc(g.serveInboundFetch))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
+	mux.Handle("/v1/memory-capture", g.gate().background(http.HandlerFunc(g.serveMemoryCapture)))
+	mux.Handle("/v1/memory-context", g.gate().interactive(http.HandlerFunc(g.serveMemoryContext)))
+	mux.Handle("/v1/rights/decide", g.gate().interactive(http.HandlerFunc(g.serveRightsDecide)))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
-	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))
+	mux.Handle("/v1/admin/diagnose/", g.gate().background(http.HandlerFunc(g.serveAdminDiagnose)))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))
+	mux.Handle("/knowledge", http.HandlerFunc(g.serveKnowledge))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/confirm/", http.HandlerFunc(g.serveConfirm))
 	mux.Handle("/remove/", http.HandlerFunc(g.serveRemove))
@@ -141,6 +186,7 @@ func (g *Gateway) PublicMux() *http.ServeMux {
 	mux.Handle("/viewer/", wrap(g.serveViewer))
 	mux.Handle("/device/", wrap(g.serveDevice))
 	mux.Handle("/oauth/callback", wrap(g.serveOAuthCallback))
+	mux.Handle("/knowledge", wrap(g.serveKnowledge))
 	return mux
 }
 
@@ -251,19 +297,48 @@ func (g *Gateway) serveConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	g.connectorFacadeResult(w, r, "connector_install", args)
 }
 
-// serveConnectorVerb maps POST /v1/connectors/{id}:disable onto the
-// connector_disable facade verb — same code path as the agent tool.
+// serveConnectorInvoke is POST /v1/connectors:invoke — the generic facade
+// route every connector_* verb shares. Operator tooling (hubctl --service)
+// takes this path so it exercises the identical admission, journaling and
+// store locks the agent tools do, instead of writing the store file beside
+// the live container.
+func (g *Gateway) serveConnectorInvoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Tool string         `json:"tool"`
+		Args map[string]any `json:"args"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGatewayBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || body.Tool == "" {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	g.connectorFacadeResult(w, r, body.Tool, body.Args)
+}
+
+// serveConnectorVerb maps enable and disable HTTP actions onto the same
+// connector facade verbs as the agent tools.
 func (g *Gateway) serveConnectorVerb(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	id, found := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/connectors/"), ":disable")
-	if !found || id == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/connectors/")
+	id, tool := "", ""
+	if value, found := strings.CutSuffix(path, ":enable"); found {
+		id, tool = value, "connector_enable"
+	} else if value, found := strings.CutSuffix(path, ":disable"); found {
+		id, tool = value, "connector_disable"
+	}
+	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	g.connectorFacadeResult(w, r, "connector_disable", map[string]any{"target": id})
+	g.connectorFacadeResult(w, r, tool, map[string]any{"target": id})
 }
 
 // serveOperation is GET /v1/operations/{id} — the journaled operation record
@@ -298,6 +373,10 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if _, err := g.requireActivated(auth); err != nil {
+		http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	var body struct {
 		Tool      string         `json:"tool"`
 		Arguments map[string]any `json:"arguments"`
@@ -308,42 +387,66 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tool call", http.StatusBadRequest)
 		return
 	}
-	tools, err := g.Store.ListProjectedTools(auth)
-	if err != nil {
-		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if tools, err = g.filterProjectedTools(auth, tools); err != nil {
-		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	allowed := false
-	for _, tool := range tools {
-		if tool.Name == body.Tool && tool.Tool.Effect == api.ReadEffect {
-			allowed = true
-		}
-	}
-	if !allowed {
-		http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
-		return
-	}
 	corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
-	result, err := g.call(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
+	result, err := g.callReadTool(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
 	if err != nil {
+		if errors.Is(err, errProbeNotProjected) {
+			http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, errProbeRegistry) {
+			http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if data := uncertainCallData(err); data != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(data)
+			return
+		}
 		http.Error(w, "tool call failed", http.StatusBadGateway)
 		return
 	}
-	var text strings.Builder
-	for _, content := range result.Content {
-		if tc, ok := content.(*mcp.TextContent); ok {
-			if text.Len() > 0 {
-				text.WriteByte('\n')
-			}
-			text.WriteString(tc.Text)
+	value := flattenToolText(result)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"text": string(value), "is_error": result.IsError})
+}
+
+var errProbeNotProjected = errors.New("tool is not a projected read tool")
+var errProbeRegistry = errors.New("tool registry unavailable")
+
+func (g *Gateway) callReadTool(ctx context.Context, auth identity.Envelope, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	tools, err := g.Store.ListProjectedTools(auth)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbeRegistry, err)
+	}
+	tools, err = g.filterProjectedTools(auth, tools)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbeRegistry, err)
+	}
+	for _, tool := range tools {
+		if tool.Name == name && tool.Tool.Effect == api.ReadEffect {
+			return g.call(ctx, auth, name, arguments)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"text": text.String(), "is_error": result.IsError})
+	return nil, errProbeNotProjected
+}
+
+func flattenToolText(result *mcp.CallToolResult) []byte {
+	var value strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			if value.Len() > 0 {
+				value.WriteByte('\n')
+			}
+			value.WriteString(text.Text)
+		}
+	}
+	if value.Len() == 0 && result.StructuredContent != nil {
+		encoded, _ := json.Marshal(result.StructuredContent)
+		return encoded
+	}
+	return []byte(value.String())
 }
 
 // serveCLIJobRelease is the job-end hook: the communication hub calls it when
@@ -417,9 +520,9 @@ func (g *Gateway) connectorAuth(r *http.Request) (identity.Envelope, bool) {
 	return identity.Envelope{}, false
 }
 
-func (g *Gateway) protect() http.Handler {
+func (g *Gateway) protect(path string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != DefaultEndpointPath {
+		if r.URL.Path != path {
 			http.NotFound(w, r)
 			return
 		}
@@ -443,21 +546,22 @@ func (g *Gateway) protect() http.Handler {
 		}
 		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
 		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
-		projection.handler.ServeHTTP(w, r)
+		if path == RunEndpointPath {
+			projection.runHandler.ServeHTTP(w, r)
+		} else {
+			projection.handler.ServeHTTP(w, r)
+		}
 	})
 }
 
 func (g *Gateway) authenticate(value string) (string, bool) {
-	if token, ok := g.matchToken(value); ok {
-		return token, true
+	// The bearer can stay the same while its policy envelope changes after
+	// a sibling rebuild. Re-read the small enrolled-token file so a cached
+	// projection cannot keep the old authority.
+	if g.tokensFile != "" {
+		g.reloadTokens()
 	}
-	// A sibling space enrolled after process start is invisible until the
-	// tokens file is read again. Reload only on a miss so the steady path
-	// stays the in-memory map.
-	if g.reloadTokens() {
-		return g.matchToken(value)
-	}
-	return "", false
+	return g.matchToken(value)
 }
 
 func (g *Gateway) matchToken(value string) (string, bool) {
@@ -489,6 +593,10 @@ func (g *Gateway) reloadTokens() bool {
 	extra, err := loadTokenEnvelopes(g.tokensFile)
 	if err != nil {
 		log.Printf("toolhub token reload skipped: %v", err)
+		if primaryAuth, ok := g.Tokens[g.primaryToken]; ok {
+			g.Tokens = map[string]identity.Envelope{g.primaryToken: primaryAuth}
+			g.projections = nil
+		}
 		return false
 	}
 	primaryAuth, ok := g.Tokens[g.primaryToken]
@@ -505,6 +613,11 @@ func (g *Gateway) reloadTokens() bool {
 			continue
 		}
 		next[token] = auth
+	}
+	for token, old := range g.Tokens {
+		if current, ok := next[token]; !ok || !envelopeEqual(old, current) {
+			delete(g.projections, token)
+		}
 	}
 	g.Tokens = next
 	return true

@@ -44,7 +44,7 @@ func TestRegistryRepoResolution(t *testing.T) {
 	}
 }
 
-func TestDockerPullPrefersShaTagAndFallsBackToEdge(t *testing.T) {
+func TestDockerPullMissingShaDoesNotTestStaleEdge(t *testing.T) {
 	var calls []string
 	run := func(ctx context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
@@ -54,13 +54,11 @@ func TestDockerPullPrefersShaTagAndFallsBackToEdge(t *testing.T) {
 		return nil
 	}
 	inspect := func(ctx context.Context, args ...string) ([]byte, error) { return []byte("sha123\n"), nil }
-	if err := dockerPull(context.Background(), "hermes-hub:test", "prod", "o/r", "sha123", run, inspect); err != nil {
-		t.Fatal(err)
+	if err := dockerPull(context.Background(), "hermes-hub:test", "prod", "o/r", "sha123", run, inspect); err == nil {
+		t.Fatal("missing source image accepted")
 	}
 	want := []string{
 		"pull ghcr.io/o/r/hermes-hub:sha123-prod",
-		"pull ghcr.io/o/r/hermes-hub:edge-prod",
-		"tag ghcr.io/o/r/hermes-hub:edge-prod hermes-hub:test",
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("unexpected pull sequence: %v", calls)
@@ -87,11 +85,32 @@ func TestDockerPullUsesShaTagWhenPresent(t *testing.T) {
 }
 
 func TestDockerPullFailsWhenNothingPullable(t *testing.T) {
-	run := func(ctx context.Context, args ...string) error { return fmt.Errorf("denied") }
+	run := func(ctx context.Context, args ...string) error { t.Fatal("pull without source revision"); return nil }
 	inspect := func(ctx context.Context, args ...string) ([]byte, error) { return nil, nil }
 	if err := dockerPull(context.Background(), "hermes-hub:test", "prod", "o/r", "", run, inspect); err == nil ||
-		!strings.Contains(err.Error(), "edge-prod") {
+		!strings.Contains(err.Error(), "source revision required") {
 		t.Fatalf("missing refs must fail closed: %v", err)
+	}
+}
+
+func TestDockerPullRejectsUnverifiableRevisionBeforeRetag(t *testing.T) {
+	for _, tc := range []struct {
+		name, revision string
+		err            error
+	}{{"stale", "other", nil}, {"missing", "", nil}, {"inspect-failed", "sha123", errors.New("inspect failed")}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tagged bool
+			run := func(_ context.Context, args ...string) error { tagged = tagged || args[0] == "tag"; return nil }
+			inspect := func(_ context.Context, args ...string) ([]byte, error) {
+				if args[len(args)-1] != "ghcr.io/o/r/hermes-hub:sha123-prod" {
+					t.Fatal("inspected a mutable local tag")
+				}
+				return []byte(tc.revision), tc.err
+			}
+			if err := dockerPull(context.Background(), "hermes-hub:test", "prod", "o/r", "sha123", run, inspect); err == nil || tagged {
+				t.Fatalf("unverified image accepted or retagged: err=%v tagged=%v", err, tagged)
+			}
+		})
 	}
 }
 

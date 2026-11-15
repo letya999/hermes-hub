@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -144,7 +143,7 @@ func TestServeViewerLinkContract(t *testing.T) {
 // S8.3: connector_status on a browser connection mints the one-time viewer
 // link and posts it to the owner's channel — the tool result itself carries
 // no link material.
-func TestConnectorStatusMintsViewerLink(t *testing.T) {
+func TestConnectorResendMintsViewerWhileStatusIsReadOnly(t *testing.T) {
 	store := NewStore()
 	if err := store.RegisterDefinition(browserDefinition()); err != nil {
 		t.Fatal(err)
@@ -155,9 +154,9 @@ func TestConnectorStatusMintsViewerLink(t *testing.T) {
 	if err := store.PutOnboarding(api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-browser", PrincipalID: "alice",
 		ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled,
-		DefinitionID: "browser", DefinitionVersion: "1.0.0", ConnectionID: "conn-browser",
-	}); err != nil {
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StageLive,
+		DefinitionID: "browser", DefinitionVersion: "1.0.0", ConnectionID: "conn-browser"}); err != nil {
 		t.Fatal(err)
 	}
 	var posted map[string]any
@@ -176,6 +175,12 @@ func TestConnectorStatusMintsViewerLink(t *testing.T) {
 	}
 	if strings.Contains(result.Summary, "t=") || strings.Contains(result.Summary, "/viewer/") {
 		t.Fatalf("link material leaked into tool result: %q", result.Summary)
+	}
+	if len(posted) != 0 {
+		t.Fatal("status minted a viewer link")
+	}
+	if _, err := control.connectorResend(t.Context(), aliceAuth(), map[string]any{"target": "onb-browser"}); err != nil {
+		t.Fatal(err)
 	}
 	viewerURL, _ := posted["viewer_url"].(string)
 	if !strings.Contains(viewerURL, "/viewer/conn-browser?t=") {
@@ -315,8 +320,7 @@ func TestToolHiveShmSizeGate(t *testing.T) {
 // read tools alone by default, interaction tools only after the toolset is on
 // and writes are confirmed, eval only after its own set.
 func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
-	store := NewStore()
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "c", DeliveryTargetID: "c", PolicyVersion: "policy-1", CapabilityProfile: "alice-default", Environment: "dev", Generation: 1}
+	store, auth, _, profile := managedStore(t)
 	definition := api.ToolDefinition{
 		Schema: api.SchemaVersion, DefinitionID: "playwright-mcp", Version: "0.0.83",
 		Transport: api.AgentTools,
@@ -344,11 +348,11 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", "alice", "browser"),
 		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: auth.PolicyVersion,
 		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
+		Stage: api.StageLive, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	profile := api.CapabilityProfile{SelfInstall: true}
+	profile.SelfInstall = true
 	names := func() []string {
 		out := []string{}
 		for _, tool := range store.managedSelfInstallToolsLocked(auth, profile) {
@@ -381,6 +385,68 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	clickName := api.ProjectedToolName(definition.DefinitionID, definition.Version, "browser_click")
 	if _, _, err := store.managedSelfInstallToolLocked(auth, profile, clickName); err != nil {
 		t.Fatalf("confirmed act tool must dispatch: %v", err)
+	}
+}
+
+// A managed caller's self-install reached stage=live with an active binding,
+// but tools/list and tools/call iterated profile.Selections only — the
+// provenance-gated self-install helpers were dead code and the connector
+// stayed invisible ("tools not projected"). The public entry points must fall
+// through to the self-install projection.
+func TestManagedSelfInstallProjectsThroughPublicEntryPoints(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	definition := remoteDefinition()
+	definition.DefinitionID = "notion-mcp-server"
+	definition.Credentials = nil
+	definition.Tools = []api.ToolSpec{{Name: "API-get-self", Effect: api.ReadEffect}, {Name: "API-post-search", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, "", "")
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	profile.SelfInstall = true
+	profile.Revision++
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	wanted := api.ProjectedToolName(definition.DefinitionID, definition.Version, "API-post-search")
+	listed, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed {
+		if tool.Name == wanted {
+			t.Fatal("self-install tool must not project before its live onboarding exists")
+		}
+	}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", "alice", "notion"),
+		PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Stage: api.StageLive, BindingID: binding.ToolBindingID, Revision: 1, CreatedAt: time.Now()}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range listed {
+		if tool.Name == wanted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tools/list must include the self-installed connector tool %s", wanted)
+	}
+	if _, _, err := store.ResolveProjectedTool(auth, wanted); err != nil {
+		t.Fatalf("tools/call resolution must find the self-install tool: %v", err)
+	}
+	if err := store.AuthorizeProjected(auth, wanted, func(api.ProjectedTool, api.EffectiveBinding) error { return nil }); err != nil {
+		t.Fatalf("dispatch authorization must admit the self-install tool: %v", err)
 	}
 }
 

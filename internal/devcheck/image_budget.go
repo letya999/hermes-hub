@@ -10,13 +10,18 @@ import (
 // restrictedRoles get the forbidden-artifact list enforced (SPEC-0082 R0.2).
 var restrictedRoles = map[string]bool{"core": true, "control": true}
 
+// catalogRoles are the image roles that must ship the immutable platform
+// catalog tree (SPEC-0092 R2): control-plane daemons enforce rights from it.
+var catalogRoles = map[string]bool{"core": true, "control": true}
+
 // imageRoleBudgets are SPEC-0082 uncompressed size budgets in bytes; docker
 // reports decimal GB so the budgets are decimal too — the tighter reading.
 var imageRoleBudgets = map[string]int64{
-	"core":    250_000_000,
-	"control": 350_000_000,
-	"runtime": 1_300_000_000,
-	"browser": 1_000_000_000,
+	"core":      250_000_000,
+	"control":   350_000_000,
+	"runtime":   1_300_000_000,
+	"browser":   1_000_000_000,
+	"knowledge": 600_000_000,
 }
 
 // ImageBudget is the SPEC-0082 R0 gate: image size against the role budget
@@ -50,6 +55,8 @@ const budgetProbe = `
 for d in /usr/lib/chromium /opt/hermes/.venv /usr/lib/python3 /usr/local/lib/node_modules; do
   [ -e "$d" ] && echo "tree $d"
 done
+# SPEC-0092 R2: the immutable platform catalog tree must ship in the image.
+[ -d /opt/hub/platform/catalogs ] || echo "missing catalogs"
 for d in /usr/bin /usr/local/bin /bin /sbin /usr/sbin /opt; do
   [ -d "$d" ] && find "$d" \( -type f -o -type l \) 2>/dev/null
 done | while IFS= read -r f; do
@@ -82,6 +89,9 @@ func imageBudgetVerdict(role string, sizeBytes int64, report string) error {
 		}
 		if (kind == "binary" || kind == "tree") && restrictedRoles[role] {
 			problems = append(problems, "forbidden "+kind+" "+path)
+		}
+		if kind == "missing" && path == "catalogs" && catalogRoles[role] {
+			problems = append(problems, "missing /opt/hub/platform/catalogs in "+role+" image")
 		}
 	}
 	if len(problems) > 0 {

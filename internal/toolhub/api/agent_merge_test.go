@@ -39,6 +39,9 @@ func TestAgentExecBackendDispatch(t *testing.T) {
 	if gotRequest.Tool != "file_read" || gotRequest.TimeoutSeconds != 30 || len(gotRequest.Scopes) != 1 {
 		t.Fatalf("request: %+v", gotRequest)
 	}
+	if _, err := backend.CallEnv(WithAgentConversation(context.Background(), "telegram-22"), eff, ToolSpec{Name: "goal_status"}, nil, nil); err != nil || gotRequest.ConversationID != "telegram-22" {
+		t.Fatalf("bound conversation missing from private executor frame: %+v %v", gotRequest, err)
+	}
 	// sandboxed tools route through Scratch with the fence, executor error maps to IsError
 	backend.Scratch = func(_ context.Context, _ EffectiveBinding, req AgentExecRequest, fence ScratchFenceFunc) (AgentExecResult, error) {
 		if fence == nil {

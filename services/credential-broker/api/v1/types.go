@@ -114,8 +114,10 @@ type Event struct {
 	PolicyVersion string    `json:"policy_version,omitempty"`
 }
 type Events struct {
-	Events     []Event `json:"events"`
-	NextCursor uint64  `json:"next_cursor"`
+	Events            []Event `json:"events"`
+	NextCursor        uint64  `json:"next_cursor"`
+	EarliestAvailable uint64  `json:"earliest_available"`
+	Gap               bool    `json:"gap"`
 }
 type Error struct {
 	Code string `json:"code"`

@@ -24,6 +24,17 @@ import (
 const testSecret = "scan-secret-ORANGE-NINE-7721"
 
 func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
+	var pendingHumanNotice atomic.Bool
+	notices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseAwaitingConfirm && body["confirmation"] != nil {
+			pendingHumanNotice.Store(true)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer notices.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", notices.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	key, err := credstore.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +73,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 			return api.CredentialInjection{Environment: env, Cleanup: func() error { return nil }}, nil
 		},
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +105,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 		t.Fatal("chat KEY=value credential argument accepted")
 	}
 	formOn := mustOnboarding(t, store, prepared["onboarding_id"].(string))
-	formPath := "/credentials/" + formOn.OnboardingID + "?nonce=" + formOn.FormNonce
+	formPath := "/credentials/" + formOn.OnboardingID + "?nonce=" + formOn.GateNonce(api.GateCredentials)
 	get, err := http.Get(server.URL + formPath)
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +127,11 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if post.StatusCode != 200 || strings.Contains(string(posted), testSecret) {
 		t.Fatalf("form post=%d body=%s", post.StatusCode, posted)
 	}
+	// The submission is itself the consent: the page may report the
+	// completed install immediately — no second confirm click follows.
+	if strings.Contains(string(posted), testSecret) {
+		t.Error("credential page echoed a submitted secret")
+	}
 	info, err := secrets.Info(mustOnboarding(t, store, prepared["onboarding_id"].(string)).Locator, "alice")
 	if err != nil || info.Status != credstore.StatusActive {
 		t.Fatalf("ciphertext info=%+v err=%v", info, err)
@@ -124,8 +141,9 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status["phase"] != api.PhaseEnabled {
-		t.Fatalf("credential form did not complete authorization: %v", status)
+		t.Errorf("credential submission did not complete inline: %v", status)
 	}
+	finishAsHuman(t, control, prepared["onboarding_id"].(string))
 	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
 		t.Fatal("one-time credential form replay accepted")
 	}
@@ -161,8 +179,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("expired confirmation: %v", err)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); err == nil {
-		t.Fatal("replayed nonce accepted")
+	if body, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); err != nil || body["phase"] != api.PhaseEnabled {
+		t.Fatalf("agent confirm changed terminal state: body=%v err=%v", body, err)
 	}
 
 	fixture := oauth.NewFixture()
@@ -189,6 +207,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if location == "" {
 		t.Fatal("oauth authorize missing redirect")
 	}
+	pendingHumanNotice.Store(false)
 	cb, err := client.Get(location)
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +216,12 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	cb.Body.Close()
 	if strings.Contains(string(cbBody), testSecret) {
 		t.Fatal("oauth callback leaked test secret")
+	}
+	// The provider consent screen is the consent — the callback completes
+	// the install inline with an oauth_callback marker instead of arming a
+	// second verified-actor click.
+	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("OAuth consent did not complete onboarding: status=%d stage=%s used=%v consent=%+v", cb.StatusCode, latest.Stage, latest.ConfirmationUsed, latest.HumanConsent)
 	}
 }
 
@@ -219,14 +244,14 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	}
 	id := prepared["onboarding_id"].(string)
 	first := mustOnboarding(t, store, id)
-	oldNonce := first.FormNonce
+	oldNonce := first.GateNonce(api.GateCredentials)
 	now = now.Add(2 * time.Minute)
 	if _, err := control.Invoke(context.Background(), auth, "prepare_source", args); err != nil {
 		t.Fatal(err)
 	}
 	resumed := mustOnboarding(t, store, id)
-	if resumed.FormNonce == oldNonce || !now.Before(resumed.FormExpires) {
-		t.Fatalf("expired form was not renewed: old=%q new=%q expires=%s", oldNonce, resumed.FormNonce, resumed.FormExpires)
+	if resumed.GateNonce(api.GateCredentials) == oldNonce || !now.Before(resumed.GateExpiry(api.GateCredentials)) {
+		t.Fatalf("expired form was not renewed: old=%q new=%q expires=%s", oldNonce, resumed.GateNonce(api.GateCredentials), resumed.GateExpiry(api.GateCredentials))
 	}
 	now = now.Add(2 * time.Minute)
 	required, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": id})
@@ -238,8 +263,8 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 		t.Fatalf("required_credentials exposed the form link: %v", required)
 	}
 	renewed := mustOnboarding(t, store, id)
-	if renewed.FormNonce == resumed.FormNonce {
-		t.Fatalf("required_credentials kept the stale nonce: %q", renewed.FormNonce)
+	if renewed.GateNonce(api.GateCredentials) == resumed.GateNonce(api.GateCredentials) {
+		t.Fatalf("required_credentials kept the stale nonce: %q", renewed.GateNonce(api.GateCredentials))
 	}
 }
 
@@ -255,10 +280,14 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	control := &ControlPlane{Store: store, Now: func() time.Time { return now }, ConfirmationTTL: time.Minute}
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm")
 	auth := aliceAuth()
-	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "expire-1"})
+	// The expiry path under test needs a live armed gate: install requests
+	// complete setup inline now, so the record is minted without that
+	// completion, exactly as a still-pending legacy record would look.
+	pending, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "expire-1", catalogReadDefinition(), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared := map[string]any{"onboarding_id": pending.OnboardingID}
 	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +295,7 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if _, leaked := status["nonce"]; leaked {
 		t.Fatal("status exposed the confirmation nonce")
 	}
-	nonce := mustOnboarding(t, store, prepared["onboarding_id"].(string)).ConfirmationNonce
+	nonce := mustOnboarding(t, store, prepared["onboarding_id"].(string)).GateNonce(api.GateConfirmSetup)
 	if nonce == "" {
 		t.Fatal("missing confirmation nonce")
 	}
@@ -285,6 +314,12 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	resumed, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatalf("expired confirmation status: %v", err)
+	}
+	if confirmNonceOf(t, store, prepared["onboarding_id"]) != nonce {
+		t.Fatal("saved status renewed an expired confirmation")
+	}
+	if _, err := control.connectorResend(t.Context(), auth, map[string]any{"target": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
 	}
 	renewed := confirmNonceOf(t, store, prepared["onboarding_id"])
 	if renewed == "" || renewed == nonce {
@@ -329,13 +364,13 @@ func mustOnboarding(t *testing.T, store *Store, id string) api.Onboarding {
 func confirmNonceOf(t *testing.T, store *Store, id any) string {
 	t.Helper()
 	s, _ := id.(string)
-	return mustOnboarding(t, store, s).ConfirmationNonce
+	return mustOnboarding(t, store, s).GateNonce(api.GateConfirmSetup)
 }
 
 func removeNonceOf(t *testing.T, store *Store, id any) string {
 	t.Helper()
 	s, _ := id.(string)
-	return mustOnboarding(t, store, s).RemoveNonce
+	return mustOnboarding(t, store, s).GateNonce(api.GateRemove)
 }
 
 func providerAuthURLOf(t *testing.T, store *Store, id any) string {
@@ -364,7 +399,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-rotate1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "1.0.0", Stage: api.StageLive, BindingID: binding.ToolBindingID, ConnectionID: binding.ConnectionID, Locator: "local://alice/google/1", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +410,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)

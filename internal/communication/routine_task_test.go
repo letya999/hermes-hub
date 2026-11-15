@@ -1,52 +1,48 @@
 package communication
 
 import (
+	"context"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/routines"
 	"time"
 )
 
 func TestNamedTaskRoutineSurvivesAdmissionAndRejectsForeignConversation(t *testing.T) {
-	c := testConfig(t)
-	g, err := New(c)
+	s, _, _ := occurrenceFixture(t)
+	task, _, err := s.CreateTask(User{ID: "alice", Enabled: true}, 11, 0, "routine fixture", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := c.Users[0]
-	task, _, err := g.spool.CreateTask(u, 11, 0, "routine fixture", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
-	if err := g.authorizeOccurrence(job); err != nil {
-		t.Fatal("pre-admission", err)
-	}
+	u := s.g.config.Users[0]
+	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, Trigger: "cron", Text: "synthetic"}
 	occ := RoutineOccurrence{ScheduleID: "routine-fixture", Revision: 1, DueAt: time.Now().UTC(), Job: job}
-	if err := g.spool.PutOccurrence(occ, job.Envelope); err != nil {
+	if err := s.PutOccurrence(occ, job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(occ.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := g.spool.ClaimJob()
+	claimed, err := s.ClaimJob()
 	if err != nil || claimed == nil {
 		t.Fatal(err)
 	}
-	if claimed.ConversationID != routineConversation(occ.ScheduleID) {
+	if claimed.ConversationID != routines.RoutineConversation(occ.ScheduleID) {
 		t.Fatalf("routine session not isolated: %q", claimed.ConversationID)
 	}
 	if claimed.TaskID != task.TaskID || claimed.TopicID != task.TopicID {
 		t.Fatal("task delivery binding lost")
 	}
-	if err := g.authorizeOccurrence(*claimed); err != nil {
-		t.Fatal("owned task rejected after admission", err)
-	}
-	if err := g.spool.DispatchDueOccurrences(occ.DueAt.Add(time.Second), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(occ.DueAt.Add(time.Second), s.authorizeOccurrence); err != nil {
 		t.Fatal("second tick stalled after task admission", err)
 	}
+	// The durable fence is the admission authorization the production host
+	// runs (ChannelPolicy.Authorize): a mutated conversation, task binding,
+	// target or principal can never re-ride the recorded bindings.
 	for _, mutate := range []func(*Job){func(j *Job) { j.ConversationID = "foreign-conversation" }, func(j *Job) { j.TaskID = "foreign-task" }, func(j *Job) { j.ChatID = 22 }, func(j *Job) { j.TopicID = 7 }, func(j *Job) { j.PrincipalID = "bob" }} {
 		forged := *claimed
 		mutate(&forged)
-		if g.authorizeOccurrence(forged) == nil {
+		if err := s.policy.Authorize(context.Background(), occ.ScheduleID, forged); err == nil {
 			t.Fatal("forged task binding accepted", forged)
 		}
 	}

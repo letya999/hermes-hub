@@ -739,12 +739,20 @@
           },
           "next_cursor": {
             "type": "integer"
+          },
+          "earliest_available": {
+            "type": "integer"
+          },
+          "gap": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false,
         "required": [
           "events",
-          "next_cursor"
+          "next_cursor",
+          "earliest_available",
+          "gap"
         ]
       },
       "Error": {
@@ -1289,6 +1297,53 @@
           {
             "in": "path",
             "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/connections/{connection_id}/credentials": {
+      "get": {
+        "operationId": "connectionCredentials",
+        "summary": "Owner-scoped credential metadata for one connection, including deleted tombstones",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Credential"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
             "required": true,
             "schema": {
               "type": "string"

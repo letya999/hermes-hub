@@ -164,6 +164,13 @@ func TestCommandEngines(t *testing.T) {
 	if !(commandTTS{command: tts}).Ready(ctx) {
 		t.Fatal("command tts not ready")
 	}
+	format := scriptFile(t, "ttsformat",
+		"#!/bin/sh\ncat >/dev/null\nprintf \"$HUB_TTS_OUTPUT_FORMAT\"\n",
+		"@echo off\r\nmore >nul\r\necho %HUB_TTS_OUTPUT_FORMAT%\r\n")
+	t.Setenv("HUB_TTS_OUTPUT_FORMAT", "ogg")
+	if out, err := (commandTTS{command: format}).Synthesize(ctx, "hi", ""); err != nil || strings.TrimSpace(string(out)) != "wav" {
+		t.Fatalf("sidecar worker must return canonical WAV: %q, %v", out, err)
+	}
 	if _, err := (commandTTS{command: bad}).Synthesize(ctx, "hi", ""); err == nil {
 		t.Fatal("failing command synthesized")
 	}
@@ -924,12 +931,25 @@ func TestServeSTTKeepsWorkerResident(t *testing.T) {
 	go engine.run()
 	for i := 0; i < 3; i++ {
 		segments, err := engine.Transcribe(context.Background(), "clip-"+string(rune('a'+i))+".wav", TranscribeOpts{})
-		if err != nil || len(segments) != 1 || segments[0].Text != "heard:clip-"+string(rune('a'+i))+".wav" {
+		if err != nil || len(segments) != 1 || segments[0].Text != "heard:clip-"+string(rune('a'+i))+".wav" || segments[0].End <= segments[0].Start {
 			t.Fatalf("request %d: %v %+v", i, err, segments)
 		}
 	}
 	if !engine.Ready(context.Background()) {
 		t.Fatal("resident worker did not report ready")
+	}
+}
+
+func TestServeSTTPassesLanguageAndTimes(t *testing.T) {
+	oldArg := serveWorkerArg
+	serveWorkerArg = "-test.run=TestServeWorkerHelper"
+	defer func() { serveWorkerArg = oldArg }()
+	t.Setenv("GO_SERVE_HELPER", "1")
+	engine := &serveSTT{command: os.Args[0], requests: make(chan serveRequest)}
+	go engine.run()
+	segments, err := engine.Transcribe(context.Background(), "language-clip.wav", TranscribeOpts{Language: "ru"})
+	if err != nil || len(segments) != 1 || segments[0].Text != "lang:ru" || segments[0].Start != 0.1 || segments[0].End != 1.2 {
+		t.Fatalf("language/times not preserved: %+v %v", segments, err)
 	}
 }
 
@@ -1007,7 +1027,14 @@ func TestServeWorkerHelper(t *testing.T) {
 		if err != nil {
 			os.Exit(0)
 		}
-		path := strings.TrimSpace(line)
+		var request struct {
+			Path     string `json:"path"`
+			Language string `json:"language"`
+		}
+		if json.Unmarshal([]byte(line), &request) != nil {
+			os.Exit(1)
+		}
+		path := strings.TrimSpace(request.Path)
 		if path == "" {
 			continue
 		}
@@ -1019,6 +1046,10 @@ func TestServeWorkerHelper(t *testing.T) {
 			fmt.Printf("{\"text\":\"\"}\n")
 			continue
 		}
-		fmt.Printf("{\"text\":%q}\n", "heard:"+path)
+		if strings.Contains(path, "language") {
+			fmt.Printf("{\"text\":%q,\"segments\":[{\"start\":0.1,\"end\":1.2,\"text\":%q}]}\n", "lang:"+request.Language, "lang:"+request.Language)
+			continue
+		}
+		fmt.Printf("{\"text\":%q,\"segments\":[{\"start\":0.1,\"end\":1.2,\"text\":%q}]}\n", "heard:"+path, "heard:"+path)
 	}
 }

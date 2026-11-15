@@ -69,7 +69,7 @@ func TestBrokerRequestCarriesDiscoveredOptionalExtras(t *testing.T) {
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: NewStore(), Broker: &cfg, Now: time.Now}
 	auth := aliceAuth()
-	onboarding, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "gitlab-broker", definition, "https://github.com/zereight/gitlab-mcp", "abc123")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "gitlab-broker", definition, "https://github.com/zereight/gitlab-mcp", "abc123", false)
 	if err != nil {
 		t.Fatal(err)
 	}

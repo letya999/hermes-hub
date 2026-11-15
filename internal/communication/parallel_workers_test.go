@@ -10,12 +10,16 @@ import (
 )
 
 func parallelJob(id, principal string) Job {
-	return Job{
+	chat, target := int64(11), "telegram-11"
+	if principal == "bob" {
+		chat, target = 22, "telegram-22"
+	}
+	return Job{ChatID: chat,
 		ID: id, IdempotencyKey: "idem-" + id,
 		OrganizationID: "personal", UserID: principal, ActorID: principal,
 		ScopeID: "user:" + principal, Channel: "telegram_bot", Trigger: "message",
 		Text:     "hi " + id,
-		Envelope: identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: "ext-" + principal, ContextID: principal, RuntimeID: "rt-" + principal, ConversationID: "conv-" + id, DeliveryTargetID: "conv-" + id, PolicyVersion: "policy-1"},
+		Envelope: identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: "ext-" + principal, ContextID: principal, RuntimeID: "rt-" + principal, ConversationID: "conv-" + id, DeliveryTargetID: target, PolicyVersion: "policy-1"},
 	}
 }
 

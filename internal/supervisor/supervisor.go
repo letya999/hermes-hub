@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"os"
@@ -89,14 +91,18 @@ const DefaultWarmTTL = 30 * time.Minute
 type Config struct {
 	Docker         string
 	Image          string
+	ScriptImage    string
 	Network        string
 	SpacesRoot     string
 	HostSpacesRoot string
-	StateDir       string
-	RuntimeAuth    string
-	AdminAuth      string
-	Environment    string
-	WarmTTL        time.Duration
+	// SettingsEdit publishes one config passport change after the HTTP control
+	// request is authenticated. Nil denies settings edits.
+	SettingsEdit func(context.Context, string, string, string, *string, string) (map[string]any, error)
+	StateDir     string
+	RuntimeAuth  string
+	AdminAuth    string
+	Environment  string
+	WarmTTL      time.Duration
 	// BrowserIdleTTL is the grace a per-space browser sidecar stays up after
 	// its last runtime is gone; the sweep stops it once the deadline passes.
 	BrowserIdleTTL time.Duration
@@ -164,12 +170,16 @@ type Runtime struct {
 	ToolReasons  map[string]string `json:"tool_reasons,omitempty"`
 	ModelStatus  string            `json:"model_status,omitempty"`
 	Restarts     int               `json:"restarts,omitempty"`
-	Desired      bool              `json:"desired"`
-	PrincipalID  string            `json:"principal_id"`
-	ContextID    string            `json:"context_id"`
-	RuntimeID    string            `json:"runtime_id"`
-	RuntimeMode  string            `json:"runtime_mode"`
-	Generation   string            `json:"generation"`
+	// PendingRestart is the durable cause of a deferred restart: an armed
+	// marker on a busy runtime applies after handoff, and a supervisor
+	// restart must not lose why the restart was requested.
+	PendingRestart *RestartCause `json:"pending_restart,omitempty"`
+	Desired        bool          `json:"desired"`
+	PrincipalID    string        `json:"principal_id"`
+	ContextID      string        `json:"context_id"`
+	RuntimeID      string        `json:"runtime_id"`
+	RuntimeMode    string        `json:"runtime_mode"`
+	Generation     string        `json:"generation"`
 	// PolicyVersion records the policy hash this generation was spawned with so
 	// a later Ensure can detect a rotated policy and replace the runtime
 	// instead of reusing one whose own envelope gate would reject the request.
@@ -192,6 +202,16 @@ type Runtime struct {
 	MemBytes   int64   `json:"mem_bytes,omitempty"`
 }
 
+// RestartCause is the owner-safe record of why a runtime restart was
+// requested: a fixed reason vocabulary plus the operation/generation ids —
+// never free text or payloads.
+type RestartCause struct {
+	Reason      string `json:"reason"`
+	OperationID string `json:"operation_id,omitempty"`
+	Revision    uint64 `json:"revision,omitempty"`
+	Generation  string `json:"generation"`
+}
+
 type runtimeEntry struct {
 	Runtime
 	binding              Binding
@@ -206,14 +226,16 @@ type runtimeEntry struct {
 }
 
 type Manager struct {
-	holds           map[string]AdministrativeHold
-	pins            map[string]hubruntime.ExecuteRequest
-	orphans         []OrphanRuntime
-	cfg             Config
-	mu              sync.Mutex
-	items           map[string]*runtimeEntry
-	locks           map[string]*sync.Mutex
-	sem             chan struct{}
+	holds   map[string]AdministrativeHold
+	pins    map[string]hubruntime.ExecuteRequest
+	orphans []OrphanRuntime
+	cfg     Config
+	mu      sync.Mutex
+	items   map[string]*runtimeEntry
+	locks   map[string]*sync.Mutex
+	sem     chan struct{}
+	// Warm runtimes hold sem for their lifetime; disposable scripts need their own bound.
+	scriptSem       chan struct{}
 	slots           map[string]struct{}
 	gen             uint64
 	leaseSeq        uint64
@@ -247,20 +269,24 @@ type persistedRuntime struct {
 }
 
 type jobRecord struct {
-	OperationalEpoch uint64                     `json:"operational_epoch,omitempty"`
-	Dispatching      bool                       `json:"dispatching,omitempty"`
-	CancelRequested  bool                       `json:"cancel_requested,omitempty"`
-	Controls         map[string]controlRecord   `json:"controls,omitempty"`
-	ApprovalDeadline time.Time                  `json:"approval_deadline,omitempty"`
-	Request          hubruntime.ExecuteRequest  `json:"request"`
-	Fingerprint      string                     `json:"fingerprint"`
-	Response         hubruntime.ExecuteResponse `json:"response"`
-	Status           string                     `json:"status"`
-	Phase            string                     `json:"phase,omitempty"`
-	Unconfirmed      bool                       `json:"unconfirmed,omitempty"`
-	UnconfirmedSince time.Time                  `json:"unconfirmed_since,omitempty"`
-	Generation       string                     `json:"generation,omitempty"`
-	UpdatedAt        time.Time                  `json:"updated_at"`
+	CaptureContext    api.RunContext             `json:"capture_context,omitempty"`
+	AdmissionID       string                     `json:"admission_id,omitempty"`
+	RequestTextSHA256 string                     `json:"request_text_sha256,omitempty"`
+	OperationalEpoch  uint64                     `json:"operational_epoch,omitempty"`
+	Dispatching       bool                       `json:"dispatching,omitempty"`
+	CancelRequested   bool                       `json:"cancel_requested,omitempty"`
+	Controls          map[string]controlRecord   `json:"controls,omitempty"`
+	ApprovalDeadline  time.Time                  `json:"approval_deadline,omitempty"`
+	Request           hubruntime.ExecuteRequest  `json:"request"`
+	Fingerprint       string                     `json:"fingerprint"`
+	Response          hubruntime.ExecuteResponse `json:"response"`
+	Status            string                     `json:"status"`
+	Phase             string                     `json:"phase,omitempty"`
+	Unconfirmed       bool                       `json:"unconfirmed,omitempty"`
+	UnconfirmedSince  time.Time                  `json:"unconfirmed_since,omitempty"`
+	Generation        string                     `json:"generation,omitempty"`
+	RuntimeMode       string                     `json:"runtime_mode,omitempty"`
+	UpdatedAt         time.Time                  `json:"updated_at"`
 }
 
 // Serve runs the always-on control-plane endpoint. It never mounts or exposes
@@ -370,7 +396,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.BrowserIdleTTL = DefaultBrowserIdleTTL
 	}
 	if cfg.MaxConcurrent <= 0 {
-		cfg.MaxConcurrent = 8
+		cfg.MaxConcurrent = 16
 	}
 	if value, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_MAX_RUNTIMES_PER_PRINCIPAL"))); parseErr == nil && value > 0 {
 		cfg.MaxPerPrincipal = value
@@ -423,7 +449,7 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
 		cfg.Decide = relayDecide
 	}
-	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
 	if err := m.load(); err != nil {
 		return nil, err
 	}
@@ -639,8 +665,8 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 		return Binding{}, errors.New("invalid runtime binding")
 	}
 	if strings.HasPrefix(request.ScopeID, "group:") {
-		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, contextID))
-		if err != nil || scope.Kind != stack.GroupScope || scope.ID != contextID {
+		eff, err := passportview.LoadEffective(filepath.Join(m.cfg.SpacesRoot, contextID))
+		if err != nil || eff.Stack.Identity.Kind != string(stack.GroupScope) || eff.Stack.Identity.User != contextID {
 			return Binding{}, errors.New("group requires a dedicated group home")
 		}
 	}
@@ -648,7 +674,15 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 	if strings.HasPrefix(request.ScopeID, "user:") && request.OrganizationID != "" && request.OrganizationID != "personal" {
 		organizationRoot = filepath.Join(m.cfg.SpacesRoot, request.OrganizationID)
 	}
-	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: "gateway", ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
+	mode := "gateway"
+	if key := executeJobKey(request); key != "" {
+		m.mu.Lock()
+		if record, ok := m.jobs[key]; ok && record.Request.Envelope.Equal(request.Envelope) && record.RuntimeMode != "" {
+			mode = record.RuntimeMode
+		}
+		m.mu.Unlock()
+	}
+	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: mode, ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
 }
 
 func runtimeKey(binding Binding) string {

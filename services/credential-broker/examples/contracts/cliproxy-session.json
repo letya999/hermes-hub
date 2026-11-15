@@ -1,0 +1,34 @@
+{
+  "id": "cliproxy-session",
+  "revision": 1,
+  "title": "CLIProxy account session",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "session_json",
+      "label": "Account session JSON",
+      "kind": "json",
+      "required": true,
+      "max_bytes": 65536,
+      "label_i18n": {
+        "ru": "JSON сессии аккаунта",
+        "kk": "Аккаунт сессиясының JSON-ы",
+        "es": "JSON de sesión de la cuenta"
+      }
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "file",
+      "field": "session_json",
+      "target": "/cliproxy/auths/session.json",
+      "env_name": "CLIPROXY_SESSION_FILE"
+    }
+  ],
+  "title_i18n": {
+    "ru": "Сессия аккаунта CLIProxy",
+    "kk": "CLIProxy аккаунтының сессиясы",
+    "es": "Sesión de cuenta CLIProxy"
+  }
+}

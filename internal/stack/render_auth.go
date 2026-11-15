@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -68,8 +69,7 @@ func ensureMediaAuth(path string) error {
 	return os.WriteFile(path, content, 0600) // #nosec G703 -- path under the stack render dir
 }
 
-// ensureModelRelayAuth provisions the bearer the communication gateway
-// presents to its own space's model-relay for owner model switching.
+// ensureModelRelayAuth provisions the model relay caller and admin bearers.
 func ensureModelRelayAuth(path string) error {
 	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	values := map[string]string{}
@@ -102,11 +102,24 @@ func ensureModelRelayAuth(path string) error {
 	return writeEnvFile(path, values)
 }
 
+// The shared ToolHub gets only the caller bearer, never relay admin authority.
+func writeModelRelayCallerAuth(dir string) error {
+	values, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+	if err != nil || values["HUB_MODEL_RELAY_AUTH"] == "" {
+		return fmt.Errorf("model-relay caller auth unavailable")
+	}
+	path := filepath.Join(dir, "model-relay-caller.auth")
+	if err := writeEnvFile(path, map[string]string{"HUB_MODEL_RELAY_AUTH": values["HUB_MODEL_RELAY_AUTH"]}); err != nil {
+		return err
+	}
+	return allowServiceGroupRead(path)
+}
+
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
 func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 	source := filepath.Join(dir, "media.auth")
 	parent := filepath.Dir(filepath.Clean(dir))
-	if !s.RendersInfra() && filepath.Base(parent) == "spaces" {
+	if !s.RendersInfra() && s.PassportServices["hub-media"] != "per-space" && filepath.Base(parent) == "spaces" {
 		entries, err := os.ReadDir(parent)
 		if err != nil {
 			return nil, err
@@ -117,7 +130,7 @@ func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 				continue
 			}
 			candidate := filepath.Join(parent, entry.Name())
-			settings, err := ReadEnvironment(candidate, s.Environment)
+			settings, err := ReadEffective(candidate, s.Environment)
 			if err != nil || !settings.RendersInfra() || !settings.Has("image_gen") {
 				continue
 			}
@@ -180,4 +193,21 @@ func ensureTokenFile(path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+func ensureContainerTokenFile(path string) error {
+	if err := ensureTokenFile(path); err != nil {
+		return err
+	}
+	return allowServiceGroupRead(path)
+}
+
+func allowServiceGroupRead(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if err := os.Chown(path, -1, os.Getgid()); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0640)
 }

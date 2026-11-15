@@ -172,7 +172,7 @@ func TestRemoveRequiresExplicitConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview["phase"] == api.PhaseRemoved {
+	if preview["phase"] == "removed" {
 		t.Fatalf("bare remove deleted the connector: %v", preview)
 	}
 	if preview["requires_confirmation"] != true {
@@ -182,14 +182,14 @@ func TestRemoveRequiresExplicitConfirmation(t *testing.T) {
 	if nonce == "" {
 		t.Fatalf("preview returned no confirmation token: %v", preview)
 	}
-	if mustOnboarding(t, store, onboardingID).Phase == api.PhaseRemoved {
+	if mustOnboarding(t, store, onboardingID).Removed() {
 		t.Fatal("bare remove mutated the record")
 	}
 	// A wrong token is a refusal, not a delete.
 	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": onboardingID, "remove_nonce": "wrong"}); err == nil {
 		t.Fatal("forged remove nonce executed")
 	}
-	if mustOnboarding(t, store, onboardingID).Phase == api.PhaseRemoved {
+	if mustOnboarding(t, store, onboardingID).Removed() {
 		t.Fatal("forged nonce removed the connector")
 	}
 	// The previewed nonce executes and is single-use.
@@ -197,13 +197,13 @@ func TestRemoveRequiresExplicitConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed["phase"] != api.PhaseRemoved {
+	if removed["phase"] != "removed" {
 		t.Fatalf("confirmed remove phase: %v", removed)
 	}
 	// Removing an already-removed connector is an idempotent status report,
 	// not an error.
 	again, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": onboardingID, "remove_nonce": nonce})
-	if err != nil || again["phase"] != api.PhaseRemoved {
+	if err != nil || again["phase"] != "removed" {
 		t.Fatalf("idempotent remove=%v err=%v", again, err)
 	}
 }
@@ -230,13 +230,12 @@ func TestLifecycleResolvesFriendlySelector(t *testing.T) {
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, onboardingID)
 	onboarding.SourceURL = "https://github.com/acme/search-mcp"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	// Drive it to enabled so disable exercises a real binding.
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
-	}
+	// Prepare already drove it to enabled — the install request was the
+	// consent; enable stays as the idempotent entry exercising the binding.
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +255,7 @@ func TestLifecycleResolvesFriendlySelector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disable by name: %v", err)
 	}
-	if disabled["phase"] != api.PhaseDisabled {
+	if disabled["phase"] != "disabled" {
 		t.Fatalf("disable by name: %v", disabled)
 	}
 	// An unknown selector is not-found; it must not silently pick "latest".
@@ -288,6 +287,7 @@ func TestSelectorMatchesBasenameAndAliases(t *testing.T) {
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, onboardingID)
 	onboarding.SourceURL = "https://github.com/acme/search-mcp.git"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +315,7 @@ func TestSelectorMatchesBasenameAndAliases(t *testing.T) {
 	}
 	onboarding2 := mustOnboarding(t, store, prepared2["onboarding_id"].(string))
 	onboarding2.SourceURL = "https://github.com/other/search-mcp"
+	onboarding2.Revision++
 	if err := store.PutOnboarding(onboarding2); err != nil {
 		t.Fatal(err)
 	}
@@ -434,15 +435,13 @@ func TestSharedConnectorResolvesOneWorkload(t *testing.T) {
 		}
 		onboardingID := prepared["onboarding_id"].(string)
 		onboarding := mustOnboarding(t, store, onboardingID)
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatalf("%s submit: %v", principal, err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatalf("%s confirm: %v", principal, err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
 		if err != nil {
 			t.Fatalf("%s enable: %v", principal, err)
@@ -519,15 +518,13 @@ func TestSharedConnectorMemberLifecycleIsScoped(t *testing.T) {
 		}
 		onboardingID := prepared["onboarding_id"].(string)
 		onboarding := mustOnboarding(t, store, onboardingID)
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -616,15 +613,13 @@ func TestSharedWorkloadSurvivesMemberDisable(t *testing.T) {
 		}
 		onboardingID := prepared["onboarding_id"].(string)
 		onboarding := mustOnboarding(t, store, onboardingID)
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -712,15 +707,13 @@ func TestSharedMemberRemoveKeepsSharedRecords(t *testing.T) {
 		}
 		onboardingID := prepared["onboarding_id"].(string)
 		onboarding := mustOnboarding(t, store, onboardingID)
-		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
+		if err := control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
-			t.Fatal(err)
-		}
+		// The submit is the consent — `enable` re-drives inline, no click.
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
@@ -811,7 +804,7 @@ func TestRemoveDeletesCredentialCiphertext(t *testing.T) {
 	}
 	id := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, id)
-	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
+	if err := control.SubmitCredentials(id, onboarding.GateNonce(api.GateCredentials), map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding = mustOnboarding(t, store, id)
@@ -824,9 +817,6 @@ func TestRemoveDeletesCredentialCiphertext(t *testing.T) {
 		owner = auth.PrincipalID
 	}
 	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
@@ -949,8 +939,8 @@ func TestCredentialFormStoresUploadedFileContent(t *testing.T) {
 	}
 	id := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, store, id)
-	if onboarding.Phase != api.PhaseAwaitingCreds {
-		t.Fatalf("phase=%s", onboarding.Phase)
+	if !onboarding.Awaiting(api.GateCredentials) {
+		t.Fatalf("phase=%s", onboarding.NoticePhase())
 	}
 
 	var body bytes.Buffer
@@ -966,7 +956,7 @@ func TestCredentialFormStoresUploadedFileContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{Control: control}
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/credentials/"+id+"?nonce="+onboarding.FormNonce, &body)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/credentials/"+id+"?nonce="+onboarding.GateNonce(api.GateCredentials), &body)
 	req.Host = "127.0.0.1"
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()

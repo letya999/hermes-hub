@@ -3,11 +3,14 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -32,6 +35,7 @@ func TestConnectorsListsOnlyCallerProjection(t *testing.T) {
 			"bob-principal-token-000000000000000": {auth: bob},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +101,7 @@ func TestConnectorsHTTPIncludesScopedConnectionInventory(t *testing.T) {
 	store.connections["bob-only"] = api.Connection{ConnectionID: "bob-only", DefinitionID: "bob-tool", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: bob.PrincipalID}, Status: api.DegradedStatus}
 	control := &ControlPlane{Store: store}
 	g := &Gateway{Store: store, Control: control, Backend: api.RoutingBackend{}, Tokens: map[string]identity.Envelope{"alice-principal-token-0000000000000": auth}, projections: map[string]*gatewayProjection{"alice-principal-token-0000000000000": {auth: auth}}}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +153,7 @@ func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {
 			return nil
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -271,5 +277,511 @@ func TestRuntimeRestartNotifierFromEnvRequiresSupervisor(t *testing.T) {
 	n := api.RuntimeRestartNotifierFromEnv()
 	if n == nil || n.URL != "http://supervisor:8876" || n.Token != "token" {
 		t.Fatalf("notifier env: %+v", n)
+	}
+}
+
+func TestRestartNotifierRecoversUnappliedRevision(t *testing.T) {
+	store := NewStore()
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	store, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := api.ProjectionTarget{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Revision: 3}
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	n := &api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: store}
+	if err := n.Notify([]api.ProjectionTarget{target}); err != nil || posts != 1 {
+		t.Fatalf("first notify: posts=%d err=%v", posts, err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n = &api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: reloaded}
+	if err := n.Notify([]api.ProjectionTarget{target}); err != nil || posts != 1 {
+		t.Fatalf("applied revision replayed after restart: posts=%d err=%v", posts, err)
+	}
+	target.Revision++
+	n = &api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: reloaded}
+	if err := n.Notify([]api.ProjectionTarget{target}); err != nil || posts != 2 {
+		t.Fatalf("unapplied revision lost after restart: posts=%d err=%v", posts, err)
+	}
+}
+
+func TestRestartAppliedRevisionCannotRegress(t *testing.T) {
+	store := NewStore()
+	target := api.ProjectionTarget{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Revision: 4}
+	if err := store.MarkRestartApplied(target); err != nil {
+		t.Fatal(err)
+	}
+	target.Revision = 3
+	if err := store.MarkRestartApplied(target); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.AppliedRestartRevision(target); got != 4 {
+		t.Fatalf("applied revision regressed: %d", got)
+	}
+}
+
+func TestRestartAppliedRevisionReloadsAcrossStoreInstances(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	first := NewStore()
+	if err := first.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	first, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := api.ProjectionTarget{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Revision: 4}
+	if err := first.MarkRestartApplied(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := second.AppliedRestartRevision(target); got != 4 {
+		t.Fatalf("applied revision not reloaded: %d", got)
+	}
+}
+
+func TestRestartAppliedRevisionWriteConflictDoesNotAcknowledge(t *testing.T) {
+	for _, initial := range []uint64{0, 2} {
+		t.Run(map[uint64]string{0: "new", 2: "existing"}[initial], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "store.json")
+			first := NewStore()
+			if err := first.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			if initial != 0 {
+				var err error
+				first, err = Load(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := first.MarkRestartApplied(api.ProjectionTarget{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Revision: initial, Digest: "sha256:old"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stale, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fresh.MarkRestartApplied(api.ProjectionTarget{PrincipalID: "bob", ContextID: "bob", RuntimeID: "runtime", Revision: 1}); err != nil {
+				t.Fatal(err)
+			}
+			target := api.ProjectionTarget{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", Revision: 4, Digest: "sha256:new"}
+			if err := stale.MarkRestartApplied(target); !errors.Is(err, api.ErrConflict) {
+				t.Fatalf("stale write: %v", err)
+			}
+			if got := stale.AppliedRestartRevision(target); got != initial {
+				t.Fatalf("failed write acknowledged revision %d", got)
+			}
+			wantDigest := ""
+			if initial != 0 {
+				wantDigest = "sha256:old"
+			}
+			if got := stale.AppliedRestartDigest(target); got != wantDigest {
+				t.Fatalf("failed write acknowledged digest %q", got)
+			}
+		})
+	}
+}
+
+func TestSemanticSurfaceUnchangedDoesNotRestart(t *testing.T) {
+	seed, _, binding := seededStore(t)
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	n := &api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: store}
+	targets, err := store.ProjectionRevisions()
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("initial targets=%v err=%v", targets, err)
+	}
+	if err := n.Notify(targets); err != nil || posts != 1 {
+		t.Fatalf("initial restart posts=%d err=%v", posts, err)
+	}
+	key := projectionKey("alice", "alice", "runtime")
+	store.mu.Lock()
+	store.projectionRevisions[key]++ // synthetic metadata-only revision
+	store.mu.Unlock()
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = store.ProjectionRevisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Notify(targets); err != nil || posts != 1 || store.AppliedRestartRevision(targets[0]) != targets[0].Revision {
+		t.Fatalf("metadata-only restart posts=%d applied=%d revision=%d err=%v", posts, store.AppliedRestartRevision(targets[0]), targets[0].Revision, err)
+	}
+	if err := store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = store.ProjectionRevisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Notify(targets); err != nil || posts != 2 {
+		t.Fatalf("semantic change skipped: posts=%d err=%v", posts, err)
+	}
+}
+
+func TestSemanticDigestTracksAuthorityAndIgnoresObservation(t *testing.T) {
+	store, _, binding := seededStore(t)
+	target := func() api.ProjectionTarget {
+		t.Helper()
+		targets, err := store.ProjectionRevisions()
+		if err != nil || len(targets) != 1 {
+			t.Fatalf("targets=%v err=%v", targets, err)
+		}
+		return targets[0]
+	}
+	before := target().Digest
+	if before == "" {
+		t.Error("missing semantic digest")
+	}
+	store.mu.Lock()
+	connection := store.connections[binding.ConnectionID]
+	connection.HealthCause = "probe timeout"
+	store.connections[binding.ConnectionID] = connection
+	store.mu.Unlock()
+	if got := target().Digest; got != before {
+		t.Fatalf("health observation changed digest: %q -> %q", before, got)
+	}
+	store.mu.Lock()
+	credential := store.credentials[binding.CredentialRefID]
+	credential.Status = api.RevokedStatus
+	store.credentials[binding.CredentialRefID] = credential
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("credential revocation did not change digest")
+	}
+	credential.Status = api.ActiveStatus
+	store.mu.Lock()
+	store.credentials[binding.CredentialRefID] = credential
+	for id, grant := range store.grants {
+		if grant.PrincipalID == "alice" {
+			grant.Status = api.RevokedStatus
+			store.grants[id] = grant
+			break
+		}
+	}
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("grant revocation did not change digest")
+	}
+	store.mu.Lock()
+	for id, grant := range store.grants {
+		if grant.PrincipalID == "alice" {
+			grant.Status = api.ActiveStatus
+			store.grants[id] = grant
+			break
+		}
+	}
+	definitionKey := definitionKey(binding.DefinitionID, binding.DefinitionVersion)
+	originalDefinition := store.definitions[definitionKey]
+	definition := originalDefinition
+	definition.Tools = append([]api.ToolSpec(nil), definition.Tools...)
+	definition.Tools[0].Name += "_changed"
+	store.definitions[definitionKey] = definition
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("tool surface change did not change digest")
+	}
+	store.mu.Lock()
+	store.definitions[definitionKey] = originalDefinition
+	current := store.bindings[binding.ToolBindingID]
+	current.PolicyVersion = "policy-2"
+	store.bindings[binding.ToolBindingID] = current
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("policy change did not change digest")
+	}
+	store.mu.Lock()
+	current.PolicyVersion = binding.PolicyVersion
+	store.bindings[binding.ToolBindingID] = current
+	connection = store.connections[binding.ConnectionID]
+	connection.Status = api.DisabledStatus
+	store.connections[binding.ConnectionID] = connection
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("connection disable did not change digest")
+	}
+	store.mu.Lock()
+	connection.Status = api.ActiveStatus
+	store.connections[binding.ConnectionID] = connection
+	current.CredentialRevision++
+	store.bindings[binding.ToolBindingID] = current
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("credential revision did not change digest")
+	}
+	store.mu.Lock()
+	current.CredentialRevision = binding.CredentialRevision
+	current.CredentialRefID = "different-ref"
+	store.bindings[binding.ToolBindingID] = current
+	store.mu.Unlock()
+	if got := target().Digest; got == before {
+		t.Error("credential reference did not change digest")
+	}
+	store.mu.Lock()
+	current.CredentialRefID = binding.CredentialRefID
+	store.bindings[binding.ToolBindingID] = current
+	var grantID string
+	var originalGrant api.Grant
+	for id, grant := range store.grants {
+		if grant.PrincipalID == "alice" {
+			grantID, originalGrant = id, grant
+			break
+		}
+	}
+	store.mu.Unlock()
+	for name, mutate := range map[string]func(*api.Grant){
+		"kind":       func(g *api.Grant) { g.Kind = api.GrantControlOperation },
+		"definition": func(g *api.Grant) { g.DefinitionID += "-changed" },
+		"version":    func(g *api.Grant) { g.DefinitionVersion = "2.0.0" },
+		"operation":  func(g *api.Grant) { g.Operation = "revoke" },
+	} {
+		grant := originalGrant
+		mutate(&grant)
+		store.mu.Lock()
+		store.grants[grantID] = grant
+		store.mu.Unlock()
+		if got := target().Digest; got == before {
+			t.Errorf("grant %s did not change digest", name)
+		}
+	}
+	store.mu.Lock()
+	store.grants[grantID] = originalGrant
+	store.mu.Unlock()
+}
+
+func TestSemanticDigestFallsBackForUnknownAuthority(t *testing.T) {
+	store, _, binding := seededStore(t)
+	store.mu.Lock()
+	store.capabilityProfiles["managed"] = api.CapabilityProfile{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime"}
+	store.mu.Unlock()
+	targets, err := store.ProjectionRevisions()
+	if err != nil || len(targets) != 1 || targets[0].Digest != "" {
+		t.Fatalf("managed digest must fall back to revision-based restart: %v %v", targets, err)
+	}
+	store.mu.Lock()
+	delete(store.capabilityProfiles, "managed")
+	connection := store.connections[binding.ConnectionID]
+	connection.Owner.Type = api.TeamOwner
+	store.connections[binding.ConnectionID] = connection
+	store.mu.Unlock()
+	targets, err = store.ProjectionRevisions()
+	if err != nil || len(targets) != 1 || targets[0].Digest != "" {
+		t.Fatalf("team digest must fall back to revision-based restart: %v %v", targets, err)
+	}
+	store.mu.Lock()
+	connection.Owner.Type = api.PrincipalOwner
+	store.connections[binding.ConnectionID] = connection
+	definitionKey := definitionKey(binding.DefinitionID, binding.DefinitionVersion)
+	definition := store.definitions[definitionKey]
+	delete(store.definitions, definitionKey)
+	store.mu.Unlock()
+	targets, _ = store.ProjectionRevisions()
+	if targets[0].Digest != "" {
+		t.Error("missing definition produced a trusted digest")
+	}
+	store.mu.Lock()
+	store.definitions[definitionKey] = definition
+	delete(store.connections, binding.ConnectionID)
+	store.mu.Unlock()
+	targets, _ = store.ProjectionRevisions()
+	if targets[0].Digest != "" {
+		t.Error("missing connection produced a trusted digest")
+	}
+	store.mu.Lock()
+	store.connections[binding.ConnectionID] = connection
+	credential := store.credentials[binding.CredentialRefID]
+	delete(store.credentials, binding.CredentialRefID)
+	store.mu.Unlock()
+	targets, _ = store.ProjectionRevisions()
+	if targets[0].Digest != "" {
+		t.Error("missing credential produced a trusted digest")
+	}
+	store.mu.Lock()
+	store.credentials[binding.CredentialRefID] = credential
+	store.mu.Unlock()
+}
+
+func TestSemanticDigestAppliedSurvivesReload(t *testing.T) {
+	seed, _, _ := seededStore(t)
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := seed.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadow, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	targets, err := store.ProjectionRevisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: store}).Notify(targets); err != nil || posts != 1 {
+		t.Fatalf("initial notify posts=%d err=%v", posts, err)
+	}
+	if err := shadow.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := shadow.AppliedRestartDigest(targets[0]); got != targets[0].Digest {
+		t.Fatalf("applied digest not reloaded: %q", got)
+	}
+	store, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.projectionRevisions[projectionKey("alice", "alice", "runtime")]++
+	store.mu.Unlock()
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = store.ProjectionRevisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&api.RuntimeRestartNotifier{URL: srv.URL, Token: "fixture", State: store}).Notify(targets); err != nil || posts != 1 {
+		t.Fatalf("reloaded semantic ack lost: posts=%d err=%v", posts, err)
+	}
+}
+
+func TestSemanticDigestTracksStaleFences(t *testing.T) {
+	for name, mutate := range map[string]func(*Store, api.ToolBinding){
+		"connection_revision": func(s *Store, b api.ToolBinding) {
+			c := s.connections[b.ConnectionID]
+			c.Revision++
+			s.connections[b.ConnectionID] = c
+		},
+		"binding_connection_revision": func(s *Store, b api.ToolBinding) {
+			b.ConnectionRevision++
+			s.bindings[b.ToolBindingID] = b
+		},
+		"credential_revision": func(s *Store, b api.ToolBinding) {
+			c := s.credentials[b.CredentialRefID]
+			c.Revision++
+			s.credentials[b.CredentialRefID] = c
+		},
+		"connection_owner": func(s *Store, b api.ToolBinding) {
+			c := s.connections[b.ConnectionID]
+			c.Owner.ID = "bob"
+			s.connections[b.ConnectionID] = c
+		},
+		"connection_credential": func(s *Store, b api.ToolBinding) {
+			c := s.connections[b.ConnectionID]
+			c.CredentialRefID = "other-ref"
+			s.connections[b.ConnectionID] = c
+		},
+		"tool_pin": func(s *Store, b api.ToolBinding) {
+			b.ToolDigest = "sha256:changed"
+			s.bindings[b.ToolBindingID] = b
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, _, binding := seededStore(t)
+			targets, err := store.ProjectionRevisions()
+			if err != nil || len(targets) != 1 || targets[0].Digest == "" {
+				t.Fatalf("initial digest: %v %v", targets, err)
+			}
+			before := targets[0].Digest
+			store.mu.Lock()
+			mutate(store, binding)
+			store.mu.Unlock()
+			targets, err = store.ProjectionRevisions()
+			if err != nil || len(targets) != 1 || targets[0].Digest == before {
+				t.Fatalf("stale fence did not change digest: %v %v", targets, err)
+			}
+		})
+	}
+}
+
+// The generic invoke route carries every connector_* facade verb through the
+// same InvokeConnector the agent tools reach — hubctl --service lives here.
+func TestConnectorInvokeRoutesFacadeVerbs(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{
+		Store:   store,
+		Control: &ControlPlane{Store: store, Now: time.Now},
+		Backend: api.RoutingBackend{},
+		Tokens:  map[string]identity.Envelope{"svc-token-00000000000000000000000": auth},
+	}
+	attachGatewayAudit(t, g)
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(token string, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/connectors:invoke", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := invoke("svc-token-00000000000000000000000", `{"tool":"connector_list","args":{}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connector_list: %d %s", rec.Code, rec.Body.String())
+	}
+	var result api.OperationResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || result.Summary == "" {
+		t.Fatalf("invoke must return the OperationResult: %v %s", err, rec.Body.String())
+	}
+	// Unknown and dead tokens are refused before the facade runs.
+	if rec := invoke("mallory-token-0000000000000000000000", `{"tool":"connector_list","args":{}}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown token status=%d", rec.Code)
+	}
+	// Non-connector tools are rejected by the facade, not silently run.
+	if rec := invoke("svc-token-00000000000000000000000", `{"tool":"settings_edit","args":{}}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("non-connector tool must be refused: %d %s", rec.Code, rec.Body.String())
 	}
 }

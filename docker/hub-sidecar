@@ -351,6 +351,44 @@ def _op_goal_evaluate(db, args):
     return out
 
 
+def _web_result(raw):
+    result = json.loads(raw) if isinstance(raw, str) else raw
+    return {"result": result} if isinstance(result, dict) else _err("internal")
+
+
+def _op_web_search(_db, args):
+    from tools.web_tools import web_search_tool
+    return _web_result(web_search_tool(args["query"], limit=args["limit"]))
+
+
+def _op_web_fetch(_db, args):
+    import asyncio
+    from tools.web_tools import web_extract_tool
+    return _web_result(asyncio.run(web_extract_tool([args["url"]], "markdown")))
+
+
+def _hub_web_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("hub_web_tools", "/opt/hermes/plugins/hub-web/tools.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("web plugin unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _op_web_providers(_db, args):
+    return _web_result(_hub_web_module().handle_web_providers(args))
+
+
+def _op_web_search_multi(_db, args):
+    return _web_result(_hub_web_module().handle_web_search_multi(args))
+
+
+def _op_web_cache(_db, args):
+    return _web_result(_hub_web_module().handle_web_cache(args))
+
+
 _OPS = {
     "probe": _op_probe,
     "lock": _op_lock,
@@ -365,6 +403,11 @@ _OPS = {
     "native_compress": _op_native_compress,
     "goal_dispatch": _op_goal_dispatch,
     "goal_evaluate": _op_goal_evaluate,
+    "web_search": _op_web_search,
+    "web_fetch": _op_web_fetch,
+    "web_providers": _op_web_providers,
+    "web_search_multi": _op_web_search_multi,
+    "web_cache": _op_web_cache,
 }
 
 
@@ -380,12 +423,12 @@ def main() -> int:
     if handler is None:
         print(json.dumps(_err("invalid_args")))
         return 0
-    if _missing and op != "probe":
+    if _missing and op not in ("probe", "web_search", "web_fetch", "web_providers", "web_search_multi", "web_cache"):
         print(json.dumps({**_err("unsupported"), "missing": list(_missing)}))
         return 0
     db = None
     try:
-        if op == "probe":
+        if op in ("probe", "web_search", "web_fetch", "web_providers", "web_search_multi", "web_cache"):
             out = handler(None, req)
         else:
             db = _db()

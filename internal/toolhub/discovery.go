@@ -42,7 +42,11 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 	}
 	var candidates []api.DiscoveryCandidate
 	for _, entry := range entries {
-		if !strings.Contains(strings.ToLower(entry.ID+" "+strings.Join(entry.Aliases, " ")+" "+entry.Name+" "+entry.Source.Repository), query) {
+		searchable := strings.ToLower(entry.ID + " " + strings.Join(entry.Aliases, " ") + " " + entry.Name + " " + sourceBasename(entry.Source.Repository))
+		if strings.Contains(query, "://") {
+			searchable = strings.ToLower(entry.Source.Repository)
+		}
+		if !strings.Contains(searchable, query) {
 			continue
 		}
 		preparedID := entry.ID

@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0216
 title: "Изоляция курсоров и безопасная очистка event records"
 status: in_progress
-branch: fix/m23-live-wake
-updated: "2026-10-28"
-phase: design-complete
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: integrated-code-validation
 adr: ADR-0088
 spec: SPEC-0088
 requirements: [R1]
@@ -13,7 +13,7 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
+implementation_status: partial
 readiness: ready_after_rebaseline
 slices:
   S192.1-retention-regressions: not_started
@@ -29,8 +29,8 @@ validation:
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence: [evidence.md]
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "Imported implementation requires integrated acceptance; design-only dependencies remain outstanding."
 limitations:
-  - "Planning record only; no production code or live state changed."
+  - "Imported code is under validation; no live data migration performed."

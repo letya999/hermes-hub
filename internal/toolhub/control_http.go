@@ -21,12 +21,29 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// connectorSurfaceTools is the r5 model-visible connector surface
+// (ADR-0094 D1): five curated names. connector_edit multiplexes the legacy
+// lifecycle verbs — it projects when any connector write op is admitted.
+var connectorSurfaceTools = []string{"connector_list", "connector_search", "connector_status", "connector_install", "connector_edit"}
+
+func connectorSurfaceAllowed(allowed map[string]bool, tool string) bool {
+	if tool == "connector_edit" {
+		for _, op := range []string{"connector_enable", "connector_disable", "connector_remove", "connector_reauth", "connector_allow_writes"} {
+			if allowed[op] {
+				return true
+			}
+		}
+		return false
+	}
+	return allowed[tool]
+}
+
 func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, allowed map[string]bool) {
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
-	for _, tool := range api.ConnectorTools {
-		if !allowed[tool] {
+	for _, tool := range connectorSurfaceTools {
+		if !connectorSurfaceAllowed(allowed, tool) {
 			continue
 		}
 		name := tool
@@ -40,10 +57,14 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			}
 			result, err := g.Control.InvokeConnector(ctx, auth, name, arguments)
 			if err != nil {
-				return nil, err
+				if domain, ok := connectorDomainResult(err); ok {
+					result = domain
+				} else {
+					return nil, err
+				}
 			}
 			encoded, _ := json.Marshal(result)
-			return &mcp.CallToolResult{StructuredContent: result, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+			return &mcp.CallToolResult{IsError: result.State == api.ModelStateBroken, StructuredContent: result, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 		})
 	}
 	for _, op := range api.ControlOperations {
@@ -60,12 +81,22 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 				}
 			}
 			notifyControlProgress(ctx, request, name, false, nil)
-			body, err := g.Control.Invoke(ctx, auth, name, arguments)
+			var body map[string]any
+			var err error
+			if name == "confirm" {
+				if err = g.Store.RequireControlOperation(auth, name); err == nil {
+					if err = api.RejectAuthorityArguments(arguments); err == nil {
+						body, err = g.Control.status(ctx, auth, arguments)
+					}
+				}
+			} else {
+				body, err = g.Control.Invoke(ctx, auth, name, arguments)
+			}
 			if err != nil {
 				return nil, err
 			}
 			notifyControlProgress(ctx, request, name, true, body)
-			if name == "required_credentials" || (name == "confirm" || name == "status") && body["phase"] == api.PhaseAwaitingOAuth {
+			if name == "required_credentials" {
 				if pending := pendingCredentialElicit(ctx, request, body, g.Control); pending != nil {
 					return pending, nil
 				}
@@ -77,7 +108,9 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if !allowed["invoke"] {
 		return
 	}
-	server.AddTool(&mcp.Tool{Name: "invoke", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments.", InputSchema: map[string]any{
+	// The r5 model surface names this tool_call; `invoke` remains the PDP
+	// control operation a grant names to admit it (ADR-0094 D6).
+	server.AddTool(&mcp.Tool{Name: "tool_call", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments; admission is identical to a direct call. An uncertain application result carries operation_id and retryable=false; reconcile it before any repeat.", InputSchema: map[string]any{
 		"type": "object", "required": []string{"tool"}, "additionalProperties": false,
 		"properties": map[string]any{"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"}},
 	}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -86,12 +119,23 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 		}
 		var arguments struct {
 			Tool      string         `json:"tool"`
+			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
-			return nil, fmt.Errorf("%w: invoke arguments", api.ErrInvalid)
+		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil {
+			return nil, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
 		}
-		return g.call(ctx, auth, arguments.Tool, arguments.Arguments)
+		// Models alternate between `tool` and `name` for the target selector;
+		// the admitted schema documents `tool`, but either resolves the same
+		// projected name through mcpCall's qualifier strip and unwrap.
+		tool := strings.TrimSpace(arguments.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(arguments.Name)
+		}
+		if tool == "" {
+			return nil, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
+		}
+		return g.mcpCall(ctx, auth, tool, arguments.Arguments)
 	})
 }
 
@@ -121,9 +165,9 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties["tools"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allowlist of advertised remote tool names to expose; omit to expose every advertised tool."}
 		properties["scope"] = map[string]any{"type": "string", "enum": []string{"owner", "shared"}, "description": "owner (default) scopes the connector to the caller. shared is operator-only (install_shared grant): the connector becomes catalog-visible and every member binds one shared connection and credential via a shared-credential policy — for endpoints where one service account serves everyone."}
 		properties["credentials"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Credential names to collect through the protected form (for example GITHUB_TOKEN). Each becomes an Authorization: Bearer header unless it names its own header."}
-		properties["telegram_send"] = map[string]any{"type": "boolean", "description": "Only on the user's explicit request to enable sending: true with the enabled Telegram onboarding_id upgrades that owner's existing session to reads plus send_message. No new login. Then confirm the returned nonce and enable."}
+		properties["upgrade_mode"] = map[string]any{"type": "string", "description": "Reviewed capability upgrade mode for an enabled onboarding_id. Reuses the owner's Broker credential; a changed tool contract requires confirmation and enable. Available modes are declared by the prepared connector catalog."}
 		properties["cli"] = map[string]any{"type": "object", "description": "Only on the user's explicit request for an owner-scoped bounded CLI: a declarative spec with name, command (an executable from the operator allowlist — shell names are admitted only when the operator put them there), optional args (long-option tokens only), tools (name/effect plus typed arguments; a --flag name renders a flag, omitting flag renders a positional operand that then requires a pattern regexp), optional credentials and egress. With source plus binary instead of command, onboards an immutable artifact: default to github-release:owner/repo@latest — popular tools (bat, fd, jq, eza, sd, yq, fzf, age) all ship prebuilt linux-amd64 assets (asset is a glob on the release assets, e.g. *x86_64-unknown-linux-musl.tar.gz or jq-linux-amd64 for a bare binary — on a miss the error lists available asset names; member names the binary inside an archive and defaults to the tool name; digest optional). Use a commit-pinned GitHub URL only after the release path fails, since source builds cover just a single-package Go or Rust layout. Never a command string, path or script."}
-		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. If the user only asks to resend the protected link or asks how an earlier install is doing — not for a fresh install — call status or required_credentials with the connector's definition_id instead: it resumes the latest onboarding and reissues a live link when the old one expired, without rebuilding. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
+		description += " For every explicit install/add request for a hosted MCP server containing a GitHub repository URL, call this first with that URL in source, even if chat history mentions an older installation. For an explicit request to add a personal command-line tool, pass the declarative spec in cli — not the source field. Do not call remove, revoke or status first. Review and build may outlive the call: on phase=preparing poll status with the returned onboarding_id. If the user only asks to resend the protected link or asks how an earlier install is doing — not for a fresh install — read status with the exact connector ID; for an explicit link resend use connector_edit action=resend with that ID. Status never renews links or starts provider work. For an explicit request naming a hosted remote MCP endpoint, pass that official URL in remote_url instead of source."
 		cli := properties["cli"].(map[string]any)
 		cli["properties"], cli["required"], cli["additionalProperties"] = cliInstallProperties(), []string{"name", "tools"}, false
 		cli["oneOf"] = []any{
@@ -142,11 +186,11 @@ func controlToolContract(name string) (string, map[string]any) {
 			"tail":     map[string]any{"type": "integer", "description": "Newest lines to return, 1-500 (default 200).", "minimum": 1, "maximum": 500},
 			"since":    map[string]any{"type": "string", "description": "RFC3339 lower time bound."},
 			"until":    map[string]any{"type": "string", "description": "RFC3339 upper time bound."},
-			"search":   map[string]any{"type": "string", "description": "Case-insensitive substring filter.", "maxLength": 256},
+			"search":   map[string]any{"type": "string", "description": "Case-insensitive substring filter over safe lifecycle metadata; message bodies are excluded.", "maxLength": 256},
 			"severity": map[string]any{"type": "string", "enum": []string{"info", "warn", "error"}},
 			"workload": map[string]any{"type": "string", "description": "Narrow to a workload_id, binding_id, definition_id, or \"runtime\" for the Hermes runtime container."},
 		}
-		description = "User-scoped runtime diagnostics. Returns health for the authenticated caller's own connector workloads plus bounded, redacted log lines from their runtime and workload containers. Host logs, other users' data, secrets and raw Docker APIs are never exposed."
+		description = "User-scoped runtime diagnostics. Returns owned workload health and bounded lifecycle metadata from the authenticated caller's runtime/workloads. Message bodies, unknown log fields, other users' data, secrets and raw Docker APIs are excluded. Search uses safe metadata only. source_position identifies replay; truncated or diagnostic_gap means incomplete evidence, never verified success."
 	case "grant_request":
 		properties = map[string]any{
 			"section":  map[string]any{"type": "string", "description": "Governance section to unlock; default user_mcp."},
@@ -156,9 +200,10 @@ func controlToolContract(name string) (string, map[string]any) {
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, definition_id, a selector/name/source naming the connector, or the operation_id (request_key) of the original call."
 		if name == "status" {
-			properties["resend"] = map[string]any{"type": "boolean", "description": "Only when the user explicitly asks for the pending action link again (send/resend/re-issue the link): posts it as a fresh channel message. For an OAuth onboarding the armed link is rotated — the previous link stops working, so do not resend as a routine poll."}
-			description += " With no selector, status returns the latest onboarding for the authenticated user."
+			description += " With no selector, status returns the latest onboarding for the authenticated user. This is a saved read: it does not contact providers, renew links or send messages. Use connector_edit action=resend with an exact pending ID when the owner asks for a link."
 		}
+	case "confirm":
+		description += " Read the current onboarding status only. Confirmation requires a verified channel callback bound to the human actor, exact action, revision and expiry; calling this tool, even with a nonce, never grants consent. Protected pages display status only."
 	}
 	return description, map[string]any{"type": "object", "properties": properties, "additionalProperties": true}
 }
@@ -314,8 +359,10 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	nonce := linkToken(r)
 	if r.Method == http.MethodGet {
 		onboarding, err := g.Control.Store.onboarding(onboardingID)
-		if err != nil || onboarding.Phase != api.PhaseAwaitingCreds || onboarding.FormNonce == "" || nonce != onboarding.FormNonce || onboarding.FormExpires.IsZero() || g.Control.now().After(onboarding.FormExpires) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if err != nil || !onboarding.Awaiting(api.GateCredentials) || onboarding.GateNonce(api.GateCredentials) == "" || nonce != onboarding.GateNonce(api.GateCredentials) || onboarding.GateExpiry(api.GateCredentials).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateCredentials)) {
+			// Stale or superseded link lands on the dead-link page, not a bare
+			// 401 — forged and rotated nonces get the same honest answer.
+			goneLinkPage(w, pageLang(r))
 			return
 		}
 		cspNonce := api.RandomNonce()
@@ -446,13 +493,13 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
-	if err == nil && onboarding.ConfirmationNonce != "" && nonce == onboarding.ConfirmationNonce && (onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires)) {
+	if err == nil && onboarding.GateNonce(api.GateConfirmSetup) != "" && nonce == onboarding.GateNonce(api.GateConfirmSetup) && (onboarding.ConfirmationUsed || onboarding.GateExpiry(api.GateConfirmSetup).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateConfirmSetup))) {
 		// The link was already spent: dead link, not a forged token.
 		goneLinkPage(w, pageLang(r))
 		return
 	}
-	if err != nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce || onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if err != nil || !onboarding.Awaiting(api.GateConfirmSetup) || onboarding.GateNonce(api.GateConfirmSetup) == "" || nonce != onboarding.GateNonce(api.GateConfirmSetup) || onboarding.GateExpiry(api.GateConfirmSetup).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateConfirmSetup)) {
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -465,23 +512,18 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	lang := pageLang(r)
-	var finishErr error
-	if onboarding.PendingWrites {
-		finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
-	} else {
-		finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
-	}
-	if finishErr != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.confirm-failed-title"), api.PublicPrepareError(finishErr), lang)) // #nosec G705 -- credentialResultPage escapes title and message
-		return
-	}
-	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.confirmed-title"), locale.T(lang, "page.confirmed-body"), lang))
+	http.Error(w, locale.T(pageLang(r), "page.confirm-in-chat"), http.StatusForbidden)
 }
 
 func confirmPage(onboarding api.Onboarding, lang locale.Lang) string {
-	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(locale.T(lang, "page.confirm-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.confirm-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.confirm-body", onboarding.DefinitionID)) + `</p><form method="post"><button type="submit">` + html.EscapeString(locale.T(lang, "page.confirm-btn")) + `</button></form></main></html>`
+	message := locale.T(lang, "page.confirm-in-chat-for", onboarding.DefinitionID)
+	if len(onboarding.Permissions) > 0 {
+		message += " " + locale.T(lang, "page.confirm-permissions", strings.Join(onboarding.Permissions, ", "))
+	}
+	if len(onboarding.Effects) > 0 {
+		message += " " + locale.T(lang, "page.confirm-effects", strings.Join(onboarding.Effects, ", "))
+	}
+	return credentialResultPage(locale.T(lang, "page.confirm-title"), message, lang)
 }
 
 // serveRemove is the destructive twin of serveConfirm: the channel notice
@@ -503,12 +545,12 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
-	if err == nil && onboarding.RemoveNonce != "" && nonce == onboarding.RemoveNonce && (onboarding.Phase == api.PhaseRemoved || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires)) {
+	if err == nil && onboarding.GateNonce(api.GateRemove) != "" && nonce == onboarding.GateNonce(api.GateRemove) && (onboarding.Removed() || onboarding.GateExpiry(api.GateRemove).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateRemove))) {
 		goneLinkPage(w, pageLang(r))
 		return
 	}
-	if err != nil || onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires) || onboarding.Phase == api.PhaseRemoved {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if err != nil || onboarding.GateNonce(api.GateRemove) == "" || nonce != onboarding.GateNonce(api.GateRemove) || onboarding.GateExpiry(api.GateRemove).IsZero() || g.Control.now().After(onboarding.GateExpiry(api.GateRemove)) || onboarding.Removed() {
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -551,7 +593,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if key := r.URL.Query().Get("k"); key != "" {
@@ -647,7 +689,7 @@ func brokerHopPage(onboarding api.Onboarding, lang locale.Lang) string {
 // page shows whatever phase the onboarding is in.
 func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboardingID string, onboarding api.Onboarding, key string) {
 	if onboarding.WizardNonce == "" || key != onboarding.WizardNonce || !g.Control.now().Before(onboarding.WizardExpires) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	lang := pageLang(r)
@@ -655,12 +697,18 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 	// request forward so a submitted form flips the page to confirm without
 	// a second link or a chat round-trip. The gateway dedupes the notices
 	// refreshBrokerRequest posts while the invite is alive.
-	if r.Method == http.MethodGet && onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
-		if err := g.Control.refreshBrokerRequest(r.Context(), onboardingEnvelope(onboarding), &onboarding); err != nil {
-			log.Printf("toolhub wizard %s: broker refresh: %v", onboardingID, err) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
+	if r.Method == http.MethodGet && onboarding.Awaiting(api.GateCredentials) && onboarding.BrokerRequestID != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := g.Control.reconcileBrokerReady(ctx, onboardingEnvelope(onboarding), &onboarding)
+		cancel()
+		if err != nil {
+			log.Printf("toolhub wizard %s: broker observation unavailable", onboardingID)
+		} // #nosec G706 -- validated onboarding id; no provider text
+		if current, err := g.Control.Store.onboarding(onboardingID); err == nil {
+			onboarding = current
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingConfirm {
+	if onboarding.Awaiting(api.GateConfirmSetup) {
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
@@ -668,23 +716,11 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 		if r.Method == http.MethodPost {
-			var finishErr error
-			if onboarding.PendingWrites {
-				finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
-			} else {
-				finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
-			}
-			if finishErr != nil {
-				http.Error(w, "confirmation failed", http.StatusBadGateway)
-				return
-			}
-			wizardURL := g.Control.origin() + "/connect/" + url.PathEscape(onboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce) + "&lang=" + url.QueryEscape(string(lang))
-			w.Header().Set("Location", wizardURL)
-			w.WriteHeader(http.StatusSeeOther)
+			http.Error(w, locale.T(lang, "page.confirm-in-chat"), http.StatusForbidden)
 			return
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth {
+	if onboarding.Awaiting(api.GateOAuth) {
 		storedState := ""
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
 			storedState = parsed.Query().Get("state")
@@ -702,7 +738,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 				if definition, derr := g.Control.definitionOf(onboarding); derr == nil {
 					if _, oerr := g.Control.ensurePreparedOAuth(r.Context(), onboardingEnvelope(onboarding), onboarding, definition, false); oerr != nil {
 						log.Printf("toolhub wizard %s: oauth re-arm: %v", onboardingID, oerr) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
-					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Phase == api.PhaseAwaitingOAuth {
+					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Awaiting(api.GateOAuth) {
 						onboarding = fresh
 						if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
 							storedState = parsed.Query().Get("state")
@@ -721,18 +757,18 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodPost {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodPost {
 		g.submitCredentialForm(w, r, onboardingID, "")
 		return
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet && onboarding.BrokerAuthorizationURL != "" {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodGet && onboarding.BrokerAuthorizationURL != "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 		_, _ = io.WriteString(w, brokerHopPage(onboarding, lang))
 		return
 	}
-	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet {
+	if onboarding.Awaiting(api.GateCredentials) && r.Method == http.MethodGet {
 		cspNonce := api.RandomNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -744,19 +780,21 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-		switch onboarding.Phase {
-		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed:
+		switch onboarding.Stage {
+		case api.StagePending:
+			// Preparing, review, consumed confirmation and admission retry
+			// all render the same honest in-progress page that meta-refreshes.
 			_, _ = io.WriteString(w, wizardWaitPage(lang))
 			return
-		case api.PhaseEnabled:
+		case api.StageLive:
 			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.enabled-title"), locale.T(lang, "page.enabled-body"), lang))
 			return
-		case api.PhaseFailed:
+		case api.StageFailed:
 			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.failed-title"), locale.T(lang, "page.failed-body"), lang))
 			return
 		}
 	}
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	goneLinkPage(w, pageLang(r))
 }
 
 // wizardWaitPage renders the honest in-progress state: the backend is still
@@ -978,7 +1016,7 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 	token := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err != nil || !deviceTokenValid(onboarding, token) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if onboarding.OAuthProvider == "" {
@@ -1051,10 +1089,10 @@ func deviceTokenValid(onboarding api.Onboarding, token string) bool {
 	if token == "" {
 		return false
 	}
-	if onboarding.FormNonce != "" && token == onboarding.FormNonce && !onboarding.FormExpires.IsZero() {
+	if onboarding.GateNonce(api.GateCredentials) != "" && token == onboarding.GateNonce(api.GateCredentials) && !onboarding.GateExpiry(api.GateCredentials).IsZero() {
 		return true
 	}
-	if onboarding.ConfirmationNonce != "" && token == onboarding.ConfirmationNonce && !onboarding.ConfirmationUsed {
+	if onboarding.GateNonce(api.GateConfirmSetup) != "" && token == onboarding.GateNonce(api.GateConfirmSetup) && !onboarding.ConfirmationUsed {
 		return true
 	}
 	return false
@@ -1161,7 +1199,7 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 	separate := credentialHintsUseAlternatives(hints)
 	if !separate {
 		b.WriteString(`<form method="post" enctype="multipart/form-data">`)
-		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
+		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.GateNonce(api.GateCredentials)) + "\">")
 	}
 	var recipeFields map[string]api.ConnectionField
 	if recipe := g.Control.recipeOf(onboarding); recipe != nil {
@@ -1226,10 +1264,10 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 	// /device page reuses this link's token.
 	if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
 		if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
-			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.device-alt")) + "</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "&amp;lang=" + html.EscapeString(string(lang)) + "\">" + html.EscapeString(locale.T(lang, "page.device-open")) + "</a></details>")
+			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.device-alt")) + "</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.GateNonce(api.GateCredentials)) + "&amp;lang=" + html.EscapeString(string(lang)) + "\">" + html.EscapeString(locale.T(lang, "page.device-open")) + "</a></details>")
 		}
 	}
-	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields, prefill, lang)
+	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.GateNonce(api.GateCredentials), recipeFields, prefill, lang)
 	if !separate {
 		b.WriteString(`<button type="submit">` + html.EscapeString(locale.T(lang, "page.submit")) + `</button><button type="submit" formnovalidate>` + html.EscapeString(locale.T(lang, "page.submit-no-probe")) + `</button></form>`)
 	}

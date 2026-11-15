@@ -48,10 +48,17 @@ func putGrant(t *testing.T, s *Store, g api.Grant) error {
 }
 
 func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy, api.CapabilityProfile) {
+	return managedStoreWithExecutor(t, "")
+}
+
+func managedStoreWithExecutor(t *testing.T, executor api.Executor) (*Store, identity.Envelope, api.CapabilityPolicy, api.CapabilityProfile) {
 	t.Helper()
 	s, auth, binding := seededStore(t)
 	definition := remoteDefinition()
 	definition.Version = "2.0.0"
+	if executor != "" {
+		definition.Tools[0].Executor = executor
+	}
 	definition.Tools[0].CapabilityID = "files.read"
 	definition.Tools[0].Uses = []api.CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "path"}}
 	definition.Tools[0].ArgumentEquals = map[string]string{"scope": "workspace"}
@@ -64,6 +71,7 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	rule := api.CapabilityRule{CapabilityID: "files.read", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "workspace", ConnectionID: binding.ConnectionID,
 		PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice", "bob"}, Revision: 1,
@@ -71,15 +79,77 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: "workspace_read", ConnectionID: binding.ConnectionID}}}
+	policy.RightCeiling = []api.RightRule{
+		{Capability: "tools", Operation: "use"}, {Capability: "tools", Operation: "list"},
+		{Capability: "workspace", Operation: "read"}, {Capability: "workspace", Operation: "write"},
+		{Capability: "models", Operation: "switch"}, {Capability: "observability", Operation: "read_own_logs"},
+		{Capability: "memory", Operation: "search"}, {Capability: "connectors", Operation: "discover"},
+		{Capability: "platform", Operation: "status"}, {Capability: "platform", Operation: "guide"},
+		{Capability: "platform", Operation: "bootstrap"}, {Capability: "platform", Operation: "usage"},
+		{Capability: "research", Operation: "create"}, {Capability: "browser", Operation: "act"},
+		{Capability: "sessions", Operation: "read"}, {Capability: "sessions", Operation: "manage"},
+	}
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	s.RightsDoc = rightsVocabulary()
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	s.RightsLedger = gov.Load
+	mintRight(t, gov, s.RightsDoc, api.NewRightGrant("rightgrant-alice-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
 	return s, auth, policy, profile
+}
+
+func TestPublishedToolScopeConstrainsCall(t *testing.T) {
+	s, auth, _, profile := managedStoreWithExecutor(t, "handler:files")
+	profile.Revision++
+	profile.Selections[0].PathScopes = []string{"/workspace/docs/public"}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
+		t.Fatalf("scoped tool disappeared: %v %v", tools, err)
+	}
+	called := false
+	admit := func(_ api.ProjectedTool, binding api.EffectiveBinding) error {
+		called = true
+		if len(binding.CapabilityScopes) != 1 || binding.CapabilityScopes[0].PathPrefix != "docs/public" {
+			t.Fatalf("scope did not reach executor: %+v", binding.CapabilityScopes)
+		}
+		return nil
+	}
+	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); err != nil || !called {
+		t.Fatalf("allowed call denied: %v", err)
+	}
+	for _, args := range []map[string]any{
+		{"path": "docs/private/a", "scope": "workspace"},
+		{"path": "docs/public/a", "root": "archive", "scope": "workspace"},
+	} {
+		called = false
+		// A name the profile declares stays denied — masked as
+		// record-not-found it reads as "no such tool" and sends the model
+		// back into tool_search for a name it can already see.
+		if err := s.AuthorizeProjectedCall(auth, "workspace_read", args, admit); !errors.Is(err, api.ErrUnauthorized) || called {
+			t.Fatalf("out-of-scope call masked or reached executor: %v %v", args, err)
+		}
+	}
+	if err := s.AuthorizeProjectedCall(auth, "workspace_missing", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("undeclared name was not not-found: %v", err)
+	}
+	profile.Revision++
+	profile.Selections[0].PathScopes = []string{"/workspace/docs/private"}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	called = false
+	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); !errors.Is(err, api.ErrUnauthorized) || called {
+		t.Fatalf("old scope survived profile revision: %v", err)
+	}
 }
 
 func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
@@ -149,6 +219,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reloaded.RightsDoc, reloaded.RightsLedger = s.RightsDoc, s.RightsLedger
 	if tools, err := reloaded.ListProjectedTools(auth); err != nil || len(tools) != 1 {
 		t.Fatalf("group snapshot lost on restart: %v %v", tools, err)
 	}
@@ -164,12 +235,16 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	s, auth, policy, profile := managedStore(t)
 	var calls, injections, admissions int
+	reasons := map[string]int{}
 	g := &Gateway{Store: s, AuditWrite: func(event string, fields map[string]string) error {
 		if event == "admit" {
 			admissions++
 			if fields["capability_id"] != "files.read" || fields["generation"] != "1" || fields["capability_policy_revision"] != "1" {
 				t.Fatalf("missing scope: %v", fields)
 			}
+		}
+		if event == "deny" || event == "reject" {
+			reasons[fields["reason"]]++
 		}
 		return nil
 	}, Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -204,6 +279,12 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	if calls != 1 || injections != 1 || admissions != 1 {
 		t.Fatalf("denied call had effects: %d/%d/%d", calls, injections, admissions)
 	}
+	// Deny classes: undeclared names stay not-found, out-of-scope arguments
+	// on a declared selection stay denied, post-admission schema failures
+	// stay invalid — argument values never reach the reason field.
+	if reasons["not-found"] != 5 || reasons["denied"] != 8 || reasons["invalid"] != 1 || reasons["error"] != 0 {
+		t.Fatalf("deny reasons misclassified: %v", reasons)
+	}
 	tools, err := s.ListProjectedTools(auth)
 	if err != nil || len(tools) != 1 || tools[0].Name != "workspace_read" {
 		t.Fatalf("projection: %v %v", tools, err)
@@ -233,7 +314,7 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	if err := s.RequireSelfInstall(auth); err == nil {
 		t.Fatal("legacy install grant leaked into managed profile")
 	}
-	if controls, err := s.AllowedControlOperations(auth); err != nil || len(controls) != 0 {
+	if controls, err := s.AllowedControlOperations(auth); err != nil || len(controls) != 1 || !controls["invoke"] {
 		t.Fatalf("legacy controls leaked: %v %v", controls, err)
 	}
 	profile.Revision++
@@ -552,6 +633,7 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reader.RightsDoc, reader.RightsLedger = s.RightsDoc, s.RightsLedger
 	writer, err := Load(file)
 	if err != nil {
 		t.Fatal(err)
@@ -607,6 +689,64 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	}
 }
 
+// The SQLite substrate must honor the same admission fence as the JSON
+// store: a managed call admits on a verified digest, a committed
+// cross-instance change is detected as stale, and a competing writer cannot
+// land mid-admission. Regression for the digest being stored as the JSON
+// snapshot hash while the fence hashed raw db bytes (always stale).
+func TestManagedAdmissionFenceOnDBStore(t *testing.T) {
+	s, auth, _, _ := managedStore(t)
+	path := filepath.Join(t.TempDir(), "registry.db")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	defer s.CloseDB()
+	reader, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.RightsDoc, reader.RightsLedger = s.RightsDoc, s.RightsLedger
+	defer reader.CloseDB()
+	writer, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.CloseDB()
+	args := map[string]any{"path": "docs/a", "scope": "workspace"}
+	called := false
+	err = reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error {
+		called = true
+		if saveErr := writer.Save(path); saveErr == nil {
+			return errors.New("cross-instance commit allowed during admission")
+		}
+		return nil
+	})
+	if err != nil || !called {
+		t.Fatalf("db-backed managed admission denied: %v", err)
+	}
+	def := remoteDefinition()
+	def.Version = "3.0.0"
+	if err := writer.RegisterDefinition(def); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	reader.mu.RLock()
+	release, fenceErr := reader.lockCapabilityAdmission()
+	reader.mu.RUnlock()
+	if release != nil {
+		release()
+	}
+	if !errors.Is(fenceErr, api.ErrStale) {
+		t.Fatalf("cross-instance commit passed db admission fence: %v", fenceErr)
+	}
+	called = false
+	if err := reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("admission did not recover after reload: %v", err)
+	}
+}
+
 func TestManagedPolicyOwnsPublishedData(t *testing.T) {
 	s, auth, policy, profile := managedStore(t)
 	policy.Members[0] = "mallory"
@@ -646,6 +786,7 @@ func TestGatewayStartupSkipsUnresolvableManagedToken(t *testing.T) {
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatalf("one unresolvable managed token took the endpoint down: %v", err)
@@ -687,7 +828,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := mcpConnect(t, server.URL, aliceToken)
 	id := client.ID()
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 3 || !toolListed(listed, "workspace_read") || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 6 || !toolListed(listed, "workspace_read") || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") {
 		t.Fatalf("list: %+v %v", listed, err)
 	}
 	args := &mcp.CallToolParams{Name: "workspace_read", Arguments: map[string]any{"path": "docs/a", "scope": "workspace"}}
@@ -702,7 +843,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	if _, err := client.CallTool(t.Context(), args); err == nil {
 		t.Fatal("open session retained revoked capability")
 	}
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") || client.ID() != id {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 5 || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") || client.ID() != id {
 		t.Fatalf("revoke projection/session: %+v %v", listed, err)
 	}
 	if calls.Load() != 1 {
@@ -717,6 +858,7 @@ func TestManagedDispatchRequiresDurableAudit(t *testing.T) {
 		calls++
 		return api.BackendResult{}, nil
 	})}
+
 	args := map[string]any{"path": "docs/a", "scope": "workspace"}
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", args); err == nil {
 		t.Fatal("missing durable audit allowed")
@@ -1201,7 +1343,7 @@ func TestSelfInstallProvenanceFollowsOnlyCredentialRotation(t *testing.T) {
 	next := old
 	next.ToolBindingID, next.CredentialRevision, next.Status = "bind-next", 2, api.ActiveStatus
 	s.bindings[old.ToolBindingID], s.bindings[next.ToolBindingID] = old, next
-	s.onboardings["onboard-telegram"] = api.Onboarding{OnboardingID: "onboard-telegram", Mode: api.OnboardingSelfInstall, Phase: api.PhaseEnabled, BindingID: old.ToolBindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, WritesEnabled: true}
+	s.onboardings["onboard-telegram"] = api.Onboarding{OnboardingID: "onboard-telegram", Mode: api.OnboardingSelfInstall, Stage: api.StageLive, BindingID: old.ToolBindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, WritesEnabled: true}
 	if !s.managedSelfInstallsLocked(auth, profile)[next.ToolBindingID] || !s.selfInstallWritesLocked(next.ToolBindingID) {
 		t.Fatal("rotated binding lost confirmed self-install authority")
 	}
@@ -1254,7 +1396,7 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			t.Fatalf("profile-granted op %s denied: %v", op, err)
 		}
 	}
-	for _, op := range []string{"rotate", "revoke", "remove", "invoke", "grant"} {
+	for _, op := range []string{"rotate", "revoke", "remove", "grant"} {
 		if err := s.RequireControlOperation(auth, op); err == nil {
 			t.Fatalf("unlisted control op %s admitted", op)
 		}
@@ -1280,7 +1422,8 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 	}
 	bindingID := api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-self-1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
-		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode, Phase: api.PhaseEnabled,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: mode,
+		Stage:        api.StageLive,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, BindingID: bindingID,
 		SourceURL: "https://github.com/example/repo", Revision: 1, CreatedAt: time.Now().UTC()}
 	if err := s.PutOnboarding(onboarding); err != nil {
@@ -1298,8 +1441,11 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			found = true
 		}
 	}
+	// A confirmed self-install projects under the managed surface without an
+	// authored tools.yaml row — the profile's SelfInstall grant plus the live
+	// onboarding's provenance is the authorization.
 	if !found || len(projected) != 2 {
-		t.Fatalf("self-installed tool not projected: %v", projected)
+		t.Fatalf("confirmed self-install must project alongside authored selections: %v", projected)
 	}
 	dispatched := false
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
@@ -1308,7 +1454,7 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			return api.BackendResult{Text: "ok"}, nil
 		})}
 	if _, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{}); err != nil || !dispatched {
-		t.Fatalf("self-installed call denied: %v", err)
+		t.Fatalf("confirmed self-installed call must reach backend: %v", err)
 	}
 
 	// A catalog onboarding does not admit the binding; nor does a pre-managed

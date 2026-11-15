@@ -15,7 +15,7 @@ import (
 )
 
 // Only controlled status labels reach chat; upstream error text may contain credentials.
-func failureMessage(lang locale.Lang, jobID, status string) string {
+func failureMessage(lang locale.Lang, status string) string {
 	key := "job.failed"
 	switch status {
 	case "cancelled":
@@ -23,7 +23,7 @@ func failureMessage(lang locale.Lang, jobID, status string) string {
 	case "interrupted":
 		key = "job.interrupted"
 	}
-	return locale.T(lang, key, jobID)
+	return locale.T(lang, key)
 }
 
 type ConversationMapping struct {
@@ -51,13 +51,13 @@ func (s *Spool) conversationPath(principal, context, conversation string) string
 }
 
 func (s *Spool) writeIdempotencyIndexLocked(key, jobID string) error {
-	return atomicJSON(s.idempotencyIndexPath(key), struct {
+	return s.writeJSON(s.idempotencyIndexPath(key), struct {
 		JobID string `json:"job_id"`
 	}{jobID})
 }
 
 func (s *Spool) writeMappingLocked(mapping JobMapping) error {
-	if err := atomicJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
+	if err := s.writeJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
 		return err
 	}
 	if s.activeMappings != nil {
@@ -79,21 +79,21 @@ func (s *Spool) activeMappingIDs() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeMappings == nil {
-		entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+		names, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 		if err != nil {
 			return nil, err
 		}
 		active := map[string]bool{}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range names {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 			var mapping JobMapping
 			if err != nil || json.Unmarshal(body, &mapping) != nil {
 				continue
 			}
-			if mapping.JobID != "" && !terminalStatus(mapping.Status) && entry.Name() == spoolFileID(mapping.JobID)+".json" {
+			if mapping.JobID != "" && !terminalStatus(mapping.Status) && name == spoolFileID(mapping.JobID)+".json" {
 				active[mapping.JobID] = true
 			}
 		}
@@ -129,7 +129,7 @@ func (s *Spool) ActiveJobsForTask(principal, taskID string) ([]JobMapping, error
 }
 
 func (s *Spool) loadMappingLocked(id string) (JobMapping, error) {
-	b, err := os.ReadFile(s.mappingPath(id))
+	b, err := s.fsys.ReadFile(s.mappingPath(id))
 	if err != nil {
 		return JobMapping{}, err
 	}
@@ -177,7 +177,7 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	if outcome.SessionID != "" {
 		mapping.SessionID = outcome.SessionID
 		conversation := ConversationMapping{PrincipalID: mapping.PrincipalID, ContextID: mapping.ContextID, ConversationID: mapping.ConversationID, SessionID: outcome.SessionID, UpdatedAt: time.Now().UTC()}
-		if err := atomicJSON(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID), conversation); err != nil {
+		if err := s.writeJSON(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID), conversation); err != nil {
 			return err
 		}
 	}
@@ -286,7 +286,7 @@ func (s *Spool) contextLanesHeldLocked(fairKey string) int {
 func (s *Spool) SessionFor(principal, context, conversation string) (ConversationMapping, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := os.ReadFile(s.conversationPath(principal, context, conversation))
+	b, err := s.fsys.ReadFile(s.conversationPath(principal, context, conversation))
 	if errors.Is(err, os.ErrNotExist) {
 		return ConversationMapping{}, false, nil
 	}
@@ -309,4 +309,38 @@ func (s *Spool) RecordOutcome(jobID string, outcome RunOutcome) error {
 	}
 	terminal := status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
 	return s.updateMappingLocked(jobID, outcome, status, terminal)
+}
+
+// A caller may repair an identical pending admission, never infer a missing run.
+func (s *Spool) jobAdmissionLocked(job Job) (bool, error) {
+	m, err := s.loadMappingLocked(job.ID)
+	if err == nil {
+		if !m.MatchesJob(job) || m.ChatID != job.ChatID || m.TaskID != job.TaskID || m.TopicID != job.TopicID || m.AssignmentID != job.AssignmentID {
+			return false, errors.New("source job mapping mismatch")
+		}
+		return true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	path := filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json")
+	body, err := s.readEventRecordLocked(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, dir := range []string{"running", "done", "failed"} {
+			if _, other := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); other == nil {
+				return false, errors.New("unmapped source job requires recovery")
+			} else if !errors.Is(other, os.ErrNotExist) {
+				return false, other
+			}
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var stored Job
+	if strictEventJSON(body, &stored) != nil || stored.ID != job.ID || stored.IdempotencyKey != job.IdempotencyKey || jobFingerprint(stored) != jobFingerprint(job) || stored.ChatID != job.ChatID || stored.TaskID != job.TaskID || stored.TopicID != job.TopicID || stored.AssignmentID != job.AssignmentID || stored.AssignmentPlanRevision != job.AssignmentPlanRevision {
+		return false, errors.New("source pending job mismatch")
+	}
+	return true, s.writeMappingLocked(mappingFromJob(stored, stored.CreatedAt.UTC()))
 }

@@ -21,21 +21,23 @@ const (
 	OnboardingCatalog     string    = "catalog"
 	OnboardingSelfInstall string    = "self-install"
 	OnboardingRemote      string    = "remote-mcp"
-	PhasePreparing        string    = "preparing"
-	PhaseReview           string    = "review"
-	PhaseAwaitingCreds    string    = "awaiting-credentials"
-	PhaseAwaitingConfirm  string    = "awaiting-confirm"
-	PhaseAwaitingOAuth    string    = "awaiting-oauth"
-	PhaseConfirmed        string    = "confirmed"
-	PhaseEnabled          string    = "enabled"
-	PhaseDisabled         string    = "disabled"
-	PhaseRevoked          string    = "revoked"
-	PhaseRemoved          string    = "removed"
-	// PhaseCleanupIncomplete marks a remove whose cleanup did not converge:
-	// no removed tombstone until every step succeeded, and a bare retry
-	// resumes the remaining work without another confirmation.
-	PhaseCleanupIncomplete string = "cleanup_incomplete"
+	// The channel's rendering vocabulary — wire labels produced by
+	// Onboarding.NoticePhase, never a durable lifecycle. The durable model is
+	// Stage + Gate (ADR-0099).
+	PhasePreparing         string = "preparing"
+	PhaseAwaitingCreds     string = "awaiting-credentials"
+	PhaseAwaitingConfirm   string = "awaiting-confirm"
+	PhaseAwaitingOAuth     string = "awaiting-oauth"
+	PhaseConfirmed         string = "confirmed"
+	PhaseEnabled           string = "enabled"
 	PhaseFailed            string = "failed"
+	PhaseCleanupIncomplete string = "cleanup_incomplete"
+	PhaseRevoked           string = "revoked"
+	// PhaseRemoved labels a gone record's own tombstone — distinct from a
+	// revoked cut. PhaseDisabled is the status-op label for a live record
+	// whose binding is switched off; the record itself stays Stage live.
+	PhaseRemoved  string = "removed"
+	PhaseDisabled string = "disabled"
 )
 
 var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request", "install_shared"}
@@ -95,38 +97,49 @@ type CredentialHint struct {
 }
 
 type Onboarding struct {
-	Schema            int              `json:"schema"`
-	OnboardingID      string           `json:"onboarding_id"`
-	PrincipalID       string           `json:"principal_id"`
-	ContextID         string           `json:"context_id"`
-	RuntimeID         string           `json:"runtime_id"`
-	PolicyVersion     string           `json:"policy_version"`
-	Mode              string           `json:"mode"`
-	SourceURL         string           `json:"source_url,omitempty"`
-	Subfolder         string           `json:"subfolder,omitempty"`
-	CommitSHA         string           `json:"commit_sha,omitempty"`
-	DefinitionID      string           `json:"definition_id,omitempty"`
-	DefinitionVersion string           `json:"definition_version,omitempty"`
-	Phase             string           `json:"phase"`
-	BindingID         string           `json:"binding_id,omitempty"`
-	ConnectionID      string           `json:"connection_id,omitempty"`
-	CredentialRefID   string           `json:"credential_ref,omitempty"`
-	ReviewDigest      string           `json:"review_digest,omitempty"`
-	Required          []CredentialHint `json:"required,omitempty"`
+	Schema            int    `json:"schema"`
+	OnboardingID      string `json:"onboarding_id"`
+	PrincipalID       string `json:"principal_id"`
+	ContextID         string `json:"context_id"`
+	RuntimeID         string `json:"runtime_id"`
+	PolicyVersion     string `json:"policy_version"`
+	Mode              string `json:"mode"`
+	SourceURL         string `json:"source_url,omitempty"`
+	Subfolder         string `json:"subfolder,omitempty"`
+	CommitSHA         string `json:"commit_sha,omitempty"`
+	DefinitionID      string `json:"definition_id,omitempty"`
+	DefinitionVersion string `json:"definition_version,omitempty"`
+	// Stage is the durable lifecycle: pending | live | failed | gone
+	// (ADR-0099). Pipeline detail lives in journal Steps; the pending human
+	// action lives in Gate.
+	Stage string `json:"stage"`
+	// Gate is the single armed user-facing action — at most one live link
+	// per record. Arming a new gate replaces the previous one atomically.
+	Gate            *Gate            `json:"gate,omitempty"`
+	BindingID       string           `json:"binding_id,omitempty"`
+	ConnectionID    string           `json:"connection_id,omitempty"`
+	CredentialRefID string           `json:"credential_ref,omitempty"`
+	ReviewDigest    string           `json:"review_digest,omitempty"`
+	Required        []CredentialHint `json:"required,omitempty"`
 	// Optional lists discovered non-required inputs the user may fill in the
 	// same protected form. They are shown to the user but never gate the
 	// credential phase; empty submissions simply stay undelivered.
-	Optional            []CredentialHint `json:"optional,omitempty"`
-	Permissions         []string         `json:"permissions,omitempty"`
-	Effects             []string         `json:"effects,omitempty"`
-	ConfirmationNonce   string           `json:"confirmation_nonce,omitempty"`
-	ConfirmationExpires time.Time        `json:"confirmation_expires,omitempty"`
-	ConfirmationUsed    bool             `json:"confirmation_used,omitempty"`
-	// RemoveNonce/RemoveExpires arm the destructive remove: the first call
-	// previews and issues the nonce; only a follow-up remove carrying it
-	// deletes credentials, workloads and state.
-	RemoveNonce   string    `json:"remove_nonce,omitempty"`
-	RemoveExpires time.Time `json:"remove_expires,omitempty"`
+	Optional    []CredentialHint `json:"optional,omitempty"`
+	Permissions []string         `json:"permissions,omitempty"`
+	Effects     []string         `json:"effects,omitempty"`
+	// Tombstone names why a gone record died: TombstoneRemoved or
+	// TombstoneRevoked. Revoked records stay resolvable for reauth; removed
+	// and superseded (SupersededBy) ones are dead ends.
+	Tombstone string `json:"tombstone,omitempty"`
+	// PreparingStub marks the durable claim a prepare writes before
+	// review+build: the record exists so status and crash-recovery work, but
+	// it is not a materialized onboarding yet — newOnboarding may overwrite it.
+	PreparingStub bool `json:"preparing_stub,omitempty"`
+	// ConfirmationUsed records that the setup gate was consumed — a spent
+	// action proof, not a state. The gate itself lives in Gate.
+	ConfirmationUsed bool          `json:"confirmation_used,omitempty"`
+	ActionRevision   uint64        `json:"action_revision,omitempty"`
+	HumanConsent     *HumanConsent `json:"human_consent,omitempty"`
 	// Finalizers is the convergent remove ladder: each named step is
 	// idempotent and recorded so a retry resumes at the first incomplete
 	// step and connector_status shows where a cleanup is stuck.
@@ -138,8 +151,6 @@ type Onboarding struct {
 	// started; the receipt reports what the ladder purged.
 	RemoveFootprint          map[string]int `json:"remove_footprint,omitempty"`
 	IdempotencyKey           string         `json:"idempotency_key,omitempty"`
-	FormNonce                string         `json:"form_nonce,omitempty"`
-	FormExpires              time.Time      `json:"form_expires,omitempty"`
 	Locator                  string         `json:"locator,omitempty"`
 	CredentialOwner          string         `json:"credential_owner,omitempty"`
 	BrokerRequestID          string         `json:"broker_request_id,omitempty"`
@@ -155,11 +166,11 @@ type Onboarding struct {
 	// the link the agent should hand to the user.
 	ChannelAuthURL string `json:"channel_auth_url,omitempty"`
 	// WizardNonce/WizardExpires arm the stable single-link setup page
-	// (/connect/<id>?k=): one URL renders every interactive phase in place —
-	// credential intake, confirmation and the provider OAuth hop — so the
-	// channel carries one link instead of a rotating set of one-time links.
-	// Per-step nonces still gate each mutation; the nonce alone is a
-	// view/resume capability and dies with the onboarding's terminal phase.
+	// (/connect/<id>?k=): one URL renders whatever Gate currently names —
+	// credential intake, confirmation or the provider OAuth hop — so the
+	// channel carries one link for the record's whole interactive life.
+	// The gate nonce still checks each mutation; the wizard nonce is a
+	// view/resume capability and dies with the record's terminal stage.
 	WizardNonce              string    `json:"wizard_nonce,omitempty"`
 	WizardExpires            time.Time `json:"wizard_expires,omitempty"`
 	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
@@ -177,8 +188,21 @@ type Onboarding struct {
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the
 	// protected form is submitted and the probe succeeds.
-	AdmissionPending bool   `json:"admission_pending,omitempty"`
-	Error            string `json:"error,omitempty"`
+	AdmissionPending     bool      `json:"admission_pending,omitempty"`
+	AdmissionAttempts    int       `json:"admission_attempts,omitempty"`
+	AdmissionNextAttempt time.Time `json:"admission_next_attempt,omitzero"`
+	AdmissionLeaseUntil  time.Time `json:"admission_lease_until,omitzero"`
+	ObservedAt           time.Time `json:"observed_at,omitzero"`
+	ObservationCode      string    `json:"observation_code,omitempty"`
+	// Initiator contains routing identity only, never credentials. Notification
+	// intent is committed with this record; the gateway owns actual delivery.
+	Initiator           *identity.Envelope `json:"initiator,omitempty"`
+	NoticeVersion       uint64             `json:"notice_version,omitempty"`
+	NoticeEvent         string             `json:"notice_event,omitempty"`
+	NoticeEventID       string             `json:"notice_event_id,omitempty"`
+	NoticeQueuedVersion uint64             `json:"notice_queued_version,omitempty"`
+	NoticeNextAttempt   time.Time          `json:"notice_next_attempt,omitzero"`
+	Error               string             `json:"error,omitempty"`
 	// ErrorCode is the stable machine-readable companion of Error; it is set
 	// from the failure cause via ErrorCode() and survives snapshot reloads.
 	ErrorCode string `json:"error_code,omitempty"`
@@ -328,22 +352,29 @@ func (t Team) CanWrite(principalID string) bool {
 }
 
 func (o Onboarding) Validate() error {
+	if o.AdmissionAttempts < 0 || o.BrokerAttempts < 0 {
+		return fmt.Errorf("%w: onboarding attempt count", ErrInvalid)
+	}
 	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
 		return fmt.Errorf("%w: onboarding identity", ErrInvalid)
 	}
 	if o.Mode != OnboardingCatalog && o.Mode != OnboardingSelfInstall && o.Mode != OnboardingRemote {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
-	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseCleanupIncomplete, PhaseFailed:
-	default:
-		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
+	if err := o.validateStage(); err != nil {
+		return err
 	}
 	if o.DefinitionID != "" && !identity.ValidID(o.DefinitionID) {
 		return fmt.Errorf("%w: onboarding definition", ErrInvalid)
 	}
 	if o.DefinitionVersion != "" && !VersionPattern.MatchString(o.DefinitionVersion) {
 		return fmt.Errorf("%w: onboarding version", ErrInvalid)
+	}
+	if o.Initiator != nil && o.Initiator.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil {
+		return fmt.Errorf("%w: onboarding initiator", ErrInvalid)
+	}
+	if o.NoticeQueuedVersion > o.NoticeVersion {
+		return fmt.Errorf("%w: onboarding notice version", ErrInvalid)
 	}
 	return nil
 }

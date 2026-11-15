@@ -93,7 +93,7 @@ func TestPrepareRegistersContractForUncoveredCredentials(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("PrepareDone never fired")
 		}
-		phase = final.Phase
+		phase = final.NoticePhase()
 		if final.BrokerAuthorizationURL == "" {
 			t.Fatalf("no credential form minted: %+v", final)
 		}
@@ -250,7 +250,7 @@ func TestPrepareRegistersContractForOptionalCredentials(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("PrepareDone never fired")
 		}
-		phase = final.Phase
+		phase = final.NoticePhase()
 	}
 	// All-optional credentials mean no mandatory form: the onboarding may
 	// confirm directly, while the registered contract keeps the creds

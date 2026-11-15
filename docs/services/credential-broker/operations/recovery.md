@@ -1,6 +1,6 @@
 ---
 description: "Процедуры, при которых нельзя обойти fail-closed поведение."
-last_verified: "2026-10-24"
+last_verified: "2026-11-09"
 ---
 
 # Восстановление, отзыв и очистка
@@ -36,14 +36,20 @@ credentials сам по себе. Не удалять его, чтобы обо�
 зашифрованные local provider objects. Recovery key отличается от master key;
 ключи отделяются по назначению и `recovery_identity`. Backup записывается
 до primary; подтверждение приходит после fsync primary и зашифрованного
-commit anchor. После потери primary journal восстанавливается только по
+current-head v2 с atomic replace и file/directory sync. После потери primary journal восстанавливается только по
 backup, чей подтверждённый head совпадает с независимым anchor. Более старая
 или подменённая копия отвергается. Неподтверждённый хвост после прерванной
 записи отбрасывается; повторный запуск продолжает с последней подтверждённой
 позиции. Повреждённый ciphertext и неверный ключ блокируют запуск.
 
 Local provider читает backup по первоначальному locator только если primary
-object отсутствует. Удаление managed object удаляет обе копии. Broker
+object отсутствует. Удаление managed object удаляет обе копии и выполняется
+только через owned object rows: bounded-воркер переводит версию в
+`pending-delete`, стирает primary+recovery и fsync каталогов через provider,
+и лишь затем пишет receipt `deleted`. Объект без строки владения
+(unknown remote) никогда не удаляется — в том числе при восстановлении:
+неизвестная копия в recovery каталоге остаётся консервативным keep, а не
+кандидатом на чистку. Broker
 восстанавливает owner/context, contract, grant, revoke и delete из journal;
 leases остаются только в памяти и после рестарта создаются заново через
 текущую авторизацию. Внешние Vault/Kubernetes providers сохраняются своим
@@ -124,3 +130,112 @@ Journal bounded; metadata maps живут в памяти. Не использо
 Expired drafts/proof objects после прерванного OAuth могут оставаться encrypted orphan в provider.
 Нет автоматического GC неизвестных путей: планировать retention и reconciliation по ledger/evidence,
 не удалять secret prefix «на всякий случай».
+
+## Переход legacy recovery head
+
+Новый anchored startup отказывает на legacy marker; автоматического adoption
+нет. До применения остановить Broker и workloads, проверить backup с ключами,
+config и contracts, подготовить изолированную копию всего P/R/anchor набора.
+На копии выполнить `credential-broker migrate-head --config /absolute/config.json`.
+Команда берёт journal locks и требует точного совпадения primary/recovery tip
+и legacy latest anchor. При mismatch источники не обрезаются и не compact.
+Providers команда не открывает и не очищает. Head сначала сохраняется и
+проверяется, затем активируется новый marker. Повтор после staged head
+допускается лишь при тех же digest/sequence; повтор после activation идемпотентен.
+Старые commit-файлы сохраняются: их удаление не входит в эту команду.
+
+Потерянную `current-head` нельзя восстанавливать выбором старшего оставшегося
+commit-файла или запуском `migrate-recovery`: это recovery-required.
+Не удалять initialized marker. Полный module/container gate и приёмка этого
+перехода ведутся в CHG-0215. В CHG-0237 локальная dev-установка прошла
+проверку на копиях P/R/key, затем `migrate-head` на остановленном Broker;
+повторный запуск и `/healthz` прошли. Это не перенос production-данных.
+
+## Переход durable store на SQLCipher
+
+ADR-0087 переводит носитель записей на зашифрованную SQLCipher-подложку:
+primary `primary.db` в `data_dir` и recovery `recovery.db` в `recovery_dir/journal`
+обновляются одной ATTACH-транзакцией с прежним sealed witness head; одиночная
+установка использует `ledger.db` рядом с журналом. Ключи файлов выводятся из
+master/recovery key material (`sqlcipher-ledger/v1`, `sqlcipher-recovery/v1`),
+сами ключи не попадают в argv, env, manifest или вывод.
+
+Порядок оператора на остановленном писателе:
+
+1. Проверенный backup вне репозитория (config, contracts, TLS, keys, ledger,
+   recovery, anchor) — legacy `ledger.bin` после активации уходит в
+   `substrate-backup/` и остаётся источником сверки, не rollback.
+2. `hubctl store-migrate --dir spaces/<user> --env <env> --broker --apply`
+   останавливает сервис и запускает `credential-broker store-migrate --config`
+   в образе сервиса поверх его external volumes; альтернативно — та же
+   команда напрямую при вручную смонтированных каталогах. Импорт отказывает
+   при живом писателе, неизменённо сохраняет frames и запечатывает manifest
+   (format, records, head sequence/digest, store identity, byte limit) в оба
+   каталога. Повтор отказывает, пока существуют db-файлы или маркер.
+3. `hubctl store-activate --dir spaces/<user> --env <env> --broker --apply`
+   проверяет manifest и оба хранилища через полный путь открытия (replay,
+   witness head), пишет парные `sqlcipher.activated`, уносит `ledger.bin` в
+   `substrate-backup/` и поднимает сервис. Активация без staged import или с
+   расхождением ног отказывает и не меняет состояние.
+
+Открытие без маркера отказывается обслуживать db-файлы; частично записанный
+import безопасно удаляется удалением `primary.db`/`recovery.db`/`ledger.db`
+и `sqlcipher.manifest` (legacy frames при этом не тронуты). После активации
+startup проверяет обе цепочки и witness head: хвост сверх последнего
+подтверждённого head обрезается, недостающие в primary строки дозаписываются
+из recovery в той же транзакции, расхождение подтверждённого префикса —
+fail-closed. Неверный ключ отказывает; совпадение master и recovery key
+отклоняется ещё на валидации команды.
+
+## Ограниченный горячий аудит и архивы
+
+`audit_hot_max_bytes` + `audit_archive_dir` задаются парой в config: запись
+сверх байтового предела отклоняется видимой ошибкой `audit retention full`
+(HTTP 507) до начала транзакции — журнал не портится и продолжает
+обслуживать; удаления истории без явной команды не происходит.
+
+`credential-broker store-retain --config PATH` на остановленном писателе
+экспортирует горячий префикс аудита в `audit-<lo>-<hi>.seal` (AES-256-GCM,
+ключ выведен из identity хранилища, AAD привязан к диапазону) и
+`audit-<lo>-<hi>.manifest.json` (format, store identity, seq-диапазон,
+rows/bytes, sha256 открытого текста и архива; manifest запечатан HMAC от
+identity-ключа). Существующий архив никогда не перезаписывается — он
+верифицируется целиком, и подделка любого поля отклоняет проход.
+
+`--destroy` — единственная авторизация удаления: после верификации архива
+префикс удаляется одной транзакцией из обеих ног и `audit_floor = hi+1`
+фиксируется в meta. Архив остаётся самостоятельно читаемым через
+`journal.ReadAuditArchive`. Читатели `/v1/events`, чей cursor старше floor,
+получают `earliest_available` + `gap: true`.
+
+## Ротация истории records и авто-обслуживание
+
+`store-retain --config PATH --records --keep-bytes N` выносит префикс
+records-цепочки в `records-<lo>-<hi>.seal` + manifest по тем же правилам
+запечатывания; архив переверяет внутреннюю цепочку хэшей автономно.
+`--destroy` удаляет проверенный префикс из обеих ног одной транзакцией,
+фиксирует `records_floor`/`records_floor_prev` на хэше вершины архива и
+делает VACUUM — физическое ужатие файла, которое байтовый предел сам по
+себе не даёт. Replay стартует с floor: первая сохранённая строка должна
+иметь `Previous` равный связке в архивированную историю; witness-head ниже
+floor (или потерянный head на ротированном сторе) отказывает fail-closed.
+
+`audit_auto_retain` / `records_auto_retain` в config — явная destructive
+политика: на тике сервиса при 80% от предела горячая история экспортируется
+и (при включённом флаге) урезается с компакцией; без флага — только экспорт
+и видимый admission stop на пределе. Итог сохраняется в meta
+(`retain_last_ok` / `retain_last_error`); тики в покое и повторы в том же
+состоянии ничего не пишут.
+
+`{audit,records}_archive_max_bytes` и `{audit,records}_archive_max_age_days`
+ограничивают сами архивные директории: на тике старейшие **проверенные**
+архивные пары сверх лимита удаляются безвозвратно — кроме новейшей пары,
+которая несёт связку provenance к текущему floor. Чужие или подделанные
+манифесты не удаляются (fail-closed). Ноль — без потолка (дефолт).
+
+Переполнение `max_ledger_bytes` — видимый admission stop (ErrFull →
+HTTP 507), не отравленный журнал: ротация освобождает место и запись
+продолжается. Воркер объектной очистки повторяет неудачи с экспоненциальным
+backoff (30с база, удвоение, потолок, durable attempts/next_at).
+`credential-broker store-sweep --config PATH` гоняет тот же ограниченный
+проход объектной очистки офлайн на остановленном сервисе.

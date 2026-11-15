@@ -152,6 +152,27 @@ func TestPolicyVersionIgnoresMCPTransportFields(t *testing.T) {
 	}
 }
 
+func TestManagedConnectorSelectionKeepsSessionPolicyVersion(t *testing.T) {
+	s := policyBaseline()
+	s.CapabilityMode = "managed"
+	s.CapabilityProfileID, s.CapabilityGeneration = "alice-default", 1
+	s.Tools["github"] = ToolEntry{Via: ToolViaMCP}
+	s.Tools["gitlab"] = ToolEntry{Via: ToolViaMCP}
+	s.MCP = map[string]MCPServer{"gitea": {URL: "https://mcp.example.com/gitea"}, "notes": {URL: "https://mcp.example.com/notes"}}
+	s.Tools["gitea"] = ToolEntry{Via: ToolViaMCPRaw}
+	s.Tools["notes"] = ToolEntry{Via: ToolViaMCPRaw}
+	stable := PolicyVersion(s)
+	delete(s.Tools, "github")
+	s.Tools["gitea"] = ToolEntry{Via: ToolViaOff}
+	if got := PolicyVersion(s); got != stable {
+		t.Fatalf("connector deselection invalidated sibling session: %s != %s", got, stable)
+	}
+	s.Tools["file"] = ToolEntry{Via: ToolViaOff}
+	if got := PolicyVersion(s); got == stable {
+		t.Fatal("first-party rights change left policy version unchanged")
+	}
+}
+
 // SPEC-0053 R1.1: every Settings field is classified — settingsFieldRights maps
 // it to its rightsView field name, or "" when it carries no grants and must not
 // move the policy hash. The guard fails on a new unclassified field, on a

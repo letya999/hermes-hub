@@ -81,6 +81,15 @@ func TestRegistryCoversReviewedToolInventory(t *testing.T) {
 	}
 }
 
+func TestTestBinaryNameSanitizesPackagePath(t *testing.T) {
+	if got := testBinaryName("toolhub/automation"); got != "toolhub-automation.test.exe" {
+		t.Fatalf("subpackage binary collides with directory layout: %s", got)
+	}
+	if got := testBinaryName("communication"); got != "communication.test.exe" {
+		t.Fatalf("flat package name changed: %s", got)
+	}
+}
+
 func TestVerdictCannotPassUnmatchedSkippedOrTruncatedTests(t *testing.T) {
 	for _, tc := range []struct{ events, status string }{
 		{`{"Action":"run","Test":"TestA"}` + "\n" + `{"Action":"pass","Test":"TestA"}`, "PASS"},

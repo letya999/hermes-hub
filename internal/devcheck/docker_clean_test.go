@@ -88,6 +88,25 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 	}
 }
 
+func TestDockerCleanKeepsImplicitSupervisorRuntimeImage(t *testing.T) {
+	root := t.TempDir()
+	space := filepath.Join(root, "spaces", "local")
+	if err := os.MkdirAll(space, 0755); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  toolhub:\n    image: hermes-hub:0.5.0-dev-control\n  relay:\n    image: hermes-hub:0.5.0-dev-core\n"
+	if err := os.WriteFile(filepath.Join(space, "compose.dev.yaml"), []byte(compose), 0600); err != nil {
+		t.Fatal(err)
+	}
+	keep, err := activeImageTags(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keep["0.5.0-dev"] {
+		t.Fatal("supervisor runtime image was not protected from cleanup")
+	}
+}
+
 func TestDockerCleanSweepsAgedHarnessResidue(t *testing.T) {
 	old := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
 	fresh := time.Now().UTC().Format(time.RFC3339Nano)

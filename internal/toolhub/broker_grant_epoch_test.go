@@ -120,7 +120,7 @@ func TestBrokerGrantStalePolicyEpochRotatesOnConfirm(t *testing.T) {
 		return nil
 	}
 
-	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")
+	onboarding, _, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +128,10 @@ func TestBrokerGrantStalePolicyEpochRotatesOnConfirm(t *testing.T) {
 	onboarding.BrokerCredentialID = "credential_1"
 	onboarding.BrokerContractID = "github-pat"
 	onboarding.BrokerContractRevision = 1
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.FormNonce, onboarding.FormExpires = "", time.Time{}
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = time.Now().Add(time.Hour)
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateConfirmSetup, "", time.Time{})
+	onboarding.ClearGateKind(api.GateCredentials)
+	onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), time.Now().Add(time.Hour))
 	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestBrokerGrantStalePolicyEpochRotatesOnConfirm(t *testing.T) {
 	if err != nil || pendingRef.BrokerGrantID != "grant_2" {
 		t.Fatalf("pending grant missing: %v", err)
 	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
+	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.GateNonce(api.GateConfirmSetup)}); err != nil {
 		t.Fatalf("confirm failed on stale-policy grant instead of re-minting: %v", err)
 	}
 	if revocations != 1 {
@@ -159,8 +159,8 @@ func TestBrokerGrantStalePolicyEpochRotatesOnConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Phase != api.PhaseConfirmed {
-		t.Fatalf("phase=%q", stored.Phase)
+	if !stored.ConfirmationUsed {
+		t.Fatalf("phase=%q", stored.NoticePhase())
 	}
 	_, ref, err := store.OwnedConnection(auth, "conn_1")
 	if err != nil {

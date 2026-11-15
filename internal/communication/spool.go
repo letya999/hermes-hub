@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +19,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/locale"
-	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/internal/storagebudget"
 )
 
 // approvalButtonsLocked persists one durable callback record per choice and
@@ -31,7 +32,7 @@ func (s *Spool) approvalButtonsLocked(jobID, requestID string, choices []string)
 		digest := sha256.Sum256([]byte(jobID + "\x00" + requestID + "\x00" + choice))
 		id := hex.EncodeToString(digest[0:12])
 		record := approvalCallback{JobID: jobID, RequestID: requestID, Choice: choice}
-		if err := atomicJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
+		if err := s.writeJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
 			return nil, err
 		}
 		buttons = append(buttons, DeliveryButton{Text: choice, Data: "a:" + id})
@@ -57,7 +58,7 @@ func (s *Spool) ApprovalCallback(data string) (jobID, requestID, choice string, 
 			return "", "", "", errors.New("unknown callback")
 		}
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "callbacks", id+".json"))
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "callbacks", id+".json"))
 	if err != nil {
 		return "", "", "", errors.New("unknown callback")
 	}
@@ -70,9 +71,12 @@ func (s *Spool) ApprovalCallback(data string) (jobID, requestID, choice string, 
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
 type Spool struct {
-	root   string
-	mu     sync.Mutex
-	secret map[string]string
+	readOnly bool
+	storage  *storagebudget.Counter
+	root     string
+	fsys     spoolFS
+	mu       sync.Mutex
+	secret   map[string]string
 	// inFlight maps (principal, context, conversation) to the job currently
 	// allowed to run; held until the job's mapping reaches a terminal status.
 	// In-memory only, rebuilt from durable mappings on startup (ADR-0090,
@@ -90,11 +94,9 @@ type Spool struct {
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
-	// probeScript, when set, runs a watcher script probe inside the isolated
-	// script runtime: (occurrence, source, fetched input, mount-space flag,
-	// prefetched need results). Nil fails the probe — a script probe without
-	// the supervisor never runs in-process.
-	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// onAccepted persists the accepted-turn outbox event before enqueue ack.
+	onAccepted  func(job Job) error
+	onCompleted func(job Job, outcome RunOutcome) error
 	// refreshHolds, when set (supervised mode), fetches the supervisor's
 	// hold projection at the public enqueue boundary — outside the spool
 	// lock. holdsSnapshot reads the last projection under the lock: an
@@ -104,15 +106,12 @@ type Spool struct {
 	// (SPEC-0053).
 	refreshHolds  func(ctx context.Context) error
 	holdsSnapshot func() []masterHold
-	// resolveChannel, when set, binds engine channel lookups to the owning
-	// gateway's user registry: RouteBlockedNotice retargets to the owner's
-	// verified home only when the real binding is resolvable — the nil-
-	// gateway fallback stays for the pure validation methods.
-	resolveChannel func(id string) routines.OccurrenceChannel
-	// rt is the routines engine (internal/routines) sharing this spool's
-	// mutex and root; it owns the schedules/occurrences/watchers/digests
-	// subtrees and borrows the rest of the spool through its Deps seam.
-	rt *routines.Engine
+	// jobFence, when wired by the owning gateway, re-authorizes a cron
+	// routine job against its live owner occurrence before the worker
+	// executes it — a schedule deleted or re-bound between dispatch and
+	// claim retires the pending job instead of running stale work. Nil
+	// (pure-spool use) keeps the legacy posture.
+	jobFence func(job Job) (live bool, err error)
 	// budget is the atomic reservation/settlement ledger (budget.json);
 	// budgetBroken marks an unreadable ledger so admission fails closed.
 	budget       *budgetLedger
@@ -120,7 +119,8 @@ type Spool struct {
 	limits       spoolLimits
 	// langOf resolves the job owner's workspace language for user-facing
 	// stream texts; nil falls back to the hub default.
-	langOf func(principalID string) locale.Lang
+	langOf      func(principalID string) locale.Lang
+	archiveSync func(*os.File) error // Deterministic durability-fault seam; nil uses file.Sync.
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -179,14 +179,52 @@ func InspectSpool(root string) (*Spool, error) {
 	return openSpool(root, false)
 }
 
-func openSpool(root string, create bool) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
-	if ledger, err := loadBudget(root); err != nil {
+func openSpool(root string, create bool) (result *Spool, err error) {
+	s := &Spool{readOnly: !create, root: root, fsys: osFS{}, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	// A failed open must not leak the activated backend's database handle.
+	defer func() {
+		if err != nil {
+			_ = s.fsys.Close()
+		}
+	}()
+	if spoolActivated(root) {
+		fsys, err := openSpoolDB(root, !create)
+		if err != nil {
+			return nil, err
+		}
+		s.fsys = fsys
+	}
+	limits, limitsErr := spoolStorageLimits(s.limits)
+	if limitsErr != nil {
+		return nil, limitsErr
+	}
+	if ledger, err := loadBudget(s.fsys, root); err != nil {
 		s.budgetBroken = err
 	} else {
 		s.budget = ledger
 	}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals"} {
+	if create {
+		if body, err := readEventRecord(filepath.Join(root, "event-layout.json")); err == nil {
+			var layout eventLayout
+			if strictEventJSON(body, &layout) != nil || layout.Version != eventLayoutVersion {
+				return nil, errors.New("unknown event layout")
+			}
+			if layout.Complete {
+				for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
+					info, err := os.Lstat(filepath.Join(root, dir))
+					if errors.Is(err, os.ErrNotExist) {
+						continue
+					}
+					if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+						return nil, errors.New("initialized event directory missing or unsafe")
+					}
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "outbox/superseded", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "mock-sent", "mock-links", "tmp", "goals", "capture", "capture-acks"} {
 		if !create {
 			continue
 		}
@@ -194,33 +232,28 @@ func openSpool(root string, create bool) (*Spool, error) {
 			return nil, err
 		}
 	}
-	s.rt = routines.NewEngine(root, &s.mu, routines.Deps{
-		Hooks:             scheduleDraftHooks,
-		EnqueueJob:        s.enqueueLocked,
-		EnqueueDelivery:   s.enqueueDeliveryLocked,
-		LoadMapping:       s.loadMappingLocked,
-		LoadTask:          s.loadTaskLocked,
-		ListTasks:         s.listTasksLocked,
-		TopicTask:         s.topicTaskLocked,
-		WriteDeliveryBlob: s.WriteDeliveryBlob,
-		NormalizeDelivery: normalizeDelivery,
-		WriteJSONAtomic:   atomicJSON,
-		Signal:            s.signal,
-		ChannelFor: func(id string) routines.OccurrenceChannel {
-			if s.resolveChannel != nil {
-				return s.resolveChannel(id)
+	_, rootErr := os.Lstat(root)
+	if create || !errors.Is(rootErr, os.ErrNotExist) {
+		var storageErr error
+		s.storage, storageErr = storagebudget.New(root, limits)
+		if storageErr != nil {
+			return nil, storageErr
+		}
+	}
+	if create {
+		for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
+			info, err := os.Lstat(filepath.Join(root, dir))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
-			return channelFor(nil, id)
-		},
-		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
-		SettleEvents: s.settleEvents,
-		LangOf: func(p string) locale.Lang {
-			if s.langOf != nil {
-				return s.langOf(p)
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, errors.New("unsafe event directory")
 			}
-			return locale.Fallback()
-		},
-	})
+		}
+		if err := s.migrateEventLayout(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -230,7 +263,7 @@ func (s *Spool) recover() error {
 	if err := s.recoverJobs(); err != nil {
 		return err
 	}
-	if err := recoverFiles(filepath.Join(s.root, "outbox", "sending"), filepath.Join(s.root, "outbox", "failed")); err != nil {
+	if err := s.recoverFiles(filepath.Join(s.root, "outbox", "sending"), filepath.Join(s.root, "outbox", "failed")); err != nil {
 		return err
 	}
 	if err := s.rebuildMappings(); err != nil {
@@ -249,15 +282,14 @@ func (s *Spool) recover() error {
 
 func (s *Spool) recoverJobs() error {
 	from, to := filepath.Join(s.root, "running"), filepath.Join(s.root, "pending")
-	entries, err := os.ReadDir(from)
+	names, err := s.fsys.ReadDir(from)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		name := entry.Name()
 		jobID := strings.TrimSuffix(name, ".json")
 		mapping, loadErr := s.loadMappingLocked(jobID)
 		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
@@ -269,7 +301,7 @@ func (s *Spool) recoverJobs() error {
 				if mapping.Status == "completed" {
 					dir = "done"
 				}
-				if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
+				if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
 					return err
 				}
 				continue
@@ -282,12 +314,12 @@ func (s *Spool) recoverJobs() error {
 			if mapping.RunID != "" && mapping.SessionID != "" {
 				destination = "pending"
 			} // Observe the admitted run; never resubmit its prompt.
-			if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
+			if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := os.Rename(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
+		if err := s.renameOwned(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
 			return err
 		}
 	}
@@ -296,15 +328,15 @@ func (s *Spool) recoverJobs() error {
 
 func (s *Spool) rebuildMappings() error {
 	for _, dir := range []string{"pending", "running", "done", "failed"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, dir))
+		names, err := s.fsys.ReadDir(filepath.Join(s.root, dir))
 		if err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range names {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, dir, entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, dir, name))
 			if err != nil {
 				return err
 			}
@@ -312,7 +344,7 @@ func (s *Spool) rebuildMappings() error {
 			if json.Unmarshal(body, &job) != nil || job.IdempotencyKey == "" {
 				continue
 			}
-			if _, err := os.Stat(s.mappingPath(job.ID)); errors.Is(err, os.ErrNotExist) {
+			if _, err := s.fsys.Lstat(s.mappingPath(job.ID)); errors.Is(err, os.ErrNotExist) {
 				mapping := mappingFromJob(job, job.CreatedAt.UTC())
 				mapping.JobID = job.ID
 				mapping.Status = map[string]string{"pending": "accepted", "running": "running", "done": "completed", "failed": "failed"}[dir]
@@ -332,15 +364,15 @@ func (s *Spool) rebuildMappings() error {
 // before the index existed (SPEC-0053 R2.3). Afterwards the index is the
 // authoritative key→job pointer and the linear scan is a fallback only.
 func (s *Spool) rebuildIdempotencyIndex() error {
-	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 		if err != nil {
 			return err
 		}
@@ -349,7 +381,7 @@ func (s *Spool) rebuildIdempotencyIndex() error {
 			continue
 		}
 		index := s.idempotencyIndexPath(mapping.IdempotencyKey)
-		if _, err := os.Stat(index); err == nil {
+		if _, err := s.fsys.Lstat(index); err == nil {
 			continue
 		}
 		if err := s.writeIdempotencyIndexLocked(mapping.IdempotencyKey, mapping.JobID); err != nil {
@@ -376,10 +408,10 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	aged := func(path string) bool {
-		info, err := os.Stat(path)
+		info, err := s.fsys.Lstat(path)
 		return err == nil && info.ModTime().Before(cutoff)
 	}
-	for _, dir := range []string{"done", filepath.Join("outbox", "done"), filepath.Join("outbox", "failed")} {
+	for _, dir := range []string{"done", filepath.Join("outbox", "done"), filepath.Join("outbox", "failed"), filepath.Join("outbox", "superseded")} {
 		if err := s.compactDirLocked(dir, aged, nil, limits.MaxTerminalFiles, now); err != nil {
 			return err
 		}
@@ -387,37 +419,61 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 	if err := s.compactDirLocked("failed", aged, s.failedTerminalLocked, limits.MaxTerminalFiles, now); err != nil {
 		return err
 	}
+	ackClosed := func(name string) bool {
+		body, err := s.fsys.ReadFile(filepath.Join(s.root, "capture-acks", name))
+		var eventID string
+		if err != nil || json.Unmarshal(body, &eventID) != nil {
+			return false
+		}
+		jobID, ok := strings.CutPrefix(eventID, "turn-")
+		if !ok {
+			jobID, ok = strings.CutPrefix(eventID, "reply-")
+		}
+		if !ok || jobID == "" {
+			return false
+		}
+		for _, path := range []string{s.capturePath(eventID), filepath.Join(s.root, "pending", spoolFileID(jobID)+".json"), filepath.Join(s.root, "running", spoolFileID(jobID)+".json"), filepath.Join(s.root, "done", spoolFileID(jobID)+".json"), filepath.Join(s.root, "failed", spoolFileID(jobID)+".json")} {
+			if _, err := s.fsys.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+		}
+		return true
+	}
+	if err := s.compactDirLocked("capture-acks", aged, ackClosed, limits.MaxTerminalFiles, now); err != nil {
+		return err
+	}
 	live, err := s.liveDeliveryIDsLocked()
 	if err != nil {
 		return err
 	}
 	receiptClosed := func(name string) bool {
-		b, err := os.ReadFile(filepath.Join(s.root, "events", name))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "run-events", name))
 		var receipt streamReceipt
-		if err != nil || json.Unmarshal(b, &receipt) != nil || receipt.Delivery == nil {
-			return true
+		if err != nil || json.Unmarshal(b, &receipt) != nil || receipt.JobID == "" || receipt.Position == 0 || receipt.Event.JobID != receipt.JobID || receipt.Event.EventID == "" {
+			return false
 		}
-		return !live[spoolFileID(receipt.Delivery.ID)]
+		if receipt.Delivery != nil && live[spoolFileID(receipt.Delivery.ID)] {
+			return false
+		}
+		mapping, err := s.loadMappingLocked(receipt.JobID)
+		return err == nil && terminalStatus(mapping.Status) && mapping.ApprovalState != "pending"
 	}
-	if err := s.compactDirLocked("events", aged, receiptClosed, limits.MaxTerminalFiles, now); err != nil {
+	if err := s.compactDirLocked("run-events", aged, receiptClosed, limits.MaxTerminalFiles, now); err != nil {
 		return err
 	}
 	if err := s.compactUsageLocked(now, retention, limits.MaxUsageEntries); err != nil {
 		return err
 	}
-	if err := s.compactOccurrencesLocked(now, retention); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	mappingNames, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range mappingNames {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		path := filepath.Join(s.root, "mappings", entry.Name())
-		b, err := os.ReadFile(path)
+		path := filepath.Join(s.root, "mappings", name)
+		b, err := s.fsys.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -428,18 +484,18 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 		// A job file that still exists is live state regardless of mapping age.
 		live := false
 		for _, dir := range []string{"pending", "running"} {
-			if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(mapping.JobID)+".json")); err == nil {
+			if _, err := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(mapping.JobID)+".json")); err == nil {
 				live = true
 			}
 		}
 		if live {
 			continue
 		}
-		if err := s.archiveTerminalLocked("mappings", entry.Name(), now); err != nil {
+		if err := s.archiveTerminalLocked("mappings", name, now); err != nil {
 			return err
 		}
 		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
-			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
+			_ = s.removeOwned(s.idempotencyIndexPath(mapping.IdempotencyKey))
 		}
 	}
 	return s.purgeArchivesLocked(now, retention, limits.ArchiveMaxBytes)
@@ -480,155 +536,10 @@ func (s *Spool) purgeArchivesLocked(now time.Time, retention time.Duration, maxB
 		if !f.mod.Before(cutoff) && !(maxBytes > 0 && total > maxBytes) {
 			break
 		}
-		if err := os.Remove(filepath.Join(dir, f.name)); err != nil {
+		if err := s.removeOwned(filepath.Join(dir, f.name)); err != nil {
 			return err
 		}
 		total -= f.size
-	}
-	return nil
-}
-
-// compactOccurrencesLocked moves settled, silent detail out of the hot scan.
-// Detail stays in an archive for 48 hours; a small receipt keeps the normal
-// spool deduplication horizon. Active and dispatched work stays untouched.
-func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration) error {
-	outcomes, err := s.routineDeliveryStatesLocked()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(s.root, "occurrences")
-	archiveDir := filepath.Join(dir, "archive")
-	receiptDir := filepath.Join(dir, "receipts")
-	activeDelivery := map[string]bool{}
-	for _, outboxDir := range []string{"pending", "sending"} {
-		items, err := os.ReadDir(filepath.Join(s.root, "outbox", outboxDir))
-		if err != nil {
-			return err
-		}
-		for _, item := range items {
-			if item.IsDir() || !strings.HasSuffix(item.Name(), ".json") {
-				continue
-			}
-			body, err := os.ReadFile(filepath.Join(s.root, "outbox", outboxDir, item.Name()))
-			if err != nil {
-				return err
-			}
-			var delivery Delivery
-			if json.Unmarshal(body, &delivery) != nil {
-				return errors.New("invalid live delivery")
-			}
-			if delivery.OccurrenceID != "" {
-				activeDelivery[delivery.OccurrenceID] = true
-			}
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		var o RoutineOccurrence
-		if json.Unmarshal(body, &o) != nil || entry.Name() != occurrenceID(o)+".json" {
-			continue
-		}
-		switch o.State {
-		case "no_change", "missed", "blocked", "cancelled", "capped", "skipped", "failed":
-		case "dispatched":
-			if activeDelivery[o.Job.ID] {
-				continue
-			}
-			live := false
-			for _, jobDir := range []string{"pending", "running"} {
-				_, statErr := os.Stat(filepath.Join(s.root, jobDir, spoolFileID(o.Job.ID)+".json"))
-				if statErr == nil {
-					live = true
-				}
-				if statErr != nil && !os.IsNotExist(statErr) {
-					return statErr
-				}
-			}
-			if live {
-				continue
-			}
-			mapping, mappingErr := s.loadMappingLocked(o.Job.ID)
-			if mappingErr == nil && !terminalStatus(mapping.Status) {
-				continue
-			}
-			if mappingErr != nil && !os.IsNotExist(mappingErr) {
-				continue
-			}
-		default:
-			continue
-		}
-		if err := os.MkdirAll(receiptDir, 0700); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(archiveDir, 0700); err != nil {
-			return err
-		}
-		receiptPath := filepath.Join(receiptDir, entry.Name())
-		if err := atomicJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
-			return err
-		}
-		if err := os.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {
-			return err
-		}
-		if err := os.Rename(path, filepath.Join(archiveDir, entry.Name())); err != nil {
-			return err
-		}
-	}
-	archives, err := os.ReadDir(archiveDir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	for _, entry := range archives {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(archiveDir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.ModTime().Before(now.Add(-48 * time.Hour)) {
-			if err := os.Remove(path); err != nil {
-				return err
-			}
-		}
-	}
-	receipts, err := os.ReadDir(receiptDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, entry := range receipts {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(receiptDir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.ModTime().Before(now.Add(-retention)) {
-			if err := os.Remove(path); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
@@ -705,37 +616,22 @@ func (s *Spool) compactUsageLocked(now time.Time, retention time.Duration, maxEn
 	if err := s.appendArchiveLocked("usage-"+now.UTC().Format("20060102")+".jsonl.gz", buf.Bytes()); err != nil {
 		return err
 	}
-	tmp := usagePath(s.root) + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
+	var retained bytes.Buffer
 	for _, e := range keep {
 		body, err := json.Marshal(e)
 		if err != nil {
-			_ = f.Close()
 			return err
 		}
-		if _, err := f.Write(append(body, '\n')); err != nil {
-			_ = f.Close()
-			return err
-		}
+		retained.Write(append(body, '\n'))
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, usagePath(s.root))
+	return s.writeBlob(usagePath(s.root), retained.Bytes(), true)
 }
 
 // failedTerminalLocked reports whether a record under failed/ has no path
 // back to observation: its mapping is gone or terminal. Uncertain mappings
 // keep the record hot for RequeueObservations.
 func (s *Spool) failedTerminalLocked(name string) bool {
-	b, err := os.ReadFile(filepath.Join(s.root, "failed", name))
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "failed", name))
 	var job Job
 	if err != nil || json.Unmarshal(b, &job) != nil {
 		return false
@@ -754,7 +650,7 @@ func (s *Spool) failedTerminalLocked(name string) bool {
 // dir still exceeds max files, evicts oldest archivable entries first. guard
 // filters which files may leave the hot dir at all; nil means all of them.
 func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(string) bool, max int, now time.Time) error {
-	entries, err := os.ReadDir(filepath.Join(s.root, dir))
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, dir))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -767,26 +663,27 @@ func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(
 		mod  time.Time
 	}
 	var rest []candidate
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		if guard != nil && !guard(entry.Name()) {
+		if guard != nil && !guard(name) {
 			continue
 		}
 		total++
-		path := filepath.Join(s.root, dir, entry.Name())
+		path := filepath.Join(s.root, dir, name)
 		if aged(path) {
-			if err := s.archiveTerminalLocked(dir, entry.Name(), now); err != nil {
+			if err := s.archiveTerminalLocked(dir, name, now); err != nil {
 				return err
 			}
+			total--
 			continue
 		}
-		info, err := entry.Info()
+		info, err := s.fsys.Lstat(path)
 		if err != nil {
 			return err
 		}
-		rest = append(rest, candidate{entry.Name(), info.ModTime()})
+		rest = append(rest, candidate{name, info.ModTime()})
 	}
 	if max <= 0 || total <= max || len(rest) == 0 {
 		return nil
@@ -805,11 +702,17 @@ func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(
 }
 
 // archiveTerminalLocked appends one record to the day's gzip bundle under
-// archive/ then removes the original — history compresses into a few files a
-// day instead of thousands of tiny JSONs.
+// archive/ then removes the original after the archive is durable and verified.
 func (s *Spool) archiveTerminalLocked(dir, name string, now time.Time) error {
 	src := filepath.Join(s.root, dir, name)
-	body, err := os.ReadFile(src)
+	info, err := s.fsys.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("unsafe terminal record")
+	}
+	body, err := s.fsys.ReadFile(src)
 	if err != nil {
 		return err
 	}
@@ -817,31 +720,131 @@ func (s *Spool) archiveTerminalLocked(dir, name string, now time.Time) error {
 	if err := s.appendArchiveLocked(flat+"-"+now.UTC().Format("20060102")+".jsonl.gz", append(body, '\n')); err != nil {
 		return err
 	}
-	return os.Remove(src)
-}
-
-// appendArchiveLocked writes payload as one gzip member into a bundle under
-// archive/, so repeated appends stay readable as concatenated JSONL.
-func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
-	bundle := filepath.Join(s.root, "archive", name)
-	if err := os.MkdirAll(filepath.Join(s.root, "archive"), 0700); err != nil {
+	if err := s.removeOwned(src); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(bundle, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	return syncSpoolDirectory(filepath.Dir(src))
+}
+
+// appendArchiveLocked commits an immutable, content-addressed gzip chunk.
+// Replaying a source after a crash reuses the same verified chunk.
+func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
+	if filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
+		return errors.New("invalid archive name")
+	}
+	dir := filepath.Join(s.root, "archive")
+	if err := s.mkdirOwned(dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
 	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("unsafe archive directory")
+	}
+	archiveRoot, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer archiveRoot.Close()
+	sum := sha256.Sum256(payload)
+	prefix := strings.TrimSuffix(name, ".jsonl.gz")
+	if i := strings.LastIndex(prefix, "-"); i >= 0 {
+		if _, err := time.Parse("20060102", prefix[i+1:]); err == nil {
+			prefix = prefix[:i]
+		}
+	}
+	bundle := prefix + "-" + hex.EncodeToString(sum[:]) + ".jsonl.gz"
+	verify := func(f *os.File) error {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(gz, int64(len(payload))+1))
+		closeErr := gz.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if !bytes.Equal(data, payload) {
+			return errors.New("archive chunk verification failed")
+		}
+		return nil
+	}
+	syncFile := func(f *os.File) error {
+		if s.archiveSync != nil {
+			return s.archiveSync(f)
+		}
+		return f.Sync()
+	}
+	if info, err := archiveRoot.Lstat(bundle); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("unsafe archive chunk")
+		}
+		f, err := archiveRoot.OpenFile(bundle, os.O_RDWR, 0600)
+		if err != nil {
+			return err
+		}
+		verifyErr := verify(f)
+		if verifyErr == nil {
+			verifyErr = syncFile(f)
+		}
+		closeErr := f.Close()
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return syncSpoolDirectory(dir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	release, err := s.reserveStorage(int64(len(payload))+int64(len(payload))/100+1024, 1, true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	f, err := os.CreateTemp(dir, ".archive-*")
+	if err != nil {
+		return err
+	}
+	temp := f.Name()
+	defer s.removeOwned(temp)
+	if err = f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return err
+	}
 	gz := gzip.NewWriter(f)
-	if _, err := gz.Write(payload); err != nil {
+	if _, err = gz.Write(payload); err != nil {
 		_ = gz.Close()
 		_ = f.Close()
 		return err
 	}
-	if err := gz.Close(); err != nil {
+	if err = gz.Close(); err != nil {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+	if err = syncFile(f); err == nil {
+		err = verify(f)
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = archiveRoot.Rename(filepath.Base(temp), bundle); err != nil {
+		return err
+	}
+	return syncSpoolDirectory(dir)
 }
 
 // liveDeliveryIDsLocked lists outbox records still pending or in flight; an
@@ -849,29 +852,27 @@ func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
 func (s *Spool) liveDeliveryIDsLocked() (map[string]bool, error) {
 	live := map[string]bool{}
 	for _, dir := range []string{"outbox/pending", "outbox/sending"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, dir))
+		names, err := s.fsys.ReadDir(filepath.Join(s.root, dir))
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				live[strings.TrimSuffix(entry.Name(), ".json")] = true
-			}
+		for _, name := range names {
+			live[strings.TrimSuffix(name, ".json")] = true
 		}
 	}
 	return live, nil
 }
 
-func recoverFiles(from, to string) error {
-	entries, err := os.ReadDir(from)
+func (s *Spool) recoverFiles(from, to string) error {
+	names, err := s.fsys.ReadDir(from)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		if err := os.Rename(filepath.Join(from, entry.Name()), filepath.Join(to, entry.Name())); err != nil {
+		if err := s.renameOwned(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
 			return err
 		}
 	}
@@ -931,7 +932,17 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		}
 	}
 	for _, dir := range []string{"pending", "running", "done", "failed"} {
-		if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); err == nil {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); err == nil {
+			if job.IdempotencyKey != "" {
+				confirmed, err := s.jobAdmissionLocked(job)
+				if err != nil {
+					return false, err
+				}
+				if !confirmed {
+					return false, errors.New("job admission unavailable")
+				}
+			}
+
 			return false, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return false, err
@@ -943,6 +954,7 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		job.TextSHA256 = hex.EncodeToString(h[:])
 		job.Text = ""
 	}
+	job.CaptureExpected = s.onAccepted != nil
 	// Reconcile before reserving: unmapped completions and crash-window
 	// orphans release their reservation here, so stale demand never blocks
 	// fresh admission.
@@ -954,7 +966,7 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 	if err := s.reserveLocked(job); err != nil {
 		return false, err
 	}
-	if err := atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
+	if err := s.writeJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(job.IdempotencyKey) != "" {
@@ -965,13 +977,25 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		}
 	}
 	s.signal()
+	if err := s.captureAcceptedLocked(job); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+// captureAcceptedLocked persists the outbox event under the spool lock;
+// a failure rejects enqueue and startup recovery reconstructs from the job.
+func (s *Spool) captureAcceptedLocked(job Job) error {
+	if s.onAccepted == nil {
+		return nil
+	}
+	return s.onAccepted(job)
 }
 
 func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
 	// Constant-time path (SPEC-0053 R2.3): the by-key index points to the
 	// owning job; the entry is verified against the mapping it names.
-	if b, err := os.ReadFile(s.idempotencyIndexPath(key)); err == nil {
+	if b, err := s.fsys.ReadFile(s.idempotencyIndexPath(key)); err == nil {
 		var index struct {
 			JobID string `json:"job_id"`
 		}
@@ -985,15 +1009,15 @@ func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {
 	}
 	// Legacy path: linear scan kept for entries the index has not seen; a hit
 	// self-heals the index so the scan happens at most once per key.
-	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return JobMapping{}, false, err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 		if err != nil {
 			return JobMapping{}, false, err
 		}
@@ -1020,7 +1044,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 	if s.inFlight == nil {
 		s.inFlight = map[string]string{}
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "pending"))
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, "pending"))
 	if err != nil {
 		return nil, err
 	}
@@ -1030,15 +1054,18 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		parked time.Time
 	}
 	var candidates []candidate
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		info, err := entry.Info()
+		info, err := s.fsys.Lstat(filepath.Join(s.root, "pending", name))
 		if err != nil {
 			return nil, err
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "pending", entry.Name()))
+		if info.IsDir() {
+			continue
+		}
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "pending", name))
 		if err != nil {
 			return nil, err
 		}
@@ -1046,13 +1073,13 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
-		candidates = append(candidates, candidate{entry.Name(), job, info.ModTime()})
+		candidates = append(candidates, candidate{name, job, info.ModTime()})
 	}
 	var cursor struct {
 		Scope string `json:"scope"`
 	}
 	cursorPath := filepath.Join(s.root, "admission-cursor.json")
-	if body, err := os.ReadFile(cursorPath); err == nil {
+	if body, err := s.fsys.ReadFile(cursorPath); err == nil {
 		if err := json.Unmarshal(body, &cursor); err != nil {
 			return nil, err
 		}
@@ -1085,35 +1112,26 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		name := entry.name
 		job := entry.job
 		pending := filepath.Join(s.root, "pending", name)
-		if job.AssignmentID != "" && job.AssignmentPlanRevision != 0 {
-			if _, ok := s.rt.AssignmentForWakeLocked(job.AssignmentID, job.AssignmentPlanRevision); !ok {
-				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
-					return nil, err
-				}
-				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
-					return nil, err
-				}
+		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") && s.jobFence != nil {
+			live, fenceErr := s.jobFence(job)
+			if fenceErr != nil {
+				// Owner unreachable: keep the job pending and retry on the
+				// next claim rather than retiring possibly-live work.
 				continue
 			}
-		}
-		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
-			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
-			var o RoutineOccurrence
-			if err != nil || json.Unmarshal(body, &o) != nil || !s.occurrenceCurrentLocked(o) {
+			if !live {
 				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
 					return nil, err
 				}
-				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+				if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
 					return nil, err
 				}
 				continue
 			}
 		}
-		// ponytail: parallel lanes share one home and runtime — workspace
-		// writes are last-writer-wins, the browser sidecar is single and a
-		// runtime restart hits every lane (ADR-0090 D5). Upgrade paths:
-		// per-session workspace views, a browser lane, per-lane wedge
-		// accounting.
+		// ponytail: lanes share workspace and one browser sidecar; concurrent
+		// writes there are last-writer-wins (ADR-0090 addendum). Use per-session
+		// workspace views if independent file writes become necessary.
 		key := jobContextKey(job.PrincipalID, job.ContextID, job.ConversationID)
 		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
 			continue // Serialization is per conversation lane; other lanes stay claimable.
@@ -1124,10 +1142,10 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		}
 		to := filepath.Join(s.root, "running", name)
 		cursor.Scope = fairKey
-		if err := atomicJSON(cursorPath, cursor); err != nil {
+		if err := s.writeJSON(cursorPath, cursor); err != nil {
 			return nil, err
 		}
-		if err := os.Rename(pending, to); err != nil {
+		if err := s.renameOwned(pending, to); err != nil {
 			return nil, err
 		}
 		mapping, mappingErr := s.loadMappingLocked(job.ID)
@@ -1140,17 +1158,21 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			if mapping.Status == "completed" {
 				dir = "done"
 			}
-			if err := os.Rename(to, filepath.Join(s.root, dir, name)); err != nil {
+			if err := s.renameOwned(to, filepath.Join(s.root, dir, name)); err != nil {
 				return nil, err
 			}
 			continue
 		}
 		if mappingErr == nil && mapping.RunID != "" && mapping.SessionID != "" {
+			if job.TextSHA256 == "" {
+				sum := sha256.Sum256([]byte(job.Text))
+				job.TextSHA256 = hex.EncodeToString(sum[:])
+			}
 			job.Text = ""
 		} else if job.Sensitive {
 			job.Text = s.secret[job.ID]
 			if job.Text == "" {
-				_ = os.Rename(to, filepath.Join(s.root, "failed", name))
+				_ = s.renameOwned(to, filepath.Join(s.root, "failed", name))
 				return nil, errors.New("sensitive job payload unavailable after restart")
 			}
 		}
@@ -1169,7 +1191,7 @@ func (s *Spool) CompleteJob(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.releaseInFlightLocked(id)
-	if err := os.Rename(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
+	if err := s.renameOwned(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
 		return err
 	}
 	if _, err := s.loadMappingLocked(id); err == nil {
@@ -1189,9 +1211,9 @@ func (s *Spool) FailJob(id string) error {
 	fileID := spoolFileID(id)
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil && mapping.Status == "completed" {
 		s.releaseInFlightLocked(id)
-		return os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "done", fileID+".json"))
+		return s.renameOwned(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "done", fileID+".json"))
 	}
-	err := os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
+	err := s.renameOwned(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil {
 		// terminal outcomes release via updateMappingLocked; uncertain holds.
 		status := "failed"

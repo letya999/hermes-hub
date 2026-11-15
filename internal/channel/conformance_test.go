@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
@@ -22,7 +23,7 @@ func adapterFixtures(t *testing.T) map[string]Channel {
 				return commodel.User{ID: id, TelegramIDs: []int64{11}}
 			},
 			OwnsRoutineEnvelope: func(job commodel.Job, canonical identity.Envelope) bool { return job.Envelope.Equal(canonical) },
-			Capture:             func(d *commodel.Delivery) error { return nil },
+			Capture:             func(context.Context, *commodel.Delivery) error { return nil },
 		}),
 	}
 }

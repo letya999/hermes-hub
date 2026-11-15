@@ -3,8 +3,8 @@ package stack
 import (
 	_ "embed"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -12,108 +12,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// The embedded defaults are the fleet profile every space starts from. An
-// operator can override either half fleet-wide by dropping a file into
-// <hub-root>/policies/agent-default.yaml or policies/workspace-default.yaml —
-// Init prefers those over the embedded copies.
-//
-//go:embed defaults/agent.yaml
-var defaultAgentYAML []byte
-
-//go:embed defaults/workspace.yaml
-var defaultWorkspaceYAML []byte
-
-// policyTemplate resolves the fleet template for one space file: a
-// policies/<name> override beside the spaces/ directory wins, else the
-// embedded default.
-func policyTemplate(spaceDir, name string, embedded []byte) []byte {
-	root := filepath.Dir(spaceDir)
-	if filepath.Base(root) == "spaces" {
-		root = filepath.Dir(root)
-	}
-	if b, err := os.ReadFile(filepath.Join(root, "policies", name)); err == nil {
-		return b
-	}
-	return embedded
-}
-
-// renderAgent stamps the resolved agent template with the space identity and
-// the allocated host ports while preserving its comments.
-func renderAgent(template []byte, user, organization string, ports spacePorts) ([]byte, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(template, &doc); err != nil {
-		return nil, err
-	}
-	root := doc.Content[0]
-	orgSet := organization == ""
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		switch root.Content[i].Value {
-		case "user":
-			root.Content[i+1].Value = user
-		case "organization":
-			root.Content[i+1].Value = organization
-			orgSet = true
-		case "oauth_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.oauth), Tag: "!!int"}
-		case "browser_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.browser), Tag: "!!int"}
-		case "slack_events_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.slack), Tag: "!!int"}
-		}
-	}
-	if !orgSet {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "organization"}, &yaml.Node{Kind: yaml.ScalarNode, Value: organization})
-	}
-	return yaml.Marshal(&doc)
-}
-
-// spacePorts are the host ports Init allocates per space. Ports are an
-// allocation, not a preference: hubctl scans sibling spaces and picks the
-// lowest free values so two spaces can never collide.
-type spacePorts struct {
-	oauth, browser, slack int
-}
-
-func allocatePorts(spaceDir string) spacePorts {
-	ports := spacePorts{oauth: 8000, browser: 6080, slack: 8081}
-	root := filepath.Dir(spaceDir)
-	if filepath.Base(root) != "spaces" {
-		return ports
-	}
-	used := map[int]bool{}
-	if siblings, err := os.ReadDir(root); err == nil {
-		for _, sibling := range siblings {
-			if !sibling.IsDir() {
-				continue
-			}
-			for _, name := range []string{"agent.yaml", "settings.yaml"} {
-				b, err := os.ReadFile(filepath.Join(root, sibling.Name(), name))
-				if err != nil {
-					continue
-				}
-				var p struct {
-					OAuth   int `yaml:"oauth_port"`
-					Browser int `yaml:"browser_port"`
-					Slack   int `yaml:"slack_events_port"`
-				}
-				if yaml.Unmarshal(b, &p) == nil {
-					used[p.OAuth], used[p.Browser], used[p.Slack] = true, true, true
-				}
-			}
-		}
-	}
-	for used[ports.oauth] {
-		ports.oauth++
-	}
-	for used[ports.browser] || ports.browser == ports.oauth {
-		ports.browser++
-	}
-	for used[ports.slack] || ports.slack == ports.oauth || ports.slack == ports.browser {
-		ports.slack++
-	}
-	return ports
-}
 
 // ToolEntry is one line of the `tools:` map in workspace.yaml — the single
 // operator surface for "how is this capability served". The scalar form is
@@ -184,13 +82,25 @@ func (e ToolEntry) enabled() bool { return e.Via != "" && e.Via != ToolViaOff }
 // toolhubFamilies are the capability families the managed agenttools executor
 // can serve. internal/agenttools tests assert its catalog stays within this
 // set — the names are the operator-facing vocabulary, not implementation.
+// Catalog r5 keeps the absorbed legacy entry names as aliases (SPEC-0093
+// R5.2); `hh` is gone for good — see droppedToolhubFamilies.
 var toolhubFamilies = map[string]bool{
 	"files": true, "file": true, "documents": true, "docs": true,
-	"images": true, "artifacts": true, "routines": true, "services": true,
-	"hh": true, "ssh": true, "image_gen": true, "terminal": true,
-	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
+	"media": true, "images": true, "artifacts": true, "routines": true,
+	"ssh": true, "image_gen": true, "terminal": true,
+	"code_exec": true, "web": true, "web_search": true, "settings": true, "exposure": true, "hosting": true,
 	"assignments": true, "skills": true, "skills_manage": true,
+	"services": true,
+	// Catalog r5 families (ADR-0094).
+	"watches": true, "goals": true, "context": true, "sites": true,
+	"research": true, "connectors": true, "models": true, "sessions": true,
+	"browser": true, "memory": true,
 }
+
+// droppedToolhubFamilies are r4 capability families with no r5 executor —
+// catalog r5 moved them to recipes. A stale wish is pruned on read so it
+// cannot pin a governance section that no longer exists (SPEC-0093 R5.2).
+var droppedToolhubFamilies = map[string]bool{"hh": true}
 
 // mcpConnectors are builtin MCP-provided capabilities: rendered directly only
 // in unmanaged mode where a local server exists; under managed mode they are
@@ -198,14 +108,15 @@ var toolhubFamilies = map[string]bool{
 var mcpConnectors = map[string]bool{
 	"browser": true, "github": true, "gitlab": true, "google": true,
 	"slack": true, "atlassian": true, "telegram_user": true,
-	"desktop": true, "drafts": true,
 }
 
 // pseudoToolsets are `via: native` entries that are not upstream toolsets but
 // native subsystems: meet maps to the google_meet plugin toolset (unmanaged
 // only — plugins stay sealed under managed), transcription is the stt flag,
-// deep_research is the bundled-skill gate.
-var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true}
+// deep_research is the bundled-skill gate, tool_search is the upstream
+// deferred-tool bridge switch (tools.tool_search.enabled — off by default so
+// discovery stays on the ToolHub surface).
+var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true, "memory_vault": true, "knowledge_ui": true, "memory_provider": true, "tool_search": true}
 
 // ingressChannels are transport adapters that feed messages into the agent.
 // They are operator-owned ingress, never agent tools.
@@ -227,12 +138,16 @@ var toolToggleTokens = map[string]map[string]bool{
 // not depend on profile wording.
 var toolhubCapabilityID = map[string]string{
 	"files": "files", "file": "files", "documents": "documents", "docs": "documents",
-	"images": "images", "artifacts": "artifacts", "routines": "routines",
-	"services": "services", "hh": "hh", "ssh": "ssh", "image_gen": "image_gen",
-	"terminal": "terminal", "code_exec": "terminal", "web": "web",
-	"settings": "settings", "exposure": "exposure", "hosting": "hosting",
+	"media": "media", "images": "media", "artifacts": "files", "routines": "routines",
+	"services": "connectors", "connectors": "connectors", "ssh": "ssh", "image_gen": "media",
+	"terminal": "terminal", "code_exec": "terminal", "web": "web_search", "web_search": "web_search",
+	"settings": "settings", "exposure": "exposure", "hosting": "sites", "sites": "sites",
 	"assignments": "assignments",
-	"skills":      "skills", "skills_manage": "skills_manage",
+	"skills":      "skills", "skills_manage": "skills",
+	// Catalog r5 families map onto their own capability id (ADR-0094).
+	"watches": "watches", "goals": "goals", "context": "context",
+	"research": "research", "models": "models", "sessions": "sessions",
+	"browser": "browser", "memory": "memory",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`
@@ -254,6 +169,21 @@ func (s Settings) readOnlyCapabilities() []string {
 		}
 	}
 	slices.Sort(out)
+	return out
+}
+
+// workspaceReadOnlyPaths lists the workspace-relative boundaries the file
+// tools may not write: inbox originals and every mount declared ro inside
+// /workspace (R4.2).
+func (s Settings) workspaceReadOnlyPaths() []string {
+	out := []string{"inbox"}
+	for _, m := range s.Workspace.Mounts {
+		if m.Mode == "ro" {
+			if rel := strings.TrimPrefix(m.To, "/workspace/"); rel != m.To {
+				out = append(out, rel)
+			}
+		}
+	}
 	return out
 }
 
@@ -293,7 +223,8 @@ var deniedMountSegments = map[string]bool{
 	"connections": true, "hermes": true, "runtime": true, "managed": true,
 	"generated": true, "cache": true, "home": true,
 	"settings.yaml": true, "workspace.yaml": true, "agent.yaml": true,
-	"scope.yaml": true, "soul.md": true,
+	"scope.yaml": true, "soul.md": true, "passports": true,
+	"profile.lock": true,
 }
 
 // deniedMountBase is the NanoClaw-style blocklist on basenames: credential
@@ -394,6 +325,29 @@ func (s Settings) nativeCarveouts() []string {
 // (supervisor env contract, capability CLI).
 func (s Settings) NativeCarveouts() []string { return s.nativeCarveouts() }
 
+// PseudoToolsetNames returns the sorted `via: native` pseudo-toolsets —
+// native subsystems that are not upstream toolsets — for the platform
+// catalog.
+func PseudoToolsetNames() []string {
+	names := make([]string, 0, len(pseudoToolsets))
+	for name := range pseudoToolsets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ToolHubEntryCapabilities returns a copy of the `tools:` entry-name →
+// executor-capability-id map so the platform catalog records canonical
+// families and their accepted aliases without exposing the mutable table.
+func ToolHubEntryCapabilities() map[string]string {
+	out := make(map[string]string, len(toolhubCapabilityID))
+	for name, id := range toolhubCapabilityID {
+		out[name] = id
+	}
+	return out
+}
+
 // nativeToolsEntries rebuilds the tools-map form of a plain carve-out list —
 // used where the attestation path receives names rather than settings.
 func nativeToolsEntries(names []string) map[string]ToolEntry {
@@ -402,38 +356,6 @@ func nativeToolsEntries(names []string) map[string]ToolEntry {
 		entries[name] = ToolEntry{Via: ToolViaNative}
 	}
 	return entries
-}
-
-// LegacyFeatureTools converts schema-1 feature names into their `tools:`/
-// `ingress:` equivalents. Read uses it for migration; tests use it to write
-// fixtures in the old vocabulary without keeping the field alive.
-func LegacyFeatureTools(features []string) (map[string]ToolEntry, []string, error) {
-	tools := map[string]ToolEntry{}
-	var ingress []string
-	for _, feature := range features {
-		switch {
-		case feature == "workspace":
-		case feature == "telegram" || feature == "slack_app":
-			ingress = append(ingress, feature)
-		case featureToolMigration[feature].Via != "":
-			tools[feature] = featureToolMigration[feature]
-		default:
-			pair, ok := featureToggleMigration[feature]
-			if !ok {
-				return nil, nil, fmt.Errorf("unknown legacy feature %q", feature)
-			}
-			e := tools[pair[0]]
-			if e.Via == "" {
-				e = featureToolMigration[pair[0]]
-			}
-			if e.Tools == nil {
-				e.Tools = map[string]bool{}
-			}
-			e.Tools[pair[1]] = true
-			tools[pair[0]] = e
-		}
-	}
-	return tools, ingress, nil
 }
 
 // ToolPlan is the compiled view of the `tools:` map — what each backend
@@ -576,10 +498,14 @@ var toolToggleFeatureNames = map[string]map[string]string{
 // and the vocabulary organization ceilings govern. Tool entries that are not
 // classic features — the ToolHub families and upstream toolsets — never
 // appear: they are admitted by profile/grant, not by feature policy.
+// FeatureList exposes the derived feature names (features + ingress) for
+// migration/audit consumers; derived, never stored.
+func (s Settings) FeatureList() []string { return s.featureList() }
+
 func (s Settings) featureList() []string {
 	out := []string{"workspace"}
 	for name, entry := range s.Tools {
-		if !entry.enabled() {
+		if !entry.enabled() || (name == "memory_vault" && !s.Has(name)) {
 			continue
 		}
 		if slices.ContainsFunc(Features, func(f Feature) bool { return f.Name == name }) {
@@ -594,6 +520,9 @@ func (s Settings) featureList() []string {
 			}
 		}
 	}
+	if s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled && !s.toolEntry("memory_vault").enabled() {
+		out = append(out, "memory_vault")
+	}
 	out = append(out, s.Ingress...)
 	slices.Sort(out)
 	return out
@@ -603,13 +532,30 @@ func (s Settings) toolToggle(name, token string) bool {
 	e := s.toolEntry(name)
 	// access: ro forces every mutation toggle off — all named toggles are
 	// write-paths, so read-only means none of them may be asserted.
-	return e.enabled() && e.Access != ToolAccessRO && e.Tools[token]
+	if !e.enabled() || e.Access == ToolAccessRO {
+		return false
+	}
+	if e.Tools[token] {
+		return true
+	}
+	// The tools passport selects members by capability id, not by toggle
+	// token: browser_act inside the include list is the same act grant the
+	// legacy tools: toggle expressed (SPEC-0095 field matrix).
+	if member, ok := toolToggleFeatureNames[name][token]; ok {
+		return slices.Contains(e.Only, member)
+	}
+	return false
 }
 
 // Has reports feature enablement in the pre-`tools:` vocabulary so every
 // render, doctor and scope call site keeps one lookup. Derived, never stored.
 func (s Settings) Has(name string) bool {
 	switch name {
+	case "memory_vault":
+		if s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil {
+			return *s.PassportConfig.Memory.Enabled
+		}
+		return s.toolEntry(name).enabled()
 	case "workspace":
 		return true
 	case "telegram", "slack_app":
@@ -628,6 +574,13 @@ func (s Settings) Has(name string) bool {
 		return s.toolToggle("google", "write")
 	case "telegram_write":
 		return s.toolToggle("telegram_user", "write")
+	case "image_gen":
+		// The r5 media family covers the image_gen surface.
+		return s.toolEntry("image_gen").enabled() || s.toolEntry("media").enabled()
+	case "hosting":
+		return s.toolEntry("hosting").enabled() || s.toolEntry("sites").enabled() && len(s.Hosting.Slots) > 0
+	case "web":
+		return s.toolEntry("web").enabled() || s.toolEntry("web_search").enabled()
 	default:
 		return s.toolEntry(name).enabled()
 	}
@@ -637,10 +590,13 @@ func (s Settings) Has(name string) bool {
 // per-backend field discipline and the managed/native boundary.
 func (s Settings) validateTools() error {
 	if s.toolEntry("terminal").Via == ToolViaToolHub && s.toolEntry("code_execution").Via == ToolViaNative {
-		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless code_exec tool")
+		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless terminal_exec tool")
 	}
 	managed := s.CapabilityMode == "managed"
 	for name, e := range s.Tools {
+		if name == "desktop" || name == "drafts" {
+			return fmt.Errorf("tools.%s: companion was removed; remove this selection", name)
+		}
 		if !toolNamePattern.MatchString(name) {
 			return fmt.Errorf("invalid tools entry name %q", name)
 		}
@@ -678,7 +634,7 @@ func (s Settings) validateTools() error {
 			if !mcpConnectors[name] {
 				return fmt.Errorf("tools.%s: %q is not a ToolHub connector — a raw mcp: server uses via: mcp-raw", name, name)
 			}
-			if e.Server != "" && e.Server != "playwright" {
+			if e.Server != "" && e.Server != "playwright" && (s.CapabilityMode != "managed" || !identity.ValidID(e.Server)) {
 				return fmt.Errorf("tools.%s: unknown connector server %q", name, e.Server)
 			}
 		case ToolViaMCPRaw:

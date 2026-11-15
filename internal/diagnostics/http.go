@@ -28,12 +28,24 @@ func HTTP(service string, next http.Handler) http.Handler {
 }
 
 func safeRoute(path string) string {
+	path, _, _ = strings.Cut(path, "?")
+	path, _, _ = strings.Cut(path, "#")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
+	if parts[0] == "" {
 		return "/"
 	}
-	if parts[0] == "v1" && len(parts) > 1 {
-		return "/v1/" + parts[1]
+	if parts[0] == "v1" {
+		if len(parts) > 1 {
+			switch parts[1] {
+			case "jobs", "execute", "runtime", "leases", "runs", "usage", "routines", "hooks", "tools", "restart-request", "health", "state", "control", "settings", "self-env", "events", "cancel", "approval", "rights", "automation", "memory-context", "memory-capture", "tool-call":
+				return "/v1/" + parts[1]
+			}
+		}
+		return "/v1"
 	}
-	return "/" + parts[0]
+	switch parts[0] {
+	case "connect", "oauth", "health", "healthz", "metrics", "mcp", "status", "forms", "sessions":
+		return "/" + parts[0]
+	}
+	return "/other"
 }

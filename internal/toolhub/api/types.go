@@ -155,15 +155,48 @@ type OwnerRef struct {
 	ID   string    `json:"id"`
 }
 
+// Audience marks who a tool is for (ADR-0094 D3, SPEC-0093 R1.3). Model
+// tools are the only ones a toolset may carry and the only ones the model
+// surfaces may project; internal/operator tools still execute through
+// ToolHub but are never placeable, never searchable and never in a
+// direct schema.
+type Audience string
+
+const (
+	AudienceModel    Audience = "model"
+	AudienceInternal Audience = "internal"
+	AudienceOperator Audience = "operator"
+)
+
+// Executor names who runs the call behind the PEP (ADR-0094 D2), spelled
+// as handler:<family>, connector:<name>, flow:<name>, runtime:<api>,
+// native or off. `via` stays the delivery/admission route.
+type Executor = string
+
+const (
+	ExecutorNative = "native"
+	ExecutorOff    = "off"
+)
+
 type ToolSpec struct {
-	Name           string            `json:"name"`
-	Description    string            `json:"description,omitempty"`
-	Effect         Effect            `json:"effect"`
-	Arguments      []CLIArgument     `json:"arguments,omitempty"`
-	InputSchema    json.RawMessage   `json:"input_schema,omitempty"`
-	CapabilityID   string            `json:"capability_id,omitempty"`
-	Uses           []CapabilityUse   `json:"capability_uses,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Effect       Effect          `json:"effect"`
+	Arguments    []CLIArgument   `json:"arguments,omitempty"`
+	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
+	CapabilityID string          `json:"capability_id,omitempty"`
+	Uses         []CapabilityUse `json:"capability_uses,omitempty"`
+	// Requires lists the RBAC domain.operation rights (SPEC-0092 R2) a
+	// caller must hold for the PDP to project or invoke this tool — the
+	// catalog toolset member declares the same vocabulary.
+	Requires       []string          `json:"requires,omitempty"`
 	ArgumentEquals map[string]string `json:"argument_equals,omitempty"`
+	// Audience defaults to model; internal/operator tools never reach the
+	// model surface (ADR-0094 D3).
+	Audience Audience `json:"audience,omitempty"`
+	// Executor records which backend runs the call behind the PEP;
+	// empty means the toolset's own executor (ADR-0094 D2).
+	Executor Executor `json:"executor,omitempty"`
 	// Sandboxed marks a tool dispatched to the disposable scratch executor
 	// rather than the per-call in-runtime executor. Only the AgentTools
 	// transport may carry it: it changes which control channel runs the call.
@@ -184,6 +217,14 @@ type CLIArgument struct {
 	// Pattern is a mandatory regexp for positional operands and an optional
 	// extra constraint for flag values; it applies to string arguments only.
 	Pattern string `json:"pattern,omitempty"`
+	// Description is the model-facing one-line contract for the argument
+	// (tool-design §4.3): emitted into the MCP input schema.
+	Description string `json:"description,omitempty"`
+	// Enum enumerates the closed vocabulary for string arguments — the
+	// schema publishes exactly what the executor validates.
+	Enum []string `json:"enum,omitempty"`
+	// Items declares the element type for array arguments (string, object).
+	Items string `json:"items,omitempty"`
 }
 
 type CredentialInput struct {
@@ -431,6 +472,7 @@ type EffectiveBinding struct {
 	// CapabilityScopes are the path-grant boundaries the admission bound for
 	// this call; executors must map them to os.Root scopes, never recompute.
 	CapabilityScopes []CapabilityScope `json:"-"`
+	SelectedToolName string            `json:"-"`
 }
 
 type WorkloadStopper interface {
@@ -445,4 +487,5 @@ type ProjectionTarget struct {
 	ContextID   string `json:"context_id"`
 	RuntimeID   string `json:"runtime_id"`
 	Revision    uint64 `json:"revision"`
+	Digest      string `json:"-"`
 }

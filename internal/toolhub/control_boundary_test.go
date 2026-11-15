@@ -55,6 +55,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 			return api.BackendResult{Text: "unexpected"}, nil
 		}),
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -63,16 +64,18 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	t.Cleanup(server.Close)
 	alice := mcpConnect(t, server.URL, aliceToken)
 	bob := mcpConnect(t, server.URL, bobToken)
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 5 || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") {
 		t.Fatalf("zero profile disclosed tools: %+v, %v", listed, err)
 	}
-	for _, name := range []string{"prepare_source", "diagnostics", "invoke"} {
+	for _, name := range []string{"prepare_source", "diagnostics", "tool_call"} {
 		if _, err := alice.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"tool": "hidden"}}); err == nil {
 			t.Fatalf("hidden tool %s was callable", name)
 		}
 	}
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-control", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now()}
+		Mode:          api.OnboardingSelfInstall,
+		Stage:         api.StagePending,
+		PreparingStub: true, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +83,10 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 3 || !toolListed(listed, "status") || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 6 || !toolListed(listed, "status") || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") {
 		t.Fatalf("exact control projection: %+v, %v", listed, err)
 	}
-	if listed, err := bob.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
+	if listed, err := bob.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 5 || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") {
 		t.Fatalf("cross-user control projection: %+v, %v", listed, err)
 	}
 	if body, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil || body["phase"] != api.PhasePreparing {
@@ -100,7 +103,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err == nil {
 		t.Fatal("open MCP session admitted revoked operation")
 	}
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") || alice.ID() != id {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 5 || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") || alice.ID() != id {
 		t.Fatalf("revoked projection/session: %+v, %v", listed, err)
 	}
 	if backendCalls.Load() != 0 {

@@ -31,6 +31,12 @@ type Reconciler struct {
 
 func (r *Reconciler) ScanOnce(ctx context.Context) error {
 	var failures []error
+	// Pending-selection convergence runs first: an authored connector
+	// toolset whose binding activated without materializing selections is a
+	// store-level drift this pass heals before the surface checks read it.
+	if r.Store != nil {
+		r.Store.MaterializePendingSelections()
+	}
 	if r.Scan != nil && r.Purge != nil {
 		objects, err := r.Scan(ctx, map[string]string{api.LabelConnection: ""})
 		if err != nil {

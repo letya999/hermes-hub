@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
-func reminderSchedule(t *testing.T, s *Spool, o RoutineOccurrence, expression string, window time.Duration) Schedule {
+func reminderSchedule(t *testing.T, s *testOwner, o RoutineOccurrence, expression string, window time.Duration) Schedule {
 	t.Helper()
 	due := time.Date(2100, time.January, 1, 7, 0, 0, 0, time.UTC) // Friday 10:00 Moscow.
 	draft := Schedule{ScheduleID: "reminder-acceptance", Envelope: o.Job.Envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: expression, Input: "Оплатить счёт — ровно этот текст", JobKind: "reminder", CatchUpWindow: window}
@@ -37,18 +38,17 @@ func TestWeeklyReminderRecoversCurrentSlotAfterExpiredPending(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	created := reminderSchedule(t, s, o, "0 10 * * 5", 0)
 	// Crash after saving last Friday's occurrence, before dispatch.
-	if err := s.TickSchedules(created.NextDue, "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(created.NextDue, "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := NewSpool(s.root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.spool = restarted
+	// The owner restarts on the same durable root; the spool outbox is
+	// durable communication state and survives as-is.
+	restarted := s.reopen()
+	g.spool = restarted.Spool
 	thisFriday := time.Date(2100, time.January, 8, 7, 0, 0, 0, time.UTC)
-	g.tickProactive(thisFriday.Add(30 * time.Minute))
+	restarted.tickProactive(thisFriday.Add(30*time.Minute), nil)
 	d, err := restarted.ClaimDelivery()
-	wantID := occurrenceID(RoutineOccurrence{ScheduleID: created.ScheduleID, Revision: created.Revision, DueAt: thisFriday})
+	wantID := routines.OccurrenceID(RoutineOccurrence{ScheduleID: created.ScheduleID, Revision: created.Revision, DueAt: thisFriday})
 	if err != nil || d == nil || d.Text != created.Input || d.OccurrenceID != wantID {
 		t.Fatalf("current Friday must deliver while last Friday expires: %+v %v", d, err)
 	}
@@ -60,9 +60,9 @@ func TestWeeklyReminderRecoversCurrentSlotAfterExpiredPending(t *testing.T) {
 }
 
 func TestReminderHistoryDoesNotExposeForeignDeliveryAfterRetention(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	created := reminderSchedule(t, s, o, "once:2100-01-01T10:00:00+03:00", 0)
-	g.tickProactive(created.NextDue)
+	s.tickProactive(created.NextDue, nil)
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil {
 		t.Fatalf("Alice delivery setup: %+v %v", d, err)
@@ -101,7 +101,7 @@ func TestReminderHistoryDoesNotExposeForeignDeliveryAfterRetention(t *testing.T)
 }
 
 func TestReminderIsNotStarvedByExpiredOccurrenceBacklog(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	created := reminderSchedule(t, s, o, "once:2100-01-01T10:00:00+03:00", 0)
 	for i := range 32 {
 		old := o
@@ -111,7 +111,7 @@ func TestReminderIsNotStarvedByExpiredOccurrenceBacklog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g.tickProactive(created.NextDue)
+	s.tickProactive(created.NextDue, nil)
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil || d.Text != created.Input {
 		t.Fatalf("fresh reminder starved behind expired backlog: %+v %v", d, err)
@@ -144,11 +144,12 @@ func TestReminderCommandShowsOutcomeWithoutAgent(t *testing.T) {
 	for _, tc := range []struct{ outcome, want string }{{"missed", "срабатывание пропущено"}, {"uncertain", "доставка не подтверждена"}, {"delivered", "доставлено"}} {
 		t.Run(tc.outcome, func(t *testing.T) {
 			c := testConfig(t)
-			g, err := New(c)
+			g, host, _ := automationGatewayFixture(t, c)
+			envelope := c.Users[0].Envelope(11)
+			created, err := host.CreateSchedule(context.Background(), envelope, Schedule{ScheduleID: "reminder-acceptance", Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: "once:2100-01-01T10:00:00+03:00", Input: "Оплатить счёт — ровно этот текст", JobKind: "reminder"}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			created := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].Envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
 			g.api = &fakeAPI{}
 			if tc.outcome == "uncertain" {
 				g.api = &fakeAPI{err: errors.New("unknown transport result")}
@@ -158,7 +159,9 @@ func TestReminderCommandShowsOutcomeWithoutAgent(t *testing.T) {
 				now = now.Add(2 * time.Hour)
 			}
 			g.now = func() time.Time { return now }
-			g.tickProactive(now)
+			if err := host.Tick(context.Background(), now); err != nil {
+				t.Fatal(err)
+			}
 			g.deliverOne(context.Background())
 			if err := g.handleUpdate(context.Background(), taskUpdate(1, 1, "/routines", 11, 0)); err != nil {
 				t.Fatal(err)
@@ -218,16 +221,19 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 			defer telegram.Close()
 			c := testConfig(t)
 			c.RuntimeURL, c.RuntimeAuth, c.APIBaseURL = runtimeAPI.URL, "synthetic-runtime", telegram.URL
-			g, err := New(c)
+			g, host, _ := automationGatewayFixture(t, c)
+			envelope := c.Users[0].Envelope(11)
+			draft := Schedule{ScheduleID: "reminder-acceptance", Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: "once:2100-01-01T10:00:00+03:00", Input: "Оплатить счёт — ровно этот текст", JobKind: "reminder"}
+			created, err := host.CreateSchedule(context.Background(), envelope, draft, "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			envelope := c.Users[0].Envelope(11)
-			created := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: envelope}}, "once:2100-01-01T10:00:00+03:00", 0)
 			g.now = func() time.Time { return created.NextDue }
-			g.tickProactive(created.NextDue)
+			if err := host.Tick(context.Background(), created.NextDue); err != nil {
+				t.Fatal(err)
+			}
 			if outcome == "cancelled" {
-				if err := g.spool.DeleteSchedule(created.ScheduleID, envelope); err != nil {
+				if err := host.DeleteSchedule(context.Background(), envelope, created.ScheduleID, created.Revision); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -242,7 +248,7 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 			if outcome == "delivered" {
 				deliveryDir = "done"
 			}
-			id := occurrenceID(RoutineOccurrence{ScheduleID: created.ScheduleID, Revision: created.Revision, DueAt: created.NextDue})
+			id := routines.OccurrenceID(RoutineOccurrence{ScheduleID: created.ScheduleID, Revision: created.Revision, DueAt: created.NextDue})
 			deadline := time.Now().Add(5 * time.Second)
 			for {
 				_, err = os.Stat(filepath.Join(c.SpoolDir, "outbox", deliveryDir, "reminder-"+id+".json"))
@@ -274,7 +280,6 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restarted.tickProactive(created.NextDue)
 			restarted.deliverOne(context.Background())
 			if sends.Load() != wantSends {
 				t.Fatalf("restart repeated a completed or uncertain send: %d", sends.Load())
@@ -289,11 +294,19 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 func TestReminderOwnerHTTPStatusAndIsolation(t *testing.T) {
 	for _, outcome := range []string{"missed", "uncertain", "delivered"} {
 		t.Run(outcome, func(t *testing.T) {
-			s, o, g := occurrenceFixture(t)
-			created := reminderSchedule(t, s, o, "once:2100-01-01T10:00:00+03:00", 0)
-			g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, {ID: "bob", Enabled: true, TelegramIDs: []int64{22}}}
+			c := testConfig(t)
+			bobRoot := t.TempDir()
+			_ = os.MkdirAll(filepath.Join(bobRoot, "state"), 0700)
+			_ = os.MkdirAll(filepath.Join(bobRoot, "workspace"), 0700)
+			c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(bobRoot, "state"), WorkspaceDir: filepath.Join(bobRoot, "workspace")})
+			g, host, root := automationGatewayFixture(t, c)
+			envelope := c.Users[0].Envelope(11)
+			created, err := host.CreateSchedule(context.Background(), envelope, Schedule{ScheduleID: "reminder-acceptance", Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: "once:2100-01-01T10:00:00+03:00", Input: "Оплатить счёт", JobKind: "reminder"}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
 			g.config.ControlTokensFile = filepath.Join(t.TempDir(), "enrolled.json")
-			tokens, err := json.Marshal(map[string]identity.Envelope{"alice-session": o.Job.Envelope, "bob-session": identity.TelegramEnvelope("bob", 22, "bob", "policy-1")})
+			tokens, err := json.Marshal(map[string]identity.Envelope{"alice-session": envelope, "bob-session": identity.TelegramEnvelope("bob", 22, "bob", "policy-1")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +322,9 @@ func TestReminderOwnerHTTPStatusAndIsolation(t *testing.T) {
 				now = now.Add(2 * time.Hour)
 			}
 			g.now = func() time.Time { return now }
-			g.tickProactive(now)
+			if err := host.Tick(context.Background(), now); err != nil {
+				t.Fatal(err)
+			}
 			g.deliverOne(context.Background())
 			call := func(token, method, path, body string) *httptest.ResponseRecorder {
 				r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
@@ -319,7 +334,7 @@ func TestReminderOwnerHTTPStatusAndIsolation(t *testing.T) {
 				g.Handler().ServeHTTP(w, r)
 				return w
 			}
-			before, err := os.ReadFile(s.schedulePath(created.ScheduleID))
+			before, err := os.ReadFile(filepath.Join(root, "users", "alice", "schedules", created.ScheduleID+".json"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -329,9 +344,9 @@ func TestReminderOwnerHTTPStatusAndIsolation(t *testing.T) {
 				status             int
 			}{
 				{http.MethodGet, base, "", 404},
-				{http.MethodPost, base + "/snooze", `{"until":"2100-01-02T12:00:00Z"}`, 403},
-				{http.MethodPost, base, `{"expression":"once:2100-01-02T12:00:00Z"}`, 403},
-				{http.MethodDelete, base, "", 403},
+				{http.MethodPost, base + "/snooze", `{"until":"2100-01-02T12:00:00Z"}`, 404},
+				{http.MethodPost, base, `{"expression":"once:2100-01-02T12:00:00Z"}`, 404},
+				{http.MethodDelete, base, "", 404},
 			} {
 				if got := call("bob-session", attack.method, attack.path, attack.body); got.Code != attack.status {
 					t.Fatalf("foreign %s %s: %d %s", attack.method, attack.path, got.Code, got.Body.String())
@@ -340,7 +355,7 @@ func TestReminderOwnerHTTPStatusAndIsolation(t *testing.T) {
 			if got := call("bob-session", http.MethodGet, "/v1/routines", ""); got.Code != 200 || bytes.Contains(got.Body.Bytes(), []byte(created.ScheduleID)) {
 				t.Fatalf("valid Bob session saw Alice schedule: %d %s", got.Code, got.Body.String())
 			}
-			after, err := os.ReadFile(s.schedulePath(created.ScheduleID))
+			after, err := os.ReadFile(filepath.Join(root, "users", "alice", "schedules", created.ScheduleID+".json"))
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatalf("foreign session changed schedule: %v", err)
 			}
@@ -377,19 +392,16 @@ func TestReminderScheduleCatchUpAcrossRestartAndConcurrentTicks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, o, g := occurrenceFixture(t)
 			created := reminderSchedule(t, s, o, "once:2100-01-01T10:00:00+03:00", tc.window)
-			restarted, err := NewSpool(s.root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			g.spool = restarted
+			restarted := s.reopen()
+			g.spool = restarted.Spool
 			now := created.NextDue.Add(tc.late)
 			var wg sync.WaitGroup
 			for range 12 {
 				wg.Go(func() {
-					if err := restarted.TickSchedules(now, "", g.authorizeOccurrence); err != nil {
+					if err := restarted.TickSchedules(now, "", s.authorizeOccurrence); err != nil {
 						t.Error(err)
 					}
-					if err := restarted.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+					if err := restarted.DispatchDueOccurrences(now, s.authorizeOccurrence); err != nil {
 						t.Error(err)
 					}
 				})
@@ -437,7 +449,7 @@ func TestReminderSnoozeSurvivesRestartAndPreservesWeeklyCadence(t *testing.T) {
 			created := reminderSchedule(t, s, o, expression, 0)
 			until := created.NextDue.Add(2 * time.Hour)
 			if mode == "already-dispatched" {
-				g.tickProactive(created.NextDue)
+				s.tickProactive(created.NextDue, nil)
 			}
 			if mode == "legacy-snooze" {
 				// The previous version saved snooze without moving NextDue.
@@ -451,16 +463,13 @@ func TestReminderSnoozeSurvivesRestartAndPreservesWeeklyCadence(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			restarted, err := NewSpool(s.root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			g.spool = restarted
+			restarted := s.reopen()
+			g.spool = restarted.Spool
 			api := &fakeAPI{}
 			g.api = api
 			g.now = func() time.Time { return until }
 			for _, tick := range []time.Time{created.NextDue, until.Add(-time.Second), until, until} {
-				g.tickProactive(tick)
+				s.tickProactive(tick, nil)
 				g.deliverOne(context.Background())
 				if tick.Before(until) && len(api.sent) != 0 {
 					t.Fatalf("snoozed reminder sent before new deadline: %v", api.sent)
@@ -478,7 +487,7 @@ func TestReminderSnoozeSurvivesRestartAndPreservesWeeklyCadence(t *testing.T) {
 				if !items[0].Enabled || !items[0].NextDue.Equal(want) {
 					t.Fatalf("weekly cadence moved: %+v; want %v", items[0], want)
 				}
-				g.tickProactive(want)
+				s.tickProactive(want, nil)
 				g.deliverOne(context.Background())
 				if len(api.sent) != 2 || api.sent[1] != created.Input {
 					t.Fatalf("next Friday did not deliver: %v", api.sent)

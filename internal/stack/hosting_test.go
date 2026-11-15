@@ -2,14 +2,47 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/hosting"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
+
+func TestHostingReviewedZoneForUnderscoreOwner(t *testing.T) {
+	dir := t.TempDir()
+	writeExposureConfig(t, dir)
+	path := filepath.Join(dir, "connections", "exposure", "config.yaml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = []byte(strings.Replace(string(body), "zone: alice", "zone: "+hosting.ZoneForOwner("artem_two"), 1))
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := profileSettings("hosting", "exposure")
+	s.User, s.SpaceDir = "artem_two", dir
+	s.Hosting = HostingSettings{Slots: []string{"m32test"}}
+	if issues := hostingIssues(s); len(issues) != 0 || hostingConfig(s).Zone != hosting.ZoneForOwner(s.User) {
+		t.Fatalf("owner zone rejected: %v", issues)
+	}
+}
+
+func TestSitesSelectionEnablesHosting(t *testing.T) {
+	s := profileSettings("sites=toolhub", "exposure")
+	if s.Has("hosting") {
+		t.Fatal("sites without hosting slots must not start a service")
+	}
+	s.Hosting.Slots = []string{"m32test"}
+	if !s.Has("hosting") {
+		t.Fatal("sites selection must enable hosting service")
+	}
+}
 
 func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	dir := t.TempDir()
@@ -41,6 +74,9 @@ func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	}
 	if !strings.HasPrefix(controller["user"].(string), "10001:") || len(controller["ports"].([]string)) != 0 {
 		t.Fatal("controller contract")
+	}
+	if groups, ok := controller["group_add"].([]string); !ok || len(groups) != 1 || groups[0] != fmt.Sprint(dockerSocketGID("/var/run/docker.sock")) {
+		t.Fatal("hosting controller lacks Docker socket group")
 	}
 	runtime := services["hermes-runtime"].(M)
 	for _, mount := range runtime["volumes"].([]any) {
@@ -79,6 +115,20 @@ func TestHostingReviewedConfigAndPrivateController(t *testing.T) {
 	if err := writeHostingFiles(dir, s); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{"hosting.prod.json", "hosting-controller.prod.json"} {
+			info, err := os.Stat(filepath.Join(dir, "generated", name))
+			if err != nil || info.Mode().Perm() != 0644 {
+				t.Fatalf("%s is unreadable by hosting uid: %v", name, err)
+			}
+		}
+		for _, name := range []string{"hosting.prod.key", "hosting-controller.prod.key"} {
+			info, err := os.Stat(filepath.Join(dir, "runtime", name))
+			if err != nil || info.Mode().Perm() != 0640 {
+				t.Fatalf("%s is not limited to the service group: %v", name, err)
+			}
+		}
+	}
 	cfg, err := hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
 	if err != nil || cfg.Owner != "alice" || cfg.Domain != "hub.example.com" {
 		t.Fatalf("rendered hosting config: %#v %v", cfg, err)
@@ -91,11 +141,41 @@ func TestHostingReviewedConfigAndPrivateController(t *testing.T) {
 	if json.Unmarshal(data, &controller) != nil || !controller.HostingOnly || len(controller.Hosting) != 1 || controller.CLI != nil {
 		t.Fatal("hosting controller exposes generic workload policy")
 	}
+	s.Hosting.Image = "golang@sha256:" + strings.Repeat("b", 64)
+	s.Hosting.Runtime = "kata"
+	s.Hosting.Slots = []string{"next-page"}
+	if err := writeHostingFiles(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
+	if err != nil || len(cfg.Slots) != 1 || cfg.Slots[0] != "next-page" || cfg.AdmissionDigest != hostingAdmissionDigest(s) {
+		t.Fatalf("hosting did not load changed passport values: %+v %v", cfg, err)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "generated", "hosting-controller.prod.json"))
+	if err != nil || json.Unmarshal(data, &controller) != nil {
+		t.Fatal(err)
+	}
+	profile := controller.Hosting["alice/prod"]
+	if profile.Image != s.Hosting.Image || profile.Runtime != "kata" || profile.AdmissionDigest != cfg.AdmissionDigest {
+		t.Fatalf("controller kept stale hosting policy: %+v", profile)
+	}
+	s.Hosting.Image, s.Hosting.Runtime = "", ""
+	if err := writeHostingFiles(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
+	if err != nil || cfg.ControllerURL != "" || cfg.AdmissionDigest != "" {
+		t.Fatalf("hosting image reset kept controller binding: %+v %v", cfg, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated", "hosting-controller.prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("hosting image reset kept controller config: %v", err)
+	}
 	s.Hosting.Slots = []string{"onboarding"}
 	if len(hostingIssues(s)) == 0 {
 		t.Fatal("manual endpoint collision accepted")
 	}
 	s.Hosting.Slots = []string{"page"}
+	s.Hosting.Image = "golang@sha256:" + strings.Repeat("a", 64)
 	s.Hosting.Runtime = "runc"
 	if len(hostingIssues(s)) == 0 {
 		t.Fatal("weak dynamic runtime accepted")

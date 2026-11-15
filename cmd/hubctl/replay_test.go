@@ -16,10 +16,115 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 var replayWhen = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
+func TestReplayConfigDigestUsesPublishedBundle(t *testing.T) {
+	space := t.TempDir()
+	writeManagedSpaceFixture(t, space, "alice")
+	before, err := replaySpaceDigest(space)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"agent", "workspace", "scope", "models", "settings"} {
+		if err := os.WriteFile(filepath.Join(space, name+".yaml"), []byte("retired: poisoned\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(space, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range passportview.Names {
+		if err := os.WriteFile(filepath.Join(space, "passports", name+".yaml"), []byte("unpublished: poisoned\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := replaySpaceDigest(space)
+	if err != nil || after != before {
+		t.Fatal("retired or unpublished inputs changed replay configuration evidence", err)
+	}
+	for _, name := range passportview.Names {
+		path := filepath.Join(space, "generated", "passports", "r-0123456789abcdef", name+".yaml")
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(append([]byte{}, original...), '\n'), 0600); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := replaySpaceDigest(space)
+		if err != nil || changed == before {
+			t.Fatalf("published %s omitted from digest: %v", name, err)
+		}
+		if err := os.WriteFile(path, original, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestReplayConfigDigestRejectsIncompleteActivation(t *testing.T) {
+	for _, kind := range []string{"unpublished", "pending", "missing", "malformed", "mixed", "journal", "view"} {
+		t.Run(kind, func(t *testing.T) {
+			space := t.TempDir()
+			writeManagedSpaceFixture(t, space, "alice")
+			root := filepath.Join(space, "generated", "passports")
+			config := filepath.Join(root, "r-0123456789abcdef", "config.yaml")
+			var err error
+			switch kind {
+			case "unpublished":
+				err = os.Remove(filepath.Join(root, "current"))
+			case "pending":
+				err = os.WriteFile(filepath.Join(root, "current"), []byte("pending"), 0600)
+			case "missing":
+				err = os.Remove(config)
+			case "malformed":
+				err = os.WriteFile(config, []byte("unknown: true\n"), 0600)
+			case "mixed":
+				var body []byte
+				body, err = os.ReadFile(config)
+				if err == nil {
+					err = os.WriteFile(config, bytes.ReplaceAll(body, []byte("r-0123456789abcdef"), []byte("r-other")), 0600)
+				}
+			case "journal":
+				err = os.WriteFile(filepath.Join(root, passportview.ApplyJournalFile), []byte("{}"), 0600)
+			case "view":
+				err = os.WriteFile(filepath.Join(space, "generated", "config-view", "dev", "revision"), []byte("r-other"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := replaySpaceDigest(space); err == nil {
+				t.Fatal("invalid or incomplete activation accepted for replay evidence")
+			}
+		})
+	}
+}
+
+func TestReplayConfigDigestRejectsSymlink(t *testing.T) {
+	space := t.TempDir()
+	writeManagedSpaceFixture(t, space, "alice")
+	path := filepath.Join(space, "generated", "passports", "r-0123456789abcdef", "models.yaml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Skip("symlink creation unavailable")
+	}
+	if _, err := replaySpaceDigest(space); err == nil {
+		t.Fatal("replay digest followed a published-document symlink")
+	}
+}
 
 // replaySpool seeds a done job + mapping pair the way the real spool leaves
 // them: durable envelope, ids and (non-sensitive) text in the job file.
@@ -89,6 +194,7 @@ func readBundle(t *testing.T, path string) map[string]any {
 func TestReplayExportNonSensitive(t *testing.T) {
 	spool := replaySpool(t, false)
 	space := t.TempDir()
+	writeManagedSpaceFixture(t, space, "alice")
 	// Allowlisted docs get digested; secret material must never be read.
 	mustJSON(t, filepath.Join(space, "secrets.env"), map[string]string{"TELEGRAM_BOT_TOKEN": "live-token"})
 	out := t.TempDir()
@@ -313,9 +419,7 @@ func TestReplayDispatch(t *testing.T) {
 
 	// Sensitive export through dispatch: --prompt-file + --space flags must parse.
 	space := t.TempDir()
-	if err := os.WriteFile(filepath.Join(space, "agent.yaml"), []byte("runtime: stub\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedSpaceFixture(t, space, "alice")
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(prompt, []byte("summarize the logs"), 0o600); err != nil {
 		t.Fatal(err)

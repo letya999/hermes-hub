@@ -54,8 +54,12 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	case "degraded":
 		expected = "degraded"
 	}
+	// Runtime readiness also includes its ToolHub surface and configured model.
+	if expected == "ready" && (pinned.ToolSurface == "degraded" || pinned.ModelStatus == "model_not_found") {
+		expected = "degraded"
+	}
 	if pinned.HermesReadiness != expected {
-		return fmt.Errorf("layered readiness %s differs from native observation %s (expected %s)", pinned.HermesReadiness, health.Readiness.Status, expected)
+		return fmt.Errorf("layered readiness %s differs from native observation %s, tool surface %s, model status %s (expected %s)", pinned.HermesReadiness, health.Readiness.Status, pinned.ToolSurface, pinned.ModelStatus, expected)
 	}
 	fmt.Printf("Real layered health passed: process running; native readiness %s; connections %s\n", health.Readiness.Status, pinned.ConnectorHealth)
 	if err := supervisorOrphanSmoke(ctx, m, pinned, image); err != nil {
@@ -207,18 +211,12 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	if err != nil {
 		return err
 	}
-	occurrence := communication.RoutineOccurrence{ScheduleID: "synthetic-one-shot", Revision: 1, DueAt: time.Now().UTC(), Job: template}
-	occurrence.Job.Text = "contract probe"
-	if err := spool.PutOccurrence(occurrence, template.Envelope); err != nil {
-		return err
-	}
+	// ToolHub now owns occurrence creation; this smoke covers the real
+	// communication → supervisor runtime handoff with a fixed job identity.
+	queued := template
+	queued.ID, queued.IdempotencyKey, queued.Trigger, queued.Text = "synthetic-one-shot", "synthetic-one-shot", "cron", "contract probe"
 	for range 2 {
-		if err := spool.DispatchDueOccurrences(time.Now(), func(job communication.Job) error {
-			if !job.Envelope.Equal(template.Envelope) {
-				return fmt.Errorf("routine authority changed")
-			}
-			return nil
-		}); err != nil {
+		if _, err := spool.Enqueue(queued); err != nil {
 			return err
 		}
 	}

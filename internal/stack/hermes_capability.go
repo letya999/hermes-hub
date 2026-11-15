@@ -54,6 +54,20 @@ var nativeCarveoutToolsets = map[string]bool{
 	"debugging": true, "project": true, "safe": true, "code_execution": true,
 }
 
+// Pinned Hermes removes an entire selected toolset when a disabled composite
+// contains one of its tools. These overlapping names must leave the denylist
+// for the explicitly selected native toolset to work on api_server.
+var nativeCompositeUnblock = map[string][]string{
+	"file":         {"debugging"},
+	"terminal":     {"debugging"},
+	"web":          {"debugging", "safe"},
+	"search":       {"debugging", "safe", "web"},
+	"image_gen":    {"safe"},
+	"vision":       {"safe"},
+	"feishu_doc":   {"hermes-feishu", "hermes-gateway"},
+	"feishu_drive": {"hermes-feishu", "hermes-gateway"},
+}
+
 var nativeToolsetName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // NativeCarveoutToolsets returns the sorted set of upstream toolsets a managed
@@ -95,21 +109,53 @@ func disabledToolsets(s Settings) []string {
 		panic(err) // Corrupt compiled inventory must never render a permissive config.
 	}
 	carveouts := s.nativeCarveouts()
+	unblock := map[string]bool{}
+	for _, name := range carveouts {
+		if !s.govAllows("native:" + name) {
+			continue
+		}
+		unblock[name] = true
+		for _, composite := range nativeCompositeUnblock[name] {
+			unblock[composite] = true
+		}
+	}
 	disabled := make([]string, 0, len(inventory.DisabledToolsets))
 	for _, name := range inventory.DisabledToolsets {
-		if !slices.Contains(carveouts, name) {
+		if !unblock[name] {
 			disabled = append(disabled, name)
 		}
 	}
-	// Tool governance is a second, independent fence: a carve-out whose
-	// native:<name> section is denied goes back onto the emitted denylist.
-	for _, name := range carveouts {
-		if !s.govAllows("native:"+name) && !slices.Contains(disabled, name) {
-			disabled = append(disabled, name)
-		}
+	// SPEC-0085 R1.6: memory_vault evicts the native memory toolset even
+	// when the space carved it out — it goes back onto the denylist.
+	if s.Has("memory_vault") && !slices.Contains(disabled, "memory") {
+		disabled = append(disabled, "memory")
 	}
 	slices.Sort(disabled)
 	return disabled
+}
+
+// toolSearchBridgeEnabled renders the upstream deferred-tool bridge switch
+// (`tools.tool_search.enabled`). The bridge stays off unless the operator
+// re-enabled it through the reviewed `native:tool_search` pseudo-toolset —
+// the ToolHub tool_search/tool_call pair is the only default discovery
+// surface, so upstream's per-source grouping cannot re-label the inventory.
+func (s Settings) toolSearchBridgeEnabled() string {
+	if s.Has("tool_search") {
+		return "on"
+	}
+	return "off"
+}
+
+// managedAgentSection is the managed-mode `agent:` config block: the compiled
+// denylist plus the api_server platform-hint override. Upstream's stock hint
+// claims MEDIA: markers and non-image files are never intercepted — true for
+// a bare API caller, false behind the hub gateway, so the reviewed
+// replacement keeps the model honest about attachment delivery.
+func managedAgentSection(s Settings) M {
+	return M{
+		"disabled_toolsets": disabledToolsets(s),
+		"platform_hints":    M{"api_server": M{"replace": APIServerPlatformHint}},
+	}
 }
 
 func managedHermesConfig(s Settings) M {
@@ -121,22 +167,38 @@ func managedHermesConfig(s Settings) M {
 	for _, platform := range inventory.Platforms {
 		platforms[platform] = []string{}
 	}
+	for _, name := range s.nativeCarveouts() {
+		if s.govAllows("native:" + name) {
+			platforms["api_server"] = append(platforms["api_server"].([]string), name)
+		}
+	}
 	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
-		"agent":             M{"disabled_toolsets": disabledToolsets(s)},
+		// R9.1: upstream's per-platform context-file suppression pins the one
+		// read-only prompt authority. Without it the gateway discovers
+		// SOUL.md/USER.md/MEMORY.md/AGENTS.md under the agent-writable context
+		// root and a second, unreviewed authority joins every managed turn.
+		// load_soul_identity stays true upstream, so the mounted effective
+		// SOUL still injects — exactly once, from a read-only mount.
+		"gateway": M{"platforms": M{"api_server": M{"skip_context_files": true}}},
+		"agent":   managedAgentSection(s),
 		// Hub-owned MCP endpoints render directly like the model relay: the
 		// browser sidecar is reviewed infrastructure, not a model-selectable
 		// connector. via: mcp-raw selections (organization-provided servers)
 		// join them; every connector still goes through the ToolHub
 		// projection.
 		"mcp_servers": managedMCPServers(s),
+		"timeouts":    M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}},
 		"plugins":     M{"enabled": []string{}},
+		"tools":       M{"tool_search": M{"enabled": s.toolSearchBridgeEnabled()}},
 		"skills":      M{},
 		"hooks":       M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without
 		// it the tool loads against a disabled backend and silently no-ops.
-		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory"), "user_profile_enabled": false},
+		// SPEC-0085 R1.6: memory_vault replaces the native store — the flag
+		// renders false and the toolset returns to the denylist below.
+		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory") && !s.Has("memory_vault"), "user_profile_enabled": false},
 		// Voice lives on the gateway side: communication-hub transcribes and
 		// synthesizes through the hub-stt/hub-tts sidecars. The in-runtime
 		// upstream STT toolset stays sealed — the managed runtime never sees
@@ -160,16 +222,9 @@ func managedHermesConfig(s Settings) M {
 		"display":     M{"busy_input_mode": "queue", "long_running_notifications": true},
 		"timezone":    s.Timezone,
 	}
-	// Carved-out web toolsets keep the operator's provider selection; the
-	// managed egress relay decides which of their endpoints can actually be
-	// reached.
-	for _, name := range []string{"web", "search", "x_search"} {
-		if entry := s.Tools[name]; entry.Via == ToolViaNative {
-			if web := s.Web.config(); len(web) > 0 {
-				out["web"] = web
-			}
-			break
-		}
+	// The ToolHub web executor uses the same pinned upstream provider config.
+	if web := s.managedWebSettings().config(); len(web) > 0 {
+		out["web"] = web
 	}
 	// The image_gen block is the runtime grant media.Session checks before
 	// serving the ToolHub image tools: the capability profile admits the call
@@ -215,19 +270,12 @@ type BrowserGrant struct {
 	Act        bool `json:"act,omitempty"`
 }
 
-// managedMCPServers mirrors the unmanaged render's browser admission onto
-// the managed mcp_servers map: the hub sidecar is emitted only when the
-// workspace wish survives the same hub:browser / hub:browser_guest sections.
+// Managed browser calls enter through ToolHub and the private tools-daemon;
+// exposing the Playwright MCP endpoint here would bypass per-call admission.
 func managedMCPServers(s Settings) M {
 	servers := rawMCPServers(s)
-	if s.Has("browser") {
-		if s.govAllows(api.SectionHubBrowser) {
-			servers["browser"] = browserServer(s.User, false, s.Has("browser_act"))
-		}
-		if s.govAllows("hub:browser_guest") {
-			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
-		}
-	}
+	// M32/#520: no open_knowledge entry — same retirement as the unmanaged
+	// render; a managed runtime may not dial the vault directly either.
 	return servers
 }
 
@@ -251,15 +299,28 @@ func (s Settings) managedBrowserGrant() BrowserGrant {
 // for a spawned managed runtime.
 func (s Settings) ManagedBrowserGrant() BrowserGrant { return s.managedBrowserGrant() }
 
+// managedMemoryVaultFlag reports whether the reviewed render carried
+// memory_vault: a denied wish never reaches render — applyGovernance fails
+// the read on an explicit denial — so the flag is the Has() check itself.
+func (s Settings) managedMemoryVaultFlag() bool { return s.Has("memory_vault") }
+
+// ManagedMemoryVaultFlag exposes the flag to the supervisor, which
+// reproduces this render's MaterializeOptions for a spawned managed runtime.
+func (s Settings) ManagedMemoryVaultFlag() bool { return s.managedMemoryVaultFlag() }
+
 // ManagedImageGenGrant exposes the normalized grant to the supervisor, which
 // reproduces this render's MaterializeOptions when it materializes the
 // effective config for a spawned managed runtime.
 func (s Settings) ManagedImageGenGrant() media.ImageGen { return s.managedImageGenGrant() }
 
-// managedWebSettings returns the operator web selection only when a web
-// family toolset is carved out natively — the same condition under which
-// managedHermesConfig renders the `web:` block.
+// managedWebSettings returns the operator web selection for the selected
+// ToolHub family or an explicitly carved-out native web toolset.
 func (s Settings) managedWebSettings() WebSettings {
+	for _, name := range []string{"web", "web_search"} {
+		if entry := s.Tools[name]; entry.Via == ToolViaToolHub && entry.enabled() {
+			return s.Web
+		}
+	}
 	for _, name := range []string{"web", "search", "x_search"} {
 		if entry := s.Tools[name]; entry.Via == ToolViaNative {
 			return s.Web

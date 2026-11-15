@@ -1,0 +1,410 @@
+package agenttools
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// writeBoundaryFile publishes a workspace.yaml the admission reads live.
+func writeBoundaryFile(t *testing.T, path, writable string) {
+	t.Helper()
+	body := "apiVersion: six-passport/v2\nkind: workspace\nmetadata: {space: alice, environment: prod, revision: r-1}\n" +
+		"writable: [" + writable + "]\n" +
+		"read_only: [/config, /skills, /workspace/inbox, /workspace/artifacts/services, /vault/memory]\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A narrowed published boundary applies to the next file_write in the same
+// session: the executor reloads /config/workspace.yaml on every write, never by
+// restart (SPEC-0092 R5.3).
+func TestFileWriteDeniedOutsideWritableLive(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace/work, /workspace/outbox")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	if _, err := tools.File("write", Input{Path: "outbox/first.md", Text: "before"}); err != nil {
+		t.Fatalf("write inside declared writable denied: %v", err)
+	}
+	// The owner applies a new revision removing /workspace/outbox; the file
+	// changes on the mounted /config view without any respawn.
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	if _, err := tools.File("write", Input{Path: "outbox/second.md", Text: "after"}); err == nil {
+		t.Fatal("write under a path the new revision removed from writable still succeeded")
+	}
+	if _, err := tools.File("write", Input{Path: "work/still.md", Text: "ok"}); err != nil {
+		t.Fatalf("write inside the surviving writable path denied: %v", err)
+	}
+	// A deleted boundary fails closed, never open.
+	if err := os.Remove(boundary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/nope.md", Text: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "read-only") && !strings.Contains(err.Error(), "workspace") {
+		t.Fatalf("missing boundary must fail closed, got %v", err)
+	}
+}
+
+// Inbound mail and per-service artifact originals stay read-only even
+// though a broad /workspace writable prefix covers them textually —
+// the longest matching read_only prefix wins (SPEC-0092 R5.3).
+func TestInboxAndServiceArtifactsNeverWritable(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace, /vault/library, /vault/attachments")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	for _, p := range []string{
+		"inbox/people/telegram/2026-11-03/att-1/file.txt",
+		"inbox/services/github/2026-11-03/att-2/file.txt",
+		"artifacts/services/github/report.pdf",
+	} {
+		if _, err := tools.File("write", Input{Path: p, Text: "tamper"}); err == nil {
+			t.Errorf("write into %s succeeded under a declared read_only prefix", p)
+		}
+	}
+	if _, err := tools.File("write", Input{Path: "artifacts/documents/note.md", Text: "ok"}); err != nil {
+		t.Fatalf("writable artifacts subtree denied: %v", err)
+	}
+}
+
+// M32/#517: the vault root no longer exists on the runtime — file tools
+// refuse root=vault outright for reads and writes alike; memory access is
+// ToolHub-owned and never a filesystem surface.
+func TestVaultRootRefusedByFileTools(t *testing.T) {
+	ws, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace, /vault/library, /vault/attachments")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	for _, op := range []string{"list", "read", "search", "write", "edit", "mkdir", "remove"} {
+		if _, err := tools.File(op, Input{Root: "vault", Path: "library/note.md", Text: "x", Query: "x", OldString: "x"}); err == nil {
+			t.Errorf("file op %s reached a vault root that must not exist", op)
+		}
+	}
+}
+
+// An in-root symlink inside a writable subtree cannot launder a write into
+// a read_only subtree: the boundary applies to the resolved target, not
+// the literal argument (SPEC-0092 R5.3).
+func TestSymlinkFromWritableIntoReadOnlyDenied(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "work"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "inbox"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "inbox", "original.txt"), []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	if err := os.Symlink(filepath.Join("..", "inbox"), filepath.Join(dir, "work", "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/alias/original.txt", Text: "tamper"}); err == nil {
+		t.Fatal("write through a symlink into a read_only subtree succeeded")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "inbox", "original.txt")); err != nil || string(got) != "original" {
+		t.Fatalf("read-only file changed: %v %q", err, got)
+	}
+}
+
+// A new top-level directory under /workspace/projects is project creation:
+// file_write cannot mint it — only the project_create tool, which carries
+// the workspace.create_project right (SPEC-0092 R5.3, catalog rights).
+func TestProjectCreationRequiresCreateProject(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "projects"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	if _, err := tools.Call(context.Background(), "file_write", Input{Path: "projects/newrepo/README.md", Text: "x"}); err == nil {
+		t.Fatal("file_write minted a new project directory without project_create")
+	}
+	if _, err := tools.Call(context.Background(), "project_create", Input{Name: "newrepo"}); err != nil {
+		t.Fatalf("project_create: %v", err)
+	}
+	if _, err := tools.Call(context.Background(), "file_write", Input{Path: "projects/newrepo/README.md", Text: "x"}); err != nil {
+		t.Fatalf("write inside the created project denied: %v", err)
+	}
+	// The tool must be projected: the catalog carries it with the
+	// workspace.create_project right so ToolHub admits it only under grant.
+	found := false
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Name == "project_create" {
+			found = true
+			if len(spec.Requires) != 1 || spec.Requires[0] != "workspace.create_project" {
+				t.Errorf("project_create requires = %v, want [workspace.create_project]", spec.Requires)
+			}
+		}
+	}
+	if !found {
+		t.Error("project_create missing from the hub-agent-tools catalog")
+	}
+}
+
+// project_create mints exactly one clean directory name under projects/:
+// traversal, nesting and absolute paths fail; an existing directory is
+// idempotent (created=false), and the live boundary still decides whether
+// /workspace/projects is writable at all (SPEC-0092 R5.3).
+func TestProjectCreateHardening(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "projects"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	for _, name := range []string{"..", ".", "a/b", "/abs", `back\slash`, "", "  "} {
+		if _, err := tools.Call(context.Background(), "project_create", Input{Name: name}); err == nil {
+			t.Errorf("project_create accepted unsafe name %q", name)
+		}
+	}
+	if _, err := tools.Call(context.Background(), "project_create", Input{Name: "demo"}); err != nil {
+		t.Fatalf("project_create: %v", err)
+	}
+	// Idempotent: the second create reports the project already exists.
+	res, err := tools.Call(context.Background(), "project_create", Input{Name: "demo"})
+	if err != nil {
+		t.Fatalf("project_create existing dir: %v", err)
+	}
+	if m, _ := res.(map[string]any); m["created"] != false {
+		t.Errorf("re-create reported created=%v for an existing project", m["created"])
+	}
+	// The published boundary rules: narrowing writable so /workspace/projects
+	// is uncovered denies the next create without a respawn.
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	if _, err := tools.Call(context.Background(), "project_create", Input{Name: "blocked"}); err == nil {
+		t.Error("project_create minted a project outside the narrowed writable boundary")
+	}
+}
+
+// A space whose workspace predates the projects/ skeleton still admits
+// project_create: the parent is minted on first use (live A5: managed
+// workspace without projects/ returned "no such file or directory").
+func TestProjectCreateMintsMissingParent(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace")
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+
+	res, err := tools.Call(context.Background(), "project_create", Input{Name: "fresh"})
+	if err != nil {
+		t.Fatalf("project_create without a projects/ parent: %v", err)
+	}
+	if m, _ := res.(map[string]any); m["created"] != true {
+		t.Errorf("created=%v, want true", m["created"])
+	}
+	if info, err := os.Stat(filepath.Join(dir, "projects", "fresh")); err != nil || !info.IsDir() {
+		t.Fatalf("project dir missing: %v", err)
+	}
+}
+
+// OpenRoots inside a passport-mounted runtime picks the live boundary up
+// from HUB_WORKSPACE_BOUNDARY — file_write follows the published file, not
+// a render-time env list (SPEC-0092 R5.3). A stray HUB_VAULT pin is ignored:
+// the runtime never opens a vault root (M32/#517).
+func TestOpenRootsPicksPassportBoundary(t *testing.T) {
+	dir := t.TempDir()
+	config := t.TempDir()
+	writeBoundaryFile(t, filepath.Join(config, "workspace.yaml"), "/workspace/work")
+	t.Setenv("HUB_WORKSPACE_BOUNDARY", filepath.Join(config, "workspace.yaml"))
+	t.Setenv("HUB_VAULT", t.TempDir())
+	t.Setenv("HUB_STATE", t.TempDir())
+
+	tools, err := OpenRoots(dir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tools.Workspace.Close()
+	if _, err := tools.File("write", Input{Root: "vault", Path: "library/x.md", Text: "tamper"}); err == nil {
+		t.Error("file op reached a vault root that must not exist")
+	}
+	if _, err := tools.File("write", Input{Path: "inbox/x.md", Text: "tamper"}); err == nil {
+		t.Error("write outside the published writable list succeeded")
+	}
+	if _, err := tools.File("write", Input{Path: "work/ok.md", Text: "ok"}); err != nil {
+		t.Errorf("writable path denied: %v", err)
+	}
+}
+
+func TestManagedWorkspaceBoundaryRequiresActivePassport(t *testing.T) {
+	t.Setenv("HUB_PASSPORT_REVISION", "r-1")
+	t.Setenv("HUB_STATE", t.TempDir())
+	workspace, config := t.TempDir(), t.TempDir()
+	boundary := filepath.Join(config, "workspace.yaml")
+	t.Setenv("HUB_WORKSPACE_BOUNDARY", boundary)
+	t.Setenv("HUB_WORKSPACE_RO", "")
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	valid, err := os.ReadFile(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, body, marker string }{
+		{"missing", "", "r-1"},
+		{"retired", "writable: [/workspace]\n", "r-1"},
+		{"unknown", string(valid) + "allow_everything: true\n", "r-1"},
+		{"second-document", string(valid) + "---\nwritable: [/workspace]\n", "r-1"},
+		{"unactivated", string(valid), "r-other"},
+		{"no-marker", string(valid), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(boundary, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.body == "" {
+				if err := os.Remove(boundary); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(config, "revision"), []byte(tc.marker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tools, err := OpenRoots(workspace, "", "")
+			if err == nil {
+				tools.Close()
+				t.Fatal("managed executor opened without an active workspace passport")
+			}
+		})
+	}
+	if err := os.WriteFile(boundary, valid, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := OpenRoots(workspace, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tools.Close()
+	if _, err := tools.File("write", Input{Path: "work/allowed.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(boundary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/denied.txt", Text: "no"}); err == nil {
+		t.Fatal("removed passport widened a running executor")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "work", "denied.txt")); !os.IsNotExist(err) {
+		t.Fatal("denied write touched the workspace")
+	}
+}
+
+func TestWorkspaceBoundaryReloadIgnoresUnchangedMtimeAndSize(t *testing.T) {
+	t.Setenv("HUB_PASSPORT_REVISION", "r-1")
+	workspace, config := t.TempDir(), t.TempDir()
+	boundary := filepath.Join(config, "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.OpenRoot(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+	if _, err := tools.File("write", Input{Path: "work/before.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed := strings.ReplaceAll(strings.ReplaceAll(string(body), "r-1", "r-2"), "/workspace/work", "/workspace/next")
+	if len(narrowed) != len(body) {
+		t.Fatal("fixture must preserve file size")
+	}
+	if err := os.WriteFile(boundary, []byte(narrowed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(boundary, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/after.txt", Text: "no"}); err == nil {
+		t.Fatal("cached boundary admitted a removed writable path")
+	}
+	if _, err := tools.File("write", Input{Path: "next/allowed.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceBoundaryRejectsSymlink(t *testing.T) {
+	ws, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	target := filepath.Join(t.TempDir(), "workspace.yaml")
+	writeBoundaryFile(t, target, "/workspace")
+	link := filepath.Join(t.TempDir(), "workspace.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	tools := &Tools{Workspace: ws, BoundaryPath: link}
+	if _, err := tools.File("write", Input{Path: "escaped.txt", Text: "no"}); err == nil {
+		t.Fatal("symlinked passport admitted a write")
+	}
+	if _, err := ws.Stat("escaped.txt"); !os.IsNotExist(err) {
+		t.Fatal("denied write touched the workspace")
+	}
+}

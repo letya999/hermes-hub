@@ -195,7 +195,7 @@ func TestEnglishKeysPresent(t *testing.T) {
 		"menu.desc.cancel", "menu.desc.archive", "menu.desc.archived", "menu.desc.language",
 		// Gateway replies.
 		"chat.no-access", "chat.edit-norestart", "chat.task-open-failed",
-		"chat.group-no-secrets", "chat.unknown-command", "chat.working",
+		"chat.group-no-secrets", "chat.unknown-command", "chat.working", "chat.queued",
 		"chat.approve-usage", "chat.approve-denied", "chat.approve-saved",
 		"chat.approve-scope", "chat.creds-usage", "chat.creds-saved",
 		"chat.creds-expired", "chat.started", "chat.cancel-usage",

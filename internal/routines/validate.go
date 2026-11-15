@@ -156,6 +156,9 @@ func NormalizeScheduleDraft(in commodel.Schedule) commodel.Schedule {
 }
 
 func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks DraftHooks) error {
+	if in.ScheduleID == SystemDreamingID || in.JobKind == "dreaming" {
+		return errors.New("system dreaming is not editable")
+	}
 	if in.Probe != nil && strings.ContainsFunc(in.Probe.URL, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
 		return errors.New("probe URL contains invisible or control characters")
 	}

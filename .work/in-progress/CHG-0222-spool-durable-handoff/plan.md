@@ -4,9 +4,39 @@ Chain: [ADR-0088](../../../docs/adr/ADR-0088-bounded-control-journals.md) ->
 [SPEC-0088 R4](../../../specs/active/SPEC-0088-bounded-control-journals.md) -> этот plan -> state.yaml.
 
 Workstream: Storage reliability MVP (local planning; GitHub records not created).
-Дизайн принят 2026-10-28; implementation not started.
+Дизайн принят 2026-10-28; код импортирован 2026-10-31 в
+`chore/storage-reliability-integration`. Приёмка продолжается
+(см. evidence.md и CHG-0237).
 Previous: CHG-0221. Next: CHG-0223.
 Hard dependencies: CHG-0216, CHG-0221.
+
+## Amendment 2026-10-31 (substrate)
+
+[ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md) /
+[SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) по
+инструкции владельца переносят substrate этого CHG с file renames на
+транзакции records-таблиц `spool.db`. Canonical receipt до производных
+записей и batch intent до fanout сохраняются — теперь как одна SQL
+транзакция, а не цепочка fsync+rename.
+
+### Substrate design (принят при реализации)
+
+- Все durable-записи (`*.json`/`*.jsonl`/`.initialized` под record-классами
+  и top-level ledgers `budget.json`/`usage.jsonl`/`event-layout.json`) идут
+  через `spoolFS` — узкий fs-like слой (ReadFile/WriteFile/ReadDir/Rename/
+  Remove/MkdirAll/Lstat). `osFS` — текущее поведение; `sqliteFS` — таблица
+  `rec(path,body)` в `<root>/spool.db`, path хранится с `/`.
+- File-классы остаются файлами (R3.2): `tmp`, `archive`, `blobs`, `mock-*`,
+  `credentials`, `quarantine`, attachments/`*.bin` под `inbound`, locks и
+  migration-артефакты (`*.backup`, `*.legacy`, `*.manifest.json`, `events`-fence).
+- Rename = `UPDATE path` (работает и на «каталогах» по префиксу) — тот же
+  атомарный переход состояний; budget reservation оборачивает запись как
+  раньше, размер считается по реальному файлу `spool.db`.
+- Активация: `spool-migrate` (LockSpool → import → verify → manifest),
+  `spool-activate` (record-дири → `records-legacy/`, на месте каждого класса
+  regular-file sentinel — старый бинарник падает на MkdirAll, прецедент:
+  fence-файл `events` в migrateEventLayout), marker `records.activated`.
+  openSpool выбирает backend по marker.
 
 ## Goal
 

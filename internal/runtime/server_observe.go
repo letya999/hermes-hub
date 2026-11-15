@@ -25,38 +25,6 @@ var signalRuntimeProcess = func() {
 	}
 }
 
-type wakeAttempt struct {
-	response ExecuteResponse
-	err      error
-	elapsed  time.Duration
-}
-
-// retryColdWake repeats one chat turn that died before any tool call while
-// the runtime was still waking. A finished answer, a long failure, or a run
-// that already called a tool is left alone.
-func retryColdWake(response ExecuteResponse, err error, elapsed time.Duration, sawTool bool) bool {
-	if err == nil || sawTool || strings.TrimSpace(response.Text) != "" || elapsed > 20*time.Second {
-		return false
-	}
-	return response.Status == "failed" || response.Status == ""
-}
-
-func (s *runtimeHTTP) admitAndObserve(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (wakeAttempt, bool) {
-	started := time.Now()
-	sawTool := false
-	wrapped := emit
-	if emit != nil {
-		wrapped = func(event ExecuteResponse) error {
-			if event.LastEvent == "tool.start" || event.LastEvent == "tool.end" {
-				sawTool = true
-			}
-			return emit(event)
-		}
-	}
-	response, err := s.admitHermesRun(ctx, request, wrapped)
-	return wakeAttempt{response: response, err: err, elapsed: time.Since(started)}, sawTool
-}
-
 func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 	input := request.Text
 	if request.InboundID != "" {
@@ -94,7 +62,13 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey); err != nil {
+	s.beginAdmission()
+	err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey)
+	if err == nil && admission.RunID != "" && request.JobID != "" {
+		err = s.bindRun(request.JobID, admission.RunID)
+	}
+	s.finishAdmission()
+	if err != nil {
 		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
@@ -107,6 +81,7 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 	}
 	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 	response, err := s.observeHermesRunWindow(ctx, known, emit, runStart)
+	s.releaseRun(request.JobID, admission.RunID, response.Status)
 	s.observeCompactions(context.Background(), response.SessionID)
 	// The sweep compacts between jobs — async so a real archive_and_compact
 	// can never delay the completed response the caller is waiting on.

@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-10-28
+last_verified: 2026-11-12
 ---
 
 # Integration contracts
@@ -14,9 +14,9 @@ reference — what we integrate with, at what revision, under what shape.
 
 | Component | Source / pin | Contract |
 |---|---|---|
-| Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; pin predates upstream tool-`isError`/transport split (PRs 67340/17016 closed unmerged, 68455 open) — hub tools already mark expected failures as `isError`; residual risk CHG-0093 |
+| Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; explicit, pin-checked `docker/patches/hermes-mcp-run-identity.patch` carries per-run MCP identity for managed ToolHub (ADR-0090) and keeps completed MCP tool-error responses out of the transport circuit breaker (CHG-0292). Build-time `docker/check-mcp-tool-errors.py` verifies repeated tool errors preserve their payload and only transport failures strike. |
 | Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in the standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
-| CLIProxy | image-pinned `ba7e55836dee959e93ec6d41395865d9ec535086` | model/image relay upstream |
+| CLIProxy | v8.0.59, image-pinned `c5251b57b3fa5dcbc689f514f4aa166daacb4481` | model/image relay upstream; Devin OAuth (`--devin-login`), models from the authenticated catalog |
 | ToolHive | `ghcr.io/stacklok/toolhive:v0.48.0` @ `sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d` | container executor for ToolHub workloads (ADR-0013); cellinit/cred-proxy are built from this repo, not upstream |
 | Telegram account | letya999/telegram-mcp `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate; the unrelated PyPI `telegram-mcp` is deliberately not used |
 | Telegram bot channel | Telegram Bot API via `hub-communication` | channel adapter; sender allowlist + durable outbox |
@@ -165,8 +165,9 @@ docs/tools.md — bounds here:
   Regular font; xlsx = one worksheet inline CSV; pptx splits slides on
   blank line; conversions copy extracted text (no layout, no formulas).
   webp via `nativewebp` v1.3.0, PDF font `x/image` v0.46.0.
-- Bounds fail closed: doc ≤2 MiB / 20 pages × 3000 runes; image ≤5 MiB /
-  4096 px edge / 4 Mpx; concurrency 2 / 5 s; inspect+convert 30 s;
+- Bounds fail closed: doc ≤2 MiB / 20 pages × 3000 runes; source image ≤20 MiB /
+  4096 px edge / 4 Mpx. Vision input is reduced to ≤16 MiB combined
+  before encoding; concurrency 2 / 5 s; inspect+convert 30 s;
   generate/edit concurrency 1 / 60 s; prompt 1–2000 runes; no queue.
 - Scope: invoking user's workspace only — another user's root, absolute
   paths, `..` fail closed; `document_edit` confined to
@@ -203,6 +204,11 @@ Settings `WebSettings` block: backend/search_backend/extract_backend,
 `search_providers` fan-out list, `keyless_fallback`/`keyless_rescue`,
 `extract_char_limit`, `provider_tier`, `cache_*`, `research.*` bounds
 (ceilings only — settings can tighten, never widen).
+Materialization updates each generated plugin directory in place so a running
+runtime's bind mount continues to see its files after `hubctl render` or a
+scoped `hubctl up`; removing and recreating the directory would strand that
+runtime on the old, empty inode. A live `web_providers` call checks this mount,
+while `web_search` alone does not because it uses upstream's built-in path.
 
 `hub-web` adds three tools inside the same toolset/gate: `web_providers`
 (inventory), `web_search_multi` (`providers` list or `["all"]`, ≤8
@@ -214,9 +220,17 @@ Keys/endpoints are runtime secrets via `secrets.<env>.env` or the self-env
 form: `TAVILY_API_KEY`, `EXA_API_KEY`, `PARALLEL_API_KEY`,
 `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`/`_URL`, `BRAVE_SEARCH_API_KEY`,
 `KEENABLE_API_KEY`, `SEARXNG_URL`, `XAI_API_KEY` (+`TAVILY_BASE_URL`,
-`PERPLEXITY_BASE_URL`). Never in prompts/args/results; `doctor` names a
-missing required env for searxng/firecrawl. Keyless `ddgs` + ring keep it
-working anonymously; no browser profile participates.
+`PERPLEXITY_BASE_URL`). Never in prompts/args/results; `doctor` names
+missing required credentials for providers without a keyless path (for
+example searxng). Firecrawl and the other keyless-ring providers can work
+without local keys when their public endpoints are reachable and admitted
+by the space's egress relay. `ddgs` also needs its optional upstream package;
+no browser profile participates.
+
+Managed ToolHub `research_create` queues a durable owner job through
+Supervisor. `research_read` returns its actual status and final report;
+`research_list` omits report bodies. The model job is instructed to use the
+bundled skill and live web tools. A queued job is not a provider result.
 
 `deep-research-embedded` (`config/skills/`) is the on-disk state machine:
 `plan.yaml` → `sources.yaml` → `notes/` → `gaps.md` → drafts → cited

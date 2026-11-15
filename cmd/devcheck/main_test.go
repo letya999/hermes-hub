@@ -62,7 +62,7 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	}
 	called := false
 	old := coverTest
-	coverTest = func(name string) *exec.Cmd {
+	coverTest = func(name, _ string) *exec.Cmd {
 		called = true
 		if name != profile && name != lowProfile {
 			t.Fatalf("coverTest(%q)", name)
@@ -84,6 +84,21 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	if err := run([]string{"covergo", profile, "bad"}); err == nil {
 		t.Fatal("covergo accepted invalid minimum")
 	}
+	// catalog-emit is idempotent over the committed immutable catalogs: a
+	// drifted release is a hard error, not a silent rewrite.
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(filepath.Join("..", "..")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"catalog-emit"}); err != nil {
+		t.Fatalf("catalog-emit over identical catalogs: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"catalog-emit", "extra"}); err == nil {
+		t.Fatal("catalog-emit accepted extra args")
+	}
 	if err := run([]string{"hermes-contract", "test-image"}); err == nil {
 		t.Fatal("integration-only Hermes contract accepted without build tag")
 	}
@@ -104,11 +119,10 @@ func TestRunCoverageAndValidation(t *testing.T) {
 }
 
 // The coverage gate must run the suite batched, like a CI shard: one go test
-// invocation over ./... so package binaries parallelize across GOMAXPROCS and
-// profiles merge natively. A per-package loop re-links the same
+// invocation over ./... so profiles merge natively. A per-package loop re-links the same
 // -coverpkg=./... binary per package (49 serial instrumented runs locally).
 func TestCoverTestBatchesWholeSuite(t *testing.T) {
-	var cmd *exec.Cmd = coverTest("profile.out")
+	var cmd *exec.Cmd = coverTest("profile.out", "testexec")
 	joined := strings.Join(cmd.Args, " ")
 	for _, want := range []string{"-race", "-shuffle=on", "-count=1", "-timeout=10m", "-coverpkg=./...", "-coverprofile=profile.out"} {
 		if !strings.Contains(joined, want) {
@@ -117,6 +131,15 @@ func TestCoverTestBatchesWholeSuite(t *testing.T) {
 	}
 	if cmd.Args[len(cmd.Args)-1] != "./..." {
 		t.Fatalf("coverTest must run the whole suite in one invocation, got %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-p=2") {
+		t.Fatalf("coverTest must bound Windows package concurrency: %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-exec=testexec") {
+		t.Fatalf("coverTest must retry transient Windows executable launch failures: %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-toolexec=testexec") {
+		t.Fatalf("coverTest must retry transient Windows toolchain launch failures: %v", cmd.Args)
 	}
 }
 

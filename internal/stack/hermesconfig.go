@@ -12,7 +12,6 @@ import (
 	"slices"
 
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +21,7 @@ var runtimeEnvName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 // ordinary MCP call timeout. The user gets Hermes' heartbeat while this call
 // is in flight, so do not kill it after the default two minutes.
 const toolHubCallTimeoutSeconds = 1800
+const managedToolHubProxyEndpoint = "http://127.0.0.1:8080/mcp"
 
 // MaterializeOptions carries the host-side inputs the in-container startup
 // normally reads from the environment when it materializes the effective
@@ -45,11 +45,6 @@ type MaterializeOptions struct {
 	// config: an empty struct renders no image_gen block and the runtime
 	// grant stays inactive even when the capability profile selects it.
 	ImageGen media.ImageGen
-	// SelfSettingsPath is the runtime-owned settings overlay merged onto the
-	// managed effective config at materialize time and re-merged onto the
-	// expected config at attestation, so both sides compute identical bytes.
-	// Empty disables the overlay.
-	SelfSettingsPath string
 	// Context is the normalized context-control declaration (SPEC-0072):
 	// merged onto the materialized config and re-merged onto the expected
 	// config at attestation. Nil means the reviewed zero template.
@@ -62,6 +57,10 @@ type MaterializeOptions struct {
 	// (browser-<user>), so the reconstruction cannot derive it from the file
 	// under review and takes it from HUB_USER_ID instead.
 	User string
+	// MemoryVault is the render-time memory_vault flag (SPEC-0085 R1.6):
+	// it evicts the native memory backend and re-denies a carved memory
+	// toolset, so the attestation must replay it to reproduce those bytes.
+	MemoryVault bool
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -92,11 +91,6 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	}
 	if err := ApplyHermesConfig(name, opts); err != nil {
 		return err
-	}
-	if opts.Managed {
-		if err := applySelfSettings(name, opts); err != nil {
-			return err
-		}
 	}
 	// The rendered file is bind-mounted into the runtime container: on Linux
 	// hosts the file keeps the host uid, so it must be world-readable for the
@@ -203,8 +197,12 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		// expected source matches the operator-rendered file.
 		tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
 	}
+	if !opts.Web.empty() {
+		tools["web_search"] = ToolEntry{Via: ToolViaToolHub}
+	}
 	settings := Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen, User: opts.User}
 	applyBrowserGrant(&settings, opts.Browser)
+	applyManagedFeatureFlags(&settings, opts)
 	expected, err := yaml.Marshal(managedHermesConfig(settings))
 	if err != nil {
 		return err
@@ -247,6 +245,27 @@ func applyBrowserGrant(s *Settings, grant BrowserGrant) {
 	}}
 }
 
+// applyManagedFeatureFlags replays the hub-side subsystem flags the reviewed
+// render carried but a carried grant list cannot express: pseudo-toolsets are
+// `via: native` wishes — never carve-outs — so they cannot ride
+// NativeToolsets. The Tools entries reproduce Has() while the decisions map
+// reproduces the render-time govAllows checks.
+func applyManagedFeatureFlags(s *Settings, opts MaterializeOptions) {
+	if !opts.MemoryVault {
+		return
+	}
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	if s.gov == nil {
+		s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{}}
+	}
+	if opts.MemoryVault {
+		s.Tools["memory_vault"] = ToolEntry{Via: ToolViaNative}
+		s.gov.decisions["native:memory_vault"] = api.PolicyDecision{Effect: api.RuleAllow}
+	}
+}
+
 // applyContextConfig merges the declared context-control section onto the
 // materialized config. It runs after the managed source validation and the
 // ToolHub merge, so context keys can never be mistaken for template drift.
@@ -268,37 +287,6 @@ func applyContextConfig(configPath string, ctx *ContextConfig) error {
 		return err
 	}
 	return os.WriteFile(configPath, updated, 0660) // #nosec G703 -- operator config path
-}
-
-// applySelfSettings merges the runtime-owned settings overlay onto the
-// materialized effective config, still inside the caller's atomic window.
-// Re-validation on load means a hand-edited overlay fails materialization
-// rather than sneaking past the reviewed allowlist.
-func applySelfSettings(configPath string, opts MaterializeOptions) error {
-	if opts.SelfSettingsPath == "" {
-		return nil
-	}
-	values, err := selfsettings.Load(opts.SelfSettingsPath)
-	if err != nil {
-		return fmt.Errorf("self-settings overlay: %w", err)
-	}
-	if len(values) == 0 {
-		return nil
-	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
-	if err != nil {
-		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read materialized config: %w", err)
-	}
-	selfsettings.Merge(config, values)
-	updated, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("write materialized config: %w", err)
-	}
-	return os.WriteFile(configPath, updated, 0660)
 }
 
 // ValidateManagedEffectiveConfig prevents Hermes from falling back to its
@@ -332,32 +320,26 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 		// render sites only emit it when Has("image_gen") held.
 		s.Tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
 	}
+	if !opts.Web.empty() {
+		s.Tools["web_search"] = ToolEntry{Via: ToolViaToolHub}
+	}
 	// The operator's web provider selection rides HUB_MANAGED_WEB into the
 	// container; without it a carved-out web block can never be reproduced.
 	s.Web = opts.Web
 	s.ImageGen = opts.ImageGen
 	s.User = opts.User
 	applyBrowserGrant(&s, opts.Browser)
+	applyManagedFeatureFlags(&s, opts)
 	expected := managedHermesConfig(s)
 	servers := expected["mcp_servers"].(M)
 	servers["toolhub"] = M{
-		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,
+		"url": managedToolHubProxyEndpoint, "timeout": toolHubCallTimeoutSeconds,
 		"skip_preflight": true, "headers": M{"Authorization": "Bearer ${" + tokenEnv + "}"},
 	}
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
 	}
-	// The declared context merges before the runtime-owned overlay: a
-	// settings_set override must win over the provisioned value on both
-	// sides of the attestation.
 	mergeContextConfig(expected, opts.Context)
-	if opts.SelfSettingsPath != "" {
-		values, err := selfsettings.Load(opts.SelfSettingsPath)
-		if err != nil {
-			return fmt.Errorf("self-settings overlay: %w", err)
-		}
-		selfsettings.Merge(expected, values)
-	}
 	wantBody, err := yaml.Marshal(expected)
 	if err != nil {
 		return err
@@ -475,6 +457,9 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	}
 	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return fmt.Errorf("HUB_TOOLHUB_ENDPOINT: %w", err)
+	}
+	if opts.Managed {
+		endpoint = managedToolHubProxyEndpoint
 	}
 	tokenEnv := opts.ToolHubTokenEnv
 	if tokenEnv == "" {

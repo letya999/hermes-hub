@@ -41,7 +41,7 @@ func TestReconcilerBrokerCredentialBackend(t *testing.T) {
 			}
 			conn, _ = store.connectionFor(conn.ConnectionID)
 			auth := aliceAuth()
-			if err := store.PutOnboarding(api.Onboarding{Schema: api.SchemaVersion, Revision: 1, Mode: api.OnboardingCatalog, OnboardingID: "onboard-broker-check", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, ConnectionID: conn.ConnectionID, Phase: api.PhaseEnabled}); err != nil {
+			if err := store.PutOnboarding(api.Onboarding{Schema: api.SchemaVersion, Revision: 1, Mode: api.OnboardingCatalog, OnboardingID: "onboard-broker-check", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, ConnectionID: conn.ConnectionID, Stage: api.StageLive}); err != nil {
 				t.Fatal(err)
 			}
 			gets, deletes := 0, 0

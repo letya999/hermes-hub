@@ -19,7 +19,6 @@ func profileSettings(features ...string) Settings {
 	return Settings{Schema: 1, Environment: "prod", User: "me", Model: "m",
 		ModelURL: "https://example.invalid/v1", Timezone: "UTC",
 		OAuthPort: 8000, BrowserPort: 6080, GoogleEmail: "me@example.org",
-		DesktopURL: "https://example.invalid/d", DraftsURL: "https://example.invalid/r",
 		Tools: testTools(features...), Ingress: testIngress(features...)}
 }
 

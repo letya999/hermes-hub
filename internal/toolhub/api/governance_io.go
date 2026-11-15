@@ -57,7 +57,23 @@ func SeedInventory() []ToolSection {
 		native("meet", EffectMutate),
 		native("transcription", EffectRead),
 		native("deep_research", EffectRead),
+		// memory_vault is a hub-side subsystem flag, not an agent toolset;
+		// it still opts in through the same wish + grant posture.
+		native("memory_vault", EffectRead),
+		// knowledge_ui is the same hub-side flag: wish + grant admit it —
+		// inert under M32/#520 while the OK data plane stays retired, but
+		// kept inventoried so stored grants resolve explicitly.
+		native("knowledge_ui", EffectRead),
+		// memory_provider likewise: the section governs the rendered
+		// external-provider config + egress (SPEC-0085 R11).
+		native("memory_provider", EffectRead),
+		// tool_search is the upstream deferred-tool bridge switch rendered
+		// as tools.tool_search.enabled — off by default so ToolHub's
+		// tool_search/tool_call pair stays the only discovery surface.
+		native("tool_search", EffectRead),
 		// Hub-owned MCP surfaces rendered into the effective config.
+		// browser_guest is a distinct anonymous-profile emission under its
+		// own section so governance can gate it separately.
 		hub(SectionHubTools, EffectMutate),
 		hub(SectionHubBrowser, EffectMutate),
 		hub("hub:browser_guest", EffectMutate),
@@ -67,30 +83,30 @@ func SeedInventory() []ToolSection {
 		hub("hub:slack", EffectMutate),
 		hub("hub:atlassian", EffectMutate),
 		hub("hub:telegram_user", EffectMutate),
-		hub("hub:desktop", EffectMutate),
-		hub("hub:drafts", EffectMutate),
-		// Executor capability families (`tools: <name>: toolhub`) — ids are
-		// the capability ids after alias normalization (file→files,
-		// docs→documents, code_exec→terminal).
+		// Executor capability families (`tools: <name>: toolhub`) — catalog
+		// r5 ids (ADR-0094): archives/artifacts/knowledge live under files,
+		// images/image_gen under media, hosting under sites, services under
+		// connectors; hh and the catch-all tools surface are gone.
 		hub("hub:files", EffectMutate),
-		hub("hub:documents", EffectMutate),
-		hub("hub:images", EffectMutate),
-		hub("hub:artifacts", EffectMutate),
-		hub("hub:routines", EffectMutate),
-		hub("hub:assignments", EffectMutate),
-		hub("hub:services", EffectMutate),
-		hub("hub:settings", EffectMutate),
-		hub("hub:image_gen", EffectMutate),
-		hub("hub:hh", EffectMutate),
-		hub("hub:ssh", EffectExec),
-		hub("hub:hosting", EffectExec),
-		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
 		hub("hub:terminal", EffectExec), // restrictive default, like native:terminal
-		hub("hub:web", EffectMutate),
-		// SPEC-0083 R5.2: governed skills surface — reads and mutations are
-		// separately grantable; mutations still land as drafts.
-		hub("hub:skills", EffectRead),
-		hub("hub:skills_manage", EffectMutate),
+		hub("hub:documents", EffectMutate),
+		hub("hub:media", EffectMutate),
+		hub("hub:skills", EffectMutate),
+		hub("hub:routines", EffectMutate),
+		hub("hub:watches", EffectMutate),
+		hub("hub:assignments", EffectMutate),
+		hub("hub:goals", EffectMutate),
+		hub("hub:context", EffectMutate),
+		hub("hub:settings", EffectMutate),
+		hub("hub:ssh", EffectExec),
+		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
+		hub("hub:sites", EffectExec),    // publishing: restrictive default, like hosting
+		hub("hub:web_search", EffectMutate),
+		hub("hub:research", EffectMutate),
+		hub("hub:connectors", EffectMutate),
+		hub("hub:models", EffectMutate),
+		hub("hub:sessions", EffectMutate),
+		hub("hub:memory", EffectMutate),
 		// The two mutable per-principal surfaces.
 		{ID: SectionUserMCP, Owner: OwnerUser, Effect: EffectCredential, Default: RuleDeny},
 		{ID: SectionOrgMCP, Owner: OwnerOrg, Official: true, Prepared: true, Effect: EffectMutate, Default: RuleAllow},
@@ -271,7 +287,7 @@ func SaveGovernanceLocked(path string, g *Governance) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return replaceGovernanceFile(name, path)
 }
 
 // LoadOrSeedGovernance reads the document, or seeds + persists it when the

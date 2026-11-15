@@ -27,18 +27,18 @@ func adminFixture(t *testing.T, audits *[]string) (*Gateway, http.Handler) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "ob-1", PrincipalID: "alice",
 		ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1",
-		Mode: api.OnboardingSelfInstall, Phase: api.PhaseFailed,
+		Mode:  api.OnboardingSelfInstall,
+		Stage: api.StageFailed,
 		Error: "probe failed", ErrorCode: "probe_failed",
 		SourceURL: "https://github.com/example/mcp", CommitSHA: strings.Repeat("a", 40),
 		DefinitionID: "google-work", DefinitionVersion: "1.0.0",
 		Required:   []api.CredentialHint{{Name: "API_TOKEN", Secret: true, Delivery: "env"}},
 		Finalizers: []api.Finalizer{{Name: "workload", State: "failed", Attempts: 2, Error: "rm timeout"}},
+		Gate:       &api.Gate{Kind: api.GateConfirmSetup, Nonce: "live-nonce-value", Expires: time.Time{}},
 		// Capability-bearing fields are seeded so a non-whitelisted DTO
 		// would visibly leak them.
-		ConfirmationNonce: "live-nonce-value",
-		WizardNonce:       "live-wizard-value",
-		Revision:          1, CreatedAt: time.Now().UTC(),
-	}
+		WizardNonce: "live-wizard-value",
+		Revision:    1, CreatedAt: time.Now().UTC()}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +52,7 @@ func adminFixture(t *testing.T, audits *[]string) (*Gateway, http.Handler) {
 			"alice-principal-token-0000000000000": auth,
 		},
 	}
+	attachGatewayAudit(t, g)
 	ledger, err := audit.Open(filepath.Join(t.TempDir(), "admin-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)

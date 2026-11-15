@@ -2,10 +2,10 @@ package communication
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -100,30 +100,27 @@ func (s *Spool) RecordUsage(job Job, runID string, report hubruntime.SessionUsag
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(usagePath(s.root), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(append(body, '\n')); err != nil {
-		return err
-	}
-	return f.Sync()
+	return s.updateStorage(s.storagePath(usagePath(s.root)), int64(len(body)+1), func() error {
+		existing, err := s.fsys.ReadFile(usagePath(s.root))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return s.fsys.WriteFile(usagePath(s.root), append(append([]byte{}, existing...), append(body, '\n')...))
+	})
 }
 
 // usageEntriesLocked reads the whole journal. Metering volume is one line per
 // job attempt, so a full scan stays cheap for a personal hub.
 func (s *Spool) usageEntriesLocked() ([]usageEntry, error) {
-	f, err := os.Open(usagePath(s.root)) // #nosec G304 -- spool-owned path.
+	body, err := s.fsys.ReadFile(usagePath(s.root))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	var entries []usageEntry
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(body))
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -184,49 +181,42 @@ func (s *Spool) UsageTotalsSince(scopeID string, since time.Time, model string) 
 // An interrupted append can only invalidate the final unterminated record.
 // Preserve it separately before truncating; corruption of a complete line stops writes.
 func (s *Spool) repairUsageTailLocked() error {
-	f, err := os.OpenFile(usagePath(s.root), os.O_RDWR, 0600)
+	body, err := s.fsys.ReadFile(usagePath(s.root))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	reader := bufio.NewReader(f)
 	var offset int64
-	for {
-		line, readErr := reader.ReadBytes('\n')
+	for offset < int64(len(body)) {
+		line := body[offset:]
+		nl := int64(len(line))
+		if i := bytes.IndexByte(line, '\n'); i >= 0 {
+			nl = int64(i) + 1
+			line = line[:nl]
+		}
 		if len(line) > 64*1024 {
 			return errors.New("usage record exceeds limit")
 		}
-		if readErr != nil && readErr != io.EOF {
-			return readErr
-		}
-		if len(line) == 0 && readErr == io.EOF {
-			return nil
-		}
-		if readErr == io.EOF {
+		if line[nl-1] != '\n' {
 			if json.Valid(line) {
-				if _, err := f.Seek(0, io.SeekEnd); err != nil {
-					return err
-				}
-				if _, err := f.Write([]byte{'\n'}); err != nil {
-					return err
-				}
-			} else {
-				quarantine := filepath.Join(s.root, fmt.Sprintf("usage-tail-%d.partial", time.Now().UnixNano()))
-				if err := atomicJSON(quarantine, map[string][]byte{"bytes": line}); err != nil {
-					return err
-				}
-				if err := f.Truncate(offset); err != nil {
-					return err
-				}
+				return s.updateStorage(usagePath(s.root), 1, func() error {
+					return s.fsys.WriteFile(usagePath(s.root), append(body, '\n'))
+				})
 			}
-			return f.Sync()
+			quarantine := filepath.Join(s.root, fmt.Sprintf("usage-tail-%d.partial", time.Now().UnixNano()))
+			if err := s.writeJSON(quarantine, map[string][]byte{"bytes": line}); err != nil {
+				return err
+			}
+			return s.updateStorage(usagePath(s.root), 0, func() error {
+				return s.fsys.WriteFile(usagePath(s.root), body[:offset])
+			})
 		}
 		if len(line) > 1 && !json.Valid(line) {
 			return errors.New("usage journal contains a corrupt completed record")
 		}
-		offset += int64(len(line))
+		offset += nl
 	}
+	return nil
 }

@@ -25,6 +25,18 @@ type AgentExecRequest struct {
 	Arguments      map[string]any    `json:"arguments"`
 	Scopes         []CapabilityScope `json:"scopes,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+}
+
+type agentConversationKey struct{}
+
+func WithAgentConversation(ctx context.Context, conversationID string) context.Context {
+	return context.WithValue(ctx, agentConversationKey{}, conversationID)
+}
+
+func AgentConversationFrom(ctx context.Context) string {
+	conversationID, _ := ctx.Value(agentConversationKey{}).(string)
+	return conversationID
 }
 
 // AgentExecResult is the executor's bounded response. Error carries a
@@ -45,9 +57,15 @@ type AgentExecFunc func(ctx context.Context, effective EffectiveBinding, request
 // that run inside the owning runtime's workspace island.
 type AgentExecBackend struct {
 	Exec AgentExecFunc
+	// Settings stays in the authenticated control plane; the runtime executor
+	// cannot publish passports or read an overlay.
+	Settings func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error)
 	// Scratch serves Sandboxed tools through the disposable-workload channel;
 	// nil fails closed like a missing Exec.
 	Scratch ScratchExecFunc
+	// Terminal runs bounded commands in an isolated agent-image workload and
+	// retains its background job handles across admitted terminal_job calls.
+	Terminal ScratchExecFunc
 	// Fence is the apply-time authority recheck the endpoint wires to the
 	// store's revision check; exports fail closed without it.
 	Fence ScratchFenceFunc
@@ -60,6 +78,26 @@ func (b AgentExecBackend) Call(ctx context.Context, effective EffectiveBinding, 
 func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, _ map[string]string) (BackendResult, error) {
 	if effective.Definition.Transport != AgentTools {
 		return BackendResult{}, fmt.Errorf("%w: agent executor received %s transport", ErrInvalid, effective.Definition.Transport)
+	}
+	if tool.Executor == "handler:settings" {
+		if b.Settings == nil {
+			return BackendResult{}, ErrIsolation
+		}
+		return b.Settings(ctx, effective, tool, arguments)
+	}
+	if tool.Executor == "handler:terminal" {
+		if b.Terminal == nil {
+			return BackendResult{}, ErrIsolation
+		}
+		out, err := b.Terminal(ctx, effective, AgentExecRequest{Tool: tool.Name, Arguments: arguments,
+			Scopes: effective.CapabilityScopes, TimeoutSeconds: effective.Definition.Execution.TimeoutSeconds}, b.Fence)
+		if err != nil {
+			return BackendResult{}, fmt.Errorf("%w: terminal executor: %v", ErrIsolation, err)
+		}
+		if out.Error != "" {
+			return BackendResult{IsError: true, Text: out.Error}, nil
+		}
+		return BackendResult{Structured: out.Result}, nil
 	}
 	if !tool.Sandboxed && b.Exec == nil || tool.Sandboxed && b.Scratch == nil {
 		return BackendResult{}, ErrIsolation
@@ -79,6 +117,7 @@ func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBindin
 			Arguments:      arguments,
 			Scopes:         effective.CapabilityScopes,
 			TimeoutSeconds: effective.Definition.Execution.TimeoutSeconds,
+			ConversationID: AgentConversationFrom(ctx),
 		})
 	}
 	if err != nil {

@@ -2,12 +2,14 @@ package stack
 
 import (
 	"crypto/sha256"
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -20,13 +22,15 @@ import (
 type provisioningProfile struct {
 	Name      string
 	Version   int
-	Agent     []byte
-	Workspace []byte
+	Passports map[string][]byte
 	Soul      []byte
 	Grants    []byte
 	Skills    []byte
 	Layout    []byte
 }
+
+//go:embed defaults/passports/*.yaml
+var defaultPassportTemplates embed.FS
 
 // resolveProvisioningProfile walks the extends chain for name. Org profiles
 // (<orgDir>/profiles/<level>) override platform profiles (<hubRoot>/policies/
@@ -40,10 +44,12 @@ func resolveProvisioningProfile(spaceDir, orgDir, name string) (*provisioningPro
 	if filepath.Base(root) == "spaces" {
 		root = filepath.Dir(root)
 	}
-	p := &provisioningProfile{Name: name}
+	p := &provisioningProfile{Name: name, Passports: map[string][]byte{}}
 	dst := map[string]*[]byte{
-		"agent.yaml": &p.Agent, "workspace.yaml": &p.Workspace, "SOUL.md": &p.Soul,
-		"layout.yaml": &p.Layout, "grants.yaml": &p.Grants, "skills.yaml": &p.Skills,
+		"SOUL.md":     &p.Soul,
+		"layout.yaml": &p.Layout,
+		"grants.yaml": &p.Grants,
+		"skills.yaml": &p.Skills,
 	}
 	seen := map[string]bool{}
 	level, leaf := name, true
@@ -76,17 +82,47 @@ func resolveProvisioningProfile(spaceDir, orgDir, name string) (*provisioningPro
 					}
 				}
 			}
+			for _, passportName := range passportview.Names {
+				if len(p.Passports[passportName]) != 0 {
+					continue
+				}
+				body, err := os.ReadFile(filepath.Join(dir, "passports", passportName+".yaml"))
+				if err == nil {
+					p.Passports[passportName] = body
+				} else if !os.IsNotExist(err) {
+					return nil, fmt.Errorf("profile %q passport %s: %w", level, passportName, err)
+				}
+			}
 		}
 		leaf = false
 		level = next
 	}
-	if len(p.Agent) == 0 {
-		p.Agent = policyTemplate(spaceDir, "agent-default.yaml", defaultAgentYAML)
-	}
-	if len(p.Workspace) == 0 {
-		p.Workspace = policyTemplate(spaceDir, "workspace-default.yaml", defaultWorkspaceYAML)
+	for _, passportName := range passportview.Names {
+		if len(p.Passports[passportName]) == 0 {
+			body, err := defaultPassportTemplates.ReadFile("defaults/passports/" + passportName + ".yaml")
+			if err != nil {
+				return nil, err
+			}
+			p.Passports[passportName] = body
+		}
 	}
 	return p, nil
+}
+
+func renderProfilePassports(p *provisioningProfile, user, organization string) (map[string][]byte, error) {
+	values := strings.NewReplacer(
+		"__USER__", user, "__ORGANIZATION__", organization, "__PROFILE__", p.Name,
+	)
+	out := make(map[string][]byte, len(passportview.Names))
+	for _, name := range passportview.Names {
+		body := []byte(values.Replace(string(p.Passports[name])))
+		var doc map[string]any
+		if err := yaml.Unmarshal(body, &doc); err != nil || len(doc) == 0 {
+			return nil, fmt.Errorf("profile %q passport %s is empty or invalid: %v", p.Name, name, err)
+		}
+		out[name] = body
+	}
+	return out, nil
 }
 
 // profileLevelDirs lists the candidate dirs for one chain level, org first.
@@ -139,7 +175,7 @@ func SyncOrganizationMembers(orgDir, organization, spacesRoot, environment strin
 	created, existing := []string{}, []string{}
 	for _, user := range members {
 		spaceDir := filepath.Join(spacesRoot, user)
-		if _, err := os.Lstat(filepath.Join(spaceDir, "scope.yaml")); err == nil {
+		if _, err := os.Lstat(filepath.Join(spaceDir, "passports")); err == nil {
 			existing = append(existing, user)
 			continue
 		}
@@ -248,29 +284,54 @@ func createProfileLayout(dir string, p *provisioningProfile) error {
 	return nil
 }
 
-// UpdateProvisioningProfile performs the R9.7 three-way profile update: each
-// stamped file is compared against the profile.lock baseline and the newly
-// resolved profile content — files the owner never touched take the new
-// content, customized files stay untouched and are reported. apply=false
-// reports the plan without writing; apply=true commits and rewrites
-// profile.lock to the new profile baseline.
+// UpdateProvisioningProfile refreshes only the six authored passport templates.
+// Customized files stay untouched; publication remains a separate space apply.
 func UpdateProvisioningProfile(dir string, apply bool) (map[string]any, error) {
 	lock, err := readProvisioningLock(dir)
 	if err != nil {
 		return nil, err
 	}
-	orgDir := ""
-	if scope, err := ReadScope(dir); err == nil && scope.Organization != "" {
-		orgDir = resolvedOrganizationDir(dir, scope.Organization)
-	}
-	p, err := resolveProvisioningProfile(dir, orgDir, lock.Profile)
+	// The authored stack passport carries the identity the retired
+	// scope.yaml stamped: user binds to the directory, organization selects
+	// the org profile overlay.
+	identity, err := authoredStackIdentity(dir)
 	if err != nil {
 		return nil, err
 	}
-	stamped := map[string][]byte{"agent.yaml": p.Agent, "workspace.yaml": p.Workspace}
+	if filepath.Base(filepath.Dir(dir)) == "spaces" && filepath.Base(dir) != identity.User {
+		return nil, fmt.Errorf("profile scope does not match space directory")
+	}
+	var p *provisioningProfile
+	if identity.Organization != "" {
+		p, err = resolveInitProfile(dir, identity.User, identity.Organization, "")
+	} else {
+		p, err = resolveProvisioningProfile(dir, "", lock.Profile)
+	}
+	if err != nil {
+		return nil, err
+	}
+	passports, err := renderProfilePassports(p, identity.User, identity.Organization)
+	if err != nil {
+		return nil, err
+	}
+	stamped := make(map[string][]byte, len(passports))
+	for name, body := range passports {
+		stamped["passports/"+name+".yaml"] = body
+	}
 	updates, customized := []string{}, []string{}
 	for file, body := range stamped {
-		cur, err := os.ReadFile(filepath.Join(dir, file))
+		if lock.Files[file] == "" {
+			return nil, fmt.Errorf("profile baseline missing %s", file)
+		}
+		path := filepath.Join(dir, file)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("profile passport %s is not a regular file", file)
+		}
+		cur, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}

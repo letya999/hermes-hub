@@ -111,7 +111,7 @@ func runScript(ctx context.Context, src string, now time.Time, input, watchRoot 
 			if err != nil {
 				return nil, err
 			}
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) // #nosec G304 -- bounded by probeWatchPath to the watch root.
 			if err != nil {
 				return nil, err
 			}

@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-31
+last_verified: 2026-11-14
 ---
 
 # Operations
@@ -17,7 +17,40 @@ generated/`; `up` builds and starts; `down` stops without deleting data;
 `logs` tails the Compose project. Pass service names to scope:
 `hubctl up --dir spaces/alice --env dev communication-hub toolhub` — scoped
 `up` skips dependencies, list them explicitly. `hubctl build` then
-`hubctl up --no-build` restarts on existing images.
+`hubctl up --no-build` converges the stack on existing images without forcing
+healthy containers to restart. For a single Compose
+service, use `hubctl build --dir spaces/alice communication-hub` followed by
+`hubctl up --dir spaces/alice --no-build communication-hub`; this does not
+rebuild runtime or cell images. Build a spawned runtime alone with `hubctl
+build --dir spaces/alice --image runtime`; `cli-tools` and `cell-proxy` are
+the other standalone image choices. Unscoped `build` still builds the full
+stack for first setup.
+`space apply` publishes authored passport changes; editing Go code alone does
+not require it. After a ToolHub binary edit in a running dev stack, use
+`hubctl dev-rebuild --dir spaces/alice --env dev toolhub`. For a base-image
+build, select `hubctl build --dir spaces/alice toolhub`, then `hubctl up --dir
+spaces/alice --no-build toolhub`. Neither path should recreate unrelated
+services. Agent-tool contract changes additionally require catalog rebind
+and managed runtime respawn.
+`hubctl connector link` reads only a live action link and refuses expired/spent
+confirmation. Use the explicit `hubctl connector resend --target <onboarding-id>`
+write action to renew a pending link; it requires connector lifecycle authority.
+Changing `config.web.backend`, `search_backend`, `extract_backend`, or
+`search_providers` also recreates that space's egress relay before the
+managed runtime respawns, so the configured provider hosts become reachable.
+For a stack service change, `space apply` uses the same scoped image builder
+and then recreates that service. A successful image build alone is not a
+successful service activation; managed Compose files have no build sections.
+The base-image Dockerfile still shares a Go build stage and a `cliproxy` binary
+across control services. A cold `build toolhub` can therefore rebuild those
+stages even though Compose selects only ToolHub; use `dev-rebuild` for Go-only
+iterations while the dev base image exists.
+The common Broker binary is built with SQLCipher so existing activated
+encrypted stores remain readable. Its SQLCipher dependency layer is independent
+of the hub Go source tree, avoiding recompilation after a ToolHub-only edit.
+The generated model registry is group-readable (`0640`, mounted directory
+`0750`) for model-relay's `10001:<host-gid>` identity on Linux. Credential
+auth/env files retain their private modes.
 
 `hubctl build`/`up` run `docker compose config --quiet` first; supervisor
 mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
@@ -25,57 +58,147 @@ mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
 a second cliproxy on the shared alias — stop the conflicting gateway
 intentionally.
 
+M32 lifecycle acceptance runs separately with `go run ./cmd/devcheck
+m32-lifecycle <HEAD-image> dev|prod`; both exhaustive Docker recipes and CI
+include it. The runtime image and `hermes-hub:test-core` script/relay image
+must both match HEAD; CI pulls the selected environment's core role first.
+The gate also requires clean committed source; modified, staged or untracked
+source files cannot be combined with images labeled as the old HEAD.
+Its group leg uses a dedicated group home, simultaneous private/group runs
+and checks actual model prompts. Private runs also exercise right revocation
+and confirmed regrant through already-open MCP sessions.
+It needs isolated host ports 8090/8081 and creates only disposable
+users, runtimes and relays. Use CI for this fault test; local service iteration
+continues to use existing dev spaces and scoped rebuilds.
+The clock/outage/delivery fence can also run without Docker:
+`go test -tags integration -short -run '^TestM32ReminderClockAndDeferredDelivery$'
+./cmd/toolhub`. It uses real ToolHub/gateway code and temporary storage with a
+local channel fixture; it does not exercise agent execution.
+Assignment source reconcile, pause/resume, CAS and restart recovery can run
+with `go test -tags integration -short -run
+'^TestM32AssignmentReconcileAndRecovery$' ./cmd/toolhub` without Docker.
+Dreaming's real relay/PDP/vault path, two timezones, spring DST gap,
+commit-time revoke, restart deduplication and deferred fixture delivery run with
+`go test -tags integration -short -run
+'^TestM32DreamingRelayIsolationAndRecovery$' ./cmd/toolhub`. This uses temporary
+owners and controlled clock ticks; it does not prove process-crash recovery.
+Managed agent-tools calls acquire their own runtime lease, so direct file
+calls and watch probes do not require a preceding model run to warm the
+executor. ToolHub re-authorizes the tool after startup and releases the lease
+when the call finishes.
+On communication restart, replay keeps historical run receipts but skips a
+delivery whose channel identity is invalid. The rejected audience is never
+queued for sending; the recovery log records its job ID for investigation.
+
 ## User onboarding — the capability ceremony
 
-A new space renders and boots, but **renders no tools until capability
-records exist**: `workspace.yaml` wishes admit nothing, the shared ToolHub
-store is the authority, and a managed runtime binds a profile published for
-its exact `{principal, context, runtime, environment, generation}` tuple.
-Skip the ceremony and the user gets an agent with an empty tool surface.
+A new space has exactly six authored configuration inputs under
+`spaces/<id>/passports/`: stack/config/models/workspace/tools/grants.yaml.
+Only a validated published revision is consumed. Issued rights, credentials,
+channel links and generated outputs are separate protected or operational state.
+Tool selection grants no authority; a managed profile binds the exact
+`{principal, context, runtime, environment, generation}` tuple.
 
-1. **Scaffold** — `hubctl init --user <id>` writes `spaces/<id>`:
-   `agent.yaml` (operator-owned), `workspace.yaml` (capability wishes),
-   `scope.yaml`, `secrets.{dev,prod}.env`, `SOUL.md`, state dirs. Init never
-   overwrites; a fleet default lives in `policies/agent-default.yaml` /
-   `policies/workspace-default.yaml` when present.
-2. **agent.yaml** — set `model` and `model_url`. Managed mode requires
-   `model_url: http://model-relay:8318/v1`, `capability_mode: managed`, the
-   `capability_profile_id` you will publish below, and
-   `capability_generation` (start at 1). Ports are allocated at init; pick
-   free `oauth_port`/`browser_port` when they collide. Under managed mode
-   only carve-out toolsets may go `via: native`, hooks/memory/native
-   extensions are rejected, and raw MCP on a personal space is forbidden.
-3. **workspace.yaml** — the wish list (`tools:` map). Keep the template:
-   `file/documents/images/hh` via `toolhub`, `todo/memory/web/deep_research`
-   native, `browser: mcp`. Wishes still admit nothing — step 5 does.
-4. **Secrets** — fill `secrets.<env>.env` (`OPENAI_API_KEY` at minimum —
-   the model relay authenticates upstream with it). Never commit or paste
-   this file.
+1. **Scaffold** — `hubctl init --user <id>` creates the six authored passports,
+   `secrets.{dev,prod}.env`, `SOUL.md`, profile metadata and state directories.
+   Init never overwrites an existing space. Provisioning profiles use those
+   same six passport templates; no retired root configuration is created.
+2. **Stack/config/models** — author identity and service modes in
+   `passports/stack.yaml`; timezone, ports, channels and memory in
+   `passports/config.yaml`; default route, service endpoints, model IDs and
+   credential references in `passports/models.yaml`. Managed model traffic
+   reaches the per-owner model relay. Raw provider names are not logical route
+   IDs. Missing or malformed published configuration refuses startup.
+3. **Workspace/tools/grants** — declare filesystem boundaries in
+   `passports/workspace.yaml`, toolsets and profile/generation binding in
+   `passports/tools.yaml`, and requested operations in `passports/grants.yaml`.
+   Selection stays independent from issued rights; requested grants must fit
+   the operator policy and current issued ledger. These documents do not
+   activate until `space apply` publishes them.
+4. **Secrets** — provision the declared credential references through the
+   Broker/provider enrollment flow and fill required local deployment secrets.
+   Never put credential bytes in passports, commit secret files or paste them.
 5. **Capability records** — publish into the infra space's protected store
-   (`spaces/<infra>/runtime/toolhub/store.json`; the space whose agent.yaml
-   has `infra: true` or unset):
+   (`spaces/<infra>/runtime/toolhub/store.json`, or the activated `store.db`;
+   infra ownership comes from the published stack passport):
    - ceiling policy: `hubctl capability --kind policy --file policy.json
      --toolhub-store <store> --confirm` (the `policy_id` the profile binds)
    - profile: review a draft first with `--kind preview --file profile.json
      --toolhub-store <store>` (read-only old→new diff), then
      `--kind profile --file profile.json --confirm`. The record's
      `principal_id`/`context_id`/`runtime_id`/`environment`/`generation`
-     must equal the agent.yaml binding.
+     must equal the published stack identity and tools profile binding.
    - agent-tools surface: `hubctl capability --kind agent-tools --principal
      <id> --context <id> --runtime <id> --policy-version <v>
      --toolhub-store <store>` — registers the reviewed hub-tools catalog
-     definition and enables it for the identity.
+     definition and enables it for the identity. On a policy rotation,
+     `DeriveRights` (the passport-derived rights writer) repins eligible
+     credential-free bindings onto the new `policy_version` automatically —
+     the binding follows the pv the platform already moved the profile to.
+     The manual `--version <v>` flag repins the binding onto an
+     already-registered definition when the profile's selections pin that
+     version instead of the binary's compiled catalog; it remains the
+     operator path for credential-bearing bindings and catalog-version
+     moves. A pv-stale binding projects zero tools.
+     A new immutable definition digest also needs reviewed policy-ceiling and
+     profile-allow rules for the same permitted actions. `space apply` repins
+     selections but does not approve a new implementation digest; preview the
+     profile before confirming it. A digest mismatch hides those tools.
+     For a catalog-version move, run `hubctl connector catalog-enable
+     --toolhub-store <absolute-store> --definition hub-agent-tools
+     --version <v> --principal <id> --context <id> --runtime <id>
+     --policy-version <pv> --profile <profile-id> --env <env>
+     --extend-ceiling` after registering the definition. This operator step
+     adds the reviewed digest's rules and repins sibling profiles; repeat for
+     each principal that selects the new version.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra
    space's `communication.users.yaml` (`id`, `runtime_id`, `telegram_ids`,
    `features`, `policy_version`) — no entry, no routed jobs; an entry with
    empty `telegram_ids` still jobs but cannot notify.
+   The enrolled sibling runtime token is authoritative for its current
+   `policy_version`: communication-hub resolves it when routing each request,
+   and the generated automation routing uses it after sibling `space apply`.
+   A missing or ambiguous enrollment disables that sibling route. After a
+   manual channel edit, render the infra space and recreate only
+   communication-hub so its loaded channel IDs agree with ToolHub's routing file.
 7. **Bring up** — `hubctl doctor --user <id>`, then
    `hubctl up --user <id> --env dev|prod`. Up renders `generated/` (compose,
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
    and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
    The supervised runtime spawns on first demand (pin or job).
+   Missing credentials for an optional connector (including a selected MCP
+   server) produce a warning in `doctor` and `up`; operations requiring that
+   credential may fail, while the rest of the space can start.
+   Missing model or channel credentials and invalid security configuration
+   remain blocking errors.
+
+   A dedicated CLIProxy's init companion retries in the same container after
+   a temporary Broker failure; its healthcheck only passes after both the
+   session file and generated config exist. A persistent missing or revoked
+   grant still keeps the proxy unavailable and needs credential enrollment.
+
+   A published infra owner has two generated Compose plans: `compose.shared.<env>.yaml`
+   contains only `shared` services in the standalone `hermes-hub-shared-<env>`
+   project and preserves its original volume names; `compose.user.<env>.yaml`
+   contains that owner's `per-space` services in a separate project. `hubctl up`
+   starts the shared plan first, then the user plan. Other users keep one
+   per-space Compose project each. Run `hubctl` for lifecycle operations so a
+   later up cannot rejoin the two plans.
+
+   A *managed* space additionally needs, before `up`: an execution selection
+   (`execution.<env>.json` — `mode: supervisor`,
+   `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),
+   six authored passports published with `hubctl space apply --dir
+   spaces/<id> --env <env> --confirm`, and reachable model credentials — either `cliproxy: shared`
+   against the infra instance or `cliproxy: dedicated` with the space's own
+   `cliproxy/` directory (`config.yaml`). Dedicated instances are enrolled
+   with `hubctl models login --dir spaces/<id> --service <name>`: submit each
+   reviewed link (OAuth session + client key), re-run to record the grants in
+   `generated/model-grants.json`, and keep `OPENAI_API_KEY`,
+   `HUB_CLIPROXY_MGMT_URL`=`http://cliproxy-<id>:8317`,
+   `HUB_CLIPROXY_MGMT_KEY`, `HUB_CLIPROXY_AUTH_INDEX` in `secrets.<env>.env`.
 8. **Verify tool surface** — `docker exec <runtime> cat
    /config/tool-manifest.json` shows the projected manifest;
    `hubctl tools --workspace <dir>` lists the reviewed vocabulary. A user
@@ -93,13 +216,28 @@ old record in place), then archive or delete `spaces/<id>`.
 On by default. Each stack's ToolHub appends new stdout/stderr lines every
 15 s — scoped to its own project label plus runtime containers on that
 user's agent network — into `spaces/<user>/diagnostics/
-hermes-diagnostics.txt` (100 MB rollover, cursor prevents replay; bounded
+hermes-diagnostics.txt` (100 MiB active + at most three rotated files, seven-day
+retention; bounded
 per-pass and per-call so a stalled daemon cannot starve the cycle). Host
-supervisor mirrors its own logs to `.local/supervisor.log` (10 MB); the
+supervisor mirrors its own logs to `.local/diagnostics/supervisor.log` (10 MiB active +
+three rotated files); a persisted generation fences offset reuse. The
+mirror stays disabled if a host bind mount rejects the required directory
+permission change; supervisor still runs, but host diagnostics remain incomplete.
 collector copies only lines naming that space's owner as a whole token.
-Compose keeps Docker `local` rotation (10 MB × 3/container). Secrets are
-redacted at collection. Opt out: `diagnostics: false` in the infra space's
-`agent.yaml`, then `hubctl up`.
+Compose keeps Docker `local` rotation (10 MB × 3/container). Structured producers
+allowlist metadata; collection and agent projection exclude bodies/unknown fields
+before redaction and search. Source reads stream from oldest unread with timestamp
+and tie ordinal, never last-5000 tail. Data sync precedes atomic cursor replacement;
+replay keeps source_position. Source/cursor/rotation loss emits diagnostic_gap;
+unreadable stopped containers are not marked drained. Published passports currently expose no collector-disable field. Editing
+retired `agent.yaml` does not change collector configuration.
+
+Rotation requires the dedicated `.local/diagnostics/` directory bind; a single-file
+bind pins the obsolete inode. The directory contains diagnostics only, not host
+auth/control files. Existing stacks need an explicit re-render/recreate during
+CHG-0217 acceptance; do not deploy only a new collector against the legacy mount.
+Container/volume-loss proof and catalog rebind/respawn remain pending for managed
+spaces that have not been recreated with the new image.
 
 Gateway message logs carry IDs, status and `text_len` — never bodies;
 bracketed markers (`[voice message]`, `[credential input redacted]`) still
@@ -108,15 +246,16 @@ channel env + restart; clamped ≤1 h ahead, auto-reverts. Treat the combined
 file as private; `.local/` and `spaces/` are git-ignored — redact before
 sharing.
 
-Structured logs are JSON: `time`, `level`, `msg`, `component` plus
-`job_id`/`run_id`/`principal`/`status`. `hubctl trace <job_id> [--user]`
-merges supervisor + space logs + container logs by job identity, redacted;
+Structured lifecycle logs are JSON: `time`, `level`, `event`, `component` plus
+`job_id`/`run_id`/`principal`/`status`. `hubctl trace <job_id> [--user] --env dev|prod`
+merges only authority-bound supervisor/home/container metadata by exact job identity;
 cross-principal jobs are refused. `/status` reports caller-scoped health:
 p50/p95 receive→deliver latency, unconfirmed/failed counts, restart counter,
 average input tokens.
 
 Agent-visible diagnostics: `mcp__toolhub__diagnostics` returns the caller's
-own bounded, redacted lines and workload health, plus `excluded` projection
+own bounded lifecycle metadata across rotated files and workload health, plus
+`excluded` projection
 reasons (`policy_mismatch`, `disabled`, `revoked`, `stale`, `degraded`,
 `not_found`). Needs a `diagnostics` control-operation grant; scoped by
 authenticated identity, never arguments.
@@ -135,9 +274,51 @@ pin for one-command revert. `hubctl replay export --job <id> --spool <dir>
 -o <dir>` writes a sanitized incident bundle (digest-verified `--prompt-file`
 for sensitive jobs); `hubctl replay run --bundle <f> --replay-dir <dir>`
 replays it on an isolated spool with the channel forced to mock, printing a
-divergence line. `hubctl apply -f` accepts a declarative `space:` block that
-converges `agent.yaml`/`workspace.yaml` through full stack validation —
-secrets keys are rejected by construction.
+divergence line. Export with `--space` hashes the current complete published
+six-passport bundle; incomplete activation and document symlinks are refused.
+Space configuration is published with `hubctl space apply`
+from the six authored passports. The retired declarative `apply -f space:`
+flow is not an agent configuration authority.
+
+Storage accounting (SPEC-0088): `hubctl storage status --spool <dir>
+--toolhub-store <path>` prints per-owner allowlisted aggregates only —
+logical bytes, file counts, byte/file limits, completeness and a safe status
+word per storage owner (`communication-spool`, `toolhub-state`); paths, object
+names and raw errors never leave the process. `hubctl storage cleanup --spool
+<dir> [--retention 72h]` is a dry-run by default: it emits a digest-bound plan
+(scope, aggregate files/bytes, `sha256:` digest — never file names)
+over the owned tree, rejecting planted symlinks. `--apply
+--digest <sha256:...>` takes the spool writer lock, recomputes the plan and
+refuses a stale or foreign digest before running the bounded terminal
+compaction — aged done/failed records move to the archive, live
+pending/running state and open approvals are never touched. Offline apply
+also uses the gateway's configured terminal-file, archive-byte and usage-entry
+limits, so overflow is archived even when its file mtime is recent.
+Orphaned routine crash-replay sidecars older than retention are removed only
+when their live occurrence is absent; quarantined occurrences keep theirs.
+For an overfull schema-1-only ToolHub audit, stop the selected ToolHub and run
+`hubctl audit rollover --ledger <absolute audit.jsonl>` to review safe counts
+and the digest. Apply with `--apply --digest <sha256:...>` while it remains
+stopped. The command verifies the mode-0600 gzip archive before replacing the
+active ledger; keep that archive for historical investigation. The new live
+ledger begins with a rollover marker. Do not apply this path to schema-2 or
+segmented audit files; they require reconciliation of operation outcomes.
+
+## Overload admission
+
+ToolHub treats overload as explicit state: an exponential-moving-average of
+interactive request latency (decide, memory-context, tool-call, MCP) over a
+40 ms threshold sheds background endpoints (`/v1/memory-capture`,
+`/v1/admin/diagnose/`) with `429` + `Retry-After` before any work runs; a
+rising-edge log line marks the transition. The in-process automation tick
+defers its whole pass while the gate holds — due work keeps its catch-up
+window. Communication-hub's capture pump applies the matching client-side
+adaptive throttle (SRE `P = max(0,(requests−2·accepts)/(requests+1))` over a
+decayed 2-minute window, capped at 0.9 so a recovery probe always passes)
+plus a fail-stop of three consecutive transport or 429 refusals; per-event
+refusals never hold up siblings, and events older than 24 h settle as
+expired (the ack record is the audit trail). Depth beyond 32 pending
+captures logs `capture outbox depth=… oldest=…`.
 
 ## Operator mutations require `--confirm`
 
@@ -161,17 +342,35 @@ hubctl org sync-members --org acme --org-dir spaces/acme \
     --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
-hubctl capability --kind tools --settings <space> \
-    --set terminal=native,browser=mcp:playwright+ro --confirm          # surgical workspace.yaml write
+hubctl space apply --dir spaces/<user> --env dev --confirm             # publish passports/tools.yaml with separate grants.yaml
 hubctl governance --kind rule --scope user --user alice \
     --section native:terminal --effect allow --reason "reviewed" --confirm
 hubctl governance --kind grant --user alice --section user_mcp --expires 72h --confirm
+hubctl governance --kind right --user alice --cap workspace --op write --expires 168h --confirm
+hubctl governance --kind revoke-right --user alice --grant right-alice-workspace-write --reason "offboard" --confirm
 ```
+
+`--kind right`/`revoke-right` mint and revoke RBAC capability grants
+(`capability.operation` from `rights.yaml`; `--bind` scopes path/model/
+toolset/target). Issuers are enforced against the vocabulary — cross-subject
+rights are never operator-minted. Passport-derived `right-<user>-*` rows are
+rewritten on every publish; manual grants live alongside and stay bounded
+by the published ceiling.
 
 Connector verbs run identically on three surfaces — `connector_*` tools,
 `hubctl connector <verb> --target <sel>` (`--profile`/`--env`/`--generation`),
 and `POST /v1/connectors:*` on the control listener — all through
 `ControlPlane.InvokeConnector`, one journal.
+
+Against a running ToolHub prefer `hubctl connector <verb> --service`: it posts
+the verb to `/v1/connectors:invoke` so the live listener owns the store write
+and the CLI never trips the save-side stale fence. The bearer resolves from
+`--token`/`HUB_TOOLHUB_TOKEN` or the matching principal in the
+`toolhub-tokens.json` found walking up from `--toolhub-store`;
+`--toolhub-url`/`HUB_TOOLHUB_URL` overrides the default `127.0.0.1:8090`.
+A bare `status --service` reads `GET /v1/connectors`. `link` and `confirm`
+stay file-mode — they mint and read protected nonces, which never cross the
+service surface.
 
 Team connectors (ADR-0058) are operator-published, not conversational:
 
@@ -227,20 +426,43 @@ rotates leave the connection `degraded`. `HUB_CREDENTIAL_STORE` must be set
 on `hub-toolhub` for decrypt-and-inject; it is inert on `hub-communication`
 (the gateway never opens the store or audit ledger).
 
+Legacy owner credential writes require the configured audit ledger. A Set batch
+uses one durable owner-scoped admission and completion reserve; validation runs
+before any write. An interrupted batch fences further credential mutations for
+that owner until reconciliation; another owner does not inherit that fence.
+Post-effect audit/backend/projection failures return `uncertain`, preserve
+ciphertext and quarantine attempted records as degraded, never delete them as
+rollback. Updating one value preserves siblings in a readable multi-key object;
+unreadable siblings are not implicitly replaced. Rotation must target a connection
+owned by the same owner. Invalid rotation still closes credential access; only a
+verified downgrade is a known failed execution. Delete/terminal-disable continue
+access revocation even if audit fails, and unverified cleanup returns uncertainty.
+`secret activity` shows operation/phase/auth/execution/delivery fields without
+credential dictionary names. This is not a migration or a live provider receipt.
+
+The shared runtime enrollment and model-admin maps stay on the same inode for live bind mounts and use mode `0640` with the operator group, matching the agent UID plus operator GID used by Compose. Resetting them to owner-only `0600` after a root render makes the service unable to read its authorization map.
+
+## Effective system instructions
+
+Skill descriptions are truncated at Unicode character boundaries. Materialization rejects invalid UTF-8 before replacing the previous effective SOUL. This prevents Hermes from silently skipping the whole system contract on a decoding error. After a prompt rollout, verify the mounted file with Hermes' own `load_soul_md`, including the onboarding section; tool endpoint readiness alone does not prove the model loaded its instructions.
+
 ## Human-action links
 
 `/credentials`, `/confirm`, `/remove`, `/connect`, `/device` are one-time
 `?t=` URLs; spent/expired → 410. The stable wizard link `/connect/<id>?k=`
-is the exception: one URL per onboarding that renders the current phase
+is the exception: one URL per intake cycle that renders the current phase
 (credentials form, broker hop, confirm, OAuth interstitial, progress,
 result) and self-refreshes through the flow; it expires with the onboarding
-and dies on terminal phases' TTL. Default target is loopback. For other-
+and dies on terminal phases' TTL. Explicit `connector_edit action=reauth` rotates the wizard capability and opens credential entry; it never sends the old confirmation page as a new credential form. Default target is loopback. For other-
 device access publish TLS and set `HUB_PUBLIC_ORIGIN=https://<host>` (https
 only — anything else mints loopback) + `HUB_PUBLIC_LISTEN=<addr>` on
 hub-toolhub; that listener serves only human-action paths (control/gateway
 → 404) and the gateway accepts an https `form_url` only when host equals the
 configured origin exactly. `hubctl connector link --onboarding <id>` prints a
-pending URL; `--confirm` completes an awaiting-confirmation onboarding.
+pending URL and renews an expired confirmation before printing it; `--confirm`
+completes an awaiting-confirmation onboarding through the operator CLI grant.
+The confirmation result prints only phase, status, onboarding, binding and
+connection state; it does not print recipe or credential metadata.
 
 ## Outbound exposure (tunnels)
 
@@ -248,7 +470,24 @@ Opt-in per environment: `features.exposure` + a reviewed
 `connections/exposure/config.yaml` (provider `sish`, pinned relay host keys,
 `zone`, `key_ref` file:/broker:, bounds, named endpoints). Render fails
 closed without a valid config; the config mounts read-only at
-`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into the runtime env.
+`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into both Compose and
+supervisor-spawned runtimes. `exposure_list` reports the declared endpoint names
+and target classes even when no tunnel is open; it does not prove a service's
+content is safe to publish.
+The mounted directory must be traversable and its config/key files readable by
+the runtime's effective group; keep the private key inaccessible to others.
+Render and supervised spawn now validate the reviewed config and each `file:`
+credential as uid 10001 with the runtime's primary gid before starting. The
+same connection spec supplies both Compose and supervisor mounts and env paths.
+Managed sish uses the per-space egress relay: its only non-HTTPS CONNECT target
+is the exact host and port from the reviewed exposure config. The stack
+passport must declare `egress-relay: {mode: per-space}` for this space; the
+relay host does not gain generic HTTP egress. The executor never falls back
+to a direct relay dial after proxy refusal. Render and supervised spawn reject
+a managed sish configuration when that per-space relay is undeclared.
+An edit to `connections/exposure/config.yaml` is not hot-reloaded by an
+already-running managed runtime. Respawn that owner's runtime after the edit;
+verify `exposure_list` again before relying on the new endpoint set.
 `hubctl exposure enrol --dir <space>` materializes the relay keypair
 (file refs) or stages a broker grant (broker refs) and prints VPS enrolment
 steps — it never prints the private half.
@@ -260,6 +499,14 @@ target and public name are composed by the hub from the reviewed config
 audited (`audit/exposure.jsonl`); opens are capped by `max_exposures` and
 reaped at `lifetime_seconds` (background reaper; idle reap deferred until a
 provider-side traffic signal exists).
+Open requires durable audit admission and completion reserve. An uncertain error
+or list/status `uncertain=true` requires reconciliation before repeating open;
+unknown effects still consume capacity. Requested close still attempts to stop
+access if audit fails and returns uncertainty instead of a confirmed receipt.
+Open also holds audit space for closing that exact resource. Verified close uses
+the hold, preserves an unknown opening as unknown, and permits a fresh resource
+admission. A failed close retains its admitted cleanup for a later requested stop;
+an unverified close never releases the durable target fence.
 
 `hub_public_listener` targets resolve through `HUB_PUBLIC_TARGET` —
 set it to toolhub's public-listener address (e.g. `HUB_PUBLIC_LISTEN=0.0.0.0:8091`
@@ -349,6 +596,61 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   configuration` until config.json + key/ledger material exist; migrating
   means copying volume content while stopped (`docker run --rm --user root
   -v old:/from -v new:/to … cp -a`), then `compose up -d`.
+- Broker durable store runs on encrypted SQLCipher (ADR-0087): `primary.db`
+  beside the ledger plus `recovery.db` on the recovery volume, one ATTACH
+  transaction per commit, sealed manifest + `sqlcipher.activated` markers.
+  Migrate with `hubctl store-migrate --dir spaces/<user> --env <env> --broker
+  --apply` (stops the service, runs `credential-broker store-migrate` in the
+  service image against its volumes) then `hubctl store-activate … --broker
+  --apply` (verifies the manifest, flips the markers, retires `ledger.bin`
+  into `substrate-backup/` and restarts the service). The dev image build
+  needs a CGO SQLCipher toolchain — `hubctl dev-rebuild credential-broker`
+  uses the pinned `build` stage of `services/credential-broker/deploy/Dockerfile`.
+- Bounded hot audit retention (SPEC-0087 R3/R5): set `audit_hot_max_bytes`
+  and `audit_archive_dir` together in the broker config — an audit append
+  crossing the byte cap fails as a visible `audit retention full` (HTTP 507)
+  instead of silently deleting history. `credential-broker store-retain
+  --config PATH` exports the hot audit prefix into an identity-sealed
+  `.seal` archive plus an HMAC-authenticated `.manifest.json` and prints a
+  JSON report; `--destroy` additionally prunes the verified source prefix in
+  one transaction across both legs and persists `audit_floor`. Existing
+  archives are verified, never overwritten — a tampered archive or manifest
+  fails closed and never authorizes a prune. `/v1/events` answers report
+  `earliest_available`/`gap` when a client's cursor predates the floor.
+- Records history rotation (SPEC-0087 R5.2): `store-retain --config PATH
+  --records --keep-bytes N` exports the records-chain prefix into a sealed
+  `records-LO-HI.seal` archive + manifest that re-verifies the internal hash
+  chain standalone; `--destroy` deletes the verified prefix across both
+  legs, re-anchors `records_floor`/`records_floor_prev` on the archived
+  tip hash and VACUUMs the files — the physical shrink the byte cap alone
+  never delivers. Reopen verifies the retained chain from the floor; a
+  witness head below the floor (or lost on a rotated store) fails closed.
+- Archive budgets bound the archive directories themselves:
+  `{audit,records}_archive_max_bytes` and `{audit,records}_archive_max_age_days`
+  make the tick permanently delete the oldest **verified** archive pairs
+  over the limit — except the newest pair per directory, which carries the
+  provenance link to the retained floor. Foreign or tampered manifests are
+  never deleted (fail-closed). Zero = unbounded (default).
+- Automatic high-water maintenance: `audit_auto_retain` /
+  `records_auto_retain` are the explicit destructive policies. On the
+  service tick, hot audit bytes over 80% of the audit cap export (and prune
+  under the destructive flag); hot records bytes over 80% of the ledger cap
+  rotate to a half-cap retained suffix (and prune + compact under the
+  destructive flag). Without the flags the same checks only export —
+  admission still stops visibly at the cap, nothing is silently deleted.
+  The outcome persists in journal meta (`retain_last_ok`/`retain_last_error`)
+  so a failing cleanup stays visible across restarts; idle and
+  already-in-state ticks write nothing.
+- Ledger byte cap is a visible admission stop, not a poisoned store:
+  `max_ledger_bytes` overflow answers ErrFull (HTTP 507 via
+  `ErrRetentionFull`), the journal stays healthy and rotation frees
+  headroom for later writes.
+- Provider object cleanup retries with exponential backoff (30s base,
+  doubling, capped) and durable `attempts`/`next_at` — a persistently
+  failing provider is not hammered at a fixed rate.
+- `credential-broker store-sweep --config PATH` runs the same bounded
+  object-cleanup pass offline with the service stopped — drains abandoned
+  and retired provider objects and prints a JSON `{"swept": N}` report.
 - File-delivery contracts (e.g. Google service-account JSON) need a shared
   tmpfs at the same absolute path on broker, controller and daemon — set as
   `credential_mount_root` in the controller config; requests reject without
@@ -358,19 +660,19 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   proxy environment parameter` — move offending names to `environment` and
   restart toolhub.
 
-## Migrations
+## Space publication and data maintenance
 
-All explicit, dry-run first, never overwrite:
+Space publication is an explicit dry-run followed by `--confirm`:
 
 ```text
-hubctl migrate-spaces --user artem --org acme [--apply]
+hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile six authored passports, publish + reconcile
 hubctl spool migrate --spool <dir> --state <dir> [--apply]   # legacy knowledge tree
 hubctl context backup|restore|export|purge [--spool <dir>] [--confirm]
 ```
 
-`migrate-spaces` rejects symlinks, ID collisions, unrelated data and active
-runtimes; reports JSON paths/counts/checksums, no secret values. `spool
-migrate` copies (never moves) knowledge into `<state>/knowledge/<principal>`;
+The publisher checks all six authored files, current issued rights and the
+organization ceiling before switching the revision. `spool migrate` copies
+(never moves) knowledge into `<state>/knowledge/<principal>`;
 other spool dirs (`schedules`, `occurrences`, `watchers`, `digests`, `tasks`,
 `events`, `outbox`, `mappings`, `conversations`, `inbound`, `callbacks`) keep
 their paths. `context restore` refuses another user and never reactivates
@@ -378,8 +680,120 @@ revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
 
+A `config.supervision` change needs no respawn: `space apply` re-renders
+`runtime.<env>.policy.json` and the supervisor picks it up on its next
+decision sweep — `idle_stop` bounds warm retention, `restart: never` or
+`watchers.stack-health.protected` keep the container observed but never
+remediated, `watchers.stack-health.every` throttles the health-probe
+cadence. Port and channel changes (`config.ports`, `config.channels`) are
+recreate-class: only the owning container restarts — `hermes-runtime` is
+supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
+re-spawn it (env-baked config needs a new container, unlike a deferred
+restart's remount); the respawn reads the current published policy version
+before spawning, so a rotated policy does not reuse the stale runtime binding.
+A shared gateway such as `communication-hub` recreates
+in the infra space's project; a port leaf whose owner the revision doesn't
+declare is dead config and plans no recreate. From the operator host the
+supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
+reachable endpoint or the respawn cannot be signaled.
+During `space apply`, the operator sends the exact apply revision with the
+respawn request. The supervisor accepts it only while the matching journal is
+in its effects phase and the published pointer names the previous or new
+revision. This lets the apply finish while the journal correctly blocks
+ordinary ToolHub decisions; other runtime restart requests still use the
+`agents.restart_self` decision. Keep the endpoint on the control network or
+expose it only temporarily on local loopback for host-side apply.
+If an interrupted effects phase included an image rebuild, verify the rebuilt
+image tag and running containers first. An operator may then rerun
+`space apply --confirm --recover-rebuilt-image` to restore the prior revision,
+replay service effects, and retry publication. Without that flag, recovery
+remains blocked for an uncertain image build.
+
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
-`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
+`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
+(`spaces/<id>/vault`) adds three verbs: `hubctl memory import` parses the
+native files into reviewable draft cards staged under
+`vault/runtime/memory/import` (directive candidates are review-only — nothing
+reaches `memory/CORE.md` automatically); only `import --apply` commits them
+through the governed writer, and re-import never clobbers an existing card.
+`hubctl memory eval --questions <set.json> [--out-dir .work/tmp]` runs the
+live question set through the model relay (`HUB_MODEL_RELAY_URL`/
+`HUB_MODEL_RELAY_AUTH`) with top-4 vault evidence as context and writes a
+timestamped judged report — relay failures are recorded per question, mocks
+never count as live. `hubctl memory vacuum` dry-runs the superseded purge
+set; only `vacuum --apply` deletes, and git history keeps everything
+recoverable. `hubctl memory prune` dry-runs the leaf lifecycle report
+(fold/expire/keep predictions); only `prune --apply` executes, and every
+action journals to `memory/REVIEW.md` plus the localized morning digest.
+
+Daily leaves are bounded by two opt-in agent settings, both off by
+default: `memory_leaf_fold_bytes` (>0) folds a *completed* oversized
+leaf at the next ToolHub night tick — audit-kind block bodies (routine, system,
+probe, compaction, untrusted, background replies) collapse to stub
+lines while mem:id headers and interactive owner/agent blocks stay
+byte-identical; oversized eligible days first get a `long_summary` from
+the same rollup call so detail lands in `summaries/daily/`.
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window —
+`git rm` + commit + prov.db row drop — but only after the day's rollup
+state is complete and its daily summary exists; unverified days are
+kept and reported, never deleted. Expired bytes still live in the
+vault's git history — true erasure needs a history rewrite, not this
+knob.
+
+The ToolHub night clock reads each owner's published `memory.nightly_rollup`
+and `runtime.timezone` (default 04:00 UTC). Its protected occurrence and
+day receipt live under that owner's automation `system/dreaming/` subtree;
+vault checkpoints live under `vault/runtime/memory/night/`. A disabled memory
+passport or missing `memory.dreaming` right prevents a model call and vault
+commit. The published revision must match the active capability profile;
+an incomplete apply denies admission and each subsequent commit guard.
+Failed work stays pending; a communication outage leaves the digest
+in ToolHub's delivery outbox. `model-relay-caller.auth` is a rendered,
+caller-only file mounted read-only for the matching owner; never inspect or
+copy its contents into diagnostics. Rendering gives the service group read access
+(0640); ToolHub joins the host file group so nightly work can read the mount.
+
+An external memory backend rides the hub-owned provider seam, never the
+upstream plugin path: select `memory_provider: {via: native}` in the
+core/extended toolsets of `passports/tools.yaml`, behind the separate
+`native:memory_provider` governance grant. Declare
+`memory.provider: {adapter: hindsight, url: <absolute http(s)>, token_env: <name>}`
+in `passports/config.yaml`; token_env names a secret variable, never its value.
+The render writes `vault/runtime/memory/provider.json`; in
+managed capability mode the endpoint host joins the egress allowlist, and
+disabling the capability removes both. `hubctl memory replay` streams the
+`prov.db` audit spine into the provider — each entry's bank id minted from
+`runtime/memory/scope.key` (hub-generated, never in the space) over
+env×principal×audience — checkpointed per entry at `runtime/memory/
+replay.cursor` so an interrupted migration resumes and a re-run captures
+nothing twice. `hubctl memory export-honcho --file <export.json>` converts
+a Honcho conclusions export (the list Page or the piped array) into
+`source: migrated` draft cards in the import staging lane — review, then
+`--apply` commits. If the provider is down the vault is unaffected; the
+adapter reports degradation honestly (capture/search/export and health are
+the only lanes — recall and governed write are `unsupported`).
+
+With `knowledge_ui` on (requires `memory_vault`) no `open-knowledge`
+container renders (M32/#520): ToolHub owns the vault, so the feature can
+mount nothing — the upstream editor cannot act as a governed-API client,
+and its editor stays explicitly unavailable. The separate `memory_open`
+agent tool opens a read-only ToolHub memory view in the owner's private
+channel. Its bearer link lasts one hour and is rechecked against the
+published memory switch, current selection and `memory.search` grant on
+every request; it has no edit endpoint. `hubctl doctor` reports the upstream
+editor limitation; a space whose
+published `stack.yaml` still declares `open-knowledge` fails the
+declared-but-unrendered check until republished without it (the vault
+itself, `.ok/` state and history are untouched — nothing is deleted).
+`ui_port`/`ui_bind` validation is unchanged (loopback-only, port range,
+no collisions, requires `knowledge_ui`) but publishes nothing while no
+service renders; `ui_expose` stays the reserved M18 hook and setting it
+still fails honestly. Knowledge reads and edits go through the governed
+ToolHub tools: `memory_search` reads memory content and `memory_card
+op=propose` plus the owner's verified confirmation is the only edit path —
+an editor write that bypassed ToolHub admission is impossible by
+construction. `knowledge_ui_write` stays deferred (#422) until a
+governed-API knowledge surface exists. Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only
@@ -396,7 +810,8 @@ volume to encrypted storage. Ciphertext backups via `hubctl secret backup`
 must not include the key. Never `docker compose down --volumes` unless
 deleting data intentionally. Restore org and user homes separately; never
 merge memories, Telegram sessions or provider credentials. Back up the
-spool's `events/` with jobs/mappings/outbox — receipts repair incomplete
+spool's `event-state/`, `run-events/`, `provider-dedup/`, cursor initialization
+markers and `event-layout.json`/`events` format fence with jobs/mappings/outbox — receipts repair incomplete
 handoff on restart.
 
 ## Images and builds
@@ -434,17 +849,33 @@ managed config from the reviewed `browser`/`browser_act` capability
 (same `hub:browser`/`hub:browser_guest` governance gate, no connector
 or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
 in-container materialization so the attested config matches.
+Managed `browser_open` creates its own Playwright tab in the chosen profile;
+`browser_act action=close` closes that tab. `action=wait` uses `value` as
+visible text or, when numeric, seconds in the interval (0, 30]. Captures
+return a path under the shared workspace's `browser/` directory; the named
+file must exist there before treating a capture as delivered.
+Both Playwright MCP profiles allow 15 seconds for a browser action; the
+upstream 5-second default timed out on screenshot rendering and footer
+stability for a live page. A failed capture still needs a fresh call and a
+verified file before it is reported as complete.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
-`COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes
-retag-orphans before/after and caps builder cache at 8 GB.
+`COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; full `hubctl` builds prune
+retag-orphans before/after and cap builder cache at 8 GB. Scoped builds and
+`dev-rebuild` retain the shared cache; run `just docker-clean` deliberately
+when disk use needs reclaiming.
 `HUB_DOCKER_CACHE_FROM`/`_TO` forward `--cache-from/--cache-to` (CI uses
 `type=gha`); builds always `--load`.
 
 `dev-rebuild` (dev only, service must already run):
+
+The supervisor starts isolated Starlark helpers from the core image, which
+contains `communication-hub`; the agent runtime image has no daemon helper.
+`HUB_SCRIPT_IMAGE` selects an explicit core image for a pinned deployment.
 `go run ./cmd/hubctl dev-rebuild --dir spaces/alice --env dev <service>` —
 compiles one Linux binary, overlays the dev image, recreates only that
-service; restores prior image on failure. Names: `communication-hub`,
+service, and copies the active immutable platform catalog into the overlay;
+restores the prior image on failure. Names: `communication-hub`,
 `credential-broker`, `hub-media`, `toolhub`, `workload-controller`,
 `supervisor`, `hermes-runtime`, `model-relay` (supervisor mode records it for next spawn;
 a full `hubctl up` returns to base). Verify with `docker ps --filter
@@ -452,15 +883,18 @@ name=hermes-hub-<user>-dev-<service>-1` → `…-dev-<service>:local` + `Up`.
 
 Cleanup: `just docker-clean` drops stale `hermes-hub:*` tags unreferenced by
 `spaces/*/compose*.yaml`, stopped `hermes-*` containers pinning dangling
-images, orphan `hermes-build-*` objects; `--deep` also drops
-`hermes-build-state-shared` — run only with no artifact build in flight.
+images, orphan `hermes-build-*` objects. The supervisor's matching runtime
+image is retained while a core/control Compose image references that release;
+`--deep` also drops `hermes-build-state-shared` — run only with no artifact
+build in flight.
 Windows disk reclaim: `scripts/reclaim-docker-disk.cmd` (admin; stops Docker
 Desktop/WSL, Optimize-VHD).
 
 CI: `image` job runs `devcheck docker-publish <target>` → immutable
 `ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` + moving `edge-<target>`;
-`containers` job runs `just docker-check-prebuilt` (`docker-pull` resolves
-sha tag, `edge-*` fallback, warns when pulled revision ≠ local HEAD). Local
+`container-gates` runs independent contract scenarios; `containers` aggregates
+them. Local `just docker-check` uses prebuilt images: `docker-pull` requires an
+exact HEAD tag and matching revision label, failing before retag on mismatch. Local
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
 
@@ -476,7 +910,7 @@ executor — see SPEC-0016/CHG-0018).
 In supervisor mode the runtime joins the space's project network and mounts
 its `broker-secrets-runtime` volume read-only. Footprint (dev host sample,
 2026-10-07): always-on ≈160 MiB per stack + ~410 MiB per warm runtime;
-cold start ~60–80 s, warm lease ~0.6 s; `--max-runtimes` (8) is the
+cold start ~60–80 s, warm lease ~0.6 s; `--max-runtimes` (16) is the
 concurrency bound; crash-loop denial after 3 crashes/10 min window.
 Re-run the protocol on the target host before fixing SLOs — CHG-0100.
 
@@ -505,6 +939,10 @@ calls, `HUB_RUN_STALL_TIMEOUT` (15 m) in-runtime stall → confirmed stop.
 
 Job phases: `queued → waking → running → waiting_for_approval →
 uncertain → completed|failed|cancelled|interrupted` + `unconfirmed` flag.
+Telegram sends one editable `queued` status with an elapsed timer as soon as
+the durable spool accepts the update, before supervisor admission. A missing
+runtime run ID must not suppress that status. Rights decisions use a bounded
+20-second ToolHub client timeout and still deny on timeout.
 The reconciler re-observes unconfirmed jobs ≥30 s (same run identity, or
 `/v1/readmit` with the atomic `/state/admissions/` receipt — exact input +
 session + idempotency key; receipts <23 h only). A job unsettled past its
@@ -521,9 +959,10 @@ Canary: `HUB_CANARY_INTERVAL` runs a periodic end-to-end mock-conversation
 probe requiring exactly one `file_list` receipt + delivered reply; journal
 `canary.jsonl` (1000 lines), one notice per new failure class + one recovery.
 
-Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (336 h) —
+Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (default 72 h) —
 live work, open approvals and in-flight receipts never removed. `occurrences`
-archive holds 48 h detail + dedup receipt for the retention period; catch-up
+archive holds 48 h detail + dedup receipt for the retention period; old
+orphaned probe/digest/script receipts are cleaned after retention. Catch-up
 ≤1 h, ≤16 occurrences per tick; malformed → `occurrences/quarantine`
 (investigate before clearing). `HUB_MOCK_DIR` keeps mock/e2e capture out of
 the production spool. Never delete uncertain mappings/leases to force a
@@ -531,13 +970,14 @@ retry — the original run may already have acted externally.
 
 Concurrency: in-flight serialization is per conversation lane
 `(principal, context, conversation)` — forum topics and DM tasks of one
-user run in parallel inside the shared context runtime, FIFO inside each
-conversation (ADR-0090, amends ADR-0025). `HUB_CONTEXT_MAX_PARALLEL` (8)
-caps a context's lanes below the upstream Hermes `max_concurrent_runs`
-(10); `HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation
-still rotates by scope so one owner's sessions cannot crowd out others.
-Ceilings: shared workspace/`MEMORY.md` is last-writer-wins across lanes;
-one browser sidecar per space; a runtime restart hits all its lanes.
+user run in parallel in up to five managed runtime containers, FIFO inside
+each conversation (ADR-0090, amends ADR-0025). Each container has an exact
+MCP job/run identity and shares Hermes session history with its owner.
+`HUB_CONTEXT_MAX_PARALLEL` defaults to five and cannot raise the ceiling;
+`HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation remains
+per scope. A sixth session waits. Shared workspace writes can conflict,
+and the browser sidecar remains one per space. A lane restart affects its
+own active run.
 
 Gateway/session ops: `/new`, `/use`, `/delete`, `/sessions`, `/session`
 manage per-task sessions (each task = own durable Hermes session; forum
@@ -545,29 +985,26 @@ topics supported; slash-command list enforced + registered as bot menu).
 `/usage [session]` reads the journal/quota; session mode reads the pinned
 Hermes session API and renders `unknown` where upstream cannot report.
 Long Telegram turns queue via `display.busy_input_mode: queue`; heartbeat
-`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit.
+`HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit. The
+gateway queues one editable status immediately on acceptance and updates its
+elapsed time while the runtime is waiting to start; typing resumes only after
+run admission. Out-of-process ToolHub rights checks retain fail-closed behavior
+and allow up to 20 s for a decision under host load.
 Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
-`scope.yaml` IDs are immutable; Telegram links are provisioned only in
+Exception: connector-prepare notices are the one bounded auto-retry — the
+delivery loop sweeps `outbox/failed` every 15 s and requeues them with
+NotBefore backoff (30 s → 2 m → 10 m), at most 4 sends and only while the
+record is fresher than one hour. A newer prepare version supersedes the
+record instead; an exhausted or aged record stays `failed` for audit, and a
+requeue logs `gateway prepare requeue deliveries=N`.
+Published stack identity/scope-kind bindings are immutable; Telegram links are provisioned only in
 trusted host config after verifying the numeric account ID — never link
 from username/email/message-request.
 
 ## Per-context execution rollout
 
-`hubctl execution-audit --spool <dir> --user <u>` then
-`hubctl select-execution --dir spaces/<u> --env <e> --execution-mode
-supervisor --supervisor-url <url> --native-cron disabled
---compatibility-release 0.2.1 --apply`, then `hubctl up`. Drain first; the
-CLI refuses claimed/admitted jobs and uncertain outcomes; apply verifies the
-audited path is the stopped gateway's actual `/data` mount and requires zero
-enabled native cron jobs (checked against a disposable read-only home
-snapshot). Container deployment can select `http://supervisor:8876` —
-no host ports, private DNS (ADR-0040). Host mode needs the listener on a
-private interface reachable from both host CLI and gateway container, with
-`HUB_SUPERVISOR_AUTH` to both; on port change re-render and recreate
-communication-hub + toolhub. Rollback: drain, `--execution-mode static`
-without URL (+`--native-cron unmigrated` if needed), keep same spool/home;
-do not reactivate native definitions already migrated to hub occurrences.
+See [runtime operations](runtime-operations.md#per-context-execution-rollout).
 
 ## Skill git installs
 
@@ -592,9 +1029,10 @@ list` shows mirrors and the skills each feeds; `sources remove --id <id>`
 deletes the mirror — installed skills keep working but lose update
 tracking.
 
-Sources are https GitHub/GitLab only; a self-hosted GitLab needs
-`gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
-third `skillgit` approval tuple, then `hubctl up`. Registry locators also
+Sources are https GitHub/GitLab only. The current passport schema has no
+self-hosted GitLab host field; retired `workspace.yaml` cannot enable that
+override. Do not patch generated environment files to bypass admission.
+Registry locators also
 work: `https://www.skills.sh/<owner>/<repo>[/<skill>]` maps to the GitHub
 repository and resolves `<skill>` against the discovered candidates — an
 unmatched slug returns the candidate list instead of guessing.
@@ -626,7 +1064,7 @@ rejected — dead links out of `SKILL.md` itself stay hard errors. Zip
 extraction is bounded (entry count/bytes, path traversal and special
 files refused); binary payloads like images in `assets/` survive intact.
 Inside a runtime the agent reaches the same path with
-`skill_manage action=install_local` and a workspace-relative `path` —
+`skill_edit action=install_local` and a workspace-relative `path` —
 inbox downloads staged by `inbox_fetch`, unpacked archives, checkouts.
 
 ## Skill quality: lint, stats, evals
@@ -656,8 +1094,9 @@ enforced by tests.
 
 ## SSH capability operations
 
-`ssh` entry in `workspace.yaml` `tools:`; `ssh_write`/`ssh_shell`/`ssh_tunnel`
-stack on it. Config lives in `connections/ssh/config.yaml` mounted read-only
+Select the SSH toolset in `passports/tools.yaml` and grant its requested
+operations in `passports/grants.yaml`; selection alone grants no access.
+Config lives in `connections/ssh/config.yaml` mounted read-only
 at `/state/ssh` — render fails when missing/invalid; rotate by editing +
 `hubctl up`. Host keys are mandatory, pinned per alias (full public key
 preferred — a bare `sha256:` fp needs one pin per offered key type).
@@ -666,9 +1105,13 @@ the `ssh-key` contract with a per-dial lease under `ssh-<alias>` (needs both
 `broker:control` + `broker:runtime` audiences). Command/path allowlists are
 anchored, `*` the only wildcard; `sudo: passwordless` runs `sudo -n` only
 when the inner command matches. Shells/tunnels live in-runtime — restart
-closes them; tunnel listeners are loopback-only, never published. Every op
-appends a bounded receipt to `runtime/audit/ssh.jsonl` (exit codes, byte
-counts — never output or key material). Revoking a grant or deleting a host
+closes them; tunnel listeners are loopback-only, never published. Durable audit
+admission/reserve precedes effects; bounded receipts contain counts/IDs, never
+paths, output or key material. Uncertain outcomes require reconciliation before
+repeating; close still attempts access termination when audit fails.
+Successful shell/tunnel opens retain a scoped cleanup audit reserve until their
+verified closure; the hold survives other writers and journal rotation.
+Revoking a grant or deleting a host
 takes effect at the next dial. Bare-metal smoke: `hubctl tools` serves the
 same MCP surface over stdio against a real sshd
 (`HUB_USER_ID`, `HUB_STATE`, `HUB_SSH_CONFIG`, `HUB_SSH_*` feature vars) —
@@ -682,14 +1125,29 @@ outage fails closed). Provisioning: seed `media.private`/`server.crt` into
 `broker-secrets-media` (0600/uid 10001), register the public key with
 audiences `broker:control`+`broker:runtime`, install the
 `media-provider-key` contract, create credential + grant bound to workload
-`hub-media` (execution `dedicated`, policy_version `hub-media` — stable
+`credentialbroker.MediaBinding(<infra-owner>)` for both binding and workload
+(execution `dedicated`, policy_version `hub-media` — stable
 service-level identity), write the grant id to `spaces/<u>/media.grant`,
 re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 `OPENAI_API_KEY`/`FAL_KEY` env; a fal engine with neither refuses to boot.
 
 Operational facts proven by live acceptance:
 
-- `media.grant` reaches the container only through `hubctl up`/`down`,
+- Ten managed spaces on one infra (`m29-acc-01..10`, each with a dedicated
+  cliproxy + model-relay) project distinct bounded tool surfaces and answer
+  real provider calls independently: 10/10 `chat/completions` 200,
+  8 distinct live MCP core projections from 10 passports, one 43-selection
+  profile held to a 20-tool direct core, a non-admitted call denied as
+  `unknown tool`, and unauthenticated MCP requests 401. Publishing the
+  capability records requires policy → profile → `agent-tools` → sibling
+  token enrollment (docs/services/toolhub.md); a profile pinning an older
+  `hub-agent-tools` implementation digest than the bound version resolves
+  to zero admitted tools, and a ToolHub image older than the profile schema
+  (`core_tools`) fails its store load outright — rebuild via
+  `dev-rebuild toolhub` before judging profile data.
+
+- `media.grant` resolves from the infra owner for shared hub-media, including
+  secondary-space apply/rebuild. It reaches the container through `hubctl`,
   which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).
   A raw `docker compose up` renders the variable empty: hub-media then runs
   the `remote` engine with no credential, sends no `Authorization`, and the
@@ -726,14 +1184,17 @@ than loudly.
 
 Files and records per owner:
 
-- `spaces/<owner>/agent.yaml` — `user: <owner>` (this is the principal id
-  rendered everywhere), `model:` must be a **registry id** from models.yaml
-  (e.g. `default`), not an upstream model name. Upstream names with dots
-  (`gemini-3.8-flash-high`) fail `registryNamePattern` validation.
-- `models.yaml` — registry ids are logical names without dots (`default`,
-  `alt`); each ladder hop's `model:` must exist in **that owner's** cliproxy
-  `/v1/models` catalog — dedicated instances may expose different catalogs.
-  Hot reload applies edits without restart.
+- `spaces/<owner>/passports/stack.yaml` — `identity.user: <owner>` fixes the
+  principal rendered everywhere. `passports/tools.yaml` binds its profile and
+  generation; issued policy/rights remain protected records.
+- `passports/models.yaml` — default/routes use logical names (`default`,
+  `alt`); provider IDs belong in each service's models list. Each provider
+  model must exist in **that owner's** catalog. Publish authored edits with
+  `space apply`; the relay reloads the resulting generated registry. A
+  dedicated `vision` route is used by managed media when published. If a
+  models edit recreates `hermes-runtime`, supervisor authorizes that exact
+  target from the apply journal and respawns it; unrelated targets remain
+  denied.
 - `spaces/local/communication.users.yaml` — hand-edited: `id`, `runtime_id`,
   `telegram_ids`, `policy_version`. The policy version must equal the
   rendered stack policy (`policy-<hash>` from the space's generated files);
@@ -751,13 +1212,16 @@ Files and records per owner:
   `HUB_MODEL_RELAY_ADMIN` (the owner-facing `PUT /v1/model` switch — the
   chat bearer gets 403 on it by design).
 - Capability store — after a rename/re-render the stack policy id changes;
-  reconfirm the owner's profile onto the new `policy_version` and create
-  the `hub-agent-tools` binding via `hubctl capability … --confirm`. Stop
-  toolhub during store writes: a running toolhub rewrites `store.json`
-  between the CLI's load and save, and the write fails on drift.
+  `DeriveSpaceRights`/`space apply` reconfirms the profile and repins
+  credential-free bindings onto the new `policy_version` in the same pass.
+  Credential-bearing connector bindings stay an explicit step: re-create
+  them via `hubctl capability … --confirm`. Stop toolhub during store
+  writes: a running toolhub rewrites `store.json` between the CLI's load
+  and save, and the write fails on drift.
 - Infra re-render — re-render the infra space (`spaces/local`) after adding
-  or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
-  `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.
+  or removing a principal: `EnrollSiblingRuntimeTokens` rebuilds
+  `toolhub-tokens.json` from the current sibling spaces, revoking stale
+  bearers; comm-hub only accepts enrolled runtime tokens.
 - Broker key volume — a freshly created owner stack gets an empty
   `broker-secrets-*` volume; the relay exits with
   `credential broker CA file is invalid` until `server.crt` and the key
@@ -797,16 +1261,63 @@ Known traps from live acceptance:
   before trusting evidence — a pre-change `hermes-hub:0.5.0-dev` supervisor,
   toolhub, relay or hub-media silently shows old behavior. Check
   `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
-- **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a
-  multi-image vision call** on a cold cliproxy → honest upstream work reads
-  as a 502. Raise it in `model-relay.<env>.env` for acceptance runs.
-- **ToolHub restart kills live MCP sessions** inside spawned runtimes —
-  after any toolhub recreate, kill and re-wake runtimes rather than reusing.
+- **Model relay timeouts** — defaults are five minutes per hop and six
+  minutes total. Check operator overrides of `HUB_MODEL_RELAY_HOP_TIMEOUT`
+  and `HUB_MODEL_RELAY_TIMEOUT` before attributing a timeout to the provider.
+- **ToolHub restart interrupts MCP sessions** — verify calls after a
+  recreate; respawn an affected runtime if reconnection fails. Catalog/contract
+  changes still require rebind and managed respawn.
 - **Renamed/migrated spaces can carry corrupt SQLite state** — a malformed
   `managed/<env>/hermes/state.db` lets the runtime boot and answer
   readiness while every job stalls `uncertain`. Check
   `PRAGMA integrity_check` on each `managed/<env>/hermes/*.db` after a
   rename or host migration.
+- **ToolHub SQLite on Docker Desktop** — keep the stack's space directories on
+  the Ubuntu filesystem, not under `/mnt/c` or a Windows `C:` bind. Confirm
+  the actual `/state` mount with `docker inspect`; the container being Linux
+  does not prove its database is on a Linux filesystem. To move an existing
+  stack, stop both owner and managed-space Compose projects without deleting
+  volumes, copy their space directories with numeric uid/gid preserved, and
+  include `store.db` (plus `-journal`/`-wal` leftovers, if any) from the
+  stopped source. Check SQLite
+  `PRAGMA integrity_check` on the destination before starting services. Keep
+  the ToolHub store private to uid 10001 (`0600`); the rendered routing and
+  non-secret configs must be readable by the service, while controller and
+  hosting keys remain limited to the service group (`0640`). The rendered
+  supervisor runtime env files and `runtime.auth` must also be group-readable
+  (`0640`): the supervisor's Docker CLI reads them through `--env-file`.
+  `hubctl render` makes the generated skill views writable by the supervisor's
+  group while retaining their mount inode; the generated parent also needs
+  group write for the effective config and policy snapshot. Docker socket
+  access uses its actual host GID, passed to supervisor and Docker-using
+  services at render. Render and start from the Ubuntu path, then check all
+  service restarts and a real MCP call.
+  Assignment, routine and watch tools call communication-hub, which calls
+  ToolHub back for rights; dispatch those after releasing the registry's
+  SQLite admission transaction and reverify rights before execution. Holding
+  that transaction through the callback makes `assignments.list` wait for
+  its own single SQLite connection until the HTTP timeout.
+  The ToolHub store runs SQLite in rollback-journal mode, not WAL: a WAL's
+  shared-memory index cannot propagate through a Docker Desktop bind mount,
+  so a WAL connection's view froze at map time, a second connection failed
+  with `SQLITE_IOERR_SHORT_READ`, and blind writes/checkpoints physically
+  erased foreign frames — observed live when a host-side `space apply`
+  profile write vanished within seconds. The rollback journal needs no
+  shared index: every reader sees the authoritative file and file locks
+  serialize host and container writers. ToolHub's unchanged-store check
+  still starts with SQLite `data_version`, then compares a rate-limited
+  content hash of `store.db` (of `-wal` when a WAL-era file still exists):
+  `data_version` only sees commits this connection can observe, while the
+  file hash is a signal a foreign writer cannot mask. A real change loads a
+  snapshot made from byte copies of the store files — never a second live
+  connection — and adopts it; a snapshot overtaken by a mid-load commit is
+  refused with a conflict and converges on the next probe. Symmetrically,
+  every save compares the current file hash and, on drift, arbitrates with
+  the persisted digest read from a byte copy: a foreign commit refuses the
+  save with a conflict so the next reload adopts it, while the store's own
+  out-of-band writes re-baseline and proceed. The in-transaction digest
+  check stays as the last fence — in rollback mode the connection's view is
+  truthful again.
 - **`/model` chat command is currently dead for managed principals** behind
   the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
   only into a gateway inside its own managed space, and managed spaces run
@@ -843,7 +1354,7 @@ provider identity evidence; do not invent a universal identity endpoint.
   cliproxy it uses the loopback-published port. Offline `doctor` never
   claims live provider reachability.
 - `just config-check` renders synthetic dev/prod static+supervised profiles
-  through `compose config`; part of `just check`/`just build`/image CI.
+  through `compose config`; part of `just check-full`/`just build`/image CI.
 - The native container gate starts a real MCP stdio child against a local
   fixture — no Telegram contact. CI publishes `cli-tools`/`cell-proxy`
   stages; `just docker-check-prebuilt` pulls them.
@@ -852,81 +1363,7 @@ provider identity evidence; do not invent a universal identity endpoint.
 
 ## M16 runtime preparation and group scopes
 
-Optional managed-sandbox preparation lives in `workspace.yaml`:
-
-```yaml
-workspace:
-  goal: Prepare the workspace tools needed for this project.
-  bootstrap_revision: 1
-```
-
-Before an ordinary job, the runtime runs that goal once with its existing
-sandbox and egress grants. No host installer is invoked. `runtime/bootstrap.json`
-records `running`, `ready` or `failed`, the revision key, changed/added/deleted
-workspace paths and `changes_available`. `runtime/bootstrap-history/<key>.json`
-retains each goal/revision receipt across an explicit retry, including session/run
-IDs and the first 4096 runes of redacted output or failure. Detailed upstream
-history stays in that owner's Hermes session. Use increasing revisions for
-new attempts; never reuse a prior revision for a different preparation history.
-A workspace diff is bounded to 4096
-entries and 64 MiB of file content. The shared run budget bounds preparation;
-waiting callers can cancel independently. Failure blocks ordinary jobs and
-retains a partial diff when available. Inspect and repair deliberately, then
-increment `bootstrap_revision` to request a new attempt. Removing `goal` disables
-preparation; no data is migrated or deleted. The default manifest revision is 0.
-
-A configured group runs in one of two modes, chosen per chat in the host
-communication configuration:
-
-```yaml
-groups:
-  -1009999: topics         # personal interface: each forum topic = a session
-  -100123:                 # mention mode (the default)
-    space: team
-    members: [11, 22]      # optional; empty = every configured Telegram user
-    mention: '@helper'     # optional; empty = the bot's own @username
-```
-
-The same map accepts only the scalar mode (`topics`) when nothing else is
-needed, and keeps the legacy list-of-objects form working. An unconfigured
-group is always ignored.
-
-`topics` mode makes the group a personal interface: the sender is resolved
-through the ordinary `telegram_ids` user mapping, each forum topic adopts its
-own task/session inside the sender's personal home, and messages plus slash
-commands behave exactly like a private chat — no mention needed. Jobs carry
-the usual `user:<id>` authority and write the sender's own memory.
-
-`mention` mode keeps the bot a passive participant and requires a dedicated
-group home. Create it with
-`hubctl group-init --dir spaces/team --user team --env dev`.
-It refuses existing scopes and never converts a populated personal profile.
-In the host communication configuration, add a dedicated enabled `users` entry
-for `team` with its own state/workspace and no personal Telegram/Slack identity.
-
-Only configured members contribute to the bounded passive transcript (last
-16 excerpts, at most 512 runes each); with an empty `members` list every
-configured Telegram user counts as a member. A literal mention — the
-configured `mention` tag or, when unset, the bot's own @username resolved
-through `getMe` — starts an ordinary group job; slash commands retain their
-explicit command behavior. Passive messages do not wake the model or write
-personal memory. Recent source-event receipts are bounded to 256; admitted
-jobs retain durable idempotency mappings. The Telegram bot must actually
-receive the messages needed for this transcript; the Hub does not change
-account/privacy settings automatically. Edits do not restart work, and groups
-reject credential input.
-
-Group runtime authority is `group:<space>` and requires a matching group
-`scope.yaml`. Replies stay in the original group/topic; approval taps require
-the original actor and audience. Membership/policy are checked again before
-dispatch and delivery. Personal homes/memories are never copied into a group.
-Active execution, observation streams and pending approvals retain the existing
-typed leases; the idle deadline begins after the last release.
-
-Source-only verification never proves that a running image contains these
-changes. M16 local work does not build, deploy, restart or contact a real account;
-image/channel/provider acceptance must be recorded separately after an authorized
-rollout.
+See [runtime operations](runtime-operations.md#m16-runtime-preparation-and-group-scopes).
 
 ## Site hosting
 

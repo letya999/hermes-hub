@@ -18,11 +18,11 @@ import (
 
 // testScope owns Alice's dev stack: project-labeled services plus runtimes
 // attached to her agent network.
-var testScope = Scope{Project: "hermes-hub-alice-dev", AgentNet: "hermes-hub-agent-alice-dev", Owner: "alice"}
+var testScope = Scope{Project: "hermes-hub-alice-dev", AgentNet: "hermes-hub-agent-alice-dev", Owner: "alice", IncludeContent: true}
 
 func TestFollowAutomaticallyRefreshesOneFileAndIncludesHostSupervisor(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "supervisor.log"), []byte("supervisor acquired alice\n"), 0600); err != nil {
+	if err := os.WriteFile(diagHostFixture(t, dir), []byte("supervisor acquired alice\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -146,7 +146,7 @@ func TestCollectAcceptsLegacyCursorWithoutContainers(t *testing.T) {
 func TestCollectHandlesHostLogRollover(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hermes-diagnostics.txt")
-	host := filepath.Join(dir, "supervisor.log")
+	host := diagHostFixture(t, dir)
 	run := func(context.Context, ...string) ([]byte, error) { return nil, nil }
 	if err := os.WriteFile(host, []byte("long supervisor first line for alice\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func TestFollowRecoversAfterDockerListingFailure(t *testing.T) {
 func TestCollectRedactsSecretsAtIngest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hermes-diagnostics.txt")
 	dir := filepath.Dir(path)
-	if err := os.WriteFile(filepath.Join(dir, "supervisor.log"), []byte("leaked token=ghp_1234567890abcdef for alice\n"), 0600); err != nil {
+	if err := os.WriteFile(diagHostFixture(t, dir), []byte("leaked token=ghp_1234567890abcdef for alice\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	run := func(_ context.Context, args ...string) ([]byte, error) {
@@ -364,7 +364,7 @@ func TestCollectScopesContainersAndSupervisorLinesToOwner(t *testing.T) {
 	host := "reaped runtime for alice\n" +
 		"acquire failed for bob/ctx: timeout\n" +
 		"spawned hermes-context-deadbeef\n" // unattributed line about a foreign runtime
-	if err := os.WriteFile(filepath.Join(dir, "supervisor.log"), []byte(host), 0600); err != nil {
+	if err := os.WriteFile(diagHostFixture(t, dir), []byte(host), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var logsIDs []string
@@ -491,7 +491,7 @@ func TestHTTPLogsRouteWithoutSecretPathOrQuery(t *testing.T) {
 }
 
 func TestSafeRouteBoundsIdentifiers(t *testing.T) {
-	for input, want := range map[string]string{"/": "/", "/v1/jobs/private-id": "/v1/jobs", "/oauth/callback?code=secret": "/oauth"} {
+	for input, want := range map[string]string{"/": "/", "/v1/jobs/private-id": "/v1/jobs", "/v1/rights/private-id": "/v1/rights", "/v1/automation/private-id": "/v1/automation", "/oauth/callback?code=secret": "/oauth"} {
 		if got := safeRoute(input); got != want {
 			t.Fatalf("%q: got %q, want %q", input, got, want)
 		}
@@ -511,7 +511,14 @@ func TestHostLogMirrorsAndBoundsSupervisorFile(t *testing.T) {
 		t.Fatal(string(body), err)
 	}
 	w := &boundedFile{path: path}
-	if _, err := w.Write(bytes.Repeat([]byte("x"), 10<<20)); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Truncate(10 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := w.Write([]byte("new log line\n")); err != nil {
@@ -535,4 +542,25 @@ func TestHostLogRejectsFileAsDirectory(t *testing.T) {
 	if _, err := (&boundedFile{path: dir}).Write([]byte("line")); err == nil {
 		t.Fatal("accepted directory as host log")
 	}
+}
+
+func TestHostLogSkipsMirrorWhenChmodFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "supervisor.log")
+	stop, err := hostLog(path, func(string, os.FileMode) error { return errors.New("chmod unavailable") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unexpected diagnostic file: %v", err)
+	}
+}
+
+func diagHostFixture(t *testing.T, dir string) string {
+	t.Helper()
+	home := filepath.Join(dir, "host")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(home, "supervisor.log")
 }

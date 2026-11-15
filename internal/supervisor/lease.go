@@ -49,7 +49,7 @@ func (m *Manager) releaseKey(key string) error {
 	runtime.Leases--
 	runtime.LastUsed = m.cfg.Now()
 	if runtime.Leases == 0 {
-		runtime.State, runtime.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
+		runtime.State, runtime.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(runtime.binding))
 	}
 	if err := m.persistLocked(); err != nil {
 		return err
@@ -195,7 +195,7 @@ func (m *Manager) ReleaseLease(leaseID string) error {
 	entry.Leases--
 	entry.LastUsed = m.cfg.Now()
 	if entry.Leases == 0 {
-		entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
+		entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(entry.binding))
 	}
 	if err := m.persistLocked(); err != nil {
 		entry.Runtime = before
@@ -253,7 +253,7 @@ func (m *Manager) sweepStaleLeasesLocked(now time.Time) {
 			continue
 		}
 		if entry.Leases == 0 && entry.State == Busy {
-			entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
+			entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(entry.binding))
 		}
 		_ = m.persistLocked()
 	}

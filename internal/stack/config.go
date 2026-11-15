@@ -3,6 +3,7 @@ package stack
 import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,19 +52,30 @@ type Settings struct {
 	Ingress []string             `yaml:"ingress,omitempty"`
 	// TelegramAuth is tri-state: nil auto-enables QR login whenever telegram
 	// ingress runs, true forces it on (still requires telegram), false opts out.
-	TelegramAuth    *bool                `yaml:"telegram_auth,omitempty"`
-	Workspace       Workspace            `yaml:"workspace,omitempty"`
-	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks           map[string]any       `yaml:"hooks,omitempty"`
-	Memory          bool                 `yaml:"memory"`
-	Honcho          bool                 `yaml:"honcho,omitempty"`
-	HonchoURL       string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
-	Schema          int                  `yaml:"schema"`
-	User            string               `yaml:"user"`
-	Organization    string               `yaml:"organization,omitempty"`
-	Model           string               `yaml:"model"`
-	ModelURL        string               `yaml:"model_url"`
+	TelegramAuth *bool                `yaml:"telegram_auth,omitempty"`
+	Workspace    Workspace            `yaml:"workspace,omitempty"`
+	MCP          map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks        map[string]any       `yaml:"hooks,omitempty"`
+	Memory       bool                 `yaml:"memory"`
+	// MemoryRollupTime is the space-local "HH:MM" the hub-owned nightly
+	// memory rollup fires at (SPEC-0085 R5.1); empty renders the 04:00
+	// default while memory_vault is enabled.
+	MemoryRollupTime string `yaml:"memory_rollup_time,omitempty"`
+	// MemoryLeafRetentionDays bounds how long rolled-up daily leaves stay in
+	// the vault working tree (SPEC-0085 R7.5): 0 keeps every leaf forever,
+	// N>=2 expires completed leaves older than N days once their day summary
+	// exists. MemoryLeafFoldBytes folds a completed oversized leaf's
+	// audit-kind blocks in place the same night (0 disables folding).
+	MemoryLeafRetentionDays int    `yaml:"memory_leaf_retention_days,omitempty"`
+	MemoryLeafFoldBytes     int    `yaml:"memory_leaf_fold_bytes,omitempty"`
+	Honcho                  bool   `yaml:"honcho,omitempty"`
+	HonchoURL               string `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir         string `yaml:"global_skills_dir,omitempty"`
+	Schema                  int    `yaml:"schema"`
+	User                    string `yaml:"user"`
+	Organization            string `yaml:"organization,omitempty"`
+	Model                   string `yaml:"model"`
+	ModelURL                string `yaml:"model_url"`
 	// Cliproxy selects the proxy topology: "shared" (default) resolves the
 	// infra space's instance; "dedicated" renders a cliproxy per space.
 	Cliproxy            string `yaml:"cliproxy,omitempty"`
@@ -76,12 +88,42 @@ type Settings struct {
 	OAuthPort           int    `yaml:"oauth_port"`
 	BrowserPort         int    `yaml:"browser_port"`
 	SlackEventsPort     int    `yaml:"slack_events_port,omitempty"`
+	// UIPort opts the knowledge_ui edge into a loopback publish
+	// (127.0.0.1:<ui_port> → OK's 8080). Zero keeps the container
+	// network-only — no host reachability at all.
+	UIPort int `yaml:"ui_port,omitempty"`
+	// UIBind is the publish address — loopback only; anything wider would
+	// expose the unauthenticated editor to the LAN.
+	UIBind string `yaml:"ui_bind,omitempty"`
+	// UIExpose is reserved for M18 — the named edge service that will mint
+	// one-time ?t= links. Setting it today is an honest validation error,
+	// so the key can never silently half-work before its contract lands.
+	UIExpose string `yaml:"ui_expose,omitempty"`
+	// MemoryProvider selects the external memory backend behind the
+	// hub-owned provider seam (SPEC-0085 R11): "hindsight" is the only
+	// adapter today — an unknown kind fails validation, never a silent
+	// fallback. It is inert until the memory_provider capability is
+	// granted; the provider sees only scope-minted traffic.
+	MemoryProvider string `yaml:"memory_provider,omitempty"`
+	// MemoryProviderURL is the provider's HTTP endpoint — typically a
+	// space-network or host-side Hindsight deployment; a cloud endpoint is
+	// legal only through the explicit capability grant (it adds the host
+	// to the managed egress allowlist).
+	MemoryProviderURL string `yaml:"memory_provider_url,omitempty"`
+	// MemoryProviderTokenEnv names the secrets variable holding the
+	// provider credential for cloud egress — a name, never a value, so no
+	// credential material lands in config, renders or diagnostics.
+	MemoryProviderTokenEnv string `yaml:"memory_provider_token_env,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
 	// `infra: false` and consume the shared services over the shared network.
-	Infra                 *bool    `yaml:"infra,omitempty"`
-	Diagnostics           *bool    `yaml:"diagnostics,omitempty"`
+	Infra       *bool `yaml:"infra,omitempty"`
+	Diagnostics *bool `yaml:"diagnostics,omitempty"`
+	// ScopeKind is the published revision's identity kind — "user" or
+	// "group" — never an editable field; compose and the supervisor consult
+	// it where the retired scope.yaml used to answer.
+	ScopeKind             string   `yaml:"-"`
 	OrganizationDir       string   `yaml:"-"`
 	OrganizationDocsDir   string   `yaml:"-"`
 	OrganizationSkillsDir string   `yaml:"-"`
@@ -112,6 +154,24 @@ type Settings struct {
 	Goals        ContextGoals   `yaml:"goals,omitempty"`
 	SummaryModel string         `yaml:"summary_model,omitempty"`
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
+	// PassportServices carries the published stack passport's services map
+	// (instance → mode) into the compose plan; render state only, never
+	// serialized back to agent.yaml.
+	PassportServices map[string]string `yaml:"-"`
+	PassportRevision string            `yaml:"-"`
+	// PassportConfig carries the published config.yaml section so consumers
+	// without a Settings leaf (locale, parallel lanes, supervision, channel
+	// refs, memory) still read the imperative value. Render state only.
+	PassportConfig *passportview.Config `yaml:"-"`
+	// PassportWorkspace carries the published workspace.yaml boundary —
+	// writable/read_only/mounts — for the mount plan and file admission.
+	// Render state only, never serialized.
+	PassportWorkspace *passportview.Workspace `yaml:"-"`
+	// PassportConnectors marks s.MCP entries the published tools passport
+	// declared (its connectors map): the managed-mode raw-MCP restriction
+	// applies only to legacy-file sources, not the governed authored
+	// declaration. Render state only.
+	PassportConnectors bool `yaml:"-"`
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
@@ -152,10 +212,11 @@ var Features = []Feature{
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
-	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
-	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
+	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
+	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault — suspended under ToolHub vault ownership (M32/#520); ToolHub's read-only memory_open view is separate and requires current memory rights; requires memory_vault"},
+	{"memory_provider", nil, "External memory backend behind the hub-owned provider seam (first adapter: Hindsight); requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
@@ -346,14 +407,17 @@ func (s Settings) Validate() error {
 		// only the normalized grant (provider/model/delivery) into the effective
 		// config — admission still goes through the ToolHub capability, so an
 		// operator block without the toolhub selection is a rejected ambiguity.
-		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub {
-			return fmt.Errorf("image_gen belongs to a tools.image_gen: toolhub selection under managed mode")
+		// The r5 `media` family is the canonical admission; `image_gen` is the
+		// retired legacy entry name (toolhubCapabilityID maps it onto media).
+		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub && s.toolEntry("media").Via != ToolViaToolHub {
+			return fmt.Errorf("image_gen belongs to a media/image_gen toolhub selection under managed mode")
 		}
-		// Under managed mode raw MCP servers may only come from the
-		// organization catalog (merged in by ApplyOrganization); definitions
-		// written into a personal space stay forbidden. Which of them render
-		// is selected per-entry with via: mcp-raw.
-		if len(s.MCP) > 0 && !s.OrgScoped() {
+		// Under managed mode raw MCP servers come from the organization
+		// catalog (merged in by ApplyOrganization) or the published tools
+		// passport's connectors; definitions written into a legacy file
+		// stay forbidden. Which of them render is selected per-entry with
+		// via: mcp-raw.
+		if len(s.MCP) > 0 && !s.OrgScoped() && !s.PassportConnectors {
 			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
 		}
 		for name, entry := range s.Tools {
@@ -442,21 +506,40 @@ func (s Settings) Validate() error {
 	if s.Has("browser_act") && !s.Has("browser") {
 		return fmt.Errorf("browser_act requires browser")
 	}
+	if s.Has("knowledge_ui") && !s.Has("memory_vault") {
+		return fmt.Errorf("knowledge_ui requires memory_vault")
+	}
+	if s.Has("memory_provider") && !s.Has("memory_vault") {
+		return fmt.Errorf("memory_provider requires memory_vault")
+	}
+	if s.MemoryLeafRetentionDays < 0 || (s.MemoryLeafRetentionDays > 0 && s.MemoryLeafRetentionDays < 2) {
+		return fmt.Errorf("memory_leaf_retention_days must be 0 or >=2")
+	}
+	if s.MemoryLeafFoldBytes < 0 {
+		return fmt.Errorf("memory_leaf_fold_bytes must be >=0")
+	}
+	if (s.MemoryLeafRetentionDays > 0 || s.MemoryLeafFoldBytes > 0) && !s.Has("memory_vault") {
+		return fmt.Errorf("memory leaf pruning requires memory_vault")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
 	if s.Has("gitlab") && s.GitLabHost != "" && !regexp.MustCompile(`^[A-Za-z0-9.-]+$`).MatchString(s.GitLabHost) {
 		return fmt.Errorf("gitlab_host must be a hostname")
 	}
-	if s.Has("desktop") && s.DesktopURL == "" {
-		return fmt.Errorf("desktop_url required")
+	if s.Has("desktop") || s.DesktopURL != "" {
+		return fmt.Errorf("desktop companion was removed; remove tools.desktop and desktop_url")
 	}
-	if s.Has("drafts") && s.DraftsURL == "" {
-		return fmt.Errorf("drafts_url required")
+	if s.Has("drafts") || s.DraftsURL != "" {
+		return fmt.Errorf("drafts companion was removed; remove tools.drafts and drafts_url")
 	}
 	if s.Has("image_gen") || s.ImageGen != (media.ImageGen{}) {
-		if _, err := s.ImageGen.Normalize(); err != nil {
+		gen, err := s.ImageGen.Normalize()
+		if err != nil {
 			return err
+		}
+		if s.PassportServices["hub-media"] == "per-space" && (s.CapabilityMode != "managed" || gen.Provider != media.ProviderCLIProxy || !slices.Contains(media.CLIProxyChatImageModels(), gen.Model)) {
+			return fmt.Errorf("per-space hub-media requires a managed cliproxy chat-image model")
 		}
 	}
 	if err := s.Web.validate(); err != nil {
@@ -465,14 +548,41 @@ func (s Settings) Validate() error {
 	if err := s.validateContext(); err != nil {
 		return err
 	}
-	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
+	if s.OAuthPort > 65535 {
 		return fmt.Errorf("invalid or colliding host ports")
 	}
-	if s.Has("slack_app") {
-		port := slackEventsHostPort(s)
-		if port < 1024 || port > 65535 || port == s.BrowserPort || port == s.OAuthPort {
+	// The noVNC port is meaningful only while the browser sidecar publishes
+	// it — the same gate compose uses (browser or meet). A managed space
+	// without that service legitimately declares no browser-vnc port.
+	if s.Has("browser") || s.Has("meet") {
+		if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.BrowserPort == s.OAuthPort {
 			return fmt.Errorf("invalid or colliding host ports")
 		}
 	}
-	return nil
+	// R10.1: the unauthenticated OK editor may only ever bind loopback —
+	// a wider address is a hard validation error, not a warning.
+	if s.UIBind != "" && s.UIBind != "127.0.0.1" && s.UIBind != "::1" {
+		return fmt.Errorf("ui_bind must be loopback (127.0.0.1 or ::1), got %q", s.UIBind)
+	}
+	slackPort := 0
+	if s.Has("slack_app") {
+		slackPort = slackEventsHostPort(s)
+		if slackPort < 1024 || slackPort > 65535 || slackPort == s.BrowserPort || slackPort == s.OAuthPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
+	}
+	if s.UIPort > 0 {
+		if !s.Has("knowledge_ui") {
+			return fmt.Errorf("ui_port requires knowledge_ui")
+		}
+		if s.UIPort < 1024 || s.UIPort > 65535 || s.UIPort == s.BrowserPort || s.UIPort == s.OAuthPort || s.UIPort == slackPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
+	}
+	// R10.3: ui_expose is the reserved M18 hook — it must fail honestly
+	// until the one-time-link edge contract is decided there.
+	if s.UIExpose != "" {
+		return fmt.Errorf("ui_expose is reserved for M18 and not implemented")
+	}
+	return s.validateProviderConfig()
 }

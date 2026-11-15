@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,36 +27,41 @@ func assignmentForeignCaller() identity.Envelope {
 func testEngine(t *testing.T) *Engine {
 	t.Helper()
 	root := t.TempDir()
-	var mu sync.Mutex
-	return NewEngine(root, &mu, Deps{
-		WriteJSONAtomic: func(path string, value any) error {
-			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-				return err
-			}
-			tmp := path + ".tmp"
-			f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-			if err != nil {
-				return err
-			}
-			encErr := json.NewEncoder(f).Encode(value)
-			syncErr := f.Sync()
-			closeErr := f.Close()
-			if encErr != nil {
-				return encErr
-			}
-			if syncErr != nil {
-				return syncErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-			return os.Rename(tmp, path)
+	return NewEngine(root, Deps{
+		Storage: StoragePort{
+			WriteJSONAtomic: func(path string, value any) error {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					return err
+				}
+				tmp := path + ".tmp"
+				f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+				if err != nil {
+					return err
+				}
+				encErr := json.NewEncoder(f).Encode(value)
+				syncErr := f.Sync()
+				closeErr := f.Close()
+				if encErr != nil {
+					return encErr
+				}
+				if syncErr != nil {
+					return syncErr
+				}
+				if closeErr != nil {
+					return closeErr
+				}
+				return os.Rename(tmp, path)
+			},
 		},
-		NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
-		EnqueueJob:        func(commodel.Job) (bool, error) { return true, nil },
-		EnqueueDelivery:   func(commodel.Delivery) error { return nil },
-		Signal:            func() {},
-		ChannelFor:        func(string) OccurrenceChannel { return stubChannel{} },
+		Delivery: DeliveryPort{
+			NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
+			EnqueueDelivery:   func(commodel.Delivery) error { return nil },
+		},
+		Dispatch: DispatchPort{
+			EnqueueJob: func(commodel.Job) (bool, error) { return true, nil },
+		},
+		Signal:     func() {},
+		ChannelFor: func(string) OccurrenceChannel { return stubChannel{} },
 		Hooks: DraftHooks{
 			Channel: func(commodel.Schedule) error { return nil },
 			Script:  func(string) error { return nil },
@@ -161,14 +165,14 @@ func TestAssignmentApplyReconcilesChangedAndRemovedSources(t *testing.T) {
 	if page.ScheduleID == oldPage || page.Action != "created" {
 		t.Fatalf("changed source kept its old schedule: %+v", page)
 	}
-	actual, err := e.LoadScheduleLocked(page.ScheduleID)
+	actual, err := e.LoadSchedule(page.ScheduleID)
 	if err != nil || actual.Probe == nil || actual.Probe.URL != "https://example.com/changed" {
 		t.Fatalf("new plan not materialized: %+v %v", actual, err)
 	}
-	if _, err := e.LoadScheduleLocked(oldPage); err == nil {
+	if _, err := e.LoadSchedule(oldPage); err == nil {
 		t.Fatal("old source generation remains active")
 	}
-	if _, err := e.LoadScheduleLocked(oldOther); err == nil || second.Applied["other"].Action != "removed" {
+	if _, err := e.LoadSchedule(oldOther); err == nil || second.Applied["other"].Action != "removed" {
 		t.Fatalf("removed source remains active: %+v %v", second.Applied["other"], err)
 	}
 }
@@ -226,7 +230,7 @@ func TestAssignmentPlanIdempotent(t *testing.T) {
 	if got.State != "active" || got.Applied["page"].ScheduleID == "" || got.Applied["page"].Action != "created" {
 		t.Fatalf("apply must activate with a created receipt: %+v", got.Applied)
 	}
-	sched, err := e.LoadScheduleLocked(got.Applied["page"].ScheduleID)
+	sched, err := e.LoadSchedule(got.Applied["page"].ScheduleID)
 	if err != nil {
 		t.Fatalf("artifact must exist: %v", err)
 	}
@@ -260,26 +264,110 @@ func TestAssignmentLifecyclePropagates(t *testing.T) {
 	if err := e.PauseAssignment("asg-test020", assignmentCaller()); err != nil {
 		t.Fatal(err)
 	}
-	sched, err := e.LoadScheduleLocked(sid)
+	sched, err := e.LoadSchedule(sid)
 	if err != nil || !sched.Paused {
 		t.Fatalf("pause must silence the artifact: %+v %v", sched, err)
 	}
 	if err := e.ResumeAssignment("asg-test020", assignmentCaller()); err != nil {
 		t.Fatal(err)
 	}
-	sched, err = e.LoadScheduleLocked(sid)
+	sched, err = e.LoadSchedule(sid)
 	if err != nil || sched.Paused || sched.NextDue.IsZero() {
 		t.Fatalf("resume must re-arm the artifact: %+v %v", sched, err)
 	}
 	if err := e.CancelAssignment("asg-test020", assignmentCaller()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.LoadScheduleLocked(sid); err == nil {
+	if _, err := e.LoadSchedule(sid); err == nil {
 		t.Fatal("cancel must retire the artifact")
 	}
 	got, err := e.LoadAssignment("asg-test020", assignmentCaller())
 	if err != nil || got.State != "cancelled" || got.CancelledAt == nil {
 		t.Fatalf("cancelled record expected: %+v %v", got, err)
+	}
+}
+
+func TestAssignmentDraftCannotBecomeActiveWithoutApply(t *testing.T) {
+	e := testEngine(t)
+	draft := newTestAssignment("asg-draft-guard")
+	draft.Plan = nil
+	created, _, err := e.CreateAssignment(draft, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PauseAssignment(created.AssignmentID, assignmentCaller(), created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := e.LoadAssignment(created.AssignmentID, assignmentCaller())
+	if err != nil || paused.State != "paused" {
+		t.Fatalf("draft pause failed: %+v %v", paused, err)
+	}
+	if err := e.ResumeAssignment(created.AssignmentID, assignmentCaller(), paused.Revision); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := e.LoadAssignment(created.AssignmentID, assignmentCaller())
+	if err != nil || resumed.State != "draft" || resumed.AppliedRev != 0 {
+		t.Fatalf("draft resume must stay a draft: %+v %v", resumed, err)
+	}
+	plan := commodel.AssignmentPlan{Sources: []commodel.AssignmentSource{{Name: "page", Schedule: watcherDraft("https://example.com/")}}}
+	updated, err := e.UpdateAssignmentPlan(created.AssignmentID, plan, created.Grants, assignmentCaller(), resumed.Revision)
+	if err != nil || updated.Plan == nil || updated.Plan.Revision != 1 || updated.State != "waiting" {
+		t.Fatalf("zero-revision dry-run plan must save at revision 1: %+v %v", updated, err)
+	}
+}
+
+func TestAssignmentMockSourceBindsDestinationChat(t *testing.T) {
+	e := testEngine(t)
+	draft := newTestAssignment("asg-mock-binding")
+	draft.Plan.Sources[0].Schedule.Channel = "mock"
+	draft.Plan.Sources[0].Schedule.ChatID = 42
+	if _, _, err := e.CreateAssignment(draft, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment(draft.AssignmentID, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := e.LoadSchedule(commodel.AssignmentScheduleID(draft.AssignmentID, "page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := identity.MockEnvelope(draft.Envelope.PrincipalID, 42, draft.Envelope.RuntimeID, draft.Envelope.PolicyVersion)
+	if !schedule.Envelope.Equal(want) {
+		t.Fatal("mock assignment source must use its target chat envelope")
+	}
+}
+
+// TestAssignmentDeleteTerminal (ADR-0094 assignment_remove): removal retires
+// the applied artifacts like cancel, then deletes the record itself — a later
+// read reports not-found, a stale revision conflicts, and a foreign caller
+// cannot even probe existence.
+func TestAssignmentDeleteTerminal(t *testing.T) {
+	e := testEngine(t)
+	if _, _, err := e.CreateAssignment(newTestAssignment("asg-test025"), assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-test025", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	item, err := e.LoadAssignment("asg-test025", assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DeleteAssignment("asg-test025", assignmentCaller(), item.Revision+9); !errors.Is(err, ErrRoutineRevision) {
+		t.Fatalf("stale revision must conflict: %v", err)
+	}
+	sid := commodel.AssignmentScheduleID("asg-test025", "page")
+	if err := e.DeleteAssignment("asg-test025", assignmentCaller(), item.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.LoadAssignment("asg-test025", assignmentCaller()); !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf("removed record must read as not-found: %v", err)
+	}
+	if _, err := e.LoadSchedule(sid); err == nil {
+		t.Fatal("remove must retire the applied artifact")
+	}
+	if err := e.DeleteAssignment("asg-test025", identity.Envelope{PrincipalID: "mallory", ContextID: "mallory"}, 1); !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf("foreign remove must not probe existence: %v", err)
 	}
 }
 
@@ -332,12 +420,12 @@ func TestAssignmentWakeFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	sid := applied.Applied["page"].ScheduleID
-	sched, err := e.LoadScheduleLocked(sid)
+	sched, err := e.LoadSchedule(sid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var wakes []commodel.Job
-	e.deps.EnqueueJob = func(j commodel.Job) (bool, error) { wakes = append(wakes, j); return true, nil }
+	e.deps.Dispatch.EnqueueJob = func(j commodel.Job) (bool, error) { wakes = append(wakes, j); return true, nil }
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	if err := e.SeedWatchBaseline(sid, "v1", now); err != nil {
 		t.Fatal(err)
@@ -371,7 +459,7 @@ func TestAssignmentWakeFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	sid2 := applied2.Applied["page"].ScheduleID
-	sched2, _ := e.LoadScheduleLocked(sid2)
+	sched2, _ := e.LoadSchedule(sid2)
 	if err := e.SeedWatchBaseline(sid2, "v1", now); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +481,7 @@ func TestAssignmentWakeFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	sid3 := applied3.Applied["page"].ScheduleID
-	sched3, _ := e.LoadScheduleLocked(sid3)
+	sched3, _ := e.LoadSchedule(sid3)
 	if err := e.SeedWatchBaseline(sid3, "v1", now); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +576,7 @@ func TestAssignmentAppliedScheduleTicks(t *testing.T) {
 		t.Fatalf("applied schedule missing: %v %v", err, items)
 	}
 	authorized := false
-	authorize := func(j commodel.Job) error {
+	authorize := func(_ string, j commodel.Job) error {
 		if j.OrganizationID != "org-1" || j.ActorID != "alice" || j.ScopeID != "user:alice" {
 			return errors.New("occurrence job missing owner stamps")
 		}
@@ -545,7 +633,7 @@ func TestAssignmentApplyPartialFailureKeepsReceipts(t *testing.T) {
 	if err := e.PauseAssignment("asg-test080", assignmentCaller()); err != nil {
 		t.Fatal(err)
 	}
-	sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+	sched, err := e.LoadSchedule(rc.ScheduleID)
 	if err != nil || !sched.Paused {
 		t.Fatalf("pause must reach the partial artifact: %v %+v", err, sched)
 	}
@@ -565,5 +653,42 @@ func TestTelegramAssignmentNormalizesOnlyPublicChatReferences(t *testing.T) {
 	plan.Sources[0].Schedule.Probe.Sources[0].Args["chat_id"] = "https://t.me/+privateInvite"
 	if err := ValidateAssignmentPlan(plan, commodel.AssignmentGrants{}); err == nil {
 		t.Fatal("invite link was treated as a public chat")
+	}
+}
+
+func TestWakeReservationIsIdempotentAcrossDayAndHonorsPause(t *testing.T) {
+	e := testEngine(t)
+	now := time.Now().UTC()
+	a := commodel.Assignment{AssignmentID: "wake-reservation", Revision: 1, Envelope: assignmentCaller(), State: "active", Plan: &commodel.AssignmentPlan{Revision: 1}, AppliedRev: 1, Grants: commodel.AssignmentGrants{MaxWakesPerDay: 1}, CreatedAt: now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(e.root, "assignments"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.AssignmentPath(a.AssignmentID), a); err != nil {
+		t.Fatal(err)
+	}
+	first, firstErr := e.ReserveAssignmentWake(a.AssignmentID, "operation-one", now, 1)
+	second, secondErr := e.ReserveAssignmentWake(a.AssignmentID, "operation-one", now.Add(24*time.Hour), 1)
+	if !first || !second || firstErr != nil || secondErr != nil {
+		t.Fatal("same operation charged or rejected across day rollover")
+	}
+	stored, err := e.loadAssignmentLocked(a.AssignmentID)
+	if err != nil || stored.Checkpoint.WakesToday != 1 || stored.Checkpoint.LLMCalls != 1 {
+		t.Fatal("reservation charged twice", err)
+	}
+	stored.State = "paused"
+	if err := e.atomicJSON(e.AssignmentPath(a.AssignmentID), stored); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, _ := e.ReserveAssignmentWake(a.AssignmentID, "operation-one", now, 1); allowed {
+		t.Fatal("idempotency bypassed pause")
+	}
+	if err := e.SettleAssignmentWake(a.AssignmentID, "operation-one", 2); err == nil {
+		t.Fatal("wrong generation settled reservation")
+	}
+	if err := e.SettleAssignmentWake(a.AssignmentID, "operation-one", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SettleAssignmentWake(a.AssignmentID, "operation-one", 1); err != nil {
+		t.Fatal("idempotent settle", err)
 	}
 }

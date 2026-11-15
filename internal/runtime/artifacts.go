@@ -36,7 +36,7 @@ type ArtifactRequest struct {
 
 const (
 	artifactMaxCount = 8
-	artifactMaxBytes = 8 << 20
+	artifactMaxBytes = 20 << 20
 	// Videos ride the same contract but need more room: 48 MiB keeps them
 	// under Telegram's 50 MB bot upload bound.
 	videoMaxBytes    = 48 << 20
@@ -44,7 +44,7 @@ const (
 )
 
 // artifactLimit is the per-bucket byte cap: videos get headroom, documents
-// and images stay at the original bound.
+// and images use the channel's 20 MiB file bound.
 func artifactLimit(rel string) int64 {
 	if strings.HasPrefix(filepath.ToSlash(rel), "videos/") {
 		return videoMaxBytes

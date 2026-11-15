@@ -192,12 +192,24 @@ func CliInputSchema(tool ToolSpec) map[string]any {
 	properties := map[string]any{}
 	required := make([]string, 0)
 	for _, argument := range tool.Arguments {
-		properties[argument.Name] = map[string]any{"type": argument.Type}
+		prop := map[string]any{"type": argument.Type}
+		if argument.Description != "" {
+			prop["description"] = argument.Description
+		}
+		if len(argument.Enum) > 0 {
+			prop["enum"] = argument.Enum
+		}
+		if argument.Type == "array" && argument.Items != "" {
+			prop["items"] = map[string]any{"type": argument.Items}
+		}
+		properties[argument.Name] = prop
 		if argument.Required {
 			required = append(required, argument.Name)
 		}
 	}
-	schema := map[string]any{"type": "object", "additionalProperties": len(tool.Arguments) == 0}
+	// The object boundary stays closed regardless of arity: an argument the
+	// contract never named is rejected, never silently ignored.
+	schema := map[string]any{"type": "object", "additionalProperties": false}
 	if len(properties) > 0 {
 		schema["properties"] = properties
 	}

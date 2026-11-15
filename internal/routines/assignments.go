@@ -19,6 +19,7 @@ import (
 // ErrAssignmentNotFound is the uniform refusal for missing and foreign-owned
 // assignment records — ownership probing must not leak existence.
 var ErrAssignmentNotFound = errors.New("assignment not found")
+var ErrAssignmentGrantWidening = errors.New("grant widening requires owner authorization")
 
 // AssignmentPath resolves the durable record path; the id is filename-safe
 // by validation, anything else maps through the keyed FileID hash.
@@ -43,10 +44,10 @@ func (e *Engine) CreateAssignment(in commodel.Assignment, caller identity.Envelo
 		}
 	}
 	if effectiveWakes(in.Grants) > commodel.AssignmentDefaultWakesPerDay || effectiveSources(in.Grants) > commodel.AssignmentMaxSources {
-		return commodel.Assignment{}, false, errors.New("grant widening requires owner chat authorization")
+		return commodel.Assignment{}, false, ErrAssignmentGrantWidening
 	}
 	path := e.AssignmentPath(in.AssignmentID)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := e.readFile(path); err == nil {
 		var existing commodel.Assignment
 		if json.Unmarshal(b, &existing) == nil {
 			if existing.Envelope.PrincipalID != caller.PrincipalID || existing.Envelope.ContextID != caller.ContextID || existing.Intent != in.Intent || existing.Title != in.Title || !sameAssignmentPlan(existing.Plan, in.Plan) || existing.Grants != in.Grants {
@@ -55,7 +56,7 @@ func (e *Engine) CreateAssignment(in commodel.Assignment, caller identity.Envelo
 			return existing, true, nil
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := e.mkdirOwned(filepath.Dir(path), false); err != nil {
 		return commodel.Assignment{}, false, err
 	}
 	if err := e.atomicJSON(path, in); err != nil {
@@ -73,7 +74,7 @@ func sameAssignmentPlan(a, b *commodel.AssignmentPlan) bool {
 // loadAssignmentLocked reads the durable record; a corrupt or id-mismatched
 // file is invalid state, never silently repaired.
 func (e *Engine) loadAssignmentLocked(id string) (commodel.Assignment, error) {
-	b, err := os.ReadFile(e.AssignmentPath(id))
+	b, err := e.readFile(e.AssignmentPath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return commodel.Assignment{}, ErrAssignmentNotFound
@@ -112,7 +113,7 @@ func (e *Engine) LoadAssignment(id string, caller identity.Envelope) (commodel.A
 func (e *Engine) ListAssignments(caller identity.Envelope) ([]commodel.Assignment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "assignments"))
+	entries, err := e.readDir(filepath.Join(e.root, "assignments"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -120,12 +121,12 @@ func (e *Engine) ListAssignments(caller identity.Envelope) ([]commodel.Assignmen
 		return nil, err
 	}
 	var out []commodel.Assignment
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		var item commodel.Assignment
-		b, err := os.ReadFile(filepath.Join(e.root, "assignments", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "assignments", name))
 		if err != nil || json.Unmarshal(b, &item) != nil || item.AssignmentID == "" {
 			continue
 		}
@@ -178,6 +179,12 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		draft.ActorID = item.Envelope.PrincipalID
 		draft.ScopeID = "user:" + item.Envelope.PrincipalID
 		draft.OrganizationID = item.OrganizationID
+		scheduleCaller := item.Envelope
+		if draft.Channel == "mock" {
+			// Mock occurrences bind to the claimed destination chat, not the control caller.
+			draft.Envelope = identity.MockEnvelope(item.Envelope.PrincipalID, draft.ChatID, item.Envelope.RuntimeID, item.Envelope.PolicyVersion)
+			scheduleCaller = draft.Envelope
+		}
 		if item.Plan.Specialist != nil {
 			draft.WakePrompt = item.Plan.Specialist.Instructions
 		}
@@ -185,7 +192,7 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		if rc.ScheduleID != "" && rc.Action != "removed" {
 			draft.ScheduleID = rc.ScheduleID
 		}
-		existing, lerr := e.LoadScheduleLocked(draft.ScheduleID)
+		existing, lerr := e.LoadSchedule(draft.ScheduleID)
 		if lerr != nil && !os.IsNotExist(lerr) {
 			return commodel.Assignment{}, lerr
 		}
@@ -213,12 +220,12 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 			if generation > 1 {
 				candidate = fmt.Sprintf("%s-r%d", baseID, generation)
 			}
-			if _, err := os.Stat(e.SchedulePath(candidate)); err != nil && !os.IsNotExist(err) {
+			if _, err := e.lstat(e.SchedulePath(candidate)); err != nil && !os.IsNotExist(err) {
 				return commodel.Assignment{}, err
 			} else if err == nil {
 				continue
 			}
-			if _, err := os.Stat(e.CancelPath(candidate)); err != nil && !os.IsNotExist(err) {
+			if _, err := e.lstat(e.CancelPath(candidate)); err != nil && !os.IsNotExist(err) {
 				return commodel.Assignment{}, err
 			} else if err == nil {
 				continue
@@ -229,7 +236,7 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		if !free {
 			return commodel.Assignment{}, errors.New("assignment source generations exhausted")
 		}
-		created, cerr := e.createScheduleAtLocked(draft, caller, "", nil, now)
+		created, cerr := e.createScheduleAtLocked(draft, scheduleCaller, "", nil, now)
 		if cerr != nil {
 			// Persist the partial reconciliation before reporting the error:
 			// artifacts already created must stay reachable through receipts
@@ -276,6 +283,9 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return commodel.Assignment{}, err
 	}
+	if plan.Revision == 0 {
+		plan.Revision = 1
+	}
 	if item.Plan != nil && plan.Revision <= item.Plan.Revision {
 		plan.Revision = item.Plan.Revision + 1
 	}
@@ -283,7 +293,7 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 		return commodel.Assignment{}, err
 	}
 	if (effectiveWakes(grants) > effectiveWakes(item.Grants) || effectiveSources(grants) > effectiveSources(item.Grants)) && (plan.Revision == 0 || item.GrantsAuthorizedRev != plan.Revision) {
-		return commodel.Assignment{}, errors.New("grant widening requires owner authorization at the plan revision")
+		return commodel.Assignment{}, ErrAssignmentGrantWidening
 	}
 	item.Plan = &plan
 	item.Grants = grants
@@ -421,9 +431,9 @@ func (e *Engine) RecordAssignmentProgress(id string, caller identity.Envelope, e
 	return item, e.atomicJSON(e.AssignmentPath(id), item)
 }
 
-// AssignmentForWakeLocked returns the active, applied generation while the
-// shared spool/engine mutex is held.
-func (e *Engine) AssignmentForWakeLocked(id string, planRev uint64) (commodel.Assignment, bool) {
+// AssignmentForWake returns the active, applied generation for a wake
+// check. Lock-free durable read — safe under any owner lock.
+func (e *Engine) AssignmentForWake(id string, planRev uint64) (commodel.Assignment, bool) {
 	item, err := e.loadAssignmentLocked(id)
 	return item, err == nil && item.State == "active" && item.AppliedRev == planRev && item.Plan != nil && item.Plan.Revision == planRev
 }
@@ -447,20 +457,34 @@ func (e *Engine) AuthorizeAssignmentGrants(id string, planRev uint64, grants com
 	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
-// admitAssignmentWakeLocked is the claim-before-wake fence for
-// assignment-owned schedules (SPEC-0080 R2.2). e.mu must be held.
-func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time, planRev ...uint64) bool {
+// Reserve before enqueue; retries reuse the same applied-generation operation.
+func (e *Engine) admitAssignmentOperationLocked(assignmentID, operationID string, now time.Time, planRev ...uint64) (bool, error) {
 	item, err := e.loadAssignmentLocked(assignmentID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if item.State != "active" {
 		// Paused, completed, cancelled or failed assignments never reach
 		// the model (SPEC-0080 R2.2).
-		return false
+		return false, nil
 	}
 	if len(planRev) > 0 && planRev[0] != 0 && (item.Plan == nil || item.Plan.Revision != planRev[0] || item.AppliedRev != planRev[0]) {
-		return false
+		return false, nil
+	}
+	revision := uint64(0)
+	if len(planRev) > 0 {
+		revision = planRev[0]
+	}
+	if operationID != "" {
+		if len(operationID) > 256 {
+			return false, errors.New("invalid wake operation")
+		}
+		if reserved, ok := item.Checkpoint.WakeOperations[operationID]; ok {
+			return reserved == revision, nil
+		}
+		if len(item.Checkpoint.WakeOperations) >= 1024 {
+			return false, errors.New("wake reservation capacity reached")
+		}
 	}
 	limit := item.Grants.MaxWakesPerDay
 	if limit == 0 {
@@ -473,19 +497,20 @@ func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time, p
 		item.Checkpoint.WakeDay, item.Checkpoint.WakesToday = day, 0
 	}
 	if item.Checkpoint.WakesToday >= limit {
-		return false
+		return false, nil
+	}
+	if operationID != "" {
+		if item.Checkpoint.WakeOperations == nil {
+			item.Checkpoint.WakeOperations = map[string]uint64{}
+		}
+		item.Checkpoint.WakeOperations[operationID] = revision
 	}
 	item.Checkpoint.WakesToday++
 	item.Checkpoint.LLMCalls++
 	item.Checkpoint.LastWakeAt = now.UTC()
 	item.UpdatedAt = now.UTC()
-	return e.atomicJSON(e.AssignmentPath(item.AssignmentID), item) == nil
-}
-
-// AdmitAssignmentWakeLocked exposes the wake fence to the durable spool's
-// event fan-out; the engine and the spool share one lock (e.mu == s.mu).
-func (e *Engine) AdmitAssignmentWakeLocked(assignmentID string, now time.Time, planRev ...uint64) bool {
-	return e.admitAssignmentWakeLocked(assignmentID, now, planRev...)
+	err = e.atomicJSON(e.AssignmentPath(item.AssignmentID), item)
+	return err == nil, err
 }
 
 // ResumeAssignment re-arms a paused assignment's artifacts (SPEC-0080 R1.5).
@@ -499,12 +524,24 @@ func (e *Engine) ResumeAssignment(id string, caller identity.Envelope, expected 
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return err
 	}
+	if item.State != "paused" {
+		return errors.New("assignment is not paused")
+	}
+	if len(item.Applied) == 0 && item.AppliedRev == 0 {
+		item.State = "draft"
+		item.Revision++
+		item.UpdatedAt = time.Now().UTC()
+		return e.atomicJSON(e.AssignmentPath(id), item)
+	}
+	if item.Plan == nil || item.AppliedRev != item.Plan.Revision {
+		return errors.New("assignment has no applied plan to resume")
+	}
 	now := time.Now().UTC()
 	for _, rc := range item.Applied {
 		if rc.Action == "removed" {
 			continue
 		}
-		sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+		sched, err := e.LoadSchedule(rc.ScheduleID)
 		if err != nil {
 			continue
 		}
@@ -559,6 +596,30 @@ func (e *Engine) CancelAssignment(id string, caller identity.Envelope, expected 
 	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
+// DeleteAssignment removes the record terminally (ADR-0094 assignment_remove):
+// applied artifacts retire through the same schedule path as cancel, then the
+// record file itself is deleted — nothing is kept for recall.
+func (e *Engine) DeleteAssignment(id string, caller identity.Envelope, expected ...uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.assignmentForCallerLocked(id, caller)
+	if err != nil {
+		return err
+	}
+	if len(expected) > 0 && expected[0] != item.Revision {
+		return ErrRoutineRevision
+	}
+	for _, rc := range item.Applied {
+		if rc.Action == "removed" {
+			continue
+		}
+		if err := e.deleteScheduleLocked(rc.ScheduleID, item.Envelope); err != nil && !os.IsNotExist(err) && !errors.Is(err, ErrRoutineNotOwned) {
+			return err
+		}
+	}
+	return e.removeOwned(e.AssignmentPath(id))
+}
+
 // CompleteAssignment retires sources like cancel but lands in the terminal
 // "completed" state (SPEC-0080 R1.5) — the owner marks the watch finished.
 func (e *Engine) CompleteAssignment(id string, caller identity.Envelope, expected ...uint64) (commodel.Assignment, error) {
@@ -605,7 +666,7 @@ func (e *Engine) PauseAssignment(id string, caller identity.Envelope, expected .
 		if rc.Action == "removed" {
 			continue
 		}
-		sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+		sched, err := e.LoadSchedule(rc.ScheduleID)
 		if err != nil || sched.Paused {
 			continue
 		}
@@ -628,19 +689,19 @@ func (e *Engine) PauseAssignment(id string, caller identity.Envelope, expected .
 func (e *Engine) ReconcileAssignments(now time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "assignments"))
+	entries, err := e.readDir(filepath.Join(e.root, "assignments"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		var item commodel.Assignment
-		b, err := os.ReadFile(filepath.Join(e.root, "assignments", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "assignments", name))
 		if err != nil || json.Unmarshal(b, &item) != nil || item.AssignmentID == "" {
 			continue
 		}
@@ -649,7 +710,7 @@ func (e *Engine) ReconcileAssignments(now time.Time) error {
 		}
 		var missing []string
 		for name, rc := range item.Applied {
-			if _, err := e.LoadScheduleLocked(rc.ScheduleID); err != nil {
+			if _, err := e.LoadSchedule(rc.ScheduleID); err != nil {
 				missing = append(missing, name)
 			}
 		}
@@ -709,4 +770,47 @@ func decimalMessageID(s string) bool {
 		}
 	}
 	return true
+}
+
+// ReserveAssignmentWake reserves a particular wake once, including retries
+// after the owner's day changes.
+func (e *Engine) ReserveAssignmentWake(id, operationID string, now time.Time, planRev uint64) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.reserveAssignmentWakeLocked(id, operationID, now, planRev)
+}
+
+// reserveAssignmentWakeLocked is ReserveAssignmentWake's critical section;
+// callers hold e.mu.
+func (e *Engine) reserveAssignmentWakeLocked(id, operationID string, now time.Time, planRev uint64) (bool, error) {
+	if operationID == "" {
+		return false, errors.New("wake operation required")
+	}
+	return e.admitAssignmentOperationLocked(id, operationID, now, planRev)
+}
+
+// SettleAssignmentWake releases a wake reservation once a durable job
+// mapping owns dedup — only its matching reservation.
+func (e *Engine) SettleAssignmentWake(id, operationID string, planRev uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.settleAssignmentWakeLocked(id, operationID, planRev)
+}
+
+// settleAssignmentWakeLocked is SettleAssignmentWake's critical section;
+// callers hold e.mu.
+func (e *Engine) settleAssignmentWakeLocked(id, operationID string, planRev uint64) error {
+	item, err := e.loadAssignmentLocked(id)
+	if err != nil {
+		return err
+	}
+	revision, ok := item.Checkpoint.WakeOperations[operationID]
+	if !ok {
+		return nil
+	}
+	if revision != planRev {
+		return errors.New("wake reservation generation mismatch")
+	}
+	delete(item.Checkpoint.WakeOperations, operationID)
+	return e.atomicJSON(e.AssignmentPath(id), item)
 }

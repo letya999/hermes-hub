@@ -1,6 +1,6 @@
 ---
 description: Engineering rules — Go conventions, gates, pins, change process, boundaries on dependencies.
-last_verified: 2026-10-27
+last_verified: 2026-11-08
 ---
 
 # Engineering rules
@@ -15,17 +15,21 @@ a separate copied Go module (MIT) kept out of the flatten.
 
 ## Gates
 
-- `just check` before delivery: fmt/vet/staticcheck, race+shuffle tests,
-  docs checks (`devcheck docs` — numbering/index/verified/size),
-  actionlint, coverage ≥85% on owned code.
+- `just check` before delivery: format, docs (numbering/index/verified/size), vet.
+  Run affected packages with `just test <packages>`; concurrency changes also need
+  targeted race tests. One repo-wide check at a time across local worktrees.
+- CI owns full race/shuffle tests, actionlint, static/security analysis, deployment
+  contracts and coverage ≥85% on owned code / ≥75% per internal package.
+  `just check-full` is the explicit exhaustive local fallback, not the edit loop.
 - `just security` when dependencies change (govulncheck + npm audit).
-- `just docker-check` / `docker-check-prebuilt` for image-side change.
+- CI image/container jobs provide image-side acceptance. `just docker-check`
+  consumes exact-HEAD images; `docker-check-build` explicitly builds locally.
 - Report an unavailable gate as unavailable — never claim it by proxy.
 
 ## Pins
 
 - Hermes `0.21.0` @ `869228cab` (ADR-0012). CLIProxy
-  `ba7e55836dee959e93ec6d41395865d9ec535086`. ToolHive v0.48.0 / cellinit
+  `c5251b57b3fa5dcbc689f514f4aa166daacb4481`. ToolHive v0.48.0 / cellinit
   per ADR-0013. Full pin table: docs/integrations.md.
 - Go toolchain pinned uniformly across host and image builds.
 - Staticcheck pinned to upstream commit `452d5bb86b45`
@@ -56,7 +60,7 @@ a separate copied Go module (MIT) kept out of the flatten.
 - No unsolicited framework/database/queue dependencies; stdlib first.
 - Never commit deployments, tokens, browser profiles, transcripts or real
   personal data; secrets materialize only through the broker/secret store.
-- Docker hygiene: build via `hubctl build`/`up` or `just docker-check`
+- Docker hygiene: build via `hubctl build`/`up` or `just docker-check-build`
   (BuildKit-forced paths); `just docker-clean` after other local builds,
   `--deep` only for an intentional cold reset; no broad system/volume
   prunes.

@@ -1,0 +1,18 @@
+change: CHG-0303-space-hygiene-retention
+status: in_progress
+created: 2026-11-13
+log:
+  - "2026-11-13: implicit-FSM audit of spaces/<user> publication layer. PruneRevisions sweeps generated/passports (pointer chain + slack 3, journal/pending gates, orphan staging collection); wired into Publish and applyConfirm both exits. Renders write generated/-only and remove retired root mirrors; materialize/spawn/main.go readers repointed. Fixture tests updated; prune regression tests added."
+  - "2026-11-13: spaces cleanup — artem_two: passport-src, scope.yaml, nul, migration-backup, root compose.dev.yaml, 104 stale r-* removed (kept current+3). artem_main: same set + prod/shared root composes, 22 stale r-* removed. Root hermes.<env>.yaml kept: running old-image supervisors still materialize from it until dev-rebuild/up; new renders delete it automatically. spaces/{me,local} untouched — unmigrated legacy layout (agent.yaml/workspace.yaml present), needs migration not deletion."
+  - "2026-11-13: live verification — dev-rebuild artem_main/supervisor recreated shared supervisor on new overlay; live applies prune exactly one stale revision each (bounded at 5); renders deleted all retired root mirrors including hermes.prod.yaml (no prod containers running). spaces/{me,local} still legacy-managed, intentionally untouched."
+  - "2026-11-13: runtime spawn verified end-to-end — hermes-context-abd97cf74e166077 (telegram session) spawned by new supervisor; mounts generated/config-view/dev->/config and generated/hermes-effective.dev.yaml->/state/hermes/config.yaml (root hermes.dev.yaml absent — old reader would have failed). Runtime healthy, serving /v1/health; no apply journal, current=r-4e6c1ea5b56c3fb1."
+gates:
+  targeted_tests: passed   # go test -short internal/passport + reconcile
+  vet_touched: passed      # go vet -p=2 on all touched packages
+  just_check: passed       # format, docs, vet
+  affected_packages: passed # stack 21s, supervisor 90s, cmd/hubctl 57s
+  artem_two_cleanup: done
+  root_hermes_removal: done     # supervisor rebuilt to dev overlay, renders self-deleted root mirrors on artem_two + artem_main
+  docker_delivery: passed       # hermes-hub-shared-dev-supervisor-1 -> hermes-hub-dev-artem_main-supervisor:local, recreated, serving /v1/jobs
+  live_apply: passed            # 3x `space apply --confirm` on artem_two: receipts show pruned_revisions (r-2aa1b104b6729956, r-3c345fbe46be0d72); disk bounded at 5 dirs (current+prev+3 slack)
+  live_render: passed           # render --env dev/prod removed root hermes.*.yaml + compose.*.yaml in both migrated spaces; toolhub mounts reference generated/ only

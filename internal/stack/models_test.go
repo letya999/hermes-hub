@@ -23,6 +23,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		if err := InitEnvironment(dir, owner, "prod"); err != nil {
 			t.Fatal(err)
 		}
+		publishManagedRevision(t, dir, owner, "r-0123456789abcdef")
 		settings, err := ReadEnvironment(dir, "prod")
 		if err != nil {
 			t.Fatal(err)
@@ -32,7 +33,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		settings.CapabilityGeneration = 1
 		settings.Model = "shared-model"
 		settings.ModelURL = "http://model-relay:8318/v1"
-		if err := WriteSpace(dir, settings); err != nil {
+		if err := saveSpace(t, dir, settings); err != nil {
 			t.Fatal(err)
 		}
 		selection := fmt.Sprintf(`{"schema":1,"user":%q,"environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`, owner)
@@ -88,124 +89,52 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 	}
 }
 
-// spaces/models.yaml + spaces/<org>/models.yaml + spaces/<user>/models.yaml
-// merge into one registry: later layers win on the same keys.
-func TestModelRegistryLayersMerge(t *testing.T) {
-	spaces := filepath.Join(t.TempDir(), "spaces")
-	if err := os.MkdirAll(spaces, 0700); err != nil {
+func TestModelRegistryRejectsUnpublishedLegacySources(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spaces", "alice")
+	if err := InitEnvironment(dir, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
-	saveYAML(t, filepath.Join(spaces, "models.yaml"), map[string]any{
-		"providers": map[string]any{
-			"openai": map[string]any{"url": "https://api.openai.com/v1", "key_env": "OPENAI_KEY"},
-			"local":  map[string]any{"url": "http://local-llm:8080"},
-		},
-		"models": map[string]any{
-			"default": map[string]any{"ladder": []any{map[string]any{"provider": "cliproxy", "model": "gemini-3-pro"}, map[string]any{"provider": "openai", "model": "gpt-5"}}},
-			"cheap":   map[string]any{"ladder": []any{map[string]any{"provider": "local", "model": "qwen3"}}},
-		},
-	})
-	org := filepath.Join(spaces, "acme")
-	if err := InitEnvironment(org, "acme", "prod"); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{filepath.Join(filepath.Dir(dir), "models.yaml"), filepath.Join(dir, "models.yaml")} {
+		saveYAML(t, path, map[string]any{"models": map[string]any{"legacy": map[string]any{"ladder": []any{map[string]any{"provider": "cliproxy", "model": "legacy"}}}}})
 	}
-	saveYAML(t, filepath.Join(org, "models.yaml"), map[string]any{
-		"models": map[string]any{
-			"cheap": map[string]any{"owners": []string{"alice"}, "ladder": []any{map[string]any{"provider": "aistudio", "model": "gemini-2.5-flash"}}},
-		},
-		"providers": map[string]any{
-			"aistudio": map[string]any{"url": "https://generativelanguage.googleapis.com/v1beta/openai", "key_env": "GOOGLE_AI_KEY"},
-		},
-	})
-	user := filepath.Join(spaces, "alice")
-	if err := InitEnvironment(user, "alice", "prod"); err != nil {
-		t.Fatal(err)
+	settings := Settings{User: "alice", Environment: "prod"}
+	if _, err := LoadModelRegistry(dir, settings); err == nil {
+		t.Fatal("unpublished legacy model configuration accepted")
 	}
-	// Org dir is not a user space — alice declares her org by settings.
-	s, err := ReadEnvironment(user, "prod")
+	publishManagedRevision(t, dir, "alice", "r-model-current")
+	registry, err := LoadModelRegistry(dir, settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Organization = "acme"
-	if err := WriteSpace(user, s); err != nil {
-		t.Fatal(err)
+	if len(registry.Models) != 1 || len(registry.Models["m"].Ladder) != 1 {
+		t.Fatal("retired model file changed the published registry")
 	}
-
-	reg, err := LoadModelRegistry(user, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Shared ladder kept.
-	if got := reg.Models["default"].Ladder; len(got) != 2 || got[0].Provider != "cliproxy" || got[1].Model != "gpt-5" {
-		t.Fatalf("default ladder: %+v", got)
-	}
-	// Org layer replaced the cheap ladder and granted it to alice only.
-	cheap := reg.Models["cheap"]
-	if len(cheap.Ladder) != 1 || cheap.Ladder[0].Provider != "aistudio" || !cheap.Allows("alice") || cheap.Allows("bob") {
-		t.Fatalf("org override/grant lost: %+v", cheap)
-	}
-	if reg.Providers["aistudio"].KeyEnv != "GOOGLE_AI_KEY" {
-		t.Fatalf("org provider missing: %+v", reg.Providers)
+	for _, pointer := range []string{"pending", "r-missing"} {
+		if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(pointer), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadModelRegistry(dir, settings); err == nil {
+			t.Fatal("unloadable revision fell back to a retired model file")
+		}
 	}
 }
 
-// The switch grant rides the same layered owner scheme as models and
-// providers: an owner may get none (automatic ladders only), logical
-// (granted registry names) or catalog (any model the account serves).
-// Layers merge per owner key; unknown levels and owner ids are rejected.
 func TestModelRegistrySwitchLevels(t *testing.T) {
-	spaces := filepath.Join(t.TempDir(), "spaces")
-	if err := os.MkdirAll(spaces, 0700); err != nil {
-		t.Fatal(err)
+	for _, level := range []string{"none", "logical", "catalog"} {
+		registry := ModelRegistry{Switch: map[string]string{"alice": level, "*": "logical"}}
+		if err := registry.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	saveYAML(t, filepath.Join(spaces, "models.yaml"), map[string]any{
-		"switch": map[string]any{"alice": "catalog", "bob": "none", "*": "logical"},
-		"models": map[string]any{
-			"default": map[string]any{"ladder": []any{map[string]any{"provider": "cliproxy", "model": "gemini-3-flash"}}},
-		},
-	})
-	user := filepath.Join(spaces, "alice")
-	if err := InitEnvironment(user, "alice", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	// The owner layer narrows her own grant; other keys merge through.
-	saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{
-		"switch": map[string]any{"alice": "logical"},
-	})
-	s, err := ReadEnvironment(user, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg, err := LoadModelRegistry(user, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reg.Switch["alice"] != "logical" || reg.Switch["bob"] != "none" || reg.Switch["*"] != "logical" {
-		t.Fatalf("switch grants not merged per owner: %+v", reg.Switch)
-	}
-
-	for name, sw := range map[string]map[string]any{
-		"unknown_level":  {"alice": "everything"},
-		"bad_owner_name": {"Bad Owner": "catalog"},
-		"empty_level":    {"alice": ""},
-	} {
-		saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{"switch": sw})
-		if _, err := LoadModelRegistry(user, s); err == nil {
-			t.Fatalf("%s accepted", name)
+	for _, values := range []map[string]string{{"alice": "everything"}, {"Bad Owner": "catalog"}, {"alice": ""}} {
+		registry := ModelRegistry{Switch: values}
+		if err := registry.Validate(); err == nil {
+			t.Fatal("invalid model switch contract accepted")
 		}
 	}
 }
 
 func TestModelRegistryValidation(t *testing.T) {
-	spaces := filepath.Join(t.TempDir(), "spaces")
-	user := filepath.Join(spaces, "alice")
-	if err := InitEnvironment(user, "alice", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ReadEnvironment(user, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
 	cases := map[string]map[string]any{
 		"provider_url_not_http":        {"providers": map[string]any{"p": map[string]any{"url": "ftp://x"}}},
 		"provider_url_has_credentials": {"providers": map[string]any{"p": map[string]any{"url": "http://u:p@x.invalid"}}},
@@ -217,8 +146,15 @@ func TestModelRegistryValidation(t *testing.T) {
 		"model_owner_invalid":          {"models": map[string]any{"m": map[string]any{"owners": []string{"Bad Owner"}, "ladder": []any{map[string]any{"provider": "cliproxy", "model": "x"}}}}},
 	}
 	for name, doc := range cases {
-		saveYAML(t, filepath.Join(spaces, "models.yaml"), doc)
-		if _, err := LoadModelRegistry(user, s); err == nil {
+		body, err := yaml.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var registry ModelRegistry
+		if err := yaml.Unmarshal(body, &registry); err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.Validate(); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
 	}
@@ -285,15 +221,19 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
-	if err := WriteSpace(user, s); err != nil {
+	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["models"] = "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy, openai]}\n  vision: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, auth: {proxy_access: {kind: broker-key, ref: cliproxy}}, models: [{id: gemini-3-pro}]}\n  openai: {via: openai-compatible, endpoint: https://api.openai.com/v1, auth: {upstream: {kind: broker-key, ref: openai-key}}, models: [{id: gpt-5}]}\n"
+	publishManagedDocs(t, user, "alice", "r-0123456789abcdef", docs)
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(user, "execution.prod.json"), []byte(selection), 0600); err != nil {
 		t.Fatal(err)
@@ -354,8 +294,18 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if managed["OPENAI_API_KEY"] == "provider-fixture" || managed["OPENAI_API_KEY"] != relayAuth["HUB_MODEL_RELAY_AUTH"] {
 		t.Error("runtime receives provider credential instead of its relay bearer")
 	}
+	if managed["HUB_MEDIA_VISION_MODEL"] != "vision" {
+		t.Error("published vision route was not selected for media inspection")
+	}
 	if managed["HUB_MODEL_RELAY_ADMIN"] != "" || provider["OPENAI_API_KEY"] != "provider-fixture" {
 		t.Error("credential ownership changed across relay and runtime")
+	}
+	caller, err := ReadSecrets(filepath.Join(user, "model-relay-caller.auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caller) != 1 || caller["HUB_MODEL_RELAY_AUTH"] != relayAuth["HUB_MODEL_RELAY_AUTH"] {
+		t.Error("ToolHub caller auth must contain only the relay caller bearer")
 	}
 	if err := RenderEnvironment(user, root, "prod"); err != nil {
 		t.Fatal(err)
@@ -377,15 +327,17 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
-	if err := WriteSpace(user, s); err != nil {
+	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0123456789abcdef")
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(user, "execution.prod.json"), []byte(selection), 0600); err != nil {
 		t.Fatal(err)

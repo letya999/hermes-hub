@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/letya999/hermes-hub/internal/exposure"
@@ -26,7 +27,7 @@ func (s Settings) hostingWorkspace(dir string) string {
 	return filepath.Join(dir, "workspace")
 }
 func hostingConfig(s Settings) hosting.Deployment {
-	cfg := hosting.Deployment{ContextID: s.User, PolicyVersion: PolicyVersion(s), Config: hosting.Config{Owner: s.User, Environment: s.Environment, Zone: s.User, Domain: "invalid.test", Workspace: "/workspace", Store: "/sites", AdmissionDigest: hostingAdmissionDigest(s)}, Slots: s.Hosting.Slots, ExposureConfig: "/exposure/config.yaml", ControlTokenFile: "/run/hosting.key", DataListen: "127.0.0.1:8181", ControlListen: "0.0.0.0:8182"}
+	cfg := hosting.Deployment{ContextID: s.User, PolicyVersion: PolicyVersion(s), Config: hosting.Config{Owner: s.User, Environment: s.Environment, Zone: hosting.ZoneForOwner(s.User), Domain: "invalid.test", Workspace: "/workspace", Store: "/sites", AdmissionDigest: hostingAdmissionDigest(s)}, Slots: s.Hosting.Slots, ExposureConfig: "/exposure/config.yaml", ControlTokenFile: "/run/hosting.key", DataListen: "127.0.0.1:8181", ControlListen: "0.0.0.0:8182"}
 	if s.OrgScoped() {
 		cfg.ContextID = s.Organization
 	}
@@ -50,11 +51,11 @@ func writeHostingFiles(dir string, s Settings) error {
 		return fmt.Errorf("hosting configuration invalid: %s", issues[0])
 	}
 	cfg := hostingConfig(s)
-	if err := ensureTokenFile(filepath.Join(dir, "runtime", "hosting."+s.Environment+".key")); err != nil {
+	if err := ensureContainerTokenFile(filepath.Join(dir, "runtime", "hosting."+s.Environment+".key")); err != nil {
 		return err
 	}
 	if s.Hosting.Image != "" {
-		if err := ensureTokenFile(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")); err != nil {
+		if err := ensureContainerTokenFile(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")); err != nil {
 			return err
 		}
 		controller := toolhub.GenericControllerConfig{Hosting: hostingControllerSection(s), HostingOnly: true, HostingFleetRoot: "/fleet", HostingHelperVolume: hostingVolume(s) + "-controller", HostingCellInit: "/usr/local/bin/cellinit", StateRoot: "/state", ToolHiveBinary: "/usr/local/bin/thv", SeccompProfile: "/opt/hub/seccomp/seccomp-mcp-runtime.json", DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 1800}
@@ -62,7 +63,7 @@ func writeHostingFiles(dir string, s Settings) error {
 		if err != nil {
 			return err
 		}
-		if err = atomic(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json"), data); err != nil {
+		if err = atomicMode(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json"), data, 0644); err != nil {
 			return err
 		}
 	}
@@ -70,7 +71,15 @@ func writeHostingFiles(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	return atomic(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n'))
+	if err := atomicMode(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n'), 0644); err != nil {
+		return err
+	}
+	if s.Hosting.Image == "" {
+		if err := os.Remove(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json")); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 func hostingIssues(s Settings) []string {
 	if !s.Has("hosting") {
@@ -81,7 +90,7 @@ func hostingIssues(s Settings) []string {
 		issues = append(issues, "hosting requires the reviewed exposure feature")
 	}
 	ec, err := exposure.Load(filepath.Join(s.SpaceDir, "connections", "exposure", "config.yaml"))
-	if err != nil || ec.Provider != "sish" || ec.Zone != s.User || ec.Relay == nil {
+	if err != nil || ec.Provider != "sish" || ec.Zone != hosting.ZoneForOwner(s.User) || ec.Relay == nil {
 		return append(issues, "hosting requires a valid owner-bound sish exposure config")
 	}
 	if len(s.Hosting.Slots) < 1 || len(s.Hosting.Slots) > 4 || len(s.Hosting.Slots)+len(ec.Endpoints) > ec.Max() {
@@ -102,21 +111,7 @@ func hostingIssues(s Settings) []string {
 	}
 	return issues
 }
-func identitySiteSlot(n string) bool {
-	if len(n) < 1 || len(n) > 40 || n[0] < 'a' || n[0] > 'z' || n[len(n)-1] == '-' {
-		return false
-	}
-	switch n {
-	case "api", "admin", "auth", "broker", "hub", "control", "localhost":
-		return false
-	}
-	for _, r := range n {
-		if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
+func identitySiteSlot(n string) bool { return exposure.ValidSiteSlot(n) }
 func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEnv M, runtimeVolumes *[]any) {
 	if !s.Has("hosting") {
 		return
@@ -186,6 +181,7 @@ func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEn
 		controller["networks"] = []string{"default"}
 		controller["environment"] = M{"HOME": "/tmp", "TZ": s.Timezone, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": "hermes-hub-" + s.User + "-" + s.Environment}
 		controller["volumes"] = []any{M{"type": "volume", "source": "hosting-fleet", "target": "/fleet"}, M{"type": "volume", "source": "hosting-controller-state", "target": "/state"}, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json")), "target": "/config/hosting-controller.json", "read_only": true}, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")), "target": "/run/controller.key", "read_only": true}, M{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}}
+		controller["group_add"] = []string{fmt.Sprint(dockerSocketGID("/var/run/docker.sock"))}
 		controller["depends_on"] = M{name + "-init": M{"condition": "service_completed_successfully"}}
 		controller["cpus"] = "1"
 		controller["mem_limit"] = "256m"

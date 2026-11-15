@@ -39,6 +39,25 @@ func streamEvent(job Job) hubruntime.ExecuteResponse {
 	return hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 }
 
+func TestRecoverySkipsInvalidDeliveryIdentity(t *testing.T) {
+	s, job := streamJob(t)
+	bad := Delivery{ID: "wrong-audience", JobID: job.ID, Channel: "telegram_bot", ChatID: 22,
+		ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: "synthetic"}
+	receipt := streamReceipt{JobID: job.ID, Position: 1, Event: streamEvent(job), Delivery: &bad}
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "invalid.json"), receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recover(); err != nil {
+		t.Fatalf("invalid historical audience blocked startup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "run-events", "invalid.json")); err != nil {
+		t.Fatal("historical receipt was removed")
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "outbox", "pending", "wrong-audience.json")); !os.IsNotExist(err) {
+		t.Fatal("invalid delivery was enqueued")
+	}
+}
+
 // Live progress: while a telegram run is non-terminal the gateway re-arms the
 // typing action and refreshes the single status message with elapsed time;
 // terminal jobs are left alone.
@@ -48,9 +67,7 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Unix(1_800_000_000, 0)
-	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	envelope.DeliveryTargetID = "telegram--100"
-	job := Job{Envelope: envelope, ID: "live-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "live-key", ChatID: -100, TopicID: 5, Text: "hello", CreatedAt: base}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "live-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "live-key", ChatID: 11, TopicID: 5, Text: "hello", CreatedAt: base}
 	if _, err := s.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +102,12 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	if last.messageID != 100 || !strings.Contains(last.text, "Выполняю запрос") || !strings.Contains(last.text, "1 мин") {
 		t.Fatalf("status edit lost base text or elapsed: %+v", last)
 	}
+	g.now = func() time.Time { return base.Add(125 * time.Second) }
+	g.progressTick(ctx)
+	g.deliverOne(ctx)
+	if len(fake.edits) != 2 || !strings.Contains(fake.edits[1].text, "2 мин") {
+		t.Fatal("same-position elapsed status stopped updating")
+	}
 	// Once the run is terminal the tick produces neither actions nor edits.
 	terminal := streamEvent(job)
 	terminal.Status, terminal.LastEvent, terminal.EventID, terminal.Text = "completed", "run.completed", "done", "готово"
@@ -100,9 +123,9 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	}
 }
 
-// A queued job that never reached admission — a dead supervisor, a wedged
-// runtime — must not farm typing actions and status edits forever.
-func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
+// A queued job reports elapsed wait without pretending that runtime work
+// has started or sending a typing action.
+func TestProgressTickShowsUnadmittedWait(t *testing.T) {
 	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
 	if err != nil {
 		t.Fatal(err)
@@ -119,8 +142,63 @@ func TestProgressTickSkipsUnadmittedJob(t *testing.T) {
 	g.api, g.spool = fake, s
 	g.progressTick(context.Background())
 	g.deliverOne(context.Background())
-	if len(fake.chatActions) != 0 || len(fake.sent) != 0 {
-		t.Fatalf("unadmitted job got progress: actions=%v sent=%v", fake.chatActions, fake.sent)
+	if len(fake.chatActions) != 0 || len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "Ожидаю запуска агента") {
+		t.Fatalf("queued job must show truthful wait without typing: actions=%v sent=%v", fake.chatActions, fake.sent)
+	}
+}
+
+// A wedged uncertain mapping lost its admission outcome: its honest state is
+// the uncertain notice, not "queued". Re-arming the queued status would edit
+// the chat forever for a job that will never run again.
+func TestProgressTickSkipsUncertainUnadmittedJob(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "wedged-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "wedged-key", ChatID: 11, Text: "hi", CreatedAt: time.Now().UTC()}
+	if _, err := s.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	if err := s.writeMappingLocked(mappingFromJob(job, job.CreatedAt)); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain", LastEvent: "run.unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.spool = fake, s
+	g.progressTick(context.Background())
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 0 || len(fake.edits) != 0 {
+		t.Fatalf("wedged uncertain job must not farm queued edits: sent=%v edits=%v", fake.sent, fake.edits)
+	}
+}
+
+func TestTelegramJobQueuesStatusBeforeRuntimeAdmission(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	user := c.Users[0]
+	task, err := g.spool.ResolveTask(user, 11, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.enqueueChannelJob(t.Context(), user, task, "telegram_bot", "queued-job", "queued-key", 11, 0, "hello", 11, "", false); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := g.spool.ClaimDelivery()
+	if err != nil || delivery == nil || delivery.ID != "job-queued-job-status" || !strings.Contains(delivery.Text, "Ожидаю запуска агента") {
+		t.Fatalf("acceptance did not queue an immediate status: delivery=%+v err=%v", delivery, err)
 	}
 }
 
@@ -172,7 +250,7 @@ func (a *idleAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, err
 	return nil, ctx.Err()
 }
 
-func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
+func TestTerminalFailureDeliveryNamesCauseWithoutRawErrorOrID(t *testing.T) {
 	for _, status := range []string{"failed", "interrupted", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
 			s, job := streamJob(t)
@@ -183,8 +261,8 @@ func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
 				t.Fatal(err)
 			}
 			delivery, err := s.ClaimDelivery()
-			if err != nil || delivery == nil || !strings.Contains(delivery.Text, job.ID) || !strings.Contains(delivery.Text, "run."+status) || strings.Contains(delivery.Text, "provider secret") {
-				t.Fatalf("failure must carry a safe named cause and correlation ID: %+v %v", delivery, err)
+			if err != nil || delivery == nil || strings.Contains(delivery.Text, job.ID) || !strings.Contains(delivery.Text, "run."+status) || strings.Contains(delivery.Text, "provider secret") {
+				t.Fatalf("failure must carry a safe named cause without internal ID: %+v %v", delivery, err)
 			}
 		})
 	}
@@ -829,12 +907,15 @@ func TestCompactionKeepsPendingReceipts(t *testing.T) {
 	old := time.Now().Add(-400 * time.Hour)
 	receipt := func(name, deliveryID string) string {
 		t.Helper()
-		path := filepath.Join(root, "events", name+".json")
+		path := filepath.Join(root, "run-events", name+".json")
 		if err := atomicJSON(path, streamReceipt{JobID: "job-x", Position: 1, Event: hubruntime.ExecuteResponse{JobID: "job-x", EventID: name, Status: "running", LastEvent: "run.started"}, Delivery: &Delivery{ID: deliveryID}}); err != nil {
 			t.Fatal(err)
 		}
 		_ = os.Chtimes(path, old, old)
 		return path
+	}
+	if err := s.writeMappingLocked(JobMapping{JobID: "job-x", Status: "completed"}); err != nil {
+		t.Fatal(err)
 	}
 	kept := receipt("live", "job-x-event-live")
 	dropped := receipt("stale", "job-x-event-stale")
@@ -1192,7 +1273,7 @@ func TestStreamRejectsChangedBindingAndBoundsBeforeReceipt(t *testing.T) {
 	if m.EventPosition != 1 {
 		t.Fatalf("rejected event wrote state: %+v", m)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "broken.json"), []byte("invalid"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "run-events", "broken.json"), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewSpool(s.root); err == nil {
@@ -1231,29 +1312,40 @@ func TestHeartbeatDoesNotClobberBoundRunIdentity(t *testing.T) {
 	}
 }
 
-// A run stream that stops emitting must not pin the worker for the whole run
-// budget: the idle deadline cuts the hop and the job goes uncertain.
+// A silent run stream must cancel its HTTP hop before the run budget; durable
+// receipt persistence may outlast cancellation, and the job remains uncertain.
 func TestRunOutcomeStreamIdleDeadlineCancels(t *testing.T) {
 	s, job := streamJob(t)
 	t.Setenv("HUB_STREAM_IDLE", "50ms")
 	release := make(chan struct{})
+	cancelled := make(chan time.Duration, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
 		_ = json.NewEncoder(w).Encode(streamEvent(job))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		<-release
+		streamingAt := time.Now()
+		select {
+		case <-r.Context().Done():
+			cancelled <- time.Since(streamingAt)
+		case <-release:
+		}
 	}))
 	defer api.Close()
 	defer close(release)
-	start := time.Now()
 	outcome, err := (HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, Limit: 30 * time.Second}).RunOutcome(context.Background(), job)
 	if err == nil || outcome.Status != "uncertain" {
 		t.Fatalf("silent stream outcome=%+v err=%v", outcome, err)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("idle stream pinned the worker %v", elapsed)
+	// Measure the idle network hop; durable receipt writes can outlast cancellation.
+	select {
+	case elapsed := <-cancelled:
+		if elapsed > 5*time.Second {
+			t.Fatalf("idle stream cancellation took %v", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle cancellation did not reach the stream handler")
 	}
 }
 
@@ -1311,7 +1403,7 @@ func TestAdmittedRestartResumesWithoutSecondSubmission(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
 		event.RuntimeGeneration = "gen-2"
-		event.EventID = "observed:gen-2"
+		// The real runtime repeats the original admission ID on a new generation.
 		_ = json.NewEncoder(w).Encode(event)
 		event.Status, event.EventID, event.LastEvent = "interrupted", "terminal:interrupted", "run.interrupted"
 		_ = json.NewEncoder(w).Encode(event)
@@ -1368,7 +1460,7 @@ func TestStreamDisconnectAndStaleFramesKeepOutcomeUncertain(t *testing.T) {
 func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	s, job := streamJob(t)
 	event := streamEvent(job)
-	if err := os.Remove(filepath.Join(s.root, "events")); err != nil {
+	if err := os.Remove(filepath.Join(s.root, "run-events")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err == nil {
@@ -1378,7 +1470,7 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	if m.EventPosition != 0 || m.RunID != "" {
 		t.Fatalf("failed persistence advanced state: %+v", m)
 	}
-	if err := os.Mkdir(filepath.Join(s.root, "events"), 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(s.root, "run-events"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err != nil {
@@ -1393,11 +1485,11 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	if err := s.RebindObservation(job, event); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	entries, err := os.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", entries[0].Name()), []byte("invalid"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "run-events", entries[0].Name()), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err == nil {
@@ -1405,18 +1497,21 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	}
 }
 
-// spool/events is shared: stream receipts, slack dedup markers and event
-// subscription states coexist under it. Restart recovery must read only
-// receipt-shaped records and leave the other contracts to their owners.
+// Typed event directories keep subscription and provider records outside receipt replay.
 func TestRecoverStreamEventsIgnoresForeignEventFiles(t *testing.T) {
 	s, job := streamJob(t)
 	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
+	// The owner retired communication-owned event-state, but a leftover dir
+	// from a legacy layout must still be ignored at open.
+	if err := os.MkdirAll(filepath.Join(s.root, "event-state"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "slack-marker.json"), []byte(`{"provider":"slack","event_id":"ev1"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "event-state", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.root, "provider-dedup", "slack-marker.json"), []byte(`{"provider":"slack","event_id":"ev1"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewSpool(s.root); err != nil {
@@ -1434,12 +1529,12 @@ func TestRecoveryRejectsCrossAudienceReceipt(t *testing.T) {
 	if err := s.RecordStreamEvent(job, event); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	entries, err := os.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		path := filepath.Join(s.root, "events", entry.Name())
+		path := filepath.Join(s.root, "run-events", entry.Name())
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -1798,10 +1893,10 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 	settled := streamEvent(job)
 	settled.Status, settled.LastEvent, settled.EventID, settled.Text = "completed", "run.completed", "terminal:completed", "saved answer"
 	consistent := streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 2, Event: settled}
-	if err := atomicJSON(filepath.Join(s.root, "events", "straggler.json"), straggler); err != nil {
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "straggler.json"), straggler); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicJSON(filepath.Join(s.root, "events", "settled.json"), consistent); err != nil {
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "settled.json"), consistent); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewSpool(s.root)
@@ -1817,6 +1912,43 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.root, "outbox", "pending", spoolFileID(straggler.Delivery.ID)+".json")); !os.IsNotExist(err) {
 		t.Fatal("stale delivery was re-enqueued")
+	}
+}
+
+// A write-ahead "uncertain" handoff receipt can sit at a lower position than
+// the terminal record that superseded it: the runtime looked lost, the spool
+// wrote the failed handoff, then the run actually finished. Its apply no-ops
+// on the recorded position, so finishReceiptJobLocked is the only place the
+// staleness still surfaces — recovery must skip it there too, or the process
+// dies on restart with "stale stream receipt".
+func TestRecoverySkipsSupersededHandoffReceipt(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordTerminalOutcome(job, RunOutcome{JobID: job.ID, Status: "completed", Text: "saved answer"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatalf("mapping found=%v err=%v", found, err)
+	}
+	stale := streamEvent(job)
+	stale.Status, stale.LastEvent, stale.EventID = "uncertain", "run.uncertain", "terminal:uncertain"
+	straggler := streamReceipt{JobID: job.ID, Position: mapping.EventPosition, Binding: receiptBinding(mapping), FinalState: "failed", Event: stale}
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "straggler.json"), straggler); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("replay of a superseded handoff receipt killed recovery: %v", err)
+	}
+	mapping, _, err = reopened.Mapping(job.ID)
+	if err != nil || mapping.Status != "completed" || mapping.Result != "saved answer" {
+		t.Fatalf("terminal history moved: %+v %v", mapping, err)
 	}
 }
 

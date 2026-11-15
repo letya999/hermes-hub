@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,10 +69,7 @@ func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
 func TestRoutineHTTPCreateUpdateDeleteAndCommands(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	due := time.Now().UTC().Add(3 * time.Hour).Format(time.RFC3339)
 	handler := g.Handler()
@@ -129,13 +127,13 @@ func TestRoutineHTTPCreateUpdateDeleteAndCommands(t *testing.T) {
 func TestCronExpressionsAndSlackLinks(t *testing.T) {
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, expr := range []string{"0 9 * * 1-5", "*/15 * * * *", "0,30 8-18 * * *", "0 0 1 1 *"} {
-		next, err := nextCron(expr, time.UTC, now)
+		next, err := routines.NextCron(expr, time.UTC, now)
 		if err != nil || next.IsZero() {
 			t.Fatalf("%s: %v %v", expr, next, err)
 		}
 	}
 	for _, expr := range []string{"*", "a b c d e", "60 * * * *", "* * * * * *"} {
-		if _, err := nextCron(expr, time.UTC, now); err == nil {
+		if _, err := routines.NextCron(expr, time.UTC, now); err == nil {
 			t.Fatal("invalid cron accepted", expr)
 		}
 	}
@@ -149,7 +147,7 @@ func TestCronExpressionsAndSlackLinks(t *testing.T) {
 	if err != nil || len(c.Users[0].SlackIDs) != 2 || c.SlackSigningSecret != "sign" {
 		t.Fatal(c, err)
 	}
-	if OccurrenceID(RoutineOccurrence{ScheduleID: "x", Revision: 1, DueAt: now}) == "" {
+	if routines.OccurrenceID(RoutineOccurrence{ScheduleID: "x", Revision: 1, DueAt: now}) == "" {
 		t.Fatal("occurrence id")
 	}
 	hashed := identity.SlackIdentity(strings.Repeat("t", 40), strings.Repeat("u", 40))
@@ -199,10 +197,7 @@ func TestSlackEventsIgnoreBotsAndSecrets(t *testing.T) {
 func TestRoutineHTTPItemErrorsAndVoiceDownloadFailure(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	handler := g.Handler()
 	req := httptest.NewRequest(http.MethodDelete, "/v1/routines/", nil)
 	req.Header.Set("Authorization", "Bearer control-token")
@@ -217,7 +212,8 @@ func TestRoutineHTTPItemErrorsAndVoiceDownloadFailure(t *testing.T) {
 	pause.Header.Set("X-Hub-Principal", "alice")
 	paused := httptest.NewRecorder()
 	handler.ServeHTTP(paused, pause)
-	if paused.Code != http.StatusForbidden {
+	// Missing or foreign schedules are enumeration-safe 404s under the owner.
+	if paused.Code != http.StatusNotFound {
 		t.Fatalf("missing pause: %d", paused.Code)
 	}
 	put := httptest.NewRequest(http.MethodPut, "/v1/routines", nil)
@@ -237,7 +233,7 @@ func TestRoutineHTTPItemErrorsAndVoiceDownloadFailure(t *testing.T) {
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 71, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "Aw3", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := nextCron("1-5/2 * * * *", time.UTC, time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := routines.NextCron("1-5/2 * * * *", time.UTC, time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -250,7 +246,7 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(created.NextDue.Add(2*time.Hour), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(created.NextDue.Add(2*time.Hour), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
@@ -270,10 +266,10 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 		t.Fatal(err)
 	}
 	occ := RoutineOccurrence{ScheduleID: live.ScheduleID, Revision: live.Revision, DueAt: live.NextDue, Job: Job{Envelope: caller, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "exists"}}
-	if err := os.WriteFile(filepath.Join(s.root, "occurrences", occurrenceID(occ)+".json"), []byte(`{"state":"pending"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(occ)+".json"), []byte(`{"state":"pending"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(live.NextDue.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(live.NextDue.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	blocked, err := s.CreateSchedule(Schedule{ScheduleID: "blocked", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "blocked"}, caller, "")
@@ -294,10 +290,7 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 		t.Fatal(err)
 	}
 	c.Users = append(c.Users, User{ID: "carol", Enabled: true, SlackIDs: []SlackLink{{TeamID: "TTEAM", UserID: "UUSER"}}, StateDir: slackState, WorkspaceDir: slackWS})
-	gw, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	gw, _, _ := automationGatewayFixture(t, c)
 	req := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
 	req.Header.Set("Authorization", "Bearer control-token")
 	req.Header.Set("X-Hub-Principal", "carol")
@@ -334,10 +327,7 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	g.transcriber = stubSTT{text: "from-audio"}
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 201, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Caption: "note", Audio: &TGMedia{FileID: "A1", MimeType: "audio/mpeg", FileSize: 12, Duration: 2}}}); err != nil {
@@ -395,7 +385,9 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	upd.Header.Set("Content-Type", "application/json")
 	updRec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(updRec, upd)
-	if updRec.Code != http.StatusForbidden {
+	// The owner maps missing-or-foreign routines to 404 (ErrRoutineNotOwned)
+	// — enumeration-safe, so there is no separate "not found" status.
+	if updRec.Code != http.StatusNotFound {
 		t.Fatalf("update missing: %d", updRec.Code)
 	}
 	if err := g.handleUpdate(context.Background(), Update{UpdateID: 204, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: "/use missing"}}); err != nil {
@@ -407,12 +399,12 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 }
 
 func TestScheduleValidateAndNativeTickSkip(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "bad id", Envelope: caller, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "x"}, caller, ""); err == nil {
 		t.Fatal("invalid id accepted")
 	}
-	if err := s.TickSchedules(time.Now().UTC(), "unmigrated", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(time.Now().UTC(), "unmigrated", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 }

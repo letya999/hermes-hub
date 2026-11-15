@@ -1,6 +1,6 @@
 ---
 description: "Принятое направление: ограниченное SQLCipher-хранилище брокера с проверяемым восстановлением и явной миграцией."
-last_verified: "2026-10-28"
+last_verified: "2026-11-01"
 ---
 
 # ADR-0087: Ограниченное хранилище Credential Broker
@@ -145,3 +145,14 @@ SQLCipher page integrity сама по себе не обнаруживает ro
 - [SQLite atomic commit](https://www.sqlite.org/atomiccommit.html).
 - [SQLCipher API](https://www.zetetic.net/sqlcipher/sqlcipher-api/).
 - [SQLCipher design](https://www.zetetic.net/sqlcipher/design/).
+
+## Дополнение 2026-11-01: подложка журнала до нормализации
+
+Первый проверяемый шаг переносит сам носитель записей: существующий
+хэш-цепочный журнал заменяется SQLCipher-подложкой (primary.db + recovery.db
+в одной ATTACH-транзакции либо одиночный ledger.db) с прежним sealed witness
+head и контрактом journal.Journal. Импорт/активация через `store-migrate` /
+`store-activate`; устаревшие frames уходят в substrate-backup только после
+успешной активации. Нормализованные state/audit/object-таблицы и постраничный
+audit (срезы S195.* CHG-0219) остаются отдельной незавершённой работой поверх
+этой подложки — её отсутствие не считается выполненной миграцией R3.

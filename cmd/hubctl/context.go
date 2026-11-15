@@ -11,14 +11,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/communication"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/memory"
+	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
+	"github.com/letya999/hermes-hub/internal/memory/importer"
+	"github.com/letya999/hermes-hub/internal/memory/prune"
+	"github.com/letya999/hermes-hub/internal/memory/replay"
+	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
+	"github.com/letya999/hermes-hub/internal/memory/vacuum"
 	"github.com/letya999/hermes-hub/internal/skilleval"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -71,15 +80,21 @@ func runContext(_ context.Context, args []string) error {
 	}
 }
 
-func runMemory(_ context.Context, args []string) error {
+func runMemory(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("memory requires list or delete")
+		return fmt.Errorf("memory requires list, delete, search, import, eval, vacuum, prune, replay or export-honcho")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("memory", flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	profile := f.String("user", "me", "person identifier")
 	name := f.String("name", "", "memory file name")
+	reindex := f.Bool("reindex", false, "rebuild the vault search index")
+	apply := f.Bool("apply", false, "commit the reported mutation (import/vacuum)")
+	questions := f.String("questions", "", "live-eval question set JSON")
+	outDir := f.String("out-dir", "", "report directory (default .work/tmp)")
+	env := f.String("env", "prod", "dev or prod")
+	file := f.String("file", "", "export file path (export-honcho)")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -91,6 +106,20 @@ func runMemory(_ context.Context, args []string) error {
 		return err
 	}
 	switch sub {
+	case "search":
+		if !*reindex {
+			return fmt.Errorf("memory search requires --reindex")
+		}
+		_, rebuilt, err := memorysearch.NewIndexer(filepath.Join(abs, "vault")).Ensure()
+		if err != nil {
+			return err
+		}
+		state := "fresh"
+		if rebuilt {
+			state = "rebuilt"
+		}
+		fmt.Printf("memory index %s\n", state)
+		return nil
 	case "list":
 		names, err := contextlife.MemoryFiles(abs)
 		if err != nil {
@@ -102,6 +131,193 @@ func runMemory(_ context.Context, args []string) error {
 			return fmt.Errorf("memory delete requires --name")
 		}
 		return contextlife.DeleteMemory(abs, *name)
+	case "import":
+		// Native import (SPEC-0085 R7.1): stage reviewable drafts first;
+		// --apply commits what is staged. Nothing lands silently.
+		vaultDir := filepath.Join(abs, "vault")
+		if *apply {
+			res, err := importer.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		rep, err := importer.Parse(filepath.Join(abs, "hermes", "memories"))
+		if err != nil {
+			return err
+		}
+		if err := importer.Stage(vaultDir, rep); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "eval":
+		// Live eval (SPEC-0085 R7.3): each question rides the model-relay
+		// with the vault's top-4 evidence as context; the judged report is
+		// recorded under --out-dir (default .work/tmp). Requires relay env.
+		if *questions == "" {
+			return fmt.Errorf("memory eval requires --questions")
+		}
+		data, err := os.ReadFile(*questions)
+		if err != nil {
+			return err
+		}
+		var qs []memoryeval.Question
+		if err := json.Unmarshal(data, &qs); err != nil {
+			return err
+		}
+		idx, _, err := memorysearch.NewIndexer(filepath.Join(abs, "vault")).Ensure()
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for i := range qs {
+			var b strings.Builder
+			b.WriteString(qs[i].Text + "\n\nCandidate evidence:\n")
+			for _, h := range idx.Search(qs[i].Text, memorysearch.Options{Audience: "private", Limit: 4, Now: now}) {
+				snip := strings.Join(strings.Fields(h.Doc.Text), " ")
+				if len(snip) > 160 {
+					snip = snip[:160]
+				}
+				fmt.Fprintf(&b, "- %s: %s\n", h.Evidence, snip)
+			}
+			qs[i].Text = b.String()
+		}
+		rep := memoryeval.RunLive(ctx, memoryeval.RelayAsker(), qs)
+		out := *outDir
+		if out == "" {
+			out = filepath.Join(".work", "tmp")
+		}
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			return err
+		}
+		body, err := json.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		base := "memory-eval-" + now.UTC().Format("20060102T150405Z")
+		for i := 0; ; i++ {
+			name := base
+			if i > 0 {
+				name = fmt.Sprintf("%s-%d", base, i)
+			}
+			f, err := os.OpenFile(filepath.Join(out, name+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			_, werr := f.Write(body)
+			cerr := f.Close()
+			if werr != nil {
+				return werr
+			}
+			if cerr != nil {
+				return cerr
+			}
+			break
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "vacuum":
+		// Hard purge (SPEC-0085 R7.4): dry-run reports the purge set; only
+		// --apply deletes. Git history keeps everything recoverable.
+		vaultDir := filepath.Join(abs, "vault")
+		if *apply {
+			rep, err := vacuum.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		rep, err := vacuum.Scan(vaultDir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "prune":
+		// Leaf lifecycle (SPEC-0085 R7.5): knobs ride the space settings —
+		// dry-run prints the predicted report, --apply folds/expires.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEffective(abs, *env)
+		if err != nil {
+			return err
+		}
+		o := prune.Options{
+			RetentionDays: s.MemoryLeafRetentionDays,
+			FoldBytes:     int64(s.MemoryLeafFoldBytes),
+			TZ:            time.Local,
+		}
+		if *apply {
+			rep, err := prune.Apply(vaultDir, o)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		rep, err := prune.Scan(vaultDir, o)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "replay":
+		// Provider migration (SPEC-0085 R11.4): the prov.db audit spine
+		// streams into the rendered provider with stable ids — resumable
+		// via the hub-owned cursor, idempotent on retry.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEffective(abs, *env)
+		if err != nil {
+			return err
+		}
+		p, err := stack.OpenProvider(abs, s)
+		if err != nil {
+			return err
+		}
+		prov, err := memory.OpenProvDB(filepath.Join(vaultDir, "runtime", "memory"))
+		if err != nil {
+			return err
+		}
+		entries, err := prov.Entries()
+		if err != nil {
+			return err
+		}
+		material, err := vault.OpenScopeMaterial(vaultDir)
+		if err != nil {
+			return err
+		}
+		mint := func(a memory.Audience) memory.Scope {
+			return memory.MintScope(material, *env, *profile, string(a))
+		}
+		cursor := filepath.Join(vaultDir, "runtime", "memory", "replay.cursor")
+		rep, err := replay.New(p, mint, cursor).Run(ctx, entries)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "export-honcho":
+		// Honcho migration (SPEC-0085 R11.5): the export file becomes
+		// reviewable card drafts in the staging lane; only --apply commits.
+		if *file == "" {
+			return fmt.Errorf("memory export-honcho requires --file")
+		}
+		vaultDir := filepath.Join(abs, "vault")
+		rep, err := importer.ParseHoncho(*file)
+		if err != nil {
+			return err
+		}
+		if *apply {
+			if err := importer.Stage(vaultDir, rep); err != nil {
+				return err
+			}
+			res, err := importer.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		if err := importer.Stage(vaultDir, rep); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
 	default:
 		return fmt.Errorf("unknown memory command %q", sub)
 	}
@@ -141,7 +357,7 @@ func runSkill(ctx context.Context, args []string) error {
 	// way /v1/skill-apply does; a failed rebuild warns, it does not undo
 	// the applied store change.
 	refresh := func() {
-		s, err := stack.ReadEnvironment(abs, *env)
+		s, err := stack.ReadEffective(abs, *env)
 		if err != nil {
 			return
 		}
@@ -467,7 +683,7 @@ func runSkill(ctx context.Context, args []string) error {
 		if *id == "" {
 			return fmt.Errorf("skill promote requires --id")
 		}
-		s, err := stack.ReadEnvironment(abs, "prod")
+		s, err := stack.ReadEffective(abs, "prod")
 		if err != nil {
 			return err
 		}
@@ -494,70 +710,70 @@ func runSkill(ctx context.Context, args []string) error {
 	}
 }
 
-func runRoutine(_ context.Context, args []string) error {
+type routineOpts struct {
+	toolhubURL, token, profile, id, tz, expr, organization, runtimeID, policy, input string
+	chatID                                                                           int64
+}
+
+func runRoutine(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("routine requires list, create, pause or delete")
 	}
 	sub := args[0]
+	var opts routineOpts
 	f := flag.NewFlagSet("routine", flag.ContinueOnError)
-	spoolDir := f.String("spool", "", "communication spool")
-	profile := f.String("user", "me", "person identifier")
-	id := f.String("id", "", "schedule id")
-	tz := f.String("tz", "UTC", "timezone")
-	expr := f.String("expr", "", "once:RFC3339 or 5-field cron")
-	chatID := f.Int64("chat-id", 0, "explicit Telegram chat id")
-	organization := f.String("organization", "", "explicit organization id")
-	runtimeID := f.String("runtime", "", "explicit runtime id")
-	policy := f.String("policy", "", "explicit policy version")
-	input := f.String("input", "", "bounded task text")
+	f.StringVar(&opts.toolhubURL, "toolhub-url", os.Getenv("HUB_TOOLHUB_URL"), "ToolHub control URL")
+	f.StringVar(&opts.token, "token", os.Getenv("HUB_COMMUNICATION_AUTH"), "enrolled service bearer")
+	f.StringVar(&opts.profile, "user", "me", "person identifier")
+	f.StringVar(&opts.id, "id", "", "schedule id")
+	f.StringVar(&opts.tz, "tz", "UTC", "timezone")
+	f.StringVar(&opts.expr, "expr", "", "once:RFC3339 or 5-field cron")
+	f.Int64Var(&opts.chatID, "chat-id", 0, "explicit Telegram chat id")
+	f.StringVar(&opts.organization, "organization", "", "explicit organization id")
+	f.StringVar(&opts.runtimeID, "runtime", "", "explicit runtime id")
+	f.StringVar(&opts.policy, "policy", "", "explicit policy version")
+	f.StringVar(&opts.input, "input", "", "bounded task text")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if *spoolDir == "" {
-		return fmt.Errorf("routine requires --spool")
+	if opts.toolhubURL == "" || opts.token == "" {
+		return fmt.Errorf("routine requires --toolhub-url and --token (or HUB_TOOLHUB_URL/HUB_COMMUNICATION_AUTH)")
 	}
-	unlock, err := communication.LockSpool(*spoolDir)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	spool, err := communication.OpenSpool(*spoolDir)
-	if err != nil {
-		return err
-	}
-	if sub != "list" && (*chatID <= 0 || !identity.ValidID(*organization) || !identity.ValidID(*runtimeID) || !identity.ValidID(*policy)) {
+	if sub != "list" && (opts.chatID <= 0 || !identity.ValidID(opts.organization) || !identity.ValidID(opts.runtimeID) || !identity.ValidID(opts.policy)) {
 		return fmt.Errorf("routine mutation requires --chat-id --organization --runtime --policy")
 	}
-	caller := identity.TelegramEnvelope(*profile, *chatID, *runtimeID, *policy)
-	if sub == "list" {
-		caller.PrincipalID = *profile
-	}
+	// Schedules live with the ToolHub automation owner — never the shared
+	// spool: the operator route is the same service-only control surface the
+	// gateway uses.
+	caller := identity.TelegramEnvelope(opts.profile, opts.chatID, opts.runtimeID, opts.policy)
+	client := automation.ControlClient{URL: opts.toolhubURL, Token: opts.token}
 	switch sub {
 	case "list":
-		items, err := spool.ListSchedules(caller)
-		if err != nil {
+		var items []commodel.Schedule
+		if err := client.Call(ctx, caller, "schedule.list", nil, &items); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(items)
 	case "create":
-		if *id == "" || *expr == "" || strings.TrimSpace(*input) == "" {
+		if opts.id == "" || opts.expr == "" || strings.TrimSpace(opts.input) == "" {
 			return fmt.Errorf("routine create requires --id --expr --input")
 		}
-		item, err := spool.CreateSchedule(communication.Schedule{ScheduleID: *id, Envelope: caller, OrganizationID: *organization, UserID: *profile, ActorID: *profile, ScopeID: "user:" + *profile, Channel: "telegram_bot", ChatID: *chatID, Timezone: *tz, Expression: *expr, Input: *input}, caller, "")
+		var item commodel.Schedule
+		err := client.Call(ctx, caller, "schedule.create", map[string]any{"schedule": commodel.Schedule{ScheduleID: opts.id, Envelope: caller, OrganizationID: opts.organization, UserID: opts.profile, ActorID: opts.profile, ScopeID: "user:" + opts.profile, Channel: "telegram_bot", ChatID: opts.chatID, Timezone: opts.tz, Expression: opts.expr, Input: opts.input}}, &item)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(item)
 	case "pause":
-		if *id == "" {
+		if opts.id == "" {
 			return fmt.Errorf("routine pause requires --id")
 		}
-		return spool.PauseSchedule(*id, caller)
+		return client.Call(ctx, caller, "schedule.pause", map[string]any{"id": opts.id}, nil)
 	case "delete":
-		if *id == "" {
+		if opts.id == "" {
 			return fmt.Errorf("routine delete requires --id")
 		}
-		return spool.DeleteSchedule(*id, caller)
+		return client.Call(ctx, caller, "schedule.delete", map[string]any{"id": opts.id}, nil)
 	default:
 		return fmt.Errorf("unknown routine command %q", sub)
 	}

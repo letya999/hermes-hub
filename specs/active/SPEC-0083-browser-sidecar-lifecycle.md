@@ -50,3 +50,15 @@ does not hold idle browser stacks resident.
 - R4.1: operations.md records the sleep/wake model, the flag, and the
   expected healthcheck flap while a sidecar is down (container `healthcheck`
   probes CDP whenever `marker.browser` is set).
+
+### R5 — Managed ToolHub route (2026-11-08 amendment)
+
+- R5.1: Managed Hermes exposes only the ToolHub proxy, not the Playwright MCP
+  sidecar as a model-selectable server. ToolHub admits the curated `browser_*`
+  call and its private persistent tools-daemon connects to the existing
+  owner-local Playwright sidecar on the agent network.
+- R5.2: `browser_open` returns an owner-bound session ID; read, act, capture
+  and close reject unknown, foreign, closed or revoked sessions and recheck
+  the published user/guest and act grant on each operation.
+- R5.3: A capture uses a fixed filename under the shared workspace/browser
+  directory. The sidecar and its lifecycle/resource limits remain unchanged.

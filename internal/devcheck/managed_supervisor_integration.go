@@ -17,9 +17,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
-	"gopkg.in/yaml.v3"
+	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ManagedSupervisorCanary proves the supervisor-managed lifecycle end to end
@@ -116,6 +122,7 @@ HTTPServer(('0.0.0.0',8317),Handler).serve_forever()`
 	relays := []struct{ name, alias, command, env string }{
 		{"hermes-mgsup-toolrelay-" + suffix, "toolhub", "toolhub-relay", ""},
 		{"hermes-mgsup-modelrelay-" + suffix, "model-relay", "model-relay", "HUB_MODEL_RELAY_MODEL=synthetic"},
+		{"hermes-mgsup-egressrelay-" + suffix, "egress-relay", "egress-relay", "HUB_EGRESS_RELAY_CONNECT_TARGET=fixture.invalid:22"},
 	}
 	for _, relay := range relays {
 		args := []string{"run", "-d", "--name", relay.name, "--network", agentNet, "--network-alias", relay.alias, "--entrypoint", "hub-runtime"}
@@ -136,7 +143,7 @@ HTTPServer(('0.0.0.0',8317),Handler).serve_forever()`
 	wait := `import socket,sys,time
 for attempt in range(60):
  try:
-  socket.create_connection(("toolhub",8090),1).close(); socket.create_connection(("model-relay",8318),1).close(); sys.exit(0)
+		  socket.create_connection(("toolhub",8090),1).close(); socket.create_connection(("model-relay",8318),1).close(); socket.create_connection(("egress-relay",8319),1).close(); sys.exit(0)
  except OSError: time.sleep(1)
 sys.exit(1)`
 	if _, err := docker("run", "--rm", "--network", agentNet, "--entrypoint", "python", image, "-c", wait); err != nil {
@@ -170,12 +177,6 @@ sys.exit(1)`
 			}
 		}
 		output, err := exec.CommandContext(callCtx, "docker", args...).CombinedOutput()
-		if len(args) != 0 && args[0] == "rm" {
-			name := args[len(args)-1]
-			if logs, logErr := exec.CommandContext(callCtx, "docker", "logs", name).CombinedOutput(); logErr == nil && len(logs) != 0 {
-				fmt.Printf("--- logs %s ---\n%s\n", name, logs)
-			}
-		}
 		return output, err
 	}
 	m, err := supervisor.New(cfg)
@@ -190,6 +191,49 @@ sys.exit(1)`
 	containers = append(containers, runtime.Container, runtime.Container+"-ctl")
 	if !runtime.Managed || runtime.State != supervisor.Busy {
 		return fmt.Errorf("managed runtime not busy: %+v", runtime)
+	}
+	// The real ToolHub admission and private executor must reach the reviewed
+	// connection config in the supervisor-spawned container. No tunnel opens.
+	store := toolhub.NewStore()
+	definition := agenttools.HubToolsDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		return err
+	}
+	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: userID, ExternalIdentityID: userID,
+		ContextID: userID, RuntimeID: userID, ConversationID: "canary", DeliveryTargetID: "canary", PolicyVersion: "canary"}
+	if _, err := store.Enable(caller, definition.DefinitionID, definition.Version); err != nil {
+		return err
+	}
+	var admitted, completed bool
+	gateway := &toolhub.Gateway{Store: store, Backend: api.AgentExecBackend{Exec: api.DockerAgentExec([]string{"docker"}, api.ManagedAgentContainer)},
+		AuditWrite: func(event string, fields map[string]string) error {
+			admitted = admitted || event == "admit"
+			completed = completed || event == "allow" && fields["outcome"] == "ok"
+			return nil
+		}}
+	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "exposure_list")
+	call, err := gateway.CallAuthorized(ctx, caller, name, map[string]any{})
+	if err != nil || call == nil || call.IsError || !admitted || !completed {
+		return fmt.Errorf("managed exposure ToolHub read failed: admitted=%t completed=%t err=%v", admitted, completed, err)
+	}
+	var listed struct {
+		Declared []struct {
+			Name string `json:"name"`
+		} `json:"declared_endpoints"`
+		Tunnels []any `json:"tunnels"`
+	}
+	decoded := false
+	if call.StructuredContent != nil {
+		body, marshalErr := json.Marshal(call.StructuredContent)
+		decoded = marshalErr == nil && json.Unmarshal(body, &listed) == nil
+	}
+	for _, item := range call.Content {
+		if content, ok := item.(*mcp.TextContent); ok && !decoded && json.Unmarshal([]byte(content.Text), &listed) == nil {
+			decoded = true
+		}
+	}
+	if !decoded || len(listed.Declared) != 1 || listed.Declared[0].Name != "canary" || len(listed.Tunnels) != 0 {
+		return errors.New("managed exposure ToolHub read returned unexpected declared endpoints or live tunnels")
 	}
 	inspect := func(container string) (map[string]any, error) {
 		out, err := docker("inspect", container)
@@ -311,12 +355,12 @@ sys.exit(1)`
 	}
 	envOut, envErr := exec.CommandContext(ctx, "docker", "exec", runtime.Container, "env").CombinedOutput()
 	if envErr != nil {
-		return fmt.Errorf("managed env scan failed: %v: %s", envErr, envOut)
+		return fmt.Errorf("managed env scan failed: %w", envErr)
 	}
 	for _, line := range strings.Split(string(envOut), "\n") {
 		key := strings.SplitN(line, "=", 2)[0]
 		if strings.Contains(key, "BROKER") || strings.Contains(key, "CREDENTIAL") || strings.Contains(key, "TOKEN") || strings.HasPrefix(key, "AWS_") || strings.HasPrefix(key, "GH_") {
-			return fmt.Errorf("managed runtime env leaks control-plane secret variable %s", key)
+			return errors.New("managed runtime env includes a protected control-plane variable")
 		}
 	}
 	// Link-local cloud metadata is unreachable without a default route.
@@ -480,38 +524,70 @@ sys.exit(1)`
 			return fmt.Errorf("managed container %s survived teardown", name)
 		}
 	}
-	fmt.Println("managed supervisor canary passed: real spawn on internal agent network, relay-only control route, live isolation attestation, restart/rollover/secondary parity and combined teardown")
+	fmt.Println("managed supervisor canary passed: ToolHub exposure admission/read, internal agent network, relay-only control route, isolation, restart/rollover/secondary parity and teardown")
 	return nil
 }
 
-// managedCanaryContext writes the reviewed settings, execution selection,
-// env files and managed state directories one supervised context needs.
+// managedCanaryContext publishes the synthetic passports and execution selection
+// one supervised context needs.
 func managedCanaryContext(root, userID, env string) (string, error) {
 	contextRoot := filepath.Join(root, userID)
-	if err := os.MkdirAll(contextRoot, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
 		return "", err
 	}
-	settings := stack.Settings{Schema: 1, User: userID, Environment: env, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1}
-	body, err := yaml.Marshal(settings)
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# managed canary\n"), 0644); err != nil {
+		return "", err
+	}
+	if err := stack.InitEnvironment(contextRoot, userID, env); err != nil {
+		return "", err
+	}
+	for name, body := range map[string]string{
+		"stack":  "identity: {user: " + userID + ", infra: true}\nservices:\n  hermes-runtime: {mode: supervised}\n  model-relay: {mode: shared}\n  egress-relay: {mode: per-space}\n  cliproxy: {mode: shared}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n  communication-hub: {mode: shared}\n  supervisor: {mode: shared}\n",
+		"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-contract}}\n",
+		"models": "default: synthetic\nroutes: {synthetic: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://cliproxy:8317/v1, models: [{id: synthetic}]}\n",
+		"tools":  "binding: {profile_id: " + userID + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n  exposure: {via: toolhub}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(contextRoot, "passports", name+".yaml"), []byte(body), 0600); err != nil {
+			return "", err
+		}
+	}
+	exposureDir := filepath.Join(contextRoot, "connections", "exposure")
+	if err := os.MkdirAll(exposureDir, 0750); err != nil {
+		return "", err
+	}
+	const exposureConfig = "schema: 1\nprovider: sish\nrelay:\n  host: fixture.invalid\n  user: canary\n  domain: fixture.invalid\n  host_keys: [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEa6/V1v39RJXNZvJSJp7hEDWdTsFc9n/k8G+sMFBqGX\"]\nzone: canary\nkey_ref: file:fixture-key.pem\nendpoints:\n  canary: {target: hub_public_listener}\n"
+	if err := os.WriteFile(filepath.Join(exposureDir, "config.yaml"), []byte(exposureConfig), 0640); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(exposureDir, "fixture-key.pem"), []byte("synthetic canary key"), 0640); err != nil {
+		return "", err
+	}
+	catalogDocs, err := catalog.Generate()
 	if err != nil {
 		return "", err
 	}
-	source, err := yaml.Marshal(stack.Config(settings))
+	revision, err := passport.CompileAuthored(contextRoot, env, time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(contextRoot), map[string][]string{})
 	if err != nil {
 		return "", err
 	}
-	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	if err := revision.Publish(contextRoot); err != nil {
+		return "", err
+	}
+	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
 	selectionBody, err := json.Marshal(selection)
 	if err != nil {
 		return "", err
 	}
+	if err := os.WriteFile(filepath.Join(contextRoot, stack.ExecutionPath(env)), selectionBody, 0600); err != nil {
+		return "", err
+	}
+	if err := stack.RenderEnvironment(contextRoot, root, env); err != nil {
+		return "", err
+	}
 	files := map[string][]byte{
-		"settings.yaml":                   body,
 		"managed-runtime." + env + ".env": []byte("OPENAI_API_KEY=probe-key\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"),
 		"runtime.auth":                    []byte("HUB_RUNTIME_AUTH=managed-canary-auth-0123456789abcdef\n"),
 		"SOUL.md":                         []byte("# managed canary\n"),
-		"hermes." + env + ".yaml":         source,
-		stack.ExecutionPath(env):          selectionBody,
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(contextRoot, name), content, 0600); err != nil {
@@ -524,7 +600,7 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 	if err := os.Chmod(filepath.Join(contextRoot, "SOUL.md"), 0644); err != nil {
 		return "", err
 	}
-	for _, name := range []string{"runtime", "hermes", "home", "cache"} {
+	for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace"} {
 		dir := filepath.Join(contextRoot, "managed", env, name)
 		if err := os.MkdirAll(dir, 0777); err != nil {
 			return "", err

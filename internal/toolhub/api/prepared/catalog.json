@@ -50,7 +50,7 @@
     "handoff":"Install https://github.com/taylorwilsdon/google_workspace_mcp through the reviewed read-only recipe. Upload the OAuth client JSON and account email only in the protected Broker form, then approve the requested Google scopes in the browser. Verify list_calendars; no provider writes are authorized."
   },
   {
-    "id": "github", "name": "GitHub", "license": "MIT", "tier": "t1",
+    "id": "github", "name": "GitHub", "license": "MIT", "tier": "t1", "definition_version": "0.0.3",
     "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
     "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
     "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
@@ -244,6 +244,7 @@
     "contract_id": "telegram-session", "contract_revision": 3, "stateful": false,
     "auth_before_tools_list": true,
     "runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_TRANSCRIBE": "off", "TELEGRAM_DEVICE_MODEL": "hermes-hub ToolHub"},
+    "upgrade_modes": {"send": {"runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only+send_message"}, "added_tools": ["send_message"]}},
     "proxy_environment": ["TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"],
     "egress": ["91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24"],
     "read_tools": ["list_accounts", "get_chats", "list_chats", "get_chat", "get_history", "get_messages", "list_messages", "watch_chat_messages", "search_messages", "search_global", "wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"],

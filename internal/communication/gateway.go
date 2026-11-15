@@ -24,12 +24,23 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
-	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 type Gateway struct {
-	watchHTTP    *http.Client
+	watchHTTP   *http.Client
+	captureHTTP *http.Client // capture-post transport; nil → default client
+	captureKick chan struct{}
+	// captureThrottle is the adaptive-throttle window: decayed request/accept
+	// counts plus last-sample time (SRE "Handling Overload" ch.21). Owned by
+	// the single pump goroutine — no lock.
+	captureThrottle struct {
+		requests float64
+		accepts  float64
+		last     time.Time
+	}
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User
@@ -71,10 +82,22 @@ type Gateway struct {
 	botName string
 	// holdsMu/holdsLast cache the supervisor's hold projection so the
 	// spool's under-lock admission check never performs I/O.
-	holdsMu     sync.Mutex
-	holdsLast   []masterHold
-	streamMu    sync.Mutex
-	streamCalls map[string]*streamSharedCall
+	holdsMu       sync.Mutex
+	holdsLast     []masterHold
+	maintenanceMu sync.Mutex
+	maintenance   storageMaintenanceStatus
+}
+
+func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
+	return (automation.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth}).Call(ctx, caller, operation, payload, out)
+}
+
+func automationStatus(err error) int {
+	var control automation.ControlError
+	if errors.As(err, &control) {
+		return control.StatusCode
+	}
+	return http.StatusBadGateway
 }
 
 func New(config Config) (*Gateway, error) {
@@ -104,6 +127,13 @@ func New(config Config) (*Gateway, error) {
 			}
 		}
 	}
+	if _, err := os.Lstat(config.SpoolDir); err == nil {
+		if err := automation.ValidateLegacySpool(config.SpoolDir); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	spool, err := NewSpool(config.SpoolDir)
 	if err != nil {
 		return nil, err
@@ -111,6 +141,13 @@ func New(config Config) (*Gateway, error) {
 	if config.MockDir != "" {
 		for _, dir := range []string{"mock-sent", "mock-links"} {
 			if err := os.MkdirAll(filepath.Join(config.MockDir, dir), 0700); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if config.MockDir != "" && spool.storage != nil {
+		for _, dir := range []string{"mock-sent", "mock-links"} {
+			if err := spool.storage.AddRoot(filepath.Join(config.MockDir, dir)); err != nil {
 				return nil, err
 			}
 		}
@@ -139,8 +176,7 @@ func New(config Config) (*Gateway, error) {
 	// murder pending links (nonce hashes only — the link stays the secret).
 	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
 	spool.JobDone = g.toolHubJobDone
-	spool.probeScript = g.runProbeScript
-	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
+	spool.jobFence = g.routineJobLive
 	spool.langOf = func(principalID string) locale.Lang {
 		if u := g.user(principalID); u.ID != "" && u.WorkspaceDir != "" {
 			return locale.LangOf(u.WorkspaceDir)
@@ -150,6 +186,17 @@ func New(config Config) (*Gateway, error) {
 	if config.Supervised {
 		spool.refreshHolds = g.refreshHolds
 		spool.holdsSnapshot = g.holdsSnapshot
+	}
+	if config.ToolHubURL != "" {
+		// Accepted turns and completed runs are durable outbox events —
+		// ToolHub is the only vault writer (SPEC-0098 M4). No ToolHub means
+		// no memory surface at all, so nothing is produced.
+		g.captureKick = make(chan struct{}, 1)
+		spool.onAccepted = g.captureTurn
+		spool.onCompleted = g.captureCompletedLocked
+		if err := g.recoverCaptureOutbox(); err != nil {
+			return nil, fmt.Errorf("memory capture recovery: %w", err)
+		}
 	}
 	if config.TelegramAuthEnabled {
 		// Enabled by default on telegram stacks: missing Broker/form-origin
@@ -203,6 +250,11 @@ func (g *Gateway) Run(ctx context.Context) error {
 	if err := g.spool.recover(); err != nil {
 		return err
 	}
+	if g.captureKick != nil {
+		if err := g.recoverCaptureOutbox(); err != nil {
+			return err
+		}
+	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	g.commandCtx = workerCtx
 	var workerWG sync.WaitGroup
@@ -215,26 +267,11 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
-	proactiveDone := make(chan struct{})
 	progressDone := make(chan struct{})
-	streamDone := g.startStreamLoops(workerCtx)
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
 		g.canaryLoop(workerCtx, canaryInterval())
-	}()
-	go func() {
-		defer close(proactiveDone)
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			g.tickProactiveContext(workerCtx, g.now().UTC())
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
 	}()
 	go func() {
 		defer close(controlDone)
@@ -257,14 +294,24 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
+	captureDone := make(chan struct{})
+	if g.captureKick != nil {
+		// The outbox drain lives with the other loops: it sweeps what a
+		// restart or outage left pending and empties on kick.
+		go func() {
+			defer close(captureDone)
+			g.capturePump(workerCtx)
+		}()
+	} else {
+		close(captureDone)
+	}
 	defer func() {
 		cancel()
 		workerWG.Wait()
 		<-deliveryDone
+		<-captureDone
 		<-controlDone
-		<-proactiveDone
 		<-progressDone
-		<-streamDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -344,6 +391,12 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 	if query.From != nil && query.Message != nil {
 		if user, ok := g.telegramUserFor(query.Message.Chat.ID, query.From.ID); ok {
 			answer = locale.T(locale.LangOf(user.WorkspaceDir), "chat.approve-denied")
+			if strings.HasPrefix(query.Data, "h:") {
+				if err := g.confirmHumanCallback(ctx, user.Envelope(query.From.ID), "telegram_bot", query.Message.Chat.ID, query.Data); err == nil {
+					answer = locale.T(locale.LangOf(user.WorkspaceDir), "chat.confirm-saved")
+				}
+				return g.api.AnswerCallbackQuery(ctx, query.ID, answer)
+			}
 			if strings.HasPrefix(query.Data, "lang:") {
 				if picked, parsed := locale.Parse(strings.TrimPrefix(query.Data, "lang:")); parsed {
 					_ = locale.StorePrefs(user.WorkspaceDir, locale.Prefs{Lang: picked, Source: locale.SourceChosen})
@@ -481,7 +534,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "")
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "", message.ForwardOrigin != nil)
 }
 
 // commandRoute is the verified return path for a channel command reply:
@@ -594,7 +647,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			}
 			return reply(answer)
 		case "routines":
-			items, err := g.spool.ListSchedules(user.Envelope(sender))
+			items, err := g.listSchedules(ctx, user.Envelope(sender))
 			if err != nil {
 				return reply(locale.T(lang, "chat.routines-unavail"))
 			}
@@ -723,7 +776,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				if err != nil {
 					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}
-				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "")
+				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "", false)
 			}
 			return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
 		}
@@ -743,7 +796,7 @@ func (g *Gateway) languagePicker(_ context.Context, route commandRoute, topic in
 	return g.spool.EnqueueDelivery(d)
 }
 
-func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
+func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string, untrusted bool) error {
 	ch := g.channel(channel)
 	if ch == nil {
 		return errors.New("channel is not registered")
@@ -751,7 +804,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
 	text = g.expandSkillRefs(envelope.PrincipalID, task.TaskID, text)
-	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
+	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, Untrusted: untrusted, CreatedAt: g.now().UTC()}
 	if channel == "telegram_bot" && chatID < 0 {
 		if group := g.groupFor(chatID); group == nil || group.Mode != "topics" {
 			job.ScopeID = "group:" + user.ID
@@ -774,6 +827,12 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
+	}
+	if channel == "telegram_bot" {
+		lang := locale.LangOf(user.WorkspaceDir)
+		if err := g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + job.ID + "-status", Channel: channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: chatID, TaskID: task.TaskID, TopicID: task.TopicID, Text: locale.T(lang, "chat.queued") + " · " + formatElapsed(lang, 0), CreatedAt: g.now().UTC()}); err != nil {
+			log.Printf("gateway job_id=%q status=queued_notice_failed", job.ID)
+		}
 	}
 	if job.Trigger == "message" {
 		// Owner work preempts queued goal turns: bump the epoch so pending
@@ -821,8 +880,8 @@ func (g *Gateway) wakeRuntime(job Job) {
 }
 
 // progressTick refreshes live progress for every non-terminal telegram job:
-// typing is re-armed (it expires after ~5s) and the job's single status
-// message gets a fresh elapsed-time suffix through the durable upsert path,
+// admitted runs re-arm typing (it expires after ~5s), while queued jobs
+// show the wait; both refresh the single status message's elapsed time,
 // so a real stream event or a restarted gateway never duplicates it.
 func (g *Gateway) progressTick(ctx context.Context) {
 	ids, err := g.spool.activeMappingIDs()
@@ -838,21 +897,25 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if ch == nil || !ch.Caps().Typing {
 			continue
 		}
-		// Only an admitted run earns live progress: a queued or wedged job
-		// would farm typing and edits forever with nothing behind them.
 		if m.AssignmentID != "" {
 			continue
 		}
-		if m.RunID == "" {
-			continue
-		}
 		lang := locale.LangOf(g.user(m.PrincipalID).WorkspaceDir)
-		_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
 		base := strings.TrimSpace(m.StatusText)
+		if m.RunID == "" {
+			// A wedged uncertain mapping lost its admission outcome; its
+			// honest state is the uncertain notice — "queued" would lie.
+			if m.Status == "uncertain" {
+				continue
+			}
+			base = locale.T(lang, "chat.queued")
+		} else {
+			_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
+		}
 		if base == "" {
 			base = locale.T(lang, "chat.working")
 		}
-		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(lang, g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(lang, g.now().Sub(m.CreatedAt)), StreamPosition: m.EventPosition, CreatedAt: g.now().UTC()})
 	}
 }
 
@@ -869,26 +932,6 @@ func formatElapsed(lang locale.Lang, d time.Duration) string {
 	default:
 		return locale.T(lang, "time.hour", s/3600, (s%3600)/60)
 	}
-}
-
-// mediaReady resolves readiness for either an embedded command worker (binary
-// must exist) or a URL-configured sidecar (health endpoint must answer).
-func mediaReady(impl any, command, url string) bool {
-	if impl == nil {
-		return false
-	}
-	if strings.TrimSpace(url) == "" {
-		return commandAvailable(command)
-	}
-	type healthchecker interface {
-		Healthy(context.Context) bool
-	}
-	if h, ok := impl.(healthchecker); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return h.Healthy(ctx)
-	}
-	return true
 }
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
@@ -924,6 +967,28 @@ func (g *Gateway) notifyTelegramConflict() {
 func (g *Gateway) user(id string) User {
 	for _, user := range g.config.Users {
 		if user.ID == id {
+			owner := g.config.ControlPrincipal
+			if owner == "" && len(g.config.Users) > 0 {
+				owner = g.config.Users[0].ID
+			}
+			if !g.config.Supervised || g.config.ControlTokensFile == "" || user.ID == owner {
+				return user
+			}
+			entries, err := serviceauth.ReadTokenEnvelopes(g.config.ControlTokensFile)
+			if err != nil {
+				user.Enabled = false
+				return user
+			}
+			runtimeID := user.RuntimeID
+			if runtimeID == "" {
+				runtimeID = user.ID
+			}
+			policy, ok := serviceauth.EnrolledPolicy(entries, user.ID, runtimeID)
+			if !ok {
+				user.Enabled = false
+				return user
+			}
+			user.PolicyVersion = policy
 			return user
 		}
 	}
@@ -934,7 +999,7 @@ func (g *Gateway) userByChatID(chatID int64) User {
 	for _, user := range g.config.Users {
 		for _, telegramID := range user.TelegramIDs {
 			if telegramID == chatID {
-				return user
+				return g.user(user.ID)
 			}
 		}
 	}

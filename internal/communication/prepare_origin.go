@@ -1,52 +1,27 @@
 package communication
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// prepareOrigin remembers which channel conversation initiated an onboarding:
-// the outcome callback authenticates by principal alone, so the origin is
-// captured from the active message job while it still runs and reused once
-// that job has finished.
+// prepareOrigin is the resolved channel conversation a notice returns to. It
+// is derived fresh on every send — never stored: a persisted route outlives
+// the session it names and strands notices on a dead channel.
 type prepareOrigin struct {
-	ConversationID   string `json:"conversation_id"`
-	DeliveryTargetID string `json:"delivery_target_id,omitempty"`
-	Channel          string `json:"channel,omitempty"`
-	ChatID           int64  `json:"chat_id"`
-	TopicID          int64  `json:"topic_id,omitempty"`
+	ConversationID   string
+	DeliveryTargetID string
+	Channel          string
+	ChatID           int64
+	TopicID          int64
 }
 
-func (s *Spool) prepareOriginPath(onboardingID string) string {
-	h := sha256.Sum256([]byte("prepare-origin\x00" + onboardingID))
-	return filepath.Join(s.root, "prepares", hex.EncodeToString(h[:])+".json")
-}
-
-func (s *Spool) putPrepareOrigin(onboardingID string, origin prepareOrigin) error {
-	path := s.prepareOriginPath(onboardingID)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	return atomicJSON(path, origin)
-}
-
-func (s *Spool) loadPrepareOrigin(onboardingID string) (prepareOrigin, bool) {
-	body, err := os.ReadFile(s.prepareOriginPath(onboardingID))
-	if err != nil {
-		return prepareOrigin{}, false
-	}
-	var origin prepareOrigin
-	if err := json.Unmarshal(body, &origin); err != nil || origin.ConversationID == "" {
-		return prepareOrigin{}, false
-	}
-	return origin, true
-}
+// prepareOriginMaxAge bounds how far back an initiator may be trusted: an
+// onboarding created days ago cannot prove which session is live today.
+const prepareOriginMaxAge = 24 * time.Hour
 
 // prepareMessageID returns the Telegram message that already carries this
 // onboarding's status, so later notices edit it instead of stacking new
@@ -57,15 +32,15 @@ func (s *Spool) prepareMessageID(onboardingID string) int {
 	best := 0
 	var bestTime time.Time
 	for _, dir := range []string{"sending", "done"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, "outbox", dir))
+		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", dir))
 		if err != nil {
 			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		for _, name := range entries {
+			if !strings.HasPrefix(name, prefix) {
 				continue
 			}
-			b, err := os.ReadFile(filepath.Join(s.root, "outbox", dir, entry.Name()))
+			b, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", dir, name))
 			if err != nil {
 				continue
 			}
@@ -94,7 +69,7 @@ func (s *Spool) newestActiveMessageMapping(principal string) (JobMapping, bool) 
 	var best JobMapping
 	for _, id := range ids {
 		mapping, err := s.loadMappingLocked(id)
-		if err != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || terminalStatus(mapping.Status) || mapping.CancelRequested {
+		if err != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || mapping.Status != "running" || mapping.CancelRequested {
 			continue
 		}
 		if mapping.CreatedAt.After(best.CreatedAt) {
@@ -111,16 +86,16 @@ func (s *Spool) newestActiveMessageMapping(principal string) (JobMapping, bool) 
 // initiator's stored result names the source it installed (repo token), while
 // an unrelated session's job does not.
 func (s *Spool) initiatingMessageMapping(principal string, onboardingCreated time.Time, repository string) (JobMapping, bool) {
-	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return JobMapping{}, false
 	}
 	var candidates []JobMapping
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		body, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 		if err != nil {
 			continue
 		}
@@ -128,7 +103,7 @@ func (s *Spool) initiatingMessageMapping(principal string, onboardingCreated tim
 		if json.Unmarshal(body, &mapping) != nil || mapping.PrincipalID != principal || mapping.Trigger != "message" || mapping.CancelRequested {
 			continue
 		}
-		if mapping.CreatedAt.After(onboardingCreated.Add(2 * time.Second)) {
+		if mapping.CreatedAt.Before(onboardingCreated.Add(-5*time.Minute)) || mapping.CreatedAt.After(onboardingCreated.Add(2*time.Second)) {
 			continue
 		}
 		candidates = append(candidates, mapping)

@@ -29,10 +29,9 @@ func (r *alwaysFailRunner) RunOutcome(_ context.Context, job Job) (RunOutcome, e
 	return RunOutcome{JobID: job.ID, Status: "failed", LastEvent: "run.failed"}, errors.New("hermes run ended without completion")
 }
 
-// A user message whose run fails gets exactly one automatic retry as a fresh
-// run; the owner hears the error only after that retry also fails. Without
-// the retry the job dies on the first transient provider blip.
-func TestWorkerRetriesFailedMessageJobOnce(t *testing.T) {
+// A terminal failure does not prove the run had no effects. Keep its original
+// logical operation and notify once instead of creating fresh authorization.
+func TestFailedRunAfterToolIsNotResubmitted(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
 	if err != nil {
@@ -68,18 +67,18 @@ func TestWorkerRetriesFailedMessageJobOnce(t *testing.T) {
 	runner.mu.Lock()
 	calls := runner.calls
 	runner.mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("runner calls=%d, want 2 (one automatic retry)", calls)
+	if calls != 1 {
+		t.Fatalf("runner calls=%d, want 1 without verified pre-effect proof", calls)
 	}
 	for _, dir := range []string{"pending", "running", "failed", "done"} {
-		if _, err := os.Stat(filepath.Join(g.spool.root, dir, "telegram-x-r2.json")); err == nil {
-			t.Fatalf("unbounded retry: telegram-x-r2.json in %s", dir)
+		if _, err := os.Stat(filepath.Join(g.spool.root, dir, "telegram-x-r1.json")); err == nil {
+			t.Fatalf("unverified fresh retry: telegram-x-r1.json in %s", dir)
 		}
 	}
 	fake.mu.Lock()
 	sent := len(fake.sent)
 	fake.mu.Unlock()
 	if sent != 1 {
-		t.Fatalf("error deliveries=%d, want exactly 1 after the retry failed", sent)
+		t.Fatalf("error deliveries=%d, want exactly 1 for the original failed operation", sent)
 	}
 }

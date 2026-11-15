@@ -1,0 +1,44 @@
+schema: 1
+change: CHG-0245
+title: "M29.4 Materialize the workspace tree, safe inbox/artifacts, projects, vault and read-only mounts"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R4.1, R4.2]
+depends_on: ["M29.2", "M29.3"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 428
+design_status: accepted
+implementation_status: done
+slices:
+  S4.1-contract: done
+  S4.2-implementation: done
+validation:
+  documents: pass
+  just_check: environmental_flake
+  docker_check: not_run
+  red_team: pass
+  live_acceptance: deferred
+evidence:
+  - kind: unit
+    detail: "go test ./internal/stack ./internal/agenttools ./internal/passport ./internal/communication — all green."
+    items:
+      - "TestInitMaterializesWorkspaceTree: provisioning + every RenderEnvironment materialize workspace/inbox/{people,services}, work, projects, artifacts/{documents,images,videos,archives,services}, outbox; legacy spaces missing whole branches get them on next render; existing nested Git projects and inbox originals preserved (R4.1)."
+      - "TestWorkspaceLayoutRejectsSymlinkAndCrossUserWrite: cross-root reads/writes stay inside the user's own os.Root; a symlink pointing outside the root is not followed; file_write refuses every depth under a read-only boundary (inbox originals, shared mounts, vault memory); an in-root symlink cannot launder a write past the boundary — the guard resolves ancestors via Readlink (A4)."
+      - "Archive surfaces honor the same boundary: archive_unpack/archive_create with a symlinked output ancestor into inbox are rejected by guardWritable (R4.2)."
+      - "TestWorkspacePassportBoundaries/TestWorkspaceTreeDerivedFromLayout: writable/read_only disjoint and canonical; workspace.tree derived from the approved layout, never layer-written (ADR-0092 D5)."
+      - "inbox_fetch routes person/service originals by X-Hub-Source into inbox/people|services/<id>/files; receipt carries original name+source and is stored before acknowledge; replay reuses the receipt without re-fetch (R4.2 filename metadata, retain originals)."
+  - kind: static
+    detail: "devcheck format clean; devcheck docs clean; gofmt clean on touched files."
+  - kind: red_team
+    detail: "Symlinked ancestor resolution guards every writable surface reachable by the agent (file_write, archive_create, archive_unpack); outside-root symlinks are not followed; filename traversal rejected by safe()+base check; zip entries refuse symlinks so an agent cannot plant links through tools; cross-user isolation holds because each Tools instance only opens its own space roots."
+  - kind: live_acceptance
+    detail: "Deferred with reason: live two-file (person+service) send against a running dev stack requires a deployed communication-hub; tracked under M29.12 milestone acceptance. Unit fixtures prove the routing/receipt/guard semantics end-to-end inside the workspace root."
+remaining:
+  - "Live dev-stack send of one person file + one service original; nested Git project creation in dev (milestone closeout M29.12)."
+limitations:
+  - "document_edit/media writes stay hard-confined to artifacts/{documents,images,videos} prefixes; a planted symlink at artifacts/ itself would redirect them — not agent-reachable today (no tool can create symlinks), noted as residual."
+  - "read_only mount boundaries inside /workspace map to HUB_WORKSPACE_RO prefixes; mounts outside /workspace are unreachable by file tools (root confinement)."

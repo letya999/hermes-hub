@@ -194,13 +194,14 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 	}))
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
-	pinRemoteFixtureClient(t, fixture, server.URL)
+	pinRemoteFixtureClient(t, fixture, server)
 	return fixture
 }
 
 // pinRemoteFixtureClient maps the fixture TLS server to a public-looking
 // answer and swaps api.RemoteHTTPClient for a fixture-dialing client.
-func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, serverURL string) {
+func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, server *httptest.Server) {
+	serverURL := server.URL
 	t.Helper()
 	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
 	fixture.tlsCleanup = func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }
@@ -210,7 +211,7 @@ func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, serverURL s
 	}
 	dialAddr := strings.TrimPrefix(serverURL, "https://")
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{RootCAs: server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs, ServerName: server.Certificate().DNSNames[0], MinVersion: tls.VersionTLS12},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", dialAddr)
 		},
@@ -301,7 +302,9 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared["phase"] != api.PhaseAwaitingConfirm || prepared["onboarding_id"] == "" {
+	// A credential-free install request is itself the consent — the record
+	// lands enabled straight off prepare, no confirm step.
+	if prepared["phase"] != api.PhaseEnabled || prepared["onboarding_id"] == "" {
 		t.Fatalf("prepare=%v", prepared)
 	}
 	// Idempotent: the same prepare resolves to the same onboarding.
@@ -313,11 +316,12 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": prepared["definition_id"], "version": "1.0.0"}); err == nil {
 		t.Fatal("cross-user catalog prepare allowed")
 	}
-	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])})
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, prepared["onboarding_id"].(string))
+	confirmed, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if confirmed["phase"] != api.PhaseConfirmed {
+	if confirmed["phase"] != api.PhaseEnabled {
 		t.Fatalf("confirm=%v", confirmed)
 	}
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -350,7 +354,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 			t.Fatalf("owner-scoped remote leaked to bob: %s", tool.Name)
 		}
 	}
-	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if err != nil || invoked.IsError {
 		t.Fatalf("invoke=%+v err=%v", invoked, err)
 	}
@@ -358,14 +362,14 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 		t.Fatal("remote fixture did not receive the call")
 	}
 	// Bob reusing the projected name is denied at call time.
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("cross-user projected call allowed")
 	}
 	// Revoke removes the projection and cuts the call path mid-session.
 	if _, err := callControl(t, alice, "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("revoked remote call still succeeded")
 	}
 	refreshed, err := alice.ListTools(context.Background(), nil)
@@ -406,16 +410,15 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if err := fix.control.SubmitCredentials(onboardingID, "wrong-nonce", map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}
-	if err := fix.control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); err != nil {
+	if err := fix.control.SubmitCredentials(onboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding = mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.AdmissionPending {
+	// The submit is the consent — the record binds inline to live.
+	if onboarding.Stage != api.StageLive || onboarding.Awaiting(api.GateConfirmSetup) || onboarding.AdmissionPending {
 		t.Fatalf("post-submit=%+v", onboarding)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboardingID)
 	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +435,7 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("credentialed remote tool not projected")
 	}
-	result, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}})
+	result, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}})
 	if err != nil || result.IsError {
 		t.Fatalf("invoke failed: %+v %v", result, err)
 	}
@@ -502,9 +505,7 @@ func TestRemoteAllowlistNarrowsProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboarding.OnboardingID)
 	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +546,7 @@ func TestRemoteSecretStaysOutOfStoreFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, persisted, prepared["onboarding_id"].(string))
-	if err := fix.control.SubmitCredentials(onboarding.OnboardingID, onboarding.FormNonce, map[string]string{"GITHUB_TOKEN": "ghp_storecheck"}); err != nil {
+	if err := fix.control.SubmitCredentials(onboarding.OnboardingID, onboarding.GateNonce(api.GateCredentials), map[string]string{"GITHUB_TOKEN": "ghp_storecheck"}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(storePath)

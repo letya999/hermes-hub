@@ -2,7 +2,6 @@ package communication
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +11,7 @@ import (
 // becomes an agent job with the untrusted snapshot, and an mcp_tool event
 // schedule fans discrete events out to the sink exactly once.
 func TestDigestBriefAndEventDispatch(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	base := Schedule{Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *"}
 
@@ -38,14 +37,6 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if _, err := s.CreateSchedule(brief, caller, ""); err != nil {
 		t.Fatal(err)
 	}
-	event := base
-	event.ScheduleID = "e1"
-	event.Input = "inbox watch"
-	event.JobKind = "event"
-	event.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "inbox.poll"}
-	if _, err := s.CreateSchedule(event, caller, ""); err != nil {
-		t.Fatal(err)
-	}
 	if _, _, err := s.CreateTask(User{ID: o.Job.UserID, Enabled: true, TelegramIDs: []int64{o.Job.ChatID}}, o.Job.ChatID, 0, "refactor cron", false); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +51,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.PutOccurrence(wo, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(wo.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(wo.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(wo.DueAt, fetch); err != nil {
@@ -71,7 +62,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.PutOccurrence(wo, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(wo.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(wo.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(wo.DueAt, fetch); err != nil {
@@ -91,7 +82,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.PutOccurrence(do, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(do.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(do.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -99,7 +90,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 		t.Fatalf("digest delivery: %+v %v", d, err)
 	}
 	// Replay: the receipt dedupes a second dispatch of the same occurrence.
-	if err := s.DispatchDueOccurrences(do.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(do.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := s.ClaimDelivery(); d != nil {
@@ -116,7 +107,7 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	if err := s.PutOccurrence(bo, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(bo.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(bo.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -125,75 +116,14 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 	}
 	// The admitted bundle keeps the occurrence id so send-time
 	// re-authorization resolves its schedule-pinned conversation.
-	if err := g.authorizeOccurrence(*job); err != nil {
+	if err := s.authorizeOccurrence(*job); err != nil {
 		t.Fatalf("brief bundle fails send-time re-authorization: %v", err)
 	}
 
-	// Event subscription: mcp_tool probe, two fresh events — one delivery
-	// each; a replayed batch stays in the durable seen-set.
-	eo := o
-	eo.ScheduleID = "e1"
-	eo.JobKind = "event"
-	eo.Job.Text = "inbox watch"
-	eo.DueAt = bo.DueAt.Add(time.Hour)
-	if err := s.PutOccurrence(eo, caller); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DispatchDueOccurrences(eo.DueAt, g.authorizeOccurrence); err != nil {
-		t.Fatal(err)
-	}
-	toolBody := []byte(`{"events":[{"id":"m-1","text":"first mail"},{"id":"m-2","text":"second mail"}]}`)
-	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) { return toolBody, nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
-		t.Fatal(err)
-	}
-	seen := 0
-	for i := 0; i < 2; i++ {
-		ev, err := s.ClaimDelivery()
-		if err != nil || ev == nil {
-			t.Fatalf("event delivery %d: %+v %v", i, ev, err)
-		}
-		if !strings.Contains(ev.Text, "mail") {
-			t.Fatalf("event text: %q", ev.Text)
-		}
-		seen++
-	}
-	if d, _ := s.ClaimDelivery(); d != nil {
-		t.Fatalf("third event delivery: %+v", d)
-	}
-	state, err := s.EventStateOf("e1")
-	if err != nil || len(state.Seen) != 2 || state.LastSuccess.IsZero() {
-		t.Fatalf("event state: %+v %v", state, err)
-	}
-	eo.DueAt = eo.DueAt.Add(time.Hour)
-	if err := s.PutOccurrence(eo, caller); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DispatchDueOccurrences(eo.DueAt, g.authorizeOccurrence); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, _ := s.ClaimDelivery(); d != nil {
-		t.Fatalf("replayed event delivered: %+v", d)
-	}
-
-	// Probe failure records the error; auth-shaped failures degrade the sink.
-	eo.DueAt = eo.DueAt.Add(time.Hour)
-	if err := s.PutOccurrence(eo, caller); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DispatchDueOccurrences(eo.DueAt, g.authorizeOccurrence); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), eo.DueAt, g.authorizeOccurrence, fetch, func(context.Context, string, *WatchProbe) ([]byte, error) {
-		return nil, errors.New("403 forbidden")
-	}, nil); err != nil {
-		t.Fatal(err)
-	}
-	state, err = s.EventStateOf("e1")
-	if err != nil || !state.Degraded || state.LastError == "" {
-		t.Fatalf("degraded state: %+v %v", state, err)
-	}
+	// Event subscription fan-out — discrete events to the sink exactly
+	// once, replay dedup through the durable seen-set, and auth-shaped
+	// failures failing the occurrence — moved to the owner's real event
+	// plane: internal/toolhub/automation/streams_ported_test.go
+	// (TestSettleStreamEventsNotify, TestMCPEventEnvelopeFansOutByEventID,
+	// TestSettleStreamEventsAuthDegraded).
 }

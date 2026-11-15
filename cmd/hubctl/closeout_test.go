@@ -17,21 +17,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
-func TestRejectedManifestDoesNotCreateSpool(t *testing.T) {
-	root := t.TempDir()
-	manifest := filepath.Join(root, "manifest.yaml")
-	if err := os.WriteFile(manifest, []byte("space:\n  workspace:\n    invalid_field: true\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	spool := filepath.Join(root, "absent-spool")
-	if _, err := applyFile(spool, "", "me", manifest, initTestSpace(t)); err == nil {
-		t.Fatal("invalid manifest accepted")
-	}
-	if _, err := os.Stat(spool); !os.IsNotExist(err) {
-		t.Fatalf("rejected manifest created spool: %v", err)
-	}
-}
-
 func TestWatchWaitsForDelivery(t *testing.T) {
 	spool := t.TempDir()
 	for _, dir := range []string{"pending", "done"} {

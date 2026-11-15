@@ -25,6 +25,11 @@ const (
 	// Telegram counts message length in UTF-16 code units.
 	telegramPartLimit = 4000
 	slackPartLimit    = 39000
+
+	// telegramMaxParts bounds one delivery's message fan-out: beyond it the
+	// answer degrades to the final part plus the full source as a document, so
+	// a pathological response can never flood the chat.
+	telegramMaxParts = 5
 )
 
 var markdownParser = goldmark.New(

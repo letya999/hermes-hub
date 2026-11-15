@@ -35,15 +35,16 @@ latest release; Go is only needed to build from source. Linux example:
 
 ```bash
 ./bin/hubctl-linux-amd64 init --user artem
-# Edit spaces/artem/agent.yaml and spaces/artem/secrets.prod.env locally.
+# Edit spaces/artem/passports/{stack,config,models,workspace,tools,grants}.yaml and secrets.prod.env locally.
+./bin/hubctl-linux-amd64 space apply --dir spaces/artem --env prod --confirm
 ./bin/hubctl-linux-amd64 doctor --user artem
 ./bin/hubctl-linux-amd64 up --user artem --env prod
 ./bin/hubctl-linux-amd64 chat --user artem
 ```
 
-Set your model ID, an OpenAI-compatible `model_url` ending in `/v1`, and
-`OPENAI_API_KEY`. CLIProxy works as that endpoint; use `host.docker.internal` for a
-provider on the Docker host. On Windows use the included `.exe` and Docker Desktop
+Set a reviewed default route in `passports/models.yaml` and the required
+provider credential in `secrets.prod.env`. CLIProxy can serve the route; use
+`host.docker.internal` for a provider on the Docker host. On Windows use the included `.exe` and Docker Desktop
 Linux containers. Start with 4 vCPU, 8 GB RAM, 30 GB free disk — the first build
 downloads pinned upstreams and the agent image is bigger than the small Go CLI.
 
@@ -82,8 +83,8 @@ in their own `tools:` but never expand past the org ceiling.
 ```
 
 Members get org skills delivered into their catalog (`source: org`), org-approved
-connectors, and the org's policies. Old layouts stay put until an explicit verified
-migration (`migrate-spaces --apply`).
+connectors, and the org's policies. Existing spaces need six authored passport
+files before their next managed restart; personal workspace and vault data stay.
 
 ## Capability map
 
@@ -119,15 +120,18 @@ skills (deferred post-MVP). The [changelog](CHANGELOG.md) and
 
 ## Engineering
 
-`just check` is the single local CI entrypoint: Go race tests, ≥85% coverage gate
-on original code, static analysis, docs/workflow checks, CLI integration tests.
+`just check` is the fast local gate: formatting, documentation and Go vet.
+Run `just test <affected-package> ...` for each change. GitHub Actions owns the
+full race/shuffle suite, ≥85% own-code coverage, static/security analysis,
+deployment contracts and container acceptance. `just check-full` is the explicit
+local fallback; a local pass is not evidence that CI passed.
 For fast iteration on a running dev stack:
 
 ```bash
 go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>
 ```
 
-GitHub Actions runs the same gate plus Docker builds. Never point CI at a personal
+GitHub Actions runs the exhaustive gates and publishes commit-pinned Docker images. Never point CI at a personal
 agent VPS. See [CONTRIBUTING](CONTRIBUTING.md).
 
 - [SETUP](SETUP.md) — account bootstrap, VPS, native tools

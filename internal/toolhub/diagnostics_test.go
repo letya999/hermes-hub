@@ -165,7 +165,7 @@ func TestDiagnosticsBoundsAndFilters(t *testing.T) {
 	dir := t.TempDir()
 	var lines []string
 	for i := 0; i < 50; i++ {
-		lines = append(lines, diagLine(fmt.Sprintf("2026-09-28T10:00:%02dZ", i), work, fmt.Sprintf("line %d noise", i)))
+		lines = append(lines, diagLine(fmt.Sprintf("2026-09-28T10:00:%02dZ", i), work, fmt.Sprintf(`{"job_id":"job-%d","event":"run.started"}`, i)))
 	}
 	lines = append(lines, diagLine("2026-09-28T10:01:00Z", work, "ERROR crash loop detected"))
 	diagWrite(t, dir, lines...)
@@ -183,11 +183,11 @@ func TestDiagnosticsBoundsAndFilters(t *testing.T) {
 		t.Fatalf("diagnostics severity: %v", err)
 	}
 	got := body["lines"].([]map[string]any)
-	if len(got) != 1 || !strings.Contains(got[0]["message"].(string), "crash loop") {
+	if len(got) != 1 || !strings.Contains(got[0]["message"].(string), "ERROR") {
 		t.Fatalf("severity filter: %#v", got)
 	}
 	// Search substring.
-	body, err = control.diagnostics(t.Context(), alice, map[string]any{"search": "line 42"})
+	body, err = control.diagnostics(t.Context(), alice, map[string]any{"search": "job-42"})
 	if err != nil {
 		t.Fatalf("diagnostics search: %v", err)
 	}
@@ -300,5 +300,87 @@ func TestDiagnosticsRejectsAuthorityArgs(t *testing.T) {
 	control := &ControlPlane{Store: store, DiagnosticsDir: t.TempDir()}
 	if _, err := control.Invoke(t.Context(), aliceAuth(), "diagnostics", map[string]any{"owner": "root"}); err == nil {
 		t.Fatal("authority argument accepted")
+	}
+}
+
+func TestDiagnosticsOmitsLegacyContentAndSearchSideChannel(t *testing.T) {
+	store := NewStore()
+	auth := aliceAuth()
+	work := "work-eeeeeeeeeeeeeeeeeeeeeeee"
+	diagFixture(t, store, auth, work)
+	dir := t.TempDir()
+	diagWrite(t, dir, diagLine("2026-10-28T12:00:00Z", work, `{"job_id":"owned-job","text":"private-body-canary","private-key-canary":"private-value-canary"}`))
+	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
+	body, err := control.diagnostics(t.Context(), auth, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := body["lines"].([]map[string]any)
+	if len(lines) != 1 {
+		t.Fatal("safe metadata record missing")
+	}
+	msg := lines[0]["message"].(string)
+	if !strings.Contains(msg, "owned-job") {
+		t.Fatal("correlation metadata missing")
+	}
+	for _, value := range []string{"private-body-canary", "private-key-canary", "private-value-canary"} {
+		if strings.Contains(msg, value) {
+			t.Errorf("private legacy field exposed: %s", value)
+		}
+	}
+	body, err = control.diagnostics(t.Context(), auth, map[string]any{"search": "private-body-canary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body["lines"].([]map[string]any)) != 0 {
+		t.Fatal("search revealed omitted private content")
+	}
+}
+
+// The diagnostics op is a declared PEP site for observability.read_own_logs:
+// a managed profile carrying a rights ceiling must Decide-allow the op;
+// profiles without a ceiling keep the legacy posture (see TestDiagnostics*).
+func TestDiagnosticsRightsGate(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	store.RightsDoc = rightsVocabulary()
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-read", auth.PrincipalID, "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-diag", auth.PrincipalID, "observability", "read_own_logs", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	dir := t.TempDir()
+	diagWrite(t, dir, diagLine("2026-09-28T10:00:00Z", "c1", "collected line"))
+	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
+
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil || !strings.Contains(err.Error(), "observability.read_own_logs") {
+		t.Fatalf("ceiling without the right must deny diagnostics: %v", err)
+	}
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err != nil {
+		t.Fatalf("granted right must allow diagnostics: %v", err)
+	}
+	// Revoke the issued grant: the next call denies without a republish.
+	grants, err := gov.RightGrants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := false
+	for _, grant := range grants {
+		if grant.Capability == "observability" && grant.Operation == "read_own_logs" {
+			revoked = true
+			if err := gov.RevokeRight(grant.GrantID, "test", "operator", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !revoked {
+		t.Fatal("issued observability grant expected")
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil {
+		t.Fatal("revoked grant must deny diagnostics on the next call")
 	}
 }

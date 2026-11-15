@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Pinned upstream code. Hermes MCP lives here; Telegram/Google/Atlassian Python
 # MCP trees are dedicated images, not copies inside every hub service.
-FROM golang:1.27.3-bookworm AS go_build
+FROM golang:1.27.4-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker/go.mod ./services/credential-broker/
@@ -17,11 +17,26 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /e2e ./cmd/e2e
 
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-media ./cmd/hub-media
-RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
-FROM golang:1.27.3-bookworm AS cliproxy_build
-RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
+# Broker's activated store requires SQLCipher; a non-CGO binary refuses it.
+FROM golang:1.27.4-bookworm AS broker_build
+RUN apt-get update -qq && apt-get install -y -qq gcc make libssl-dev tcl curl ca-certificates >/dev/null 2>&1
+RUN curl -fsSL --retry 3 -o /tmp/sqlcipher.tar.gz https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v4.6.1.tar.gz \
+    && cd /tmp && tar xzf sqlcipher.tar.gz && cd sqlcipher-4.6.1 \
+    && ./configure --enable-tempstore=yes CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL -O2" LDFLAGS="-lcrypto" >/dev/null \
+    && make -j4 >/dev/null && make install >/dev/null \
+    && mkdir -p /opt/sqlcipher-shim && ln -sf /usr/local/lib/libsqlcipher.a /opt/sqlcipher-shim/libsqlite3.a
+WORKDIR /src
+COPY services/credential-broker/go.mod services/credential-broker/go.sum ./
+RUN go mod download
+COPY services/credential-broker ./
+RUN --mount=type=cache,id=hermes-broker-go-build,target=/root/.cache/go-build \
+    CGO_ENABLED=1 CGO_CFLAGS="-I/usr/local/include/sqlcipher" CGO_LDFLAGS="-L/opt/sqlcipher-shim -static -lsqlcipher -lcrypto -lssl -lpthread -lm -ldl" \
+    go build -tags libsqlite3 -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
+
+FROM golang:1.27.4-bookworm AS cliproxy_build
+RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin c5251b57b3fa5dcbc689f514f4aa166daacb4481; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
@@ -44,6 +59,8 @@ WORKDIR /opt/hermes
 COPY --from=sqlite_build /opt/sqlite-fixed/lib/ /usr/local/lib/
 RUN ldconfig
 COPY docker/aiohttp-requirements.txt /opt/aiohttp-requirements.txt
+COPY docker/patches/hermes-mcp-run-identity.patch /opt/hermes-mcp-run-identity.patch
+COPY docker/check-mcp-tool-errors.py /opt/check-mcp-tool-errors.py
 # The pinned upstream fetch is one long HTTP stream; forcing HTTP/1.1 and
 # retrying insulates the build from middleboxes cancelling HTTP/2 streams.
 # mcp extra only: messaging/google/voice pull Discord, a second Google client
@@ -53,7 +70,8 @@ COPY docker/aiohttp-requirements.txt /opt/aiohttp-requirements.txt
 # hub's session API on :8642) needs it even when messaging platforms stay in
 # the Go communication hub.
 RUN set -e; git init; git remote add origin https://github.com/nousresearch/hermes-agent.git; for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin 869228cab4a8276d3b4c78da9d9939670c47bd0f; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; git checkout --detach FETCH_HEAD; \
-    git rev-parse HEAD > /opt/hermes/.hermes-rev; \
+    git rev-parse HEAD > /opt/hermes/.hermes-rev; git apply --check /opt/hermes-mcp-run-identity.patch; git apply /opt/hermes-mcp-run-identity.patch; \
+    python /opt/check-mcp-tool-errors.py; \
     uv sync --python /usr/local/bin/python --frozen --no-dev --extra mcp; \
     uv pip install --python .venv/bin/python --require-hashes -r /opt/aiohttp-requirements.txt; \
     .venv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"; \
@@ -64,11 +82,19 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # image-budget probe fails the image if any appear.
 FROM debian:13.6-slim AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
-# ride https sources, and apt signature checks do not need TLS anyway.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /cellinit /usr/local/bin/
+# ride https sources, and apt signature checks do not need TLS anyway. git is
+# the vault writer's commit backend (SPEC-0085 R1): the communication gateway
+# mounts the memory vault and lands governed writes as git commits.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /hub-media /cellinit /usr/local/bin/
+COPY --from=broker_build /credential-broker /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
+# Immutable platform catalogs (rights vocabulary, toolsets, service kinds):
+# root-owned read-only files baked into the image — the agent uid can read
+# but never edit them (SPEC-0092 R2, ADR-0093 D3).
+COPY platform/catalogs /opt/hub/platform/catalogs/
+RUN chmod -R a-w /opt/hub/platform/catalogs
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
 ENV HOME=/state/home
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive /data && chown 10001:10001 /state /workspace /archive /data
@@ -148,6 +174,23 @@ USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["browser"]
 
+# OpenKnowledge knowledge surface (SPEC-0085 R8, ADR-0086 D8): the per-space
+# markdown editor/MCP over the space memory vault. One pinned replica on the
+# space-private network, vault bind-mounted at /data; the container never
+# publishes to the host in this stage. The upstream package is pinned exactly
+# — no floating tag may resurrect an unreviewed release.
+FROM node AS knowledge
+# ok needs git: the vault mount at /data is a git-backed project and upstream
+# refuses to boot without the binary (git_preflight_fail).
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN set -e; for i in 1 2 3 4; do if npm i -g --ignore-scripts @inkeep/open-knowledge@0.88.2; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
+RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state/home /data && chown 10001:10001 /state/home /data
+RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
+ENV HOME=/state/home
+WORKDIR /data
+USER 10001:10001
+CMD ["ok", "start"]
+
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
@@ -222,6 +265,18 @@ ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 FROM browser AS dev-browser
+USER 0:0
+RUN mkdir /src && chown 10001:10001 /src
+USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS prod-knowledge
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS dev-knowledge
 USER 0:0
 RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001

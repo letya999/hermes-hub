@@ -74,7 +74,7 @@ func TestRoutineLifecycleCatalogDeclaresArguments(t *testing.T) {
 		t.Errorf("invalid published routine catalog: %v", err)
 	}
 	want := map[string][]string{
-		"routine_get": {"id", "include", "history_limit", "history_cursor", "preview_limit"}, "routine_delete": {"id", "expected_revision"},
+		"routine_read": {"id", "include", "history_limit", "history_cursor", "preview_limit"}, "routine_remove": {"id", "expected_revision"},
 		"routine_edit": {"id", "action", "expected_revision", "patch", "until"}, "routine_list": {"limit", "cursor", "kind", "state", "query"}, "routine_create": {"timing"},
 	}
 	found := map[string]bool{}
@@ -148,14 +148,21 @@ func TestRoutinePublishedLifecycleDispatch(t *testing.T) {
 	for _, tool := range listed.Tools {
 		descriptions[tool.Name] = tool.Description
 	}
-	for _, op := range []string{"create", "list", "get", "edit", "delete"} {
+	// Each op takes only the arguments the catalog declares for it — the
+	// advertised schema is closed, matching ToolHub admission.
+	opArgs := map[string]map[string]any{
+		"create": {"id": "item", "timezone": "UTC", "expression": "2100-01-01T10:00:00Z", "text": "fixture", "destination_task_id": "default", "timing": map[string]any{"windows": []any{map[string]any{"from": "14:00", "to": "16:00"}}}},
+		"list":   {"limit": 7, "cursor": "cursor-a", "kind": "reminder", "state": "paused"},
+		"read":   {"id": "item", "include": []string{"history", "next_runs"}, "history_cursor": "cursor-a"},
+		"edit":   {"id": "item", "action": "update", "expected_revision": 3, "patch": map[string]any{"input": "edited"}},
+		"remove": {"id": "item", "expected_revision": 3},
+	}
+	for _, op := range []string{"create", "list", "read", "edit", "remove"} {
 		name := "routine_" + op
 		if descriptions[name] == "" {
 			t.Errorf("missing documented MCP tool %s", name)
 		}
-		args := map[string]any{"id": "item", "action": "update", "expected_revision": 3, "limit": 7, "cursor": "cursor-a", "include": []string{"history", "next_runs"}, "history_cursor": "cursor-a", "kind": "reminder", "state": "paused", "timezone": "UTC", "expression": "2100-01-01T10:00:00Z", "text": "fixture", "patch": map[string]any{"input": "edited"}, "timing": map[string]any{"windows": []any{map[string]any{"from": "14:00", "to": "16:00"}}}}
-		args["destination_task_id"] = "default"
-		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: opArgs[op]})
 		if err != nil || result.IsError {
 			t.Errorf("published %s call failed: %+v %v", name, result, err)
 		}
@@ -680,7 +687,7 @@ func TestWatchSubscribeForwardsFilterAndMinInterval(t *testing.T) {
 	// never declare a stream's delivery, gate, or cadence.
 	declared := map[string]bool{}
 	for _, spec := range HubToolsDefinition().Tools {
-		if spec.Name != "watch_subscribe" {
+		if spec.Name != "watch_create" {
 			continue
 		}
 		for _, a := range spec.Arguments {
@@ -689,7 +696,7 @@ func TestWatchSubscribeForwardsFilterAndMinInterval(t *testing.T) {
 	}
 	for _, want := range []string{"delivery", "filter", "min_interval_seconds", "sources"} {
 		if !declared[want] {
-			t.Fatalf("watch_subscribe schema missing %q", want)
+			t.Fatalf("watch_create schema missing %q", want)
 		}
 	}
 }
@@ -723,6 +730,12 @@ func TestWatchSubscribeForwardsSources(t *testing.T) {
 	}
 	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "groups-watch2", Timezone: "UTC", Expression: "* * * * *", Text: "w", Tool: "hub-tg-wait-abc", Delivery: "stream", Sources: `{oops`}); err == nil {
 		t.Fatal("malformed sources JSON accepted")
+	}
+}
+
+func TestWatchSampleRequiresExistingSubscription(t *testing.T) {
+	if _, err := (&Tools{}).Routine(context.Background(), "watch_sample", Input{}); err == nil || !strings.Contains(err.Error(), "existing watch ID") {
+		t.Fatalf("draft sample refusal: %v", err)
 	}
 }
 
@@ -806,8 +819,8 @@ func TestWatchOpsFilterEventKind(t *testing.T) {
 }
 
 // An agent-kind routine carrying probe-shaped args is the cron-shaped
-// misuse watch_subscribe exists to prevent — the tool must refuse it at
-// the tool layer with a pointer to watch_subscribe, before the hub sees it.
+// misuse watch_create exists to prevent — the tool must refuse it at
+// the tool layer with a pointer to watch_create, before the hub sees it.
 func TestRoutineCreateRejectsProbeArgsOnAgentKind(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")
@@ -822,7 +835,7 @@ func TestRoutineCreateRejectsProbeArgsOnAgentKind(t *testing.T) {
 	// Agent-kind carrying a source probe tool — the exact misuse that burnt
 	// LLM wakes polling a source that produces nothing new.
 	_, err := v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "poll-mon", Expression: "*/15 * * * *", Text: "", Kind: "agent", Tool: "hub-tg-wait_for_new_message-abc", Args: `{"chat_id":"@x"}`})
-	if err == nil || !strings.Contains(err.Error(), "watch_subscribe") {
+	if err == nil || !strings.Contains(err.Error(), "watch_create") {
 		t.Fatalf("probe-args agent routine not refused with watch hint: %v", err)
 	}
 	if reached {
@@ -830,7 +843,7 @@ func TestRoutineCreateRejectsProbeArgsOnAgentKind(t *testing.T) {
 	}
 	// Same shape through args only (no kind passed — agent is the default).
 	_, err = v.Routine(ctx, "routine_create", Input{DestinationTaskID: "default", ID: "poll-mon2", Expression: "*/15 * * * *", Text: "", Args: `{"chat_id":"@x"}`, Tool: "hub-feed-abc"})
-	if err == nil || !strings.Contains(err.Error(), "watch_subscribe") {
+	if err == nil || !strings.Contains(err.Error(), "watch_create") {
 		t.Fatalf("default-kind probe routine not refused: %v", err)
 	}
 	// Probe-shaped args on any non-probe kind are equally meaningless — the
@@ -843,7 +856,7 @@ func TestRoutineCreateRejectsProbeArgsOnAgentKind(t *testing.T) {
 		{ID: "p6", Expression: "*/15 * * * *", Args: `{"chat_id":"@x"}`},
 	} {
 		tc.DestinationTaskID = "default"
-		if _, err := v.Routine(ctx, "routine_create", tc); err == nil || !strings.Contains(err.Error(), "watch_subscribe") {
+		if _, err := v.Routine(ctx, "routine_create", tc); err == nil || !strings.Contains(err.Error(), "watch_create") {
 			t.Fatalf("probe args on kind %q not refused: %v", tc.Kind, err)
 		}
 	}
@@ -872,6 +885,11 @@ func TestWatchResumeRoutesResume(t *testing.T) {
 			})
 			return
 		}
+		var patch map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil || patch == nil || len(patch) != 0 {
+			http.Error(w, "resume requires an empty JSON patch", http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -892,7 +910,11 @@ func TestWatchToolsDispatch(t *testing.T) {
 	v := fixture(t)
 	for _, name := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
 		_, err := v.call(context.Background(), name, Input{}, nil, nil, nil)
-		if err == nil || !strings.Contains(err.Error(), "routines require HUB_COMMUNICATION_CONTROL_URL") {
+		want := "routines require HUB_COMMUNICATION_CONTROL_URL"
+		if name == "watch_sample" {
+			want = "existing watch ID"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("%s not dispatched to Routine: %v", name, err)
 		}
 	}
@@ -911,7 +933,7 @@ func TestWatchToolsPublished(t *testing.T) {
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
+	for _, want := range []string{"watch_list", "watch_create", "watch_edit", "watch_remove", "watch_sample"} {
 		if !names[want] {
 			t.Fatalf("%s not published on the MCP server", want)
 		}
@@ -924,7 +946,7 @@ func TestWatchToolsInCatalog(t *testing.T) {
 	for _, spec := range HubToolsDefinition().Tools {
 		names[spec.Name] = true
 	}
-	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
+	for _, want := range []string{"watch_list", "watch_create", "watch_edit", "watch_remove", "watch_sample"} {
 		if !names[want] {
 			t.Fatalf("%s missing from catalog", want)
 		}
@@ -955,5 +977,40 @@ func TestCredentialFormCallCommunicationHub(t *testing.T) {
 	}
 	if _, err := v.EnvUpdate(Input{Text: "GOOGLE_OAUTH_CLIENT_SECRET=must-not-be-stored"}); err == nil {
 		t.Fatal("env_update accepted credentials with protected form configured")
+	}
+}
+
+// TestWatchCreateStructuredArgsReachBackend (M31.2): the r5 schema types
+// watch args/sources as object/array — values sent in that wire shape must
+// land in the probe payload, not be dropped by a string-only decode.
+func TestWatchCreateStructuredArgsReachBackend(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, `{"schedule_id":"w1","state":"active"}`)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL, v.CommunicationAuth = server.URL, "token"
+	in := Input{
+		ID: "w1", Timezone: "UTC", Expression: "every:15m", Text: "watch it", Tool: "connector_poll",
+		Args:    map[string]any{"chat_id": "9"},
+		Sources: []any{map[string]any{"tool": "poll", "args": map[string]any{"chat_id": "9"}}},
+	}
+	if _, err := v.Routine(context.Background(), "watch_subscribe", in); err != nil {
+		t.Fatalf("watch_create failed: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("backend body not JSON: %v", err)
+	}
+	probe, _ := body["probe"].(map[string]any)
+	args, _ := probe["args"].(map[string]any)
+	if args["chat_id"] != "9" {
+		t.Fatalf("object args did not reach probe payload: %s", gotBody)
+	}
+	sources, _ := probe["sources"].([]any)
+	if len(sources) != 1 {
+		t.Fatalf("array sources did not reach probe payload: %s", gotBody)
 	}
 }

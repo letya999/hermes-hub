@@ -142,3 +142,19 @@ func TestCliArgumentsAndBoundedOutput(t *testing.T) {
 		t.Fatalf("partial: %d %v %q", n, err, partial.String())
 	}
 }
+
+func TestCLIReceiptOmitsUnreviewedIsolationLabels(t *testing.T) {
+	def := cliExecDefinition()
+	runner := CLIRunner{Exec: func(context.Context, CliExecRequest) (CliExecResponse, error) {
+		receipt := cliExecReceipt(def)
+		receipt.Isolation = append([]string{"fixture-private-label"}, receipt.Isolation...)
+		return CliExecResponse{Receipt: receipt}, nil
+	}}
+	result, err := runner.CallEnv(context.Background(), cliExecEffective(def), def.Tools[0], map[string]any{"query": "x"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Receipt != "wl-1@filesystem,network,pid@cell=cell-1,rt=runc" {
+		t.Fatal("receipt omitted proof or included an unreviewed field")
+	}
+}

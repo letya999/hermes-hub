@@ -142,8 +142,24 @@ func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []api.P
 	if err != nil {
 		return nil, fmt.Errorf("%w: tool governance: %v", api.ErrUnauthorized, err)
 	}
+	if err := g.Store.Reload(); err != nil {
+		return nil, err
+	}
+	g.Store.mu.RLock()
+	defer g.Store.mu.RUnlock()
 	out := make([]api.ProjectedTool, 0, len(projected))
 	bindings := map[string]api.EffectiveBinding{}
+	var current map[string]string
+	if auth.CapabilityProfile != "" {
+		admitted, err := g.Store.managedToolsLocked(auth)
+		if err != nil {
+			return nil, err
+		}
+		current = make(map[string]string, len(admitted))
+		for _, tool := range admitted {
+			current[tool.Name] = tool.BindingID
+		}
+	}
 	for _, tool := range projected {
 		var effective api.EffectiveBinding
 		var resolveErr error
@@ -151,13 +167,16 @@ func (g *Gateway) filterProjectedTools(auth identity.Envelope, projected []api.P
 			var ok bool
 			effective, ok = bindings[tool.BindingID]
 			if !ok {
-				effective, resolveErr = g.Store.Resolve(auth, tool.BindingID)
+				effective, resolveErr = g.Store.resolveLocked(auth, tool.BindingID)
 				if resolveErr == nil {
 					bindings[tool.BindingID] = effective
 				}
 			}
 		} else {
-			_, effective, resolveErr = g.Store.ResolveProjectedTool(auth, tool.Name)
+			if current[tool.Name] != tool.BindingID {
+				continue
+			}
+			effective, resolveErr = g.Store.resolveLocked(auth, tool.BindingID)
 		}
 		if resolveErr != nil {
 			continue // unresolved bindings can't be invoked anyway

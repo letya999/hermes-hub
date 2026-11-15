@@ -615,11 +615,12 @@ func TestSupervisorBindingRejectsMalformedIdentityBeforeRuntimeAccess(t *testing
 	}
 }
 
+// controlTestPolicy publishes a managed revision and hashes the effective
+// policy it projects — the same value loadSelected + resolveSettings hash
+// when an approval is re-authorized later.
 func controlTestPolicy(t *testing.T, root string) string {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	publishAliceRevision(t, root, nil)
 	settings, err := stack.ReadEnvironment(root, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -648,14 +649,15 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 	if err := m.authorizeApproval(forged); err == nil {
 		t.Fatal("caller expanded organization")
 	}
-	path := filepath.Join(root, "settings.yaml")
-	if err := os.WriteFile(path, []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// A republished revision that narrows a toolset to read-only projects a
+	// different rights view — the old approval's policy hash must not admit.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
+	})
 	if err := m.authorizeApproval(control); err == nil {
 		t.Fatal("changed policy accepted old approval")
 	}
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(filepath.Join(root, "generated", "passports", "current")); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.authorizeApproval(control); err == nil {
@@ -665,37 +667,32 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 
 func TestApprovalRechecksOrganizationMembership(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, os.ErrNotExist }, func(context.Context, string, string) error { return nil })
-	userPath := filepath.Join(root, "settings.yaml")
-	if err := os.WriteFile(userPath, []byte("schema: 1\nuser: alice\norganization: acme\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// The space's organization binding is authored in the stack passport;
+	// the org membership policy resolves through its host-owned settings.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["stack"] = strings.Replace(docs["stack"], "identity: {user: alice, infra: false}", "identity: {user: alice, organization: acme, infra: false}", 1)
+	})
 	orgRoot := filepath.Join(m.cfg.SpacesRoot, "acme")
 	if err := os.MkdirAll(filepath.Join(orgRoot, "docs"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	orgPath := filepath.Join(orgRoot, "scope.yaml")
-	org := []byte("schema: 1\nkind: organization\nid: acme\norganization: acme\nmembers: {alice: member}\nfeatures: [workspace]\n")
+	if err := os.WriteFile(filepath.Join(orgRoot, "scope.yaml"), []byte("kind: organization\nid: acme\norganization: acme\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	orgPath := filepath.Join(orgRoot, "settings.yaml")
+	org := []byte("schema: 1\norganization: acme\nmembers: {alice: member}\nfeatures: [workspace]\n")
 	if err := os.WriteFile(orgPath, org, 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.Read(userPath)
-	if err != nil {
-		t.Fatal(err)
+	policy := m.currentPolicyVersion("alice")
+	if policy == "" {
+		t.Fatal("organization policy unresolved")
 	}
-	organization, err := stack.ReadOrganization(orgRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings, err = stack.ApplyOrganization(organization, settings, orgRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
-	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", stack.PolicyVersion(settings)), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "acme"}}, Action: "approve"}
+	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "acme"}}, Action: "approve"}
 	if err := m.authorizeApproval(control); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(orgPath, []byte("schema: 1\nkind: organization\nid: acme\norganization: acme\nmembers: {}\nfeatures: [workspace]\n"), 0600); err != nil {
+	if err := os.WriteFile(orgPath, []byte("schema: 1\norganization: acme\nmembers: {}\nfeatures: [workspace]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.authorizeApproval(control); err == nil {
@@ -710,9 +707,12 @@ func TestScheduledExecutionReauthorizesPolicyBeforeRuntimeStart(t *testing.T) {
 	}, func(context.Context, string, string) error { return nil })
 	policy := controlTestPolicy(t, root)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), JobID: "revoked-routine", IdempotencyKey: "revoked-routine", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", Trigger: "cron", Text: "scheduled work"}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, browser]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// A republished revision that narrows a toolset to read-only revokes the
+	// routine's queued envelope: it no longer matches the rights view the
+	// space renders.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
+	})
 	body, _ := json.Marshal(request)
 	response := httptest.NewRecorder()
 	m.execute(response, httptest.NewRequest("POST", "/v1/execute", strings.NewReader(string(body))))

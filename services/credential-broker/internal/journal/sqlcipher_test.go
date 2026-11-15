@@ -1,0 +1,2064 @@
+//go:build linux && cgo
+
+package journal
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/letya999/credential-broker/internal/seal"
+)
+
+// requireCipher skips engine tests on builds without the codec (stub, CGO=0
+// or missing the libsqlite3 tag). Engine presence is proven by the pinned
+// toolchain image and the container gate, not by every developer host.
+func requireCipher(t *testing.T) {
+	t.Helper()
+	if _, err := SQLCipherVersion(); err != nil {
+		t.Skip("sqlcipher engine unavailable in this build")
+	}
+}
+
+func sqlSetup(t *testing.T) (primary, recovery, anchorDir string, pk, rk []byte) {
+	t.Helper()
+	base := t.TempDir()
+	primary = filepath.Join(base, "state")
+	recovery = filepath.Join(base, "recovery", "journal")
+	anchorDir = filepath.Join(base, "anchor")
+	for _, d := range []string{primary, recovery, anchorDir} {
+		if err := os.MkdirAll(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return primary, recovery, anchorDir, bytes.Repeat([]byte{6}, 32), bytes.Repeat([]byte{9}, 32)
+}
+
+func seedLegacy(t *testing.T, primary, recovery, anchorDir string, pk, rk []byte, n int) {
+	t.Helper()
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := j.Append("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Normalized tables: state upserts and audit rows commit atomically with the
+// chained record, the normalize pass backfills history idempotently, and
+// opens after it serve current-state reads without replaying the journal.
+func TestSQLCipherNormalizedStore(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 3)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("store reported normalized without a normalize pass")
+	}
+	stateBody := []byte(`{"view":{"id":"g1","status":"issued"}}`)
+	auditBody := []byte(`{"kind":"grant.issued","principal_id":"p1"}`)
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"op": "x"}, &AuxWrites{
+		States: []StateWrite{{Kind: "grant", ID: "g1", Body: stateBody}},
+		Audit:  &AuditWrite{Kind: "grant.issued", Principal: "p1", Context: "c1", Body: auditBody},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("aux rows alone must not mark the store normalized")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	normalized := 0
+	norm := func(r Record) ([]StateWrite, *AuditWrite, error) {
+		normalized++
+		return []StateWrite{{Kind: "audit-rec", ID: fmt.Sprint(r.Sequence), Body: r.Data}},
+			&AuditWrite{Kind: r.Kind, Principal: "p", Context: "c", Body: r.Data}, nil
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, norm); err != nil {
+		t.Fatal(err)
+	}
+	if normalized != 4 {
+		t.Fatalf("normalize saw %d records, want 4", normalized)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("store not normalized after the pass")
+	}
+	states, err := j.StateRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four audit-rec rows (one per record, backfilled) plus the g1 grant the
+	// live AppendWith wrote before the pass.
+	if len(states) != 5 {
+		t.Fatalf("state rows = %d, want 5", len(states))
+	}
+	page, err := j.AuditPage(0, 2, AuditScope{Broadcast: "mutation.v1"})
+	if err != nil || len(page) != 2 || page[0].Seq != 1 || page[1].Seq != 2 {
+		t.Fatalf("first audit page = %+v %v", page, err)
+	}
+	page, err = j.AuditPage(page[len(page)-1].Seq, 100, AuditScope{Principal: "p", Context: "c"})
+	if err != nil || len(page) != 2 {
+		t.Fatalf("audit continuation = %+v %v", page, err)
+	}
+	if rows, err := j.AuditPage(0, 100, AuditScope{Principal: "other", Context: "c"}); err != nil || len(rows) != 0 {
+		t.Fatalf("foreign principal saw %d audit rows", len(rows))
+	}
+	// A plain Append leaves the marker behind the head: the store must report
+	// degraded rather than serve incomplete tables.
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "raw"}); err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("raw append kept the normalized marker fresh")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if j.Normalized() {
+		t.Fatal("reopened store ignored the stale marker")
+	}
+	// Re-running the pass repairs the gap and re-arms normalized reads.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, norm); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("re-normalized store stayed degraded")
+	}
+	if len(j.Records()) != 5 {
+		t.Fatalf("records lost after normalize: %d", len(j.Records()))
+	}
+}
+
+// The marker must track every aux append: Normalized stays true while
+// AppendWith is the only writer, and survives close/reopen.
+func TestSQLCipherNormalizedMarkerTracksAppends(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, func(Record) ([]StateWrite, *AuditWrite, error) {
+		return nil, nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.Normalized() {
+		t.Fatal("empty normalize pass did not arm the marker")
+	}
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"x": "1"}, &AuxWrites{
+		Audit: &AuditWrite{Kind: "k", Principal: "p", Context: "c", Body: []byte(`{"k":1}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !j.Normalized() {
+		t.Fatal("marker lagged behind an aux append")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("marker lost across reopen")
+	}
+}
+
+func TestSQLCipherBuildIdentity(t *testing.T) {
+	requireCipher(t)
+	v, err := SQLCipherVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v == "" {
+		t.Fatal("engine reports no cipher_version")
+	}
+}
+
+func TestSQLCipherMarkerRequired(t *testing.T) {
+	requireCipher(t)
+	base := t.TempDir()
+	primary := filepath.Join(base, "state")
+	recovery := filepath.Join(base, "recovery", "journal")
+	anchorDir := filepath.Join(base, "anchor")
+	for _, d := range []string{primary, recovery, anchorDir} {
+		if err := os.MkdirAll(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pk := bytes.Repeat([]byte{6}, 32)
+	rk := bytes.Repeat([]byte{9}, 32)
+	// Database files without the activation marker must never be served:
+	// an unverified import cannot distinguish itself from corruption.
+	for _, pair := range [][2]string{{primary, "primary.db"}, {recovery, "recovery.db"}} {
+		if err := os.WriteFile(filepath.Join(pair[0], pair[1]), []byte("not-a-database"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("unactivated sqlcipher store accepted")
+	}
+}
+
+func TestSQLCipherImportRefusesLiveWriter(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import proceeded under a live writer")
+	}
+}
+
+func TestSQLCipherImportAndActivate(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 5)
+	manifest, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Records != 5 || manifest.HeadSequence != 5 || len(manifest.HeadDigest) != 64 {
+		t.Fatalf("manifest %+v", manifest)
+	}
+	// Import is non-destructive: legacy frames still serve until activation.
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Records()) != 5 {
+		t.Fatal("import corrupted source")
+	}
+	_ = j.Close()
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{primary, recovery} {
+		if _, err := os.Lstat(filepath.Join(dir, "ledger.bin")); !os.IsNotExist(err) {
+			t.Fatal("legacy ledger still active")
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "substrate-backup", "ledger.bin")); err != nil {
+			t.Fatal("legacy ledger not retained")
+		}
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 5 || j.Records()[4].Sequence != 5 {
+		t.Fatal("activated store lost records")
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "post-activate"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close()
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 6 {
+		t.Fatal("append after activation not durable")
+	}
+}
+
+func TestSQLCipherUncommittedTailDropped(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 2)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	// Forge a crash: commit a chained row into both databases but never write
+	// the witness head, so the tail is unacknowledged and must be dropped.
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "r", filepath.Join(recovery, "recovery.db"), sqlKeyPass(rk, "sqlcipher-recovery/v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primary, "primary.db"), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	recs, prev, _, _, err := sqlReplay(db, "r")
+	if err != nil || len(recs) != 2 {
+		t.Fatal("replay")
+	}
+	r := Record{Sequence: 3, Previous: prev, Kind: "mutation.v1", Data: json.RawMessage(`{"op":"crashed"}`)}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, schema := range []string{"r", "p"} {
+		if _, err := tx.Exec("INSERT INTO "+schema+".records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 2 {
+		t.Fatalf("uncommitted tail survived: %d", len(j.Records()))
+	}
+}
+
+func TestSQLCipherWrongKeyRefused(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 2)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, bytes.Repeat([]byte{7}, 32), rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("wrong primary key accepted")
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, bytes.Repeat([]byte{7}, 32), 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("wrong recovery key accepted")
+	}
+}
+
+func TestSQLCipherNoPlaintextRecords(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"secret": "canary-only-token"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close()
+	for _, db := range []string{filepath.Join(primary, "primary.db"), filepath.Join(recovery, "recovery.db")} {
+		raw, err := os.ReadFile(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) < 16 || string(raw[:15]) == "SQLite format 3" {
+			t.Fatalf("plaintext sqlite header in %s", db)
+		}
+		if bytes.Contains(raw, []byte("canary-only-token")) {
+			t.Fatalf("plaintext record body in %s", db)
+		}
+	}
+}
+
+func TestSQLCipherSingleOpen(t *testing.T) {
+	requireCipher(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{4}, 32)
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := j.Append("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	// Before activation the framed ledger still serves.
+	j, err = Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Records()) != 3 {
+		t.Fatal("import corrupted source")
+	}
+	_ = j.Close()
+	if err := ActivateSQLCipherSingle(dir, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "ledger.bin")); !os.IsNotExist(err) {
+		t.Fatal("legacy ledger still active")
+	}
+	j, err = Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Records()) != 3 {
+		t.Fatalf("records lost: %d", len(j.Records()))
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "post"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close()
+	j, err = Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Records()) != 4 {
+		t.Fatalf("append not durable: %d", len(j.Records()))
+	}
+	_ = j.Close()
+	if j, err := Open(dir, bytes.Repeat([]byte{7}, 32), 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("wrong key accepted")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, sqlSingleDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 16 || string(raw[:15]) == "SQLite format 3" || bytes.Contains(raw, []byte("op-1")) {
+		t.Fatal("plaintext ledger.db")
+	}
+}
+
+func TestSQLCipherRecoveryCatchUp(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 3)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	// A crash between the two journal commits leaves the acknowledged tail in
+	// r but missing from p; the open path must replay it into primary.
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primary, "primary.db"), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DELETE FROM p.records WHERE seq=3"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 3 {
+		t.Fatalf("acknowledged record not recovered: %d", len(j.Records()))
+	}
+	db, err = sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primary, "primary.db"), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM p.records").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	if n != 3 {
+		t.Fatalf("primary not caught up: %d rows", n)
+	}
+}
+
+func TestSQLCipherDivergenceRefused(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 3)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primary, "primary.db"), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE p.records SET body=? WHERE seq=2", []byte(`{"forged":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("diverged primary accepted")
+	}
+}
+
+func TestSQLCipherWriterFenced(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if j2, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j2.Close()
+		t.Fatal("second writer accepted")
+	}
+}
+
+func TestSQLCipherAppendBound(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	// Fill to just under the limit, then one more append must cross the byte
+	// bound — a visible admission stop, not a poisoned journal: history
+	// rotation can free headroom and the store keeps serving (SPEC-0087 R5.3).
+	big := strings.Repeat("x", (1<<20)-300)
+	if _, err := j.Append("mutation.v1", map[string]string{"blob": big}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"blob": big}); !errors.Is(err, ErrFull) {
+		t.Fatalf("over-limit append = %v, want ErrFull", err)
+	}
+	if !j.Healthy() {
+		t.Fatal("ledger-cap stop poisoned the journal")
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "small"}); err != nil {
+		t.Fatalf("post-stop append failed: %v", err)
+	}
+}
+
+func TestSQLCipherActivateWithoutImport(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err == nil {
+		t.Fatal("activation without verified import accepted")
+	}
+}
+
+func TestSQLCipherImportRefusesExistingArtifacts(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	// A staged database must not be silently overwritten.
+	if err := os.WriteFile(filepath.Join(primary, sqlPrimaryDB), []byte("staged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import over an existing primary.db accepted")
+	}
+	if err := os.Remove(filepath.Join(primary, sqlPrimaryDB)); err != nil {
+		t.Fatal(err)
+	}
+	// An already-activated leg must not be re-imported.
+	if err := os.WriteFile(filepath.Join(recovery, sqlMarkerFile), []byte("v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import over an activated recovery leg accepted")
+	}
+	if err := os.Remove(filepath.Join(recovery, sqlMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+	// A missing anchor directory refuses instead of conjuring a store binding.
+	if _, err := ImportSQLCipher(primary, recovery, filepath.Join(t.TempDir(), "gone"), pk, rk, 8<<20); err == nil {
+		t.Fatal("import without an anchor directory accepted")
+	}
+}
+
+func TestSQLCipherImportEmptyStoreInitializesAnchor(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	// Empty legs with a never-initialized anchor still migrate: the import
+	// writes head 0 + the marker itself instead of refusing a virgin store.
+	manifest, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Records != 0 || manifest.HeadSequence != 0 {
+		t.Fatalf("empty import manifest %+v", manifest)
+	}
+}
+
+func TestSQLCipherImportSingleRefusals(t *testing.T) {
+	requireCipher(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{4}, 32)
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	// Live writer holds the lock; import must fail closed.
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err == nil {
+		t.Fatal("single import under a live writer accepted")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// An existing ledger.db is a staged import, not a source to overwrite.
+	if err := os.WriteFile(filepath.Join(dir, sqlSingleDB), []byte("staged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err == nil {
+		t.Fatal("single import over an existing ledger.db accepted")
+	}
+	if err := os.Remove(filepath.Join(dir, sqlSingleDB)); err != nil {
+		t.Fatal(err)
+	}
+	// An activated directory has no framed source left to import.
+	if err := os.WriteFile(filepath.Join(dir, sqlMarkerFile), []byte("v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err == nil {
+		t.Fatal("single import over an activated directory accepted")
+	}
+}
+
+func TestSQLCipherActivateSingleRefusals(t *testing.T) {
+	requireCipher(t)
+	key := bytes.Repeat([]byte{4}, 32)
+	// No ledger.db staged: ATTACH creates an empty file whose missing records
+	// table fails the verify instead of activating nothing.
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(dir, key); err == nil {
+		t.Fatal("activation with no staged ledger.db accepted")
+	}
+	// A staged database whose rows diverge from the live journal must not
+	// activate: the verify compares replayed rows to the framed source.
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.MkdirAll(empty, 0700); err != nil {
+		t.Fatal(err)
+	}
+	j2, err := Open(empty, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j2.Append("mutation.v1", map[string]string{"op": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(empty, key, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	j3, err := Open(empty, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j3.Append("mutation.v1", map[string]string{"op": "post-import"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j3.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(empty, key); err == nil {
+		t.Fatal("activation accepted rows stale relative to the journal")
+	}
+}
+
+func TestSQLCipherDispatchRefusesSplitMarkers(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	// One leg activated, the other not — a torn activation must refuse, not
+	// serve whichever leg happens to be readable.
+	if err := sqlSealReplace(primary, sqlMarkerFile, []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("split-marker activation accepted")
+	}
+	// Database files without any framed source are unverified imports.
+	orphan := filepath.Join(t.TempDir(), "orphan")
+	if err := os.MkdirAll(orphan, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, sqlSingleDB), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := Open(orphan, pk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("orphan ledger.db without legacy source accepted")
+	}
+}
+
+func TestSQLCipherTamperedManifestRefused(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(primary, "sqlcipher.manifest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-8] ^= 0xff
+	if err := os.WriteFile(filepath.Join(primary, "sqlcipher.manifest"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err == nil {
+		t.Fatal("tampered manifest accepted")
+	}
+}
+
+func TestSQLReplayRejectsCorruptRows(t *testing.T) {
+	requireCipher(t)
+	dir := filepath.Join(t.TempDir(), "probe")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(db *sql.DB, seq uint64, prev, kind string, body []byte) {
+		t.Helper()
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("CREATE TABLE r.records(seq INTEGER PRIMARY KEY, prev TEXT NOT NULL, kind TEXT NOT NULL, body BLOB NOT NULL)"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO r.records(seq,prev,kind,body) VALUES(?,?,?,?)", seq, prev, kind, body); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Every chain invariant is validated on replay: sequence contiguity, the
+	// prev-digest link, kind/body presence, the record size bound and JSON.
+	for i, row := range []struct {
+		seq  uint64
+		prev string
+		kind string
+		body []byte
+	}{
+		{2, "", "mutation.v1", []byte(`{"op":"x"}`)},
+		{1, "foreign-head", "mutation.v1", []byte(`{"op":"x"}`)},
+		{1, "", "", []byte(`{"op":"x"}`)},
+		{1, "", "mutation.v1", []byte(`{not-json`)},
+		{1, "", "mutation.v1", bytes.Repeat([]byte{1}, MaxRecord+1)},
+	} {
+		db, err := sqlOpenDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sqlAttach(db, "r", filepath.Join(dir, "probe.db"), sqlKeyPass(bytes.Repeat([]byte{4}, 32), "sqlcipher-ledger/v1")); err != nil {
+			t.Fatal(err)
+		}
+		insert(db, row.seq, row.prev, row.kind, row.body)
+		if _, _, _, _, err := sqlReplay(db, "r"); err == nil {
+			t.Fatalf("corrupt row %d replayed", i)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(dir, "probe.db")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSQLCipherAppendAfterCloseFails(t *testing.T) {
+	requireCipher(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{4}, 32)
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(dir, key); err != nil {
+		t.Fatal(err)
+	}
+	j, err = Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	// A store whose session dies mid-flight must refuse and poison, never
+	// report success for a row that is not on disk.
+	if err := j.sql.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "lost"}); err == nil {
+		t.Fatal("append against a dead session reported success")
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "lost"}); err == nil {
+		t.Fatal("poisoned journal accepted an append")
+	}
+}
+
+func TestSQLHelpersRefuseUnsafeInput(t *testing.T) {
+	requireCipher(t)
+	if _, err := sqlQuote("a;drop"); err == nil {
+		t.Fatal("unsafe literal quoted")
+	}
+	if sqlEqual([]Record{}, []Record{{Sequence: 1}}) {
+		t.Fatal("length-mismatched record sets compared equal")
+	}
+	if sqlEqual([]Record{{Sequence: 1}}, []Record{{Sequence: 2}}) {
+		t.Fatal("divergent records compared equal")
+	}
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := sqlMustExec(db, "SELEC 1"); err == nil {
+		t.Fatal("invalid statement executed")
+	}
+	if err := sqlSealReplace(filepath.Join(t.TempDir(), "gone"), "x", []byte("v1")); err == nil {
+		t.Fatal("seal into a missing directory succeeded")
+	}
+}
+
+func TestSQLCipherImportRefusesForeignAnchorMarker(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	// An anchor marker bound to a different store id must stop the import:
+	// accepting it would certify records under the wrong witness.
+	foreign := filepath.Join(t.TempDir(), "anchor")
+	if err := os.MkdirAll(foreign, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fa, err := newAnchor(foreign, seal.Derive(bytes.Repeat([]byte{1}, 32), "journal-store-key/v2"), bytes.Repeat([]byte{2}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fa.writeHead(0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := fa.markInitialized(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(foreign)
+	if err != nil || len(entries) == 0 {
+		t.Fatal("foreign anchor not seeded")
+	}
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(foreign, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(anchorDir, e.Name()), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import accepted a marker bound to a foreign store")
+	}
+}
+
+func TestSQLCipherOpenRefusesForgedHead(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 2)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := newAnchor(anchorDir, seal.Derive(pk, "journal-store-key/v2"), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A witness head ahead of the stored rows acknowledges data that does not
+	// exist — the open must refuse instead of truncating blindly.
+	if err := anchor.writeHead(99, strings.Repeat("0", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("head beyond committed rows accepted")
+	}
+	// A head at a valid position but with a foreign digest breaks the binding
+	// between witness and record bytes.
+	if err := anchor.writeHead(1, strings.Repeat("0", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("head with foreign digest accepted")
+	}
+}
+
+func TestSQLCipherOpenRefusesPrefixDivergence(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 2)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	// Forge p row 1 with a different body but a self-consistent chain: the
+	// replay hash chain stays valid while the committed prefix diverges from
+	// recovery — the open must compare the legs and refuse.
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primary, sqlPrimaryDB), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	recs, _, _, _, err := sqlReplay(db, "p")
+	if err != nil || len(recs) != 2 {
+		t.Fatalf("replay: %v", err)
+	}
+	forged := Record{Sequence: 1, Previous: "", Kind: "mutation.v1", Data: json.RawMessage(`{"op":"forged"}`)}
+	plain, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(plain)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("UPDATE p.records SET body=? WHERE seq=1", []byte(forged.Data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("UPDATE p.records SET prev=? WHERE seq=2", hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("primary diverged inside the committed prefix accepted")
+	}
+}
+
+func TestSQLCipherActivateRefusesBlockedSeal(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	// A directory squatting on the marker path fails the sealed write; the
+	// activation must surface it instead of half-retiring the source.
+	if err := os.Mkdir(filepath.Join(primary, sqlMarkerFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err == nil {
+		t.Fatal("activation wrote markers over a blocked path")
+	}
+}
+
+func TestSQLCipherAppendRefusesConflictingRow(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	// A foreign writer landing a conflicting row under the session must fail
+	// the insert and poison the journal — silently appending over it would
+	// fork the chain.
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "r", filepath.Join(recovery, sqlRecoveryDB), sqlKeyPass(rk, "sqlcipher-recovery/v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO r.records(seq,prev,kind,body) VALUES(?,?,?,?)", 2, "foreign", "mutation.v1", []byte(`{"op":"foreign"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "mine"}); err == nil {
+		t.Fatal("append over a conflicting row reported success")
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "mine"}); err == nil {
+		t.Fatal("poisoned journal accepted an append")
+	}
+}
+
+func TestSQLCipherImportRefusesStaleHead(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 3)
+	// A witness head behind the committed records certifies a shorter history
+	// than the legs actually hold — import must not bake that in.
+	anchor, err := newAnchor(anchorDir, seal.Derive(pk, "journal-store-key/v2"), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.writeHead(2, strings.Repeat("0", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import accepted a witness head behind the journal")
+	}
+}
+
+func TestSQLCipherImportRefusesDivergedLegs(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	// Equal sequence counts but different record bytes between the legs: the
+	// witness can only certify one of them, so the import must refuse.
+	pj, err := openJournal(primary, pk, 8<<20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pj.Append("mutation.v1", map[string]string{"op": "primary-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pj.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rj, err := openJournal(recovery, rk, 8<<20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rj.Append("mutation.v1", map[string]string{"op": "recovery-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rj.Close(); err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := newAnchor(anchorDir, seal.Derive(pk, "journal-store-key/v2"), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.writeHead(1, strings.Repeat("0", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.markInitialized(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		t.Fatal("import accepted diverged legs")
+	}
+}
+
+func TestSQLAttachRefusesUnsafeNames(t *testing.T) {
+	requireCipher(t)
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	path := filepath.Join(t.TempDir(), "probe.db")
+	// Alias, path and key are spliced into DDL — every one of them must pass
+	// the literal whitelist, never reach the engine unescaped.
+	if err := sqlAttach(db, "r;bad", path, "k"); err == nil {
+		t.Fatal("unsafe schema alias attached")
+	}
+	if err := sqlAttach(db, "r", "bad'path", "k"); err == nil {
+		t.Fatal("unsafe path attached")
+	}
+	if err := sqlAttach(db, "r", path, "bad'key"); err == nil {
+		t.Fatal("unsafe key attached")
+	}
+}
+
+func TestSQLCipherSingleActivateBlockedPaths(t *testing.T) {
+	requireCipher(t)
+	key := bytes.Repeat([]byte{4}, 32)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	// Marker path blocked by a directory: the sealed replace must fail and the
+	// activation must surface it.
+	if err := os.Mkdir(filepath.Join(dir, sqlMarkerFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(dir, key); err == nil {
+		t.Fatal("activation wrote over a blocked marker path")
+	}
+	if err := os.Remove(filepath.Join(dir, sqlMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+	// substrate-backup blocked by a regular file: retirement must not proceed.
+	if err := os.WriteFile(filepath.Join(dir, "substrate-backup"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(dir, key); err == nil {
+		t.Fatal("activation retired over a blocked backup path")
+	}
+}
+
+func TestSQLCipherSingleOpenRefusesCorruptDB(t *testing.T) {
+	requireCipher(t)
+	key := bytes.Repeat([]byte{4}, 32)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(dir, key, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLCipherSingle(dir, key, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipherSingle(dir, key); err != nil {
+		t.Fatal(err)
+	}
+	// A truncated chain in the activated database breaks replay — the open
+	// must refuse rather than serve a partial history.
+	db, err := sqlOpenDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlAttach(db, "r", filepath.Join(dir, sqlSingleDB), sqlKeyPass(key, "sqlcipher-ledger/v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE r.records SET prev=? WHERE seq=1", "forged"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := Open(dir, key, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("corrupt activated ledger.db served")
+	}
+}
+
+func TestSQLCipherAppendRefusesHeadWriteFailure(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	// Row committed but the witness head can no longer be written: the append
+	// must fail rather than leave an unacknowledged row invisible forever.
+	if err := os.RemoveAll(anchorDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "mine"}); err == nil {
+		t.Fatal("append without a writable witness head reported success")
+	}
+}
+
+func TestSQLCipherOpenRefusesHeldRecoveryLock(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 1)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	// A second writer holding only the recovery leg must still fence the
+	// replicated open — serving one leg would split the journals.
+	rlock, err := sqlLock(recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rlock.Close()
+	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
+		_ = j.Close()
+		t.Fatal("open proceeded while a foreign writer held the recovery lock")
+	}
+}
+
+// Audit pages never exceed the scoped-page contract limit of 100, no matter
+// what the caller asks for (SPEC-0087 R3.5).
+func TestAuditPageLimitCapped(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	for i := 0; i < 101; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i)}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k", Principal: "p", Context: "c", Body: []byte(`{"op":1}`)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := j.AuditPage(0, 500, AuditScope{Principal: "p", Context: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 100 {
+		t.Fatalf("audit page = %d rows, want 100 cap", len(page))
+	}
+}
+
+// Audit retention exports the hot prefix into an encrypted sealed archive and
+// only then, under an explicit destructive policy, prunes the source. Without
+// the destructive flag the store stops admitting audit writes rather than
+// silently deleting rows (SPEC-0087 R5.3).
+func TestAuditArchiveVerifiedBeforePrune(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	// ~64-byte bodies: a 200-byte hot cap admits three rows, not four.
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 200, ArchiveDir: archiveDir})
+	put := func(tag string) error {
+		_, err := j.AppendWith("mutation.v1", map[string]string{"op": tag}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k." + tag, Principal: "p1", Context: "c1", Body: []byte(`{"pad":"` + strings.Repeat("x", 48) + `"}`)},
+		})
+		return err
+	}
+	for _, tag := range []string{"a", "b", "c"} {
+		if err := put(tag); err != nil {
+			t.Fatalf("audit append %s: %v", tag, err)
+		}
+	}
+	// The fourth row would cross the hot cap: a visible admission stop, not a
+	// hidden delete — and the journal must stay usable, not poisoned.
+	if err := put("d"); !errors.Is(err, ErrFull) {
+		t.Fatalf("audit append past the hot cap = %v, want ErrFull", err)
+	}
+	if !j.Healthy() {
+		t.Fatal("admission stop poisoned the journal")
+	}
+	rep, err := j.RetainAudits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Pruned {
+		t.Fatal("retention deleted rows without the destructive policy")
+	}
+	if rep.Rows != 3 || rep.SeqLo != 1 || rep.SeqHi != 3 {
+		t.Fatalf("report = %+v, want 3 rows over seq 1-3", rep)
+	}
+	sealFile := filepath.Join(archiveDir, "audit-1-3.seal")
+	manifestFile := filepath.Join(archiveDir, "audit-1-3.manifest.json")
+	if _, err := os.Stat(sealFile); err != nil {
+		t.Fatalf("no sealed archive: %v", err)
+	}
+	if _, err := os.Stat(manifestFile); err != nil {
+		t.Fatalf("no sealed manifest: %v", err)
+	}
+	// Export-only: the source rows stay, the stop stays.
+	if got, _ := j.AuditFloor(); got != 1 {
+		t.Fatalf("audit floor moved to %d under export-only retention", got)
+	}
+	if err := put("d"); !errors.Is(err, ErrFull) {
+		t.Fatalf("post-export audit append = %v, want ErrFull", err)
+	}
+	// Tampered archive must never authorize a prune.
+	body, _ := os.ReadFile(manifestFile)
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		t.Fatal("manifest is not json")
+	}
+	m["rows"] = 1
+	// The manifest is hmac-sealed; a naive tamper must fail verification.
+	forged, _ := json.Marshal(m)
+	if err := os.WriteFile(manifestFile, forged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 200, ArchiveDir: archiveDir, Destructive: true})
+	if _, err := j.RetainAudits(); err == nil {
+		t.Fatal("retention pruned against a tampered manifest")
+	}
+	// Restore a genuine archive, then prune for real.
+	if err := os.Remove(manifestFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sealFile); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = j.RetainAudits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pruned {
+		t.Fatal("destructive retention did not prune")
+	}
+	if got, _ := j.AuditFloor(); got != 4 {
+		t.Fatalf("audit floor = %d after pruning seq 1-3, want 4", got)
+	}
+	if rows, err := j.AuditPage(0, 100, AuditScope{Principal: "p1", Context: "c1"}); err != nil || len(rows) != 0 {
+		t.Fatalf("pruned rows still served: %d %v", len(rows), err)
+	}
+	// Headroom freed: the stopped admission now goes through.
+	if err := put("d"); err != nil {
+		t.Fatalf("audit append after prune: %v", err)
+	}
+	// The archive remains readable independently of the pruned source.
+	recs, err := ReadAuditArchive(sealFile, manifestFile, j.StoreIdentity())
+	if err != nil {
+		t.Fatalf("sealed archive failed verification: %v", err)
+	}
+	if len(recs) != 3 || recs[0].Seq != 1 || recs[2].Seq != 3 {
+		t.Fatalf("archive rows = %+v", recs)
+	}
+}
+
+// writeTamperedArchive exports a one-row audit archive, then overwrites its
+// manifest with a mutated copy resealed by the store-derived key — seal
+// validity alone must never stand in for payload consistency.
+func writeTamperedArchive(t *testing.T, mutate func(*auditManifestDoc)) (sealFile, manifestFile string, identity []byte) {
+	t.Helper()
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir})
+	_, err = j.AppendWith("mutation.v1", map[string]string{"op": "x"}, &AuxWrites{
+		Audit: &AuditWrite{Kind: "k.x", Principal: "p1", Context: "c1", Body: []byte(`{"a":1}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	sealFile = filepath.Join(archiveDir, "audit-1-1.seal")
+	manifestFile = filepath.Join(archiveDir, "audit-1-1.manifest.json")
+	raw, err := os.ReadFile(manifestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d auditManifestDoc
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&d)
+	d.Seal = auditManifestHMAC(d, j.identity)
+	forged, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestFile, forged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return sealFile, manifestFile, j.StoreIdentity()
+}
+
+// A manifest whose sealed fields contradict the payload must fail closed: the
+// declared row count, byte count, digests and sequence range are part of the
+// archive proof, not decoration (SPEC-0087 R5.4).
+func TestReadAuditArchiveRejectsInconsistentManifest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Rows = 99 })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("manifest/payload inconsistency accepted")
+	}
+}
+
+// A resealed manifest with a corrupted plaintext digest must fail closed.
+func TestReadAuditArchiveRejectsBadPlaintextDigest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Digest = "AAAA" })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted plaintext digest accepted")
+	}
+}
+
+// A resealed manifest naming a different encrypted-archive digest must fail
+// closed — the sealed bytes themselves are pinned by the manifest.
+func TestReadAuditArchiveRejectsBadArchiveDigest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.ArchiveSHA256 = "AAAA" })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted archive digest accepted")
+	}
+}
+
+// A resealed manifest with a corrupted byte count must fail closed.
+func TestReadAuditArchiveRejectsBadByteCount(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Bytes = 1 })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted byte count accepted")
+	}
+}
+
+// Records rotation exports the sealed history prefix, prunes it from both
+// legs under a verified archive and VACUUMs — the file physically shrinks and
+// replay resumes at the floor instead of the genesis record (SPEC-0087 R5.2).
+func TestRecordsRotateArchivesAndShrinks(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	// 40 records at ~4 KiB bodies ≈ 160 KiB of chained history.
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i), "pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.Stat(filepath.Join(primary, "primary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep a ~32 KiB hot suffix: the first ~32 records must archive out.
+	rep, err := j.RetainRecords(32 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Exported || !rep.Pruned {
+		t.Fatalf("report = %+v, want exported+pruned", rep)
+	}
+	if rep.SeqLo != 1 || rep.SeqHi >= 40 {
+		t.Fatalf("archived range %d-%d wrong", rep.SeqLo, rep.SeqHi)
+	}
+	sealFile := filepath.Join(archiveDir, fmt.Sprintf("records-%d-%d.seal", rep.SeqLo, rep.SeqHi))
+	manifestFile := filepath.Join(archiveDir, fmt.Sprintf("records-%d-%d.manifest.json", rep.SeqLo, rep.SeqHi))
+	if _, err := os.Stat(sealFile); err != nil {
+		t.Fatalf("no sealed records archive: %v", err)
+	}
+	recs, err := ReadRecordsArchive(sealFile, manifestFile, j.StoreIdentity())
+	if err != nil {
+		t.Fatalf("sealed records archive failed verification: %v", err)
+	}
+	if len(recs) != rep.Rows || recs[0].Sequence != 1 || recs[len(recs)-1].Sequence != rep.SeqHi {
+		t.Fatalf("archive holds %d records seq %d-%d", len(recs), recs[0].Sequence, recs[len(recs)-1].Sequence)
+	}
+	// The archive must carry the chain link: last archived hash is the first
+	// retained record's prev.
+	if floor, err := j.RecordsFloor(); err != nil || floor != rep.SeqHi+1 {
+		t.Fatalf("records floor = %d, want %d", floor, rep.SeqHi+1)
+	}
+	// The file physically shrank.
+	after, err := os.Stat(filepath.Join(primary, "primary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Fatalf("primary.db did not shrink: %d >= %d", after.Size(), before.Size())
+	}
+	// History continues past the floor: the next append chains on.
+	seq, err := j.AppendWith("mutation.v1", map[string]string{"op": "post-rotate"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 41 {
+		t.Fatalf("post-rotate seq = %d, want 41", seq)
+	}
+	// Close and reopen: replay from the floor must verify clean.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j2, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatalf("reopen after rotation: %v", err)
+	}
+	defer func() { _ = j2.Close() }()
+	rows, err := j2.AuditPage(0, 100, AuditScope{AnyPrincipal: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rows
+	if got := len(j2.sqlRecords()); got != 40-rep.Rows+1 {
+		t.Fatalf("retained records = %d, want %d", got, 40-rep.Rows+1)
+	}
+}
+
+// Archives are the last unbounded location: under an explicit byte budget
+// the maintenance tick permanently deletes the oldest verified archive
+// pair — but never the newest one, which carries the provenance link to
+// the current retained floor (SPEC-0087 R5.2).
+func TestArchiveBudgetSweepsOldest(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	pad := strings.Repeat("x", 4000)
+	appendN := func(n int, tag string) {
+		for i := 0; i < n; i++ {
+			if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("%s-%d", tag, i), "pad": pad}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Two rotations → two sealed archives.
+	appendN(40, "first")
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	appendN(40, "second")
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seals []string
+	var total int64
+	for _, e := range ents {
+		fi, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += fi.Size()
+		if strings.HasSuffix(e.Name(), ".seal") {
+			seals = append(seals, e.Name())
+		}
+	}
+	if len(seals) != 2 {
+		t.Fatalf("archives = %v, want 2", seals)
+	}
+	// Budget smaller than the two archives combined: the oldest pair is
+	// permanently deleted; the newest (provenance link) survives.
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: total / 2})
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("archive sweep error: %s", rep.LastError)
+	}
+	ents, err = os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 {
+		t.Fatalf("archive dir after sweep = %v, want newest pair only", left)
+	}
+}
+
+// Age budget: a verified pair older than the limit is permanently deleted;
+// a fresh pair the same size stays (SPEC-0087 R5.2).
+func TestArchiveAgeDeletesOldPair(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxAgeDays: 1})
+	pad := strings.Repeat("x", 4000)
+	appendN := func(n int) {
+		for i := 0; i < n; i++ {
+			if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	appendN(40)
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	appendN(40)
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	// Age the older archive past the limit.
+	old := filepath.Join(archiveDir, "records-1-32.seal")
+	oldMan := filepath.Join(archiveDir, "records-1-32.manifest.json")
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldMan, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("age sweep error: %s", rep.LastError)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 || !strings.HasPrefix(left[0], "records-33-") {
+		t.Fatalf("aged pair not swept: %v", left)
+	}
+}
+
+// The archive byte budget covers audit archives the same way: the oldest
+// verified audit pair is permanently deleted over budget; the newest
+// survives (SPEC-0087 R5.2).
+func TestArchiveBudgetSweepsAudit(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir, Destructive: true})
+	put := func(tag string) {
+		_, err := j.AppendWith("mutation.v1", map[string]string{"op": tag}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k." + tag, Principal: "p1", Context: "c1", Body: []byte(`{"pad":"` + strings.Repeat("x", 400) + `"}`)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tag := range []string{"a", "b", "c"} {
+		put(tag)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"d", "e", "f"} {
+		put(tag)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seals int
+	var bytes int64
+	for _, e := range ents {
+		fi, _ := e.Info()
+		bytes += fi.Size()
+		if strings.HasPrefix(e.Name(), "audit-") && strings.HasSuffix(e.Name(), ".seal") {
+			seals++
+		}
+	}
+	if seals != 2 {
+		t.Fatalf("audit archives = %d, want 2", seals)
+	}
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: bytes / 2})
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("audit sweep error: %s", rep.LastError)
+	}
+	ents, err = os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 {
+		t.Fatalf("audit dir after sweep = %v, want newest pair only", left)
+	}
+}
+
+// The newest archive is never swept: a lone archive over the byte budget
+// stays — losing it would cut the provenance link to the retained floor.
+func TestArchiveBudgetKeepsNewestAlone(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: 1})
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("sweep error: %s", rep.LastError)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 2 {
+		t.Fatalf("newest archive swept: %v", ents)
+	}
+}
+
+// A witness head below the retained floor is inconsistent state (an archive
+// boundary swallowed acknowledged history): open must refuse, not panic on
+// index math.
+func TestRecordsFloorAboveHeadRefusesOpen(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Rewind the witness head below the floor: format-valid, content false.
+	anchor, err := newAnchor(anchorDir, seal.Derive(pk, "journal-store-key/v2"), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.writeHead(5, strings.Repeat("aa", 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("open with head below floor = %v, want ErrUnavailable", err)
+	}
+	// A wiped anchor head on a rotated store refuses the same way — floor
+	// arithmetic must not index below the retained window.
+	if err := anchor.writeHead(0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("open with lost head on rotated store = %v, want ErrUnavailable", err)
+	}
+}
+
+// High-water maintenance fires without an operator: at 80% of the ledger cap
+// the history prefix rotates out and the last-ok marker persists (SPEC-0087
+// R5.2). The tick must never need a manual store-retain.
+func TestRetainMaintenanceRotatesAtHighWater(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 160<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	// ~130 KiB of history: over the 128 KiB (80%) high-water mark.
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep := j.RetainMaintenance()
+	if rep.LastError != "" {
+		t.Fatalf("maintenance error: %s", rep.LastError)
+	}
+	if rep.Records == nil || !rep.Records.Pruned {
+		t.Fatalf("records rotation did not run at high water: %+v", rep)
+	}
+	if rep.Marker != "retain_last_ok" {
+		t.Fatalf("first pass marker = %q, want retain_last_ok", rep.Marker)
+	}
+	floor, err := j.RecordsFloor()
+	if err != nil || floor <= 1 {
+		t.Fatalf("floor = %d after high-water rotation", floor)
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_ok"); !ok {
+		t.Fatal("maintenance success was not persisted")
+	}
+	// Back over the mark again (≈60KiB over the ≤80KiB retained suffix):
+	// a repeat pass at an unchanged marker must not rewrite meta —
+	// per-second writes at sustained high water churn the WAL the same
+	// way the unbounded history did.
+	for i := 0; i < 15; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep = j.RetainMaintenance()
+	if rep.Records == nil || !rep.Records.Pruned {
+		t.Fatalf("second high-water rotation did not run: %+v", rep)
+	}
+	if rep.Marker != "" {
+		t.Fatalf("unchanged marker rewritten as %q — want skipped write", rep.Marker)
+	}
+}
+
+// Idle maintenance ticks must not write — a write txn per second on a quiet
+// store would churn the WAL for no benefit.
+func TestRetainMaintenanceIdleWritesNothing(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: filepath.Join(t.TempDir(), "archive"), Destructive: true})
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"op": "small"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rep := j.RetainMaintenance()
+	if rep.Records != nil || rep.Audit != nil || rep.LastError != "" {
+		t.Fatalf("idle tick did work: %+v", rep)
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_ok"); ok {
+		t.Fatal("idle tick wrote a marker")
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_error"); ok {
+		t.Fatal("idle tick wrote an error marker")
+	}
+}

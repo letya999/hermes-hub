@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0252
+title: "M29.11 Migrate legacy config safely and document the six-passport operating model"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-05
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R11.1, R11.2]
+depends_on: ["M29.3-M29.10"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 435
+design_status: accepted
+implementation_status: done
+slices:
+  S11.1-contract: done
+  S11.2-implementation: done
+validation:
+  documents: pass
+  just_check: partial
+  docker_check: not_run
+  red_team: done
+  live_acceptance: done
+evidence:
+  - unit: "internal/migration: TestLegacySpaceMigrationPlanApplyRollbackAndUnknownFiles (dry-run maps fields, apply publishes six-doc revision + prompt-pointer, backup manifest+digests, rollback fence, unknown files/projects untouched, symlinked settings refused); TestMigrationRejectsMixedAuthorityCorruptStoreAndSecretLeak (mixed settings+agent/workspace conflict, corrupt governance store fails pre-write, secret-bearing env file never read/copied/echoed); TestSpaceAuditReportsInventoryAndDenyReasons (revision-only inventory: services, routes, workspace tree, core/extended projection, grants, raw-MCP default-deny, provenance) — all green"
+  - unit: "internal/passport compile dep-check scoped to managed topology (unmanaged hermes-runtime is self-contained by design); tools.mcp_servers class registered for raw-MCP server names — passport + stack suites green"
+  - live: "hubctl space-migrate dry-run then --apply on disposable dev copies of two real-shaped spaces (alice: native+toolhub+mcp-raw-shaped, bob: toolhub-only) under .work/tmp/m29-accept/ — alice rev r-d504b3252197806d, bob rev r-6ecd4b01cd835305; backups with sha256 manifests, rollback fences, native:terminal grant reported as conflict not silently retyped; hubctl space-audit verified isolated inventories (bob lacks alice's terminal section), grants projected files.* ops, deny reasons and layer provenance"
+  - docs: "docs/spaces.md 'Migrating a legacy space to the six-passport contract' section added; devcheck docs pass"
+limitations:
+  - "just_check: Windows AV blocked the Go toolchain repeatedly (fork/exec ... Access is denied) on unrelated packages; every touched package passed in isolation — recorded honestly per AGENTS.md"
+  - "docker_check: not run — no image-side code changed in this stage"
+  - "Obsolete editable authority is not yet deleted for migrated spaces: legacy readers stay until all spaces migrate; retiring them is a follow-up tracked in M29.12 closeout"
+  - "space-migrate catalog vocabulary changes: catalog release unchanged (no new tool/capability surface — internal fields only)"
+remaining: []

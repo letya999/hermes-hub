@@ -351,7 +351,7 @@ func TestRoutineCRUDOwnershipAndCatchup(t *testing.T) {
 	if err := s.PauseSchedule("morning-brief", caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(due.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if job, _ := s.ClaimJob(); job != nil {
@@ -368,10 +368,10 @@ func TestRoutineCRUDOwnershipAndCatchup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(live.NextDue.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(live.NextDue.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(live.NextDue.Add(time.Second), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(live.NextDue.Add(time.Second), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
@@ -389,7 +389,7 @@ func TestCatchupEnqueuesAtMostOneMissedOccurrence(t *testing.T) {
 		t.Fatal(err)
 	}
 	late := created.NextDue.Add(4 * time.Minute)
-	if err := s.TickSchedules(late, "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(late, "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
@@ -413,7 +413,7 @@ func TestOnceScheduleDisablesAfterFire(t *testing.T) {
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "once-brief", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "once"}, caller, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(due.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := s.ListSchedules(caller)
@@ -434,16 +434,13 @@ func TestRoutineHTTPControlAndTelegramCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: bobState, WorkspaceDir: bobWS})
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	g.now = func() time.Time { return time.Unix(50, 0) }
 	due := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
 	user := g.user("alice")
 	caller := user.Envelope(11)
-	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "morning", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due, Input: "say hello", CreatedAt: g.now().UTC()}, caller, g.config.NativeCron); err != nil {
+	if _, err := host.CreateSchedule(context.Background(), caller, Schedule{ScheduleID: "morning", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due, Input: "say hello", CreatedAt: g.now().UTC()}, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)

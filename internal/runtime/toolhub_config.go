@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -56,10 +55,6 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_BROWSER: %w", err)
 		}
 	}
-	selfSettingsPath := ""
-	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
-		selfSettingsPath = filepath.Join(state, selfsettings.FileName)
-	}
 	return stack.MaterializeOptions{
 		Managed:            os.Getenv("HUB_CAPABILITY_MODE") == "managed",
 		ToolHubEndpoint:    toolHubEndpoint(),
@@ -71,9 +66,9 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		Web:                web,
 		ImageGen:           imageGen,
 		Context:            contextCfg,
-		SelfSettingsPath:   selfSettingsPath,
 		Browser:            browserGrant,
 		User:               os.Getenv("HUB_USER_ID"),
+		MemoryVault:        os.Getenv("HUB_MANAGED_MEMORY_VAULT") == "1",
 	}, nil
 }
 

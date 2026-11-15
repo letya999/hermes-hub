@@ -1,12 +1,12 @@
 package toolhub
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -228,6 +228,13 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	if err != nil {
 		return nil, err
 	}
+	denied, err := c.Store.RightsGated(auth, "observability", "read_own_logs", time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if denied {
+		return nil, fmt.Errorf("%w: observability.read_own_logs", api.ErrUnauthorized)
+	}
 	excluded, err := c.Store.ProjectionExclusions(auth)
 	if err != nil {
 		return nil, err
@@ -251,44 +258,33 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	}
 	scope := c.diagnosticsScope(auth).selectorMatch(query.selector)
 	path := filepath.Join(c.DiagnosticsDir, diagFileName)
-	handle, err := os.Open(path) // #nosec G304 -- fixed file inside configured diagnostics dir.
+	data, sourceTruncated, err := diagcollect.ReadDiagnosticTail(path, diagScanCap)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]any{"enabled": true, "workloads": scope.workloads, "excluded": excluded, "lines": []map[string]any{}, "detail": "no diagnostics collected yet"}, nil
 		}
 		return nil, fmt.Errorf("%w: diagnostics store", api.ErrInvalid)
 	}
-	defer handle.Close()
-	info, err := handle.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("%w: diagnostics store", api.ErrInvalid)
-	}
-	offset := int64(0)
-	if size := info.Size(); size > diagScanCap {
-		offset = size - diagScanCap
-	}
-	if _, err := handle.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(io.LimitReader(handle, diagScanCap))
-	if err != nil {
-		return nil, err
-	}
-	if offset > 0 {
-		if cut := strings.IndexByte(string(data[:min(len(data), 4096)]), '\n'); cut >= 0 {
-			data = data[cut+1:]
-		}
-	}
+
 	matched := make([]map[string]any, 0, query.tail)
 	payload := 0
 	truncated := false
 	stoppedEarly := false
-	lines := strings.Split(string(data), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
+	for len(data) > 0 {
+		end := len(data)
+		if data[end-1] == '\n' {
+			end--
+		}
+		start := bytes.LastIndexByte(data[:end], '\n') + 1
+		line := string(data[start:end])
+		if start == 0 {
+			data = nil
+		} else {
+			data = data[:start]
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		line := lines[i]
 		if line == "" {
 			continue
 		}
@@ -301,6 +297,14 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 		}
 		if !query.until.IsZero() && stamp.After(query.until) {
 			continue
+		}
+		if len(message) > diagMaxLine {
+			message = "diagnostic_gap=oversized_legacy_record"
+			sourceTruncated = true
+		}
+		message = diagcollect.ProjectDiagnosticLine(message, false)
+		if strings.Contains(message, `"diagnostic_gap":`) {
+			sourceTruncated = true
 		}
 		if query.search != "" && !strings.Contains(strings.ToLower(message), query.search) {
 			continue
@@ -320,7 +324,7 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 		payload += len(message) + len(name) + 48
 		matched = append(matched, entry)
 	}
-	truncated = stoppedEarly
+	truncated = stoppedEarly || sourceTruncated
 	for left, right := 0, len(matched)-1; left < right; left, right = left+1, right-1 {
 		matched[left], matched[right] = matched[right], matched[left]
 	}
@@ -350,6 +354,17 @@ func diagParseLine(line string, scope diagScope) (time.Time, string, string, boo
 		return stamp, "host-supervisor", match[2], true
 	}
 	if match := diagLinePattern.FindStringSubmatch(line); match != nil {
+		if match[2] == "collector" {
+			reason := strings.TrimPrefix(match[3], "diagnostic_gap=")
+			switch reason {
+			case "corrupt_cursor_replay", "source_disappeared", "legacy_host_mount_requires_recreate":
+				stamp, err := time.Parse(time.RFC3339Nano, match[1])
+				if err != nil {
+					return time.Time{}, "", "", false
+				}
+				return stamp, "diagnostic-collector", "diagnostic_gap=" + reason, true
+			}
+		}
 		if !scope.allowed(match[2]) {
 			return time.Time{}, "", "", false
 		}

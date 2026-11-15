@@ -191,7 +191,11 @@ func (r CLIRunner) CallEnv(ctx context.Context, effective EffectiveBinding, tool
 		return BackendResult{}, fmt.Errorf("command exit code %d: %s", response.ExitCode, result.Text)
 	}
 	if response.Receipt.WorkloadID != "" {
-		result.Receipt = response.Receipt.WorkloadID + "@" + strings.Join(response.Receipt.Isolation, ",") + "@cell=" + response.Receipt.CellID + ",rt=" + response.Receipt.Runtime
+		// Validate already proved these three scopes; do not serialize extra labels.
+		result.Receipt = SafeReceipt(response.Receipt.WorkloadID + "@filesystem,network,pid@cell=" + response.Receipt.CellID + ",rt=" + response.Receipt.Runtime)
+		if result.Receipt == "" {
+			return BackendResult{}, ErrInvalid
+		}
 	}
 	return result, nil
 }

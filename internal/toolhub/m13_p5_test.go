@@ -86,7 +86,7 @@ func TestConnectorEnableToolsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != api.OpStateDone {
+	if result.State != api.ModelStateDone {
 		t.Fatalf("enable result: %+v", result)
 	}
 	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)

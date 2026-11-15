@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+
+	xfont "golang.org/x/image/font"
+	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
 )
 
 func pdfBytes(text string) ([]byte, error) {
@@ -52,11 +57,31 @@ func pdfBytes(text string) ([]byte, error) {
 			}
 		}
 	}
+	parsedFont, err := sfnt.Parse(font)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uint16, 0, len(used))
+	for gid := range used {
+		ids = append(ids, gid)
+	}
+	slices.Sort(ids)
+	var widths strings.Builder
+	widths.WriteByte('[')
+	var glyphBuffer sfnt.Buffer
+	for _, gid := range ids {
+		advance, err := parsedFont.GlyphAdvance(&glyphBuffer, sfnt.GlyphIndex(gid), fixed.I(1000), xfont.HintingNone)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&widths, " %d [%d]", gid, (int32(advance)+32)/64)
+	}
+	widths.WriteString(" ]")
 	doc := &pdfBuilder{}
 	fontFile := doc.add(pdfStream(map[string]string{"/Length1": strconv.Itoa(len(font))}, font))
 	toUnicode := doc.add(pdfStream(nil, []byte(toUnicodeCMap(used))))
 	descriptor := doc.add(pdfDict(fmt.Sprintf("<< /Type /FontDescriptor /FontName /GoRegular /Flags 32 /FontBBox [-400 -300 1400 1100] /ItalicAngle 0 /Ascent 1024 /Descent -256 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>", fontFile)))
-	cid := doc.add(pdfDict(fmt.Sprintf("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /GoRegular /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor %d 0 R /CIDToGIDMap /Identity /DW 500 >>", descriptor)))
+	cid := doc.add(pdfDict(fmt.Sprintf("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /GoRegular /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor %d 0 R /CIDToGIDMap /Identity /DW 500 /W %s >>", descriptor, widths.String())))
 	fontObj := doc.add(pdfDict(fmt.Sprintf("<< /Type /Font /Subtype /Type0 /BaseFont /GoRegular /Encoding /Identity-H /DescendantFonts [%d 0 R] /ToUnicode %d 0 R >>", cid, toUnicode)))
 	var kids []int
 	for _, page := range glyphs {

@@ -59,29 +59,47 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 		}
 		seed = "remote-mcp:" + draft.DefinitionID + "@" + draft.Version + ":" + draft.Source.URL + ":" + strings.Join(credKey, ",") + ":" + strings.Join(allowlist, ",")
 	}
-	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, seed)
-	if existing, err := c.Store.onboarding(onboardingID); err == nil && existing.Phase != api.PhaseFailed && existing.Phase != api.PhaseRemoved {
-		if err := c.refreshCredentialForm(ctx, auth, &existing); err != nil {
-			return nil, err
+	onboardingID := api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, seed)
+	if holder, held := c.Store.OnboardingSlot(auth, draft.DefinitionID); held && !shared {
+		if holder.CleanupIncomplete() {
+			return nil, api.ErrRevoked
 		}
-		if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
-			return nil, err
+		if holder.PreparingStub {
+			return c.statusBody(holder, false), nil
 		}
-		return c.statusBody(existing, false), nil
+		if holder.Stage != api.StageFailed {
+			if err := c.refreshCredentialForm(ctx, auth, &holder); err != nil {
+				return nil, err
+			}
+			if err := c.refreshConfirmation(ctx, auth, &holder); err != nil {
+				return nil, err
+			}
+			return c.statusBody(holder, false), nil
+		}
+		if holder.OnboardingID != onboardingID {
+			// A failed holder under a different seed: retire it so the retry
+			// minted here is the one record answering the slot.
+			if err := c.Store.SupersedeOnboarding(holder, onboardingID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if len(credentials) > 0 {
 		draft.Tools = api.RemotePlaceholders(allowlist)
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: onboardingID,
-			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
-			Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingCreds, SourceURL: draft.Source.URL,
+			PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
+			Mode: api.OnboardingRemote, Stage: api.StagePending, SourceURL: draft.Source.URL,
 			DefinitionID: draft.DefinitionID, DefinitionVersion: draft.Version,
 			Required: api.RemoteCredentialHints(credentials), AdmissionPending: true,
-			Error:     "The remote endpoint needs credentials before tools/list. Submit them through the protected form; it is checked against the endpoint and the tool list is recorded.",
-			FormNonce: api.RandomNonce(), FormExpires: c.now().Add(c.ttl()),
+			Error:          "The remote endpoint needs credentials before tools/list. Submit them through the protected form; it is checked against the endpoint and the tool list is recorded.",
 			IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 			Definition: &draft,
 		}
+		if previous, err := c.Store.onboarding(onboardingID); err == nil {
+			onboarding.Revision = previous.Revision + 1
+		}
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
@@ -116,16 +134,24 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 			return nil, err
 		}
 	}
-	onboarding, err := c.newOnboarding(auth, api.OnboardingRemote, requestKey, definition, definition.Source.URL, "")
+	onboarding, attached, err := c.newOnboarding(auth, api.OnboardingRemote, requestKey, definition, definition.Source.URL, "", shared)
 	if err != nil {
 		return nil, err
 	}
-	if onboarding.OnboardingID != onboardingID {
-		onboarding.OnboardingID = onboardingID
+	if attached {
+		return c.statusBody(onboarding, false), nil
 	}
+	// The fresh record keeps the id newOnboarding minted — the definition
+	// slot, not the id seed, is what a repeat call converges on.
 	copyDef := definition
 	onboarding.Definition = &copyDef
+	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return nil, err
+	}
+	// A credential-free endpoint asked for nothing else — the install
+	// request is the consent, so the armed setup gate completes inline.
+	if err := c.autoCompleteSetup(ctx, auth, &onboarding, "install_request"); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil

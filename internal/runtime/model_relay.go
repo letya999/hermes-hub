@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/netguard"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"log"
 	"mime"
@@ -26,7 +28,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// modelHop is one upstream in the ordered fallback ladder.
+// modelHop is one upstream in the ordered fallback ladder. Each hop is one
+// credential principal (one service); models is the ordered in-service model
+// list retried on model-level failures before the ladder advances.
 type modelHop struct {
 	*modelHealth
 	keyFor    func(context.Context) (string, error)
@@ -35,6 +39,13 @@ type modelHop struct {
 	base      string // fixed scheme://host[:port]; the request path appends
 	keyEnv    string
 	model     string // provider-side model id; empty forwards the request model
+	models    []string
+	limits    []stack.ModelLimit
+	quota     []stack.ModelLimit // measurable provider_quota windows
+	disabled  string             // non-empty: service parked, reason for logs
+	reasoning bool
+	meter     *relayMeter
+	owner     string
 }
 
 type modelHealth struct {
@@ -42,6 +53,8 @@ type modelHealth struct {
 	cool        time.Time
 	recoverable bool
 	retrying    bool
+	lastClass   string // quota | provider_block | transport | other
+	lastDetail  string
 }
 
 // down reports whether the provider is still inside its cooldown window.
@@ -89,13 +102,12 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 	return hops, nil
 }
 
-func (h *modelHop) available(now time.Time) bool {
-	return h.availableFor(now, false)
-}
-
 func (h *modelHop) availableFor(now time.Time, reserved bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.disabled != "" {
+		return false
+	}
 	return (!h.retrying || reserved) && (h.cool.IsZero() || !h.cool.After(now))
 }
 
@@ -103,11 +115,14 @@ func (h *modelHop) availableFor(now time.Time, reserved bool) bool {
 // timeout again. ponytail: fixed 60 s; backoff is the upgrade if needed.
 const hopCooldown = time.Minute
 
-func (h *modelHop) fail() {
+func (h *modelHop) fail() { h.failWith("other", "") }
+
+func (h *modelHop) failWith(class, detail string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cool = time.Now().Add(hopCooldown)
 	h.recoverable = false
+	h.lastClass, h.lastDetail = class, detail
 }
 
 func (h *modelHop) failTransport() {
@@ -115,6 +130,15 @@ func (h *modelHop) failTransport() {
 	defer h.mu.Unlock()
 	h.cool = time.Now().Add(hopCooldown)
 	h.recoverable = true
+	h.lastClass, h.lastDetail = "transport", ""
+}
+
+// failure reports the classified reason the hop last failed, for operator
+// surfaces and the ladder's typed error.
+func (h *modelHealth) failure() (class, detail string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastClass, h.lastDetail
 }
 
 // waitForModelRecovery reserves one bounded probe after a transport timeout.
@@ -155,6 +179,9 @@ func (h *modelHop) state() map[string]any {
 	out := map[string]any{"name": h.name, "base": h.base}
 	if !h.cool.IsZero() {
 		out["cooldown_until"] = h.cool.UTC().Format(time.RFC3339)
+	}
+	if h.lastClass != "" {
+		out["failure"] = h.lastClass
 	}
 	return out
 }
@@ -243,7 +270,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		}
 		hop, resp, err := call(r.Context(), r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), body)
 		if err != nil {
-			http.Error(w, "model route unavailable", http.StatusBadGateway)
+			writeModelFailure(w, err)
 			return
 		}
 		if catalog && resp.StatusCode == http.StatusOK {
@@ -279,6 +306,26 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
+}
+
+func writeModelFailure(w http.ResponseWriter, err error) {
+	code, status, message := "model_route_unavailable", http.StatusBadGateway, "model route unavailable"
+	var typed *modelRouteError
+	if errors.As(err, &typed) {
+		switch typed.class {
+		case "quota":
+			code, status, message = "model_quota_exhausted", http.StatusTooManyRequests, "model quota exhausted; no configured fallback remains"
+		case "provider_block":
+			code, message = "model_provider_blocked", "model blocked by provider"
+		}
+		if typed.detail != "" {
+			message += ": " + typed.detail
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	out, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": message}})
+	_, _ = w.Write(out)
 }
 
 func requestsSelectedModel(body []byte, selected string) bool {
@@ -329,14 +376,40 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 	bounded := *client
 	recovering, releaseRecovery := waitForModelRecovery(ctx, hops)
 	defer releaseRecovery()
-	for _, hop := range hops {
+	for i, hop := range hops {
 		started := time.Now()
 		if !hop.availableFor(time.Now(), hop == recovering) {
 			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
+		if !hop.reasoning && requestNeedsReasoning(body) {
+			log.Printf("model-relay hop=%s path=%s skipped (reasoning unsupported)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+			continue
+		}
+		if hop.meter != nil && hop.meter.exhausted(hop.name, hop.limits, hop.owner) {
+			hop.failWith("quota", "local model limit spent")
+			log.Printf("model-relay hop=%s path=%s skipped (quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+			continue
+		}
+		if len(hop.quota) > 0 {
+			exhausted, err := hop.providerQuotaExhausted(ctx)
+			if err != nil {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s skipped (quota unread)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+			if exhausted {
+				hop.failWith("quota", "provider quota window spent")
+				log.Printf("model-relay hop=%s path=%s skipped (provider_quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+		}
 		hopBody := body
-		if hop.model != "" {
+		if len(hop.models) > 0 {
+			if remapped, err := rewriteModelField(body, hop.models[0]); err == nil {
+				hopBody = remapped
+			}
+		} else if hop.model != "" {
 			if remapped, err := rewriteModelField(body, hop.model); err == nil {
 				hopBody = remapped
 			}
@@ -350,13 +423,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 		if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
 			target = hop.base + strings.TrimPrefix(path, "/v1")
 		}
-		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(hopBody)) // #nosec G704 -- configured upstream hop
-		if err != nil {
-			return nil, nil, err
-		}
-		if ctype != "" {
-			req.Header.Set("Content-Type", ctype)
-		}
+		credential := auth
 		if hop.keyFor != nil {
 			credentialContext, cancel := context.WithTimeout(ctx, hopTimeout)
 			key, err := hop.keyFor(credentialContext)
@@ -366,7 +433,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				continue
 			}
-			req.Header.Set("Authorization", "Bearer "+key)
+			credential = "Bearer " + key
 		} else if hop.keyEnv != "" {
 			key := os.Getenv(hop.keyEnv)
 			if key == "" {
@@ -374,41 +441,170 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				continue
 			}
-			req.Header.Set("Authorization", "Bearer "+key)
-		} else if auth != "" {
-			req.Header.Set("Authorization", auth)
+			credential = "Bearer " + key
 		}
 		bounded.Transport = client.Transport
 		if hop.transport != nil {
 			bounded.Transport = hop.transport
 		}
-		bounded.Timeout = hopTimeout - time.Since(started)
-		if bounded.Timeout <= 0 {
-			hop.fail()
-			continue
-		}
-		resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
-		if err != nil {
-			hop.failTransport()
-			log.Printf("model-relay hop=%s path=%s transport error", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
-			continue
-		}
-		// Redirects are denied and quota/account exhaustion falls through;
-		// both park the hop for the cooldown window.
-		if (resp.StatusCode >= 300 && resp.StatusCode < 400) || retryableModelStatus(resp.StatusCode) {
-			hop.fail()
+		// Model-level failures (the account does not serve this model) retry
+		// the next model on the same principal; quota/auth/transport failures
+		// park the whole service and advance the ladder.
+		for attempt := 0; ; attempt++ {
+			if attempt > 0 && attempt < len(hop.models) {
+				if remapped, err := rewriteModelField(body, hop.models[attempt]); err == nil {
+					hopBody = remapped
+				}
+			}
+			req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(hopBody)) // #nosec G704 -- configured upstream hop
+			if err != nil {
+				return nil, nil, err
+			}
+			if ctype != "" {
+				req.Header.Set("Content-Type", ctype)
+			}
+			if credential != "" {
+				req.Header.Set("Authorization", credential)
+			}
+			bounded.Timeout = hopTimeout - time.Since(started)
+			if bounded.Timeout <= 0 {
+				hop.fail()
+				break
+			}
+			resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
+			if err != nil {
+				hop.failTransport()
+				log.Printf("model-relay hop=%s path=%s transport error", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				break
+			}
+			if hop.meter != nil {
+				hop.meter.charge(hop.name, hop.limits, hop.owner, hopBody)
+			}
+			// Redirects are denied and quota/account exhaustion falls through;
+			// both park the hop for the cooldown window.
+			if (resp.StatusCode >= 300 && resp.StatusCode < 400) || retryableModelStatus(resp.StatusCode) {
+				raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+				_ = resp.Body.Close()
+				class, detail := classifyUpstreamError(resp.StatusCode, raw)
+				hop.failWith(class, detail)
+				log.Printf("model-relay hop=%s path=%s status=%d class=%s", hop.name, path, resp.StatusCode, class) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				break
+			}
+			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+				if attempt+1 < len(hop.models) {
+					log.Printf("model-relay hop=%s path=%s model=%s status=%d", hop.name, path, hop.models[attempt], resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+					_ = resp.Body.Close()
+					continue
+				}
+				if len(hop.models) > 0 {
+					// Every declared model refused — the service does not
+					// serve this request shape; the ladder advances without
+					// parking the hop (the verdict is request-specific).
+					log.Printf("model-relay hop=%s path=%s model=%s status=%d", hop.name, path, hop.models[attempt], resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+					_ = resp.Body.Close()
+					break
+				}
+			}
+			hop.mu.Lock()
+			hop.cool, hop.recoverable = time.Time{}, false
+			hop.lastClass, hop.lastDetail = "", ""
+			hop.mu.Unlock()
 			log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
+			if i > 0 {
+				primary := hops[0]
+				class, detail := primary.failure()
+				if class == "" {
+					class = "unavailable"
+				}
+				log.Printf("model-relay fallback from=%s class=%s detail=%q served=%s", primary.name, class, detail, hop.name) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				resp.Header.Set("X-Model-Fallback", primary.name)
+				resp.Header.Set("X-Model-Fallback-Reason", class)
+			}
+			return hop, resp, nil
+		}
+	}
+	return nil, nil, classifyLadderFailure(hops)
+}
+
+// modelRouteError carries the classified reason the whole ladder refused so
+// the response can name it: a quota wall with no remaining fallback or a
+// generic outage.
+type modelRouteError struct {
+	class  string
+	detail string
+}
+
+func (e *modelRouteError) Error() string {
+	if e.detail != "" {
+		return e.class + ": " + e.detail
+	}
+	return e.class
+}
+
+// classifyLadderFailure reduces the per-hop failure set to the dominant
+// class. A provider block outranks: it needs an operator decision, not a
+// retry. An all-quota ladder is "exhausted with nothing to switch to";
+// anything else stays the generic route failure.
+func classifyLadderFailure(hops []*modelHop) *modelRouteError {
+	saw, blocked, allQuota := false, false, true
+	blockDetail, quotaDetail := "", ""
+	for _, hop := range hops {
+		class, d := hop.failure()
+		if class == "" {
 			continue
 		}
-		hop.mu.Lock()
-		hop.cool, hop.recoverable = time.Time{}, false
-		hop.mu.Unlock()
-		log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
-		return hop, resp, nil
+		saw = true
+		switch class {
+		case "provider_block":
+			blocked = true
+			if blockDetail == "" {
+				blockDetail = d
+			}
+		case "quota":
+			if quotaDetail == "" {
+				quotaDetail = d
+			}
+		default:
+			allQuota = false
+		}
 	}
-	return nil, nil, fmt.Errorf("all model upstreams failed")
+	switch {
+	case blocked:
+		return &modelRouteError{class: "provider_block", detail: blockDetail}
+	case saw && allQuota:
+		return &modelRouteError{class: "quota", detail: quotaDetail}
+	default:
+		return &modelRouteError{class: "route_unavailable"}
+	}
+}
+
+// classifyUpstreamError buckets an upstream refusal into the failure class
+// the ladder reports: rate limits and account-level provider blocks (ToS,
+// suspension, disabled service) get named classes; detail carries the
+// provider's own message for logs and error results.
+func classifyUpstreamError(status int, raw []byte) (class, detail string) {
+	var doc struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &doc)
+	detail = doc.Error.Message
+	if status == http.StatusTooManyRequests {
+		return "quota", detail
+	}
+	if status == http.StatusForbidden {
+		hay := strings.ToLower(doc.Error.Status + " " + doc.Error.Message)
+		for _, mark := range []string{"permission_denied", "terms of service", "violation", "disabled", "suspended", "deactivated", "blocked", "banned"} {
+			if strings.Contains(hay, mark) {
+				return "provider_block", detail
+			}
+		}
+	}
+	return "other", detail
 }
 
 // modelTokenCeiling refuses requests no provider window could serve. It sits
@@ -420,6 +616,9 @@ func withinModelBudget(body []byte) bool {
 	var output struct {
 		MaxTokens           int64 `json:"max_tokens"`
 		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		Messages            []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
 	}
 	if json.Unmarshal(body, &output) != nil {
 		return false
@@ -428,8 +627,34 @@ func withinModelBudget(body []byte) bool {
 	if reserve > modelTokenCeiling {
 		return false
 	}
-	// Worst case ~6 UTF-8/JSON bytes per token (escapes, CJK); conservative.
-	return int64(len(body))/6+reserve <= modelTokenCeiling
+	// Data URLs are image payloads, not prompt text. Charge a conservative
+	// image allowance while the HTTP byte limit still caps their encoded size.
+	imageBytes, images := 0, 0
+	for _, message := range output.Messages {
+		var parts []struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		}
+		if json.Unmarshal(message.Content, &parts) != nil {
+			continue
+		}
+		for _, part := range parts {
+			if part.Type != "image_url" {
+				continue
+			}
+			url := part.ImageURL.URL
+			comma := strings.IndexByte(url, ',')
+			if comma < 0 || comma > 128 || !strings.HasPrefix(url, "data:image/") || !strings.HasSuffix(url[:comma], ";base64") {
+				continue
+			}
+			imageBytes += len(url)
+			images++
+		}
+	}
+	// Worst case ~6 UTF-8/JSON bytes per text token (escapes, CJK).
+	return int64(len(body)-imageBytes)/6+reserve+int64(images)*16384 <= modelTokenCeiling
 }
 
 // rewriteModelField swaps the top-level "model" value; non-JSON bodies pass through.
@@ -468,11 +693,13 @@ type relayRegistry struct {
 	owner     string
 	admin     string
 	auth      string
+	decider   api.DecideClient
 	mu        sync.Mutex
 	mtime     time.Time
 	reg       *relayRegistryFile
 	ladders   map[string][]*modelHop
 	health    map[string]*modelHealth
+	meter     *relayMeter
 }
 
 func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
@@ -480,7 +707,8 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 	if err != nil {
 		return nil, err
 	}
-	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{}}
+	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{},
+		decider: api.DecideClient{URL: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), Token: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_CONTROL")), Principal: owner, Environment: strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))}}
 	brokerConfig, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_MODEL_")
 	if err != nil {
 		return nil, err
@@ -520,6 +748,10 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		if req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
+			return
+		}
+		if req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops") && !r.grantsRight(req.Context(), "list", "") {
+			http.Error(w, "right denied", http.StatusForbidden)
 			return
 		}
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/registry" {
@@ -582,6 +814,11 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 				return
 			}
 			requested = requestedModel(body)
+			if !r.grantsRight(req.Context(), "use", requested) {
+				log.Printf("model-relay owner=%s outcome=deny reason=rights models.use", r.owner)
+				http.Error(w, "right denied", http.StatusForbidden)
+				return
+			}
 		}
 		name, hops, err := r.hopsFor(file, requested)
 		if err != nil || len(hops) == 0 {
@@ -604,7 +841,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
 		if err != nil {
-			http.Error(w, "model route unavailable", http.StatusBadGateway)
+			writeModelFailure(w, err)
 			return
 		}
 		for key, values := range resp.Header {
@@ -813,13 +1050,38 @@ func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry re
 				r.health[ref.Provider] = health
 			}
 		}
-		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model}
+		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model, models: ref.Models, reasoning: ref.Reasoning, owner: r.owner}
+		// Declared limits split by measurability (SPEC-0092 R7.3): requests
+		// and tokens meter locally; provider_quota needs the service's own
+		// per-session telemetry — a cliproxy OAuth session readable through
+		// the instance's management API. spend_usd has no price feed. A
+		// service whose limits cannot be measured is disabled — drifting
+		// unbounded is worse than parking it.
+		for _, l := range ref.Limits {
+			switch l.Of {
+			case "requests", "tokens":
+				hop.limits = append(hop.limits, l)
+			case "provider_quota":
+				if p.Via == "cliproxy" && p.UpstreamKind == "oauth-session" && strings.TrimSpace(os.Getenv("HUB_CLIPROXY_MGMT_KEY")) != "" {
+					hop.quota = append(hop.quota, l)
+				} else {
+					hop.disabled = "limit_unmeasurable"
+				}
+			default: // spend_usd: no price feed exists
+				hop.disabled = "limit_unmeasurable"
+			}
+		}
+		if len(hop.limits) > 0 {
+			hop.meter = r.usageMeter()
+		}
 		if grant := p.BrokerGrants[r.owner]; grant != "" {
 			target := p.CredentialEnv
 			actor := identity.Envelope{Schema: identity.Schema, PrincipalID: r.owner, ContextID: r.owner, RuntimeID: r.owner, ExternalIdentityID: r.owner, ConversationID: "model-relay", DeliveryTargetID: "model-relay", PolicyVersion: "model-relay"}
-			binding := "model-relay-" + ref.Provider
+			binding := credentialbroker.ModelRelayBinding(r.owner, ref.Provider)
 			hop.keyFor = func(ctx context.Context) (string, error) {
-				return r.broker.ResolveEnv(ctx, actor, binding, "model-relay", grant, target)
+				// The dedicated grant pins binding and workload to the
+				// relay's per-provider slot; both must be presented.
+				return r.broker.ResolveEnv(ctx, actor, binding, binding, grant, target)
 			}
 		}
 		hop.transport = netguard.Transport(p.AllowPrivate)
@@ -844,6 +1106,13 @@ type relaySelection struct {
 	Provider string `json:"provider,omitempty"`
 }
 
+func (r *relayRegistry) usageMeter() *relayMeter {
+	if r.meter == nil {
+		r.meter = &relayMeter{path: r.statePath + ".usage.json"}
+	}
+	return r.meter
+}
+
 func (r *relayRegistry) selection() relaySelection {
 	b, err := os.ReadFile(r.statePath) // #nosec G304 -- state path is operator-mounted
 	if err != nil {
@@ -859,6 +1128,21 @@ func (r *relayRegistry) selection() relaySelection {
 // serveSelect is the owner-facing model switch: admin-token authenticated,
 // grant-checked and persisted into the mounted selection file. GET reports
 // the effective selection so the owner can see what their traffic resolves to.
+// grantsRight is the model-relay PEP (SPEC-0092 R2.2): when the space's
+// ToolHub decide endpoint is wired, models.* rights are verified against
+// the published ceiling and live ledger before the relay acts. An
+// unconfigured decider keeps the legacy auth-only posture.
+func (r *relayRegistry) grantsRight(ctx context.Context, operation, scope string) bool {
+	if !r.decider.Enabled() {
+		return true
+	}
+	allow, err := r.decider.GrantsRight(ctx, "models", operation, scope)
+	if err != nil {
+		log.Printf("model-relay rights decide owner=%s right=models.%s err=%v", r.owner, operation, err)
+	}
+	return allow
+}
+
 func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	if r.admin == "" || req.Header.Get("Authorization") != "Bearer "+r.admin {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -876,6 +1160,10 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	var sel relaySelection
 	if json.NewDecoder(io.LimitReader(req.Body, 1<<16)).Decode(&sel) != nil || sel.Model == "" {
 		http.Error(w, "invalid model request", http.StatusBadRequest)
+		return
+	}
+	if !r.grantsRight(req.Context(), "switch", sel.Model) {
+		http.Error(w, "right denied", http.StatusForbidden)
 		return
 	}
 	file, err := r.current()
@@ -1053,9 +1341,9 @@ func requestedModel(body []byte) string {
 	return doc.Model
 }
 
-// modelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
+// ModelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
 // registry when HUB_MODEL_RELAY_REGISTRY is set, else the static env ladder.
-func modelRelayHandlerFromEnv() (http.Handler, error) {
+func ModelRelayHandlerFromEnv() (http.Handler, error) {
 	if _, _, err := modelRelayLimits(); err != nil {
 		return nil, err
 	}
@@ -1112,7 +1400,7 @@ func modelRelayLimits() (time.Duration, time.Duration, error) {
 }
 
 func runModelRelay(ctx context.Context) error {
-	handler, err := modelRelayHandlerFromEnv()
+	handler, err := ModelRelayHandlerFromEnv()
 	if err != nil {
 		return err
 	}
@@ -1127,4 +1415,17 @@ func runModelRelay(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// requestNeedsReasoning reports whether the request carries reasoning
+// parameters a service must declare support for.
+func requestNeedsReasoning(body []byte) bool {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(body, &doc) != nil {
+		return false
+	}
+	_, a := doc["reasoning_effort"]
+	_, b := doc["reasoning"]
+	_, c := doc["thinking"]
+	return a || b || c
 }

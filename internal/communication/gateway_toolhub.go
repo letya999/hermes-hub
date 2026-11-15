@@ -37,7 +37,9 @@ func (g *Gateway) connectionsCommand(user User, sender int64) string {
 // ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
 func (g *Gateway) watchesCommand(user User, sender int64) string {
 	lang := locale.LangOf(user.WorkspaceDir)
-	items, err := g.spool.ListSchedules(user.Envelope(sender))
+	caller := user.Envelope(sender)
+	var items []Schedule
+	err := g.automationCall(context.Background(), caller, "schedule.list", nil, &items)
 	if err != nil {
 		return locale.T(lang, "watches.unavailable")
 	}
@@ -64,8 +66,9 @@ func (g *Gateway) watchesCommand(user User, sender int64) string {
 		if item.Delivery == "stream" {
 			line += ", stream"
 		}
-		st, err := g.spool.EventStateOf(item.ScheduleID)
-		if err == nil {
+		card, err := g.getRoutineCard(context.Background(), item.ScheduleID, caller)
+		if err == nil && card.EventState != nil {
+			st := *card.EventState
 			if !st.LastSuccess.IsZero() {
 				line += ", ok " + st.LastSuccess.UTC().Format(time.RFC3339)
 			}
@@ -379,10 +382,6 @@ func (g *Gateway) toolHubJobDone(jobID, principalID string) {
 		return
 	}
 	defer resp.Body.Close()
-}
-
-func connectionList(user User) string {
-	return connectionListWithLang(locale.LangOf(user.WorkspaceDir), user)
 }
 
 func connectionListWithLang(lang locale.Lang, user User) string {

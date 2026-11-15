@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -44,16 +45,30 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "script owner unavailable"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
+	m.mu.Lock()
+	hold := m.holds[holdKey(request.PrincipalID, request.ContextID)]
+	m.mu.Unlock()
+	if hold.Active || request.OperationalEpoch != hold.Epoch {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "administrative admission fence"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	select {
-	case m.sem <- struct{}{}:
-		defer func() { <-m.sem }()
+	case m.scriptSem <- struct{}{}:
+		defer func() { <-m.scriptSem }()
 	case <-ctx.Done():
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "script capacity unavailable"})
 		return
 	}
-	image, err := devScriptImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	base := m.cfg.ScriptImage
+	if base == "" {
+		base = m.cfg.Image
+	}
+	image, err := devScriptImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, base)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dev script image unavailable"})
 		return
@@ -64,7 +79,7 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 		_, _ = m.command(cleanup, "rm", "-f", name)
 	}()
-	args := []string{"run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "16", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.role=script"}
+	args := []string{"run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "16", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.role=script"}
 	if request.MountSpace {
 		watchDir := filepath.Join(m.cfg.SpacesRoot, binding.ContextID, "watch")
 		if err := os.MkdirAll(watchDir, 0750); err != nil {

@@ -42,10 +42,12 @@ const (
 	MaxDocumentBytes = 2 << 20
 	RunesPerPage     = 3000
 	MaxPages         = 20
-	MaxImageBytes    = 5 << 20
-	MaxPixels        = 4_000_000
-	MaxEdge          = 4096
-	MaxPromptRunes   = 2000
+	MaxImageBytes    = 20 << 20
+	// Model requests carry bounded derivatives, not full-size uploaded files.
+	MaxModelImageBytes = 16 << 20
+	MaxPixels          = 4_000_000
+	MaxEdge            = 4096
+	MaxPromptRunes     = 2000
 
 	configLimit = 256 << 10
 )

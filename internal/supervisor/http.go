@@ -9,9 +9,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +63,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.wake(w, r)
 	case "/v1/self-env":
 		m.selfEnv(w, r)
+	case "/v1/settings":
+		m.settingsEditHTTP(w, r)
 	case "/v1/skill-apply":
 		m.skillApply(w, r)
 	case "/v1/skill-creds":
@@ -70,10 +75,14 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.restartHTTP(w, r)
 	case "/v1/restart-request":
 		m.restartRequestHTTP(w, r)
+	case "/v1/respawn":
+		m.respawnHTTP(w, r)
 	case "/v1/artifact":
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
 		m.usageHTTP(w, r)
+	case "/v1/session-read":
+		m.sessionRead(w, r)
 	case "/v1/compact":
 		m.compactHTTP(w, r)
 	case "/v1/goal":
@@ -163,6 +172,9 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "restart_self", "runtime") {
 		return
 	}
 	m.mu.Lock()
@@ -259,6 +271,8 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	}
 	m.mu.Lock()
 	entry.restored = false
+	entry.Runtime.PendingRestart = nil // The cause is spent once the restart applies.
+	_ = m.persistLocked()
 	m.mu.Unlock()
 	return true, nil
 }
@@ -281,8 +295,12 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		PrincipalID string `json:"principal_id"`
 		ContextID   string `json:"context_id"`
 		RuntimeID   string `json:"runtime_id"`
+		Revision    uint64 `json:"revision"`
+		OperationID string `json:"operation_id"`
+		Reason      string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) {
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) || (request.RuntimeID != "" && !validID(request.RuntimeID)) ||
+		(request.Revision != 0 || request.OperationID != "" || request.Reason != "") && (request.Revision == 0 || !validID(request.OperationID) || request.Reason != "tool_projection_change" || request.RuntimeID == "") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
 		return
 	}
@@ -295,7 +313,20 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	running := entry != nil && entry.Container != "" && (entry.State == Ready || entry.State == Busy || entry.State == Idle)
+	m.mu.Unlock()
 	if !running {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	// The decide round-trip must run unlocked: a slow PDP cannot stall every
+	// runtime transition behind m.mu.
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
+	m.mu.Lock()
+	// The runtime may have stopped during the decide — re-check before
+	// trusting the snapshot.
+	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Busy && entry.State != Idle) {
 		m.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
 		return
@@ -303,7 +334,16 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	address, auth, idle := entry.Address, entry.auth, entry.State == Idle || entry.State == Ready
 	snapshot := entry.Runtime
 	m.mu.Unlock()
-	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
+	var markerBody []byte
+	if request.OperationID != "" {
+		markerBody, _ = json.Marshal(struct {
+			OperationID string `json:"operation_id"`
+			Reason      string `json:"reason"`
+			Revision    uint64 `json:"revision"`
+			Generation  string `json:"generation"`
+		}{request.OperationID, request.Reason, request.Revision, snapshot.Generation})
+	}
+	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", bytes.NewReader(markerBody))
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
@@ -322,6 +362,14 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	if response.StatusCode != http.StatusOK {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime marker refused"})
 		return
+	}
+	if !idle && request.OperationID != "" {
+		m.mu.Lock()
+		if current := m.items[runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode})]; current != nil && current.Generation == snapshot.Generation {
+			current.Runtime.PendingRestart = &RestartCause{Reason: request.Reason, OperationID: request.OperationID, Revision: request.Revision, Generation: snapshot.Generation}
+			_ = m.persistLocked()
+		}
+		m.mu.Unlock()
 	}
 	applied := false
 	if idle {
@@ -355,6 +403,112 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": applied})
 }
 
+// respawnHTTP replaces a managed runtime's container outright — the recreate
+// counterpart to restart-request: a deferred restart remounts files but keeps
+// the container's baked env, so env-carried passport config (ports, feature
+// flags) only takes effect on a real re-create (SPEC-0092 R4.2, A4).
+func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	defer r.Body.Close()
+	var request struct {
+		PrincipalID string `json:"principal_id"`
+		ContextID   string `json:"context_id"`
+		RuntimeID   string `json:"runtime_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) || (request.RuntimeID != "" && !validID(request.RuntimeID)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid respawn request"})
+		return
+	}
+	if !m.applyRespawnAuthorized(r, request.PrincipalID, request.ContextID, request.RuntimeID) &&
+		!m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
+	applied, err := m.respawnRuntime(request.PrincipalID, request.ContextID, request.RuntimeID)
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": applied, "applied": applied})
+}
+
+// ReconcileSettingsRuntime applies the authenticated local publisher's self-owned
+// runtime effect while its publication journal still blocks external admission.
+func (m *Manager) ReconcileSettingsRuntime(principal string) (bool, error) {
+	if !validID(principal) {
+		return false, errors.New("invalid publication principal")
+	}
+	return m.respawnRuntime(principal, principal, "")
+}
+
+func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, error) {
+	m.mu.Lock()
+	var entry *runtimeEntry
+	for _, candidate := range m.items {
+		if candidate.Runtime.PrincipalID == principal && candidate.Runtime.ContextID == contextID && (runtimeID == "" || candidate.Runtime.RuntimeID == runtimeID) {
+			entry = candidate
+			break
+		}
+	}
+	// Only a lease-free idle container may be replaced; a busy or absent one
+	// answers scheduled:false — nothing is queued, the next spawn reads the
+	// new revision anyway.
+	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Idle) || entry.Leases != 0 {
+		m.mu.Unlock()
+		return false, nil
+	}
+	snapshot := entry.Runtime
+	key := runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode})
+	m.mu.Unlock()
+	// Serialize on the runtime key and re-verify under it — a lease acquired
+	// between the lookup and here makes the destroy a mid-lease kill.
+	lock := m.lockFor(key)
+	lock.Lock()
+	m.mu.Lock()
+	current := m.items[key]
+	valid := current != nil && current.Container == snapshot.Container && current.Generation == snapshot.Generation && current.Leases == 0
+	var binding Binding
+	if valid {
+		binding = current.binding
+	}
+	m.mu.Unlock()
+	if !valid {
+		lock.Unlock()
+		return false, nil
+	}
+	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		lock.Unlock()
+		return false, err
+	}
+	if err == nil && settings.CapabilityMode == "managed" {
+		binding.PolicyVersion = stack.PolicyVersion(settings)
+	}
+	// The respawn outlives the client's deadline like an accepted restart.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	_, _ = m.command(ctx, "stop", "--time", "30", snapshot.Container) // a dead container makes rm authoritative anyway
+	if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+		lock.Unlock()
+		return false, err
+	}
+	m.mu.Lock()
+	current.State, current.IdleDeadline = Stopped, time.Time{}
+	_ = m.persistLocked()
+	m.mu.Unlock()
+	lock.Unlock()
+	respawned, err := m.Ensure(ctx, binding)
+	if err != nil {
+		return false, err
+	}
+	// Like wake: the respawn is a warm-up peek, not a hold — the Ensure
+	// reference returns so the fresh runtime settles to idle.
+	_ = m.ReleaseBinding(binding)
+	return respawned.Container != "", nil
+}
+
 // artifactHTTP forwards one bounded artifact fetch to the runtime bound to the
 // request envelope. No lease: the gateway asks while the runtime is answering
 // the job, so a lookup-only forward never keeps a runtime alive for it.
@@ -378,6 +532,9 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	m.mu.Lock()
@@ -425,6 +582,9 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	// Usage is a user command: a stopped runtime is spawned exactly like a
@@ -485,6 +645,9 @@ func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil || runtime.Address == "" {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -526,6 +689,9 @@ func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)

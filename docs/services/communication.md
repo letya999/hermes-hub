@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-10-28
+last_verified: 2026-11-12
 ---
 
 # communication-hub
@@ -19,13 +19,39 @@ everything entering or leaving the human conversation. Listens
 - **Inbound**: normalizes transport identity into `identity.Envelope`
   (docs/rbac.md), maps conversations to runtimes, delivers to the runtime
   HTTP surface or supervisor.
+  Telegram document/photo intake accepts up to 20 MiB per file; model vision
+  uses bounded derivatives rather than forwarding full source bytes.
+- **Outbound delivery**: model replies render to Telegram HTML parts
+  (~4,000 UTF-16 units each). A response beyond five parts degrades to a
+  localized truncation notice plus the final part — where the conclusion
+  lands — with the full source attached as `answer.md`; a pathological
+  reply can never flood the chat.
 - **Credential forms**: mints the protected links (`?t=`) used by grant
   confirmations, connector onboarding (`channel_auth_url` outranks the
   broker form), writes-enable and remove nonces. `HUB_COMMUNICATION_FORM_ORIGIN`
   fixes the host-facing origin.
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
-  (`HUB_COMMUNICATION_TOKENS_FILE`).
+  (`HUB_COMMUNICATION_TOKENS_FILE`). In supervised stacks with distinct service
+  authority, the primary runtime bearer is pinned to rendered `HUB_USER_ID`;
+  sibling bearers are pinned to enrollment. Request headers cannot switch them
+  to another principal; an unknown primary owner denies access.
+- **Human confirmations**: service-issued notices and verified owner taps use
+  the automation service bearer, including the return call to ToolHub. Runtime
+  bearers cannot submit confirmation notices. Callback routing comes from the
+  verified channel; profile, environment, generation and organization remain
+  bound to the issued proof and are rechecked by ToolHub before applying it.
+- **Automation delivery intake**: `POST /v1/automation/deliveries` and
+  `GET /v1/automation/owner-home` accept the automation service bearer
+  (`HUB_AUTOMATION_AUTH`, falling back to `HUB_COMMUNICATION_AUTH` only when
+  unset) plus `X-Hub-Principal`. Supervised stacks use the supervisor bearer;
+  owner and sibling runtime bearers cannot read arbitrary owner homes or
+  submit service deliveries.
+  The handler pins the owner to a current enabled user and verifies the
+  Telegram/mock chat or Slack identity against the channel target,
+  then writes the stable delivery ID to the existing outbox. The send worker
+  rechecks owner and the live `channels.send` right. ToolHub owns the clock
+  and durable automation state; communication owns the channel handoff.
 - **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
   boot and every second while a notice is pending; a clean hold set backs off
   to a ~10 s poll. A routable notice is durably enqueued (Telegram) then
@@ -40,6 +66,15 @@ everything entering or leaving the human conversation. Listens
   past the 5-minute aging bound. Control deliveries (approvals, marked
   control sends) claim ahead of ordinary replies and are exempt from the
   ordinary outbox cap.
+- **Memory capture outbox** (`capture_outbox.go`): accepted jobs and completed
+  run receipts mint durable `capture/` records before their transport handoff
+  completes. The pump posts them to ToolHub with the communication service
+  bearer and the enrolled principal; a lost acknowledgement or outage leaves
+  the event pending. Settlement is recorded under `capture-acks/` before the
+  outbox copy is removed; settled markers age out only after their jobs.
+  Startup rebuilds missing events from jobs and
+  terminal receipts created with capture enabled. Communication has no vault
+  mount or nightly memory clock; ToolHub owns capture and nightly writes.
 
 ## Key env
 
@@ -51,16 +86,31 @@ everything entering or leaving the human conversation. Listens
 `HUB_COMMUNICATION_CONFIG` (`communication.users.yaml` — sibling Telegram
 identities; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must
 contain every owner's numeric id),
-`HUB_MODEL_RELAY_URL` + `model-relay.auth` for a gateway rendered inside its
-own managed space, or `HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
+`HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
 `model-relay-admins.json`, principal → relay URL + admin bearer) for the
 shared gateway serving several managed principals — `/model` resolves the
 caller's relay from the authenticated identity. Slash commands share one
 dispatcher across channels: Telegram updates and `/v1/mock/message` texts
 starting with `/` both run it, so mock replies land in `mock-sent` and
 never enqueue an agent job,
-`HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
+`HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when the space renders a voice
+channel (`config.channels.*.voice` in the published revision, or the legacy
+`transcription` feature),
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
+
+Protected ToolHub confirmation notices require the service bearer and an
+owner-bound actor. The signed actor's current policy may differ from the
+gateway's loaded sibling routing snapshot; the final callback still goes to
+ToolHub with that actor for current-policy admission. A stale routing policy
+must be refreshed for new channel jobs, but it cannot suppress the owner's
+already-issued confirmation button.
+
+`GET /v1/prepare-delivery-status` is service-bearer-only. With an exact
+onboarding ID and notice version, it reads the durable outbox record matching
+the caller's principal/context/runtime identity and returns only `unknown`,
+`queued`, `uncertain` or `delivered`. It does not return links, chat content or
+credentials. ToolHub maps a notice not yet accepted by this gateway to
+`not_queued` before calling the endpoint.
 
 Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_SCOPE`
 (default 16), `HUB_SPOOL_MAX_PENDING_TOTAL` (128), `HUB_SCOPE_TOKEN_DAILY`

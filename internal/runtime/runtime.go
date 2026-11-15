@@ -99,6 +99,8 @@ func Run(args []string) error {
 			return errors.New("verify-managed requires managed capability mode")
 		}
 		return managedPreflight()
+	case "cliproxy-materialize":
+		return runCliproxyMaterialize(context.Background())
 	case "health":
 		return Health(filepath.Join(state, "runtime.json"))
 	case "prepare":
@@ -247,8 +249,13 @@ func supervise(mode string) error {
 
 // managedPreflight attests the mounted effective config and the container's
 // actual isolation before any managed Hermes process may start.
+var mountedPassportRevisionPath = "/config/revision"
+
 func managedPreflight() error {
 	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
+	if err := checkMountedPassportRevision(mountedPassportRevisionPath, os.Getenv("HUB_PASSPORT_REVISION")); err != nil {
+		return err
+	}
 	if os.Getenv("HERMES_BUNDLES_DIR") != filepath.Join(hermesHome, "skill-bundles") ||
 		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
 		return fmt.Errorf("managed runtime forbids redirected extension discovery")
@@ -264,6 +271,20 @@ func managedPreflight() error {
 	}
 	if err := verifyManagedIsolation(hermesHome); err != nil {
 		return fmt.Errorf("managed runtime isolation unverified: %w", err)
+	}
+	if err := checkMountedPassportRevision(mountedPassportRevisionPath, os.Getenv("HUB_PASSPORT_REVISION")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkMountedPassportRevision(path, expected string) error {
+	if expected == "" {
+		return fmt.Errorf("managed runtime passport revision unavailable")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(body)) != expected {
+		return fmt.Errorf("managed runtime passport activation mismatch")
 	}
 	return nil
 }
@@ -549,8 +570,8 @@ func superviseBrowser() error {
 	// profile, no /state/browser access, no shared CDP session.
 	mcp := "/opt/browser/node_modules/@playwright/mcp/cli.js"
 	for _, args := range [][]string{
-		{mcp, "--host", "0.0.0.0", "--port", "8931", "--allowed-hosts", mcpAllowedHosts("8931"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9223"},
-		{mcp, "--host", "0.0.0.0", "--port", "8932", "--allowed-hosts", mcpAllowedHosts("8932"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
+		{mcp, "--host", "0.0.0.0", "--port", "8931", "--allowed-hosts", mcpAllowedHosts("8931"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--timeout-action", "15000", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9223"},
+		{mcp, "--host", "0.0.0.0", "--port", "8932", "--allowed-hosts", mcpAllowedHosts("8932"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--timeout-action", "15000", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
 	} {
 		if err := start("node", args...); err != nil {
 			return err
@@ -628,9 +649,11 @@ func mcpAllowedHosts(port string) string {
 	return net.JoinHostPort(os.Getenv("HUB_BROWSER_HOST"), port)
 }
 
+var displayLockPaths = []string{"/tmp/.X99-lock", "/tmp/.X11-unix/X99"}
+
 func clearDisplayLocks(paths ...string) error {
 	if len(paths) == 0 {
-		paths = []string{"/tmp/.X99-lock", "/tmp/.X11-unix/X99"}
+		paths = displayLockPaths
 	}
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -821,20 +844,4 @@ func readOnlyWrite(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "read-only") || strings.Contains(text, "read only") || strings.Contains(text, "erofs")
-}
-
-func copyIfExists(source, destination string, overwrite bool) error {
-	if !overwrite {
-		if _, err := os.Stat(destination); err == nil {
-			return nil
-		}
-	}
-	body, err := os.ReadFile(source)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(destination, body, 0660) // #nosec G703 -- effective config destination from operator layout
 }

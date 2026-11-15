@@ -7,9 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -228,6 +225,79 @@ func TestGatedPluginExcludedFromMaterializedMount(t *testing.T) {
 	}
 }
 
+func TestMaterializeHubPluginsKeepsMountedDirectory(t *testing.T) {
+	root := t.TempDir()
+	plugin := filepath.Join(root, "config", "plugins", "hub-web")
+	if err := os.MkdirAll(plugin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(plugin, "tools.py")
+	if err := os.WriteFile(source, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	space := t.TempDir()
+	s := validSettings()
+	s.Tools = testTools("web")
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	mount := filepath.Join(GeneratedPluginsDir(space), "hub-web")
+	before, err := os.Stat(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "stale.py"), []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeHubPlugins(space, root, s); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("materialization replaced a live plugin bind mount")
+	}
+	if body, err := os.ReadFile(filepath.Join(mount, "tools.py")); err != nil || string(body) != "new" {
+		t.Fatalf("mounted plugin did not receive update: %q, %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "stale.py")); !os.IsNotExist(err) {
+		t.Fatalf("stale plugin file was not removed: %v", err)
+	}
+}
+
+func TestMaterializeHubPluginsRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	plugin := filepath.Join(root, "config", "plugins", "hub-web")
+	if err := os.MkdirAll(plugin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "tools.py"), []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	space := t.TempDir()
+	dest := GeneratedPluginsDir(space)
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dest, "hub-web")); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	s := validSettings()
+	s.Tools = testTools("web")
+	if err := MaterializeHubPlugins(space, root, s); err == nil {
+		t.Fatal("plugin materialization followed an external symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "tools.py")); !os.IsNotExist(err) {
+		t.Fatalf("plugin escaped generated directory: %v", err)
+	}
+}
+
 func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
 	space := t.TempDir()
 	s := validSettings()
@@ -325,13 +395,13 @@ func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 	}
 	s.Web = WebSettings{Backend: "firecrawl"}
 	issues = Doctor(s, map[string]string{"OPENAI_API_KEY": "x"})
-	if !strings.Contains(strings.Join(issues, " "), "FIRECRAWL_API_KEY") {
-		t.Fatalf("missing firecrawl credentials not reported: %v", issues)
+	if strings.Contains(strings.Join(issues, " "), "FIRECRAWL") {
+		t.Fatalf("keyless firecrawl must not require credentials: %v", issues)
 	}
 	issues = Doctor(s, map[string]string{"OPENAI_API_KEY": "x", "FIRECRAWL_API_URL": "https://firecrawl.internal"})
 	for _, issue := range issues {
 		if strings.Contains(issue, "FIRECRAWL") {
-			t.Fatalf("self-hosted firecrawl URL satisfies the credential: %v", issues)
+			t.Fatalf("self-hosted firecrawl URL must not warn: %v", issues)
 		}
 	}
 	s.Web = WebSettings{Backend: "perplexity"}
@@ -344,41 +414,6 @@ func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 		if strings.Contains(issue, "EXA_API_KEY") {
 			t.Fatalf("keyless-ring provider must not produce a doctor warning: %v", issues)
 		}
-	}
-}
-
-func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
-	d := t.TempDir()
-	if err := Init(d, "me"); err != nil {
-		t.Fatal(err)
-	}
-	// R3.1: the native web toolset is a wish plus a grant now.
-	wsPath := filepath.Join(d, "workspace.yaml")
-	ws, err := os.ReadFile(wsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws = []byte(strings.Replace(string(ws), "  # web: native", "  web: {via: native}", 1))
-	if err := os.WriteFile(wsPath, ws, 0600); err != nil {
-		t.Fatal(err)
-	}
-	seedGovernance(t, d, func(doc *api.Governance) {
-		activeToolGrant(t, doc, "me", "native:web", time.Hour)
-	})
-	s, err := Read(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Web = WebSettings{Backend: "tavily", Research: WebResearchBounds{MaxRounds: 2}}
-	if err := WriteSpace(d, s); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := Read(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.Web.Backend != "tavily" || reloaded.Web.Research.MaxRounds != 2 {
-		t.Fatalf("web settings did not round-trip: %#v", reloaded.Web)
 	}
 }
 

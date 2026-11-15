@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"os/exec"
@@ -31,7 +32,7 @@ func devService(name string) (devServiceSpec, bool) {
 		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.5.0-dev-control"}, true
 	case "hermes-runtime":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
-	case "model-relay":
+	case "model-relay", "toolhub-relay":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
 	case "egress-relay":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev-core"}, true
@@ -39,7 +40,7 @@ func devService(name string) (devServiceSpec, bool) {
 	return devServiceSpec{}, false
 }
 
-func runDevRebuild(ctx context.Context, args []string) (retErr error) {
+func runDevRebuild(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("dev-rebuild", flag.ContinueOnError)
 	dir := f.String("dir", "", "dev space directory")
 	root := f.String("root", ".", "source root")
@@ -63,7 +64,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
-	settings, err := stack.ReadEnvironment(dirAbs, "dev")
+	settings, err := stack.ReadEffective(dirAbs, "dev")
 	if err != nil {
 		return err
 	}
@@ -74,9 +75,20 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err := stack.RenderEnvironment(dirAbs, rootAbs, "dev"); err != nil {
 		return err
 	}
+	if err := refreshDevSiblingTokens(dirAbs); err != nil {
+		return err
+	}
 	compose := filepath.Join(dirAbs, "generated", "compose.dev.yaml")
+	if settings.RendersInfra() && stack.HasPerSpaceServices(settings) {
+		_, user := stack.SplitInfraCompose(settings, stack.Compose(settings, rootAbs, dirAbs))
+		part := "shared"
+		if _, ok := user["services"].(stack.M)[service]; ok {
+			part = "user"
+		}
+		compose = filepath.Join(dirAbs, "generated", "compose."+part+".dev.yaml")
+	}
 	run := func(name string, env []string, workdir string, a ...string) error {
-		cmd := exec.CommandContext(ctx, name, a...) // #nosec G204 -- fixed executable and service.
+		cmd := exec.CommandContext(ctx, name, a...) // #nosec G204 G702 -- fixed executable and validated service.
 		cmd.Dir, cmd.Env = workdir, env
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
@@ -100,14 +112,31 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		return err
 	}
 	defer os.RemoveAll(buildDir)
-	goDir := rootAbs
-	if service == "credential-broker" {
-		goDir = filepath.Join(rootAbs, "services", "credential-broker")
-	}
 	goEnv := append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	goArgs := []string{"build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(buildDir, "binary")}
-	if err := run("go", goEnv, goDir, append(goArgs, spec.source)...); err != nil {
-		return err
+	if service == "credential-broker" {
+		// The durable store is SQLCipher: the broker needs a real Linux CGO
+		// toolchain. The production Dockerfile's build stage is that pinned
+		// toolchain and links a fully static binary, so the dev overlay stays
+		// a plain binary swap on the lean base.
+		brokerDir := filepath.Join(rootAbs, "services", "credential-broker")
+		if err := docker("build", "--target", "build", "-f", filepath.Join(brokerDir, "deploy", "Dockerfile"), "-t", "hermes-credential-broker-build:local", brokerDir); err != nil {
+			return err
+		}
+		slash := func(p string) string { return filepath.ToSlash(p) }
+		if err := docker("run", "--rm",
+			"-v", slash(rootAbs)+":/src",
+			"-v", slash(buildDir)+":/out",
+			"-w", "/src/services/credential-broker",
+			"hermes-credential-broker-build:local",
+			"go", "build", "-tags", "libsqlite3", "-buildvcs=false", "-trimpath", "-ldflags=-s -w",
+			"-o", "/out/binary", "./cmd/credential-broker"); err != nil {
+			return err
+		}
+	} else {
+		goArgs := []string{"build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(buildDir, "binary")}
+		if err := run("go", goEnv, rootAbs, append(goArgs, spec.source)...); err != nil {
+			return err
+		}
 	}
 	companions := filepath.Join(buildDir, "companions")
 	if err := os.Mkdir(companions, 0700); err != nil {
@@ -121,17 +150,9 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err := stageDevCompanions(service, rootAbs, companions); err != nil {
 		return err
 	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := pruneDanglingImages(cleanupCtx, dockerOutput); err != nil {
-			if retErr == nil {
-				retErr = fmt.Errorf("dev image cleanup: %w", err)
-			} else {
-				fmt.Fprintln(os.Stderr, "hubctl: dev image cleanup:", err)
-			}
-		}
-	}()
+	if err := stageDevCatalog(rootAbs, buildDir); err != nil {
+		return err
+	}
 	image := "hermes-hub-dev-" + settings.User + "-" + service + ":local"
 	previous := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
 	previous.Env = supervisorComposeEnv(dirAbs)
@@ -140,7 +161,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		return err
 	}
 	if service == "hermes-runtime" && settings.ExecutionMode == "supervisor" {
-		if err := writeAtomic(filepath.Join(dirAbs, "generated", "dev-runtime-image"), []byte(image+"\n")); err != nil {
+		if err := writeAtomicMode(filepath.Join(dirAbs, "generated", "dev-runtime-image"), []byte(image+"\n"), 0644); err != nil {
 			return err
 		}
 		return nil
@@ -149,7 +170,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		// Disposable script containers spawn --entrypoint communication-hub
 		// from the supervisor's runtime image; pin the overlay so dev script
 		// probes run the same code the rebuilt gateway does.
-		if err := writeAtomic(filepath.Join(dirAbs, "generated", "dev-script-image"), []byte(image+"\n")); err != nil {
+		if err := writeAtomicMode(filepath.Join(dirAbs, "generated", "dev-script-image"), []byte(image+"\n"), 0644); err != nil {
 			return err
 		}
 	}
@@ -161,7 +182,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		rollback := func(a ...string) error {
-			cmd := exec.CommandContext(rollbackCtx, "docker", a...) // #nosec G204 -- fixed executable and service.
+			cmd := exec.CommandContext(rollbackCtx, "docker", a...) // #nosec G204 G702 -- fixed executable and validated service.
 			cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = rootAbs, supervisorComposeEnv(dirAbs), os.Stdout, os.Stderr
 			return cmd.Run()
 		}
@@ -182,6 +203,13 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	return nil
 }
 
+func refreshDevSiblingTokens(dir string) error {
+	if infra := stack.InfraSpaceDir(dir); infra != dir {
+		return stack.EnrollSiblingRuntimeTokens(infra, "dev")
+	}
+	return nil
+}
+
 // stageDevCompanions copies non-Go runtime assets the overlay needs onto the
 // service's /usr/local/bin. The base image predates them, so dev-rebuild must
 // stage them just like the full Dockerfile does.
@@ -194,4 +222,29 @@ func stageDevCompanions(service, root, dest string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dest, "hub-sidecar"), src, 0o755) // #nosec G703 -- dest is the private MkdirTemp build's companions directory; basename is fixed.
+}
+
+// A Go-only overlay must carry its matching immutable vocabulary; otherwise
+// a new binary can run healthy while every rights decision fails closed.
+func stageDevCatalog(root, buildDir string) error {
+	source := filepath.Join(root, "platform", "catalogs", catalog.Release)
+	target := filepath.Join(buildDir, "catalogs", catalog.Release)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	for _, name := range []string{catalog.ManifestFile, catalog.CapabilitiesFile, catalog.ToolsetsFile, catalog.ServicesFile, catalog.RightsFile} {
+		path := filepath.Join(source, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
+			return fmt.Errorf("dev catalog %s unavailable or unsafe", name)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(target, name), body, 0o444); err != nil { // #nosec G703 -- name is a directory entry name, never a path.
+			return err
+		}
+	}
+	return nil
 }

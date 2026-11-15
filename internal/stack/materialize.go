@@ -1,16 +1,18 @@
 package stack
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/systemguide"
@@ -30,7 +32,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := ChannelContract
+	body := s.channelContract(passportRevision(dir)) + promptPointer(dir, s.PassportRevision)
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}
@@ -38,6 +40,9 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 		body += "\n\n" + profile
 	}
 	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir)
+	if !utf8.ValidString(body) {
+		return fmt.Errorf("system contract is not valid UTF-8")
+	}
 	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
@@ -46,6 +51,35 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	// hermes-effective materialization it must stay world-readable past
 	// atomic's 0600, or the container dies on SOUL.md permission denied.
 	return os.Chmod(path, 0644)
+}
+
+// revisionID admits only the published id shape: an r- prefixed token with
+// no dots or separators, so a tampered `current` pointer cannot traverse
+// out of the revision root.
+var revisionID = regexp.MustCompile(`^r-[0-9a-zA-Z_-]{1,32}$`)
+
+// promptPointer appends the short revision/core inventory the published
+// passport revision stamps for the prompt (R9.1). The pointer file is
+// generated authority written by passport.Publish — stack cannot import
+// passport (catalog -> stack is already an edge), so it reads the rendered
+// file directly. No published revision, no pointer: unmanaged spaces keep
+// their existing prompt.
+func promptPointer(dir, id string) string {
+	if id == "" {
+		current, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+		if err != nil {
+			return ""
+		}
+		id = strings.TrimSpace(string(current))
+	}
+	if !revisionID.MatchString(id) {
+		return ""
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", id, "prompt-pointer.txt")) // #nosec G304 G703 -- id validated to a separator-free token above; generated authority path
+	if err != nil {
+		return ""
+	}
+	return "\n\n<hub_contract>\n" + strings.TrimSpace(string(body)) + "\n</hub_contract>"
 }
 
 // orgSoulLayer reads the organization's SOUL.md for the org→profile→user
@@ -75,7 +109,22 @@ func profileSoulLayer(dir string, s Settings) string {
 // generated/ so the managed model-relay mounts it read-only. A space with no
 // declared models still gets its cliproxy ladder so managed chat keeps working.
 func writeModelRegistry(dir string, s Settings) error {
-	reg, err := LoadModelRegistry(dir, s)
+	return writeModelRegistryRevision(dir, s, "")
+}
+
+func writeModelRegistryRevision(dir string, s Settings, revisionID string) error {
+	var reg *ModelRegistry
+	var err error
+	if revisionID == "" {
+		reg, err = LoadModelRegistry(dir, s)
+	} else {
+		layer, loadErr := passportRegistryLayer(dir, revisionID)
+		if loadErr != nil {
+			return loadErr
+		}
+		reg = &ModelRegistry{Providers: layer.Providers, Models: layer.Models, Switch: layer.Switch}
+		err = reg.Validate()
+	}
 	if err != nil {
 		return err
 	}
@@ -88,10 +137,15 @@ func writeModelRegistry(dir string, s Settings) error {
 		return err
 	}
 	directory := filepath.Join(dir, "generated", "model-registry", s.Environment)
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := os.MkdirAll(directory, 0755); err != nil {
 		return err
 	}
-	return atomic(filepath.Join(directory, "models.yaml"), body)
+	if err := os.Chmod(directory, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(directory, "models.yaml")
+	// The relay runs as uid10001; registry values never carry credentials.
+	return atomicMode(path, body, 0644)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the
@@ -99,7 +153,7 @@ func writeModelRegistry(dir string, s Settings) error {
 // Inputs mirror what the in-container startup used to read from the env file
 // and runtime.auth produced by this same render.
 func materializeHermesConfig(dir string, s Settings) error {
-	source := filepath.Join(dir, "hermes."+s.Environment+".yaml")
+	source := filepath.Join(dir, "generated", "hermes."+s.Environment+".yaml")
 	dest := filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")
 	envFile := "runtime." + s.Environment + ".env"
 	if s.CapabilityMode == "managed" {
@@ -114,10 +168,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
-	selfSettingsPath := ""
-	if s.CapabilityMode == "managed" {
-		selfSettingsPath = filepath.Join(dir, "managed", s.Environment, "runtime", selfsettings.FileName)
-	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
 		Managed:            s.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
@@ -128,8 +178,8 @@ func materializeHermesConfig(dir string, s Settings) error {
 		NativeToolsets:     s.nativeCarveouts(),
 		Web:                s.Web,
 		ImageGen:           s.managedImageGenGrant(),
-		SelfSettingsPath:   selfSettingsPath,
 		Browser:            s.managedBrowserGrant(),
+		MemoryVault:        s.managedMemoryVaultFlag(),
 		User:               s.User,
 	})
 }
@@ -329,8 +379,9 @@ func tier0Block(dir string) string {
 // markup is escaped so catalog text cannot inject prompt markup and the
 // text is capped at 200 chars (R6.6).
 func catalogDescription(desc string) string {
-	if len(desc) > 200 {
-		desc = desc[:200]
+	chars := []rune(desc)
+	if len(chars) > 200 {
+		desc = string(chars[:200])
 	}
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(desc)
@@ -358,55 +409,138 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 	if src != "" && filepath.Clean(src) == filepath.Clean(dest) {
 		return nil
 	}
-	if err := os.RemoveAll(dest); err != nil {
+	if info, err := os.Lstat(dest); err != nil && !os.IsNotExist(err) {
+		return err
+	} else if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("unsafe generated plugins directory")
+	}
+	if err := os.MkdirAll(dest, 0755); err != nil {
 		return err
 	}
+	ensureDir := func(path string) error {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("unsafe generated plugin directory")
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return os.MkdirAll(path, 0755)
+	}
+	wanted := map[string]bool{}
 	// Every enabled gated plugin gets a dir even when the repo copy is absent:
 	// the compose/supervisor mount expects the source path to exist; an empty
 	// dir holds no plugin.yaml, so nothing loads.
 	for name, feature := range hubGatedPlugins {
 		if s.Has(feature) {
-			if err := os.MkdirAll(filepath.Join(dest, name), 0755); err != nil {
+			wanted[name] = true
+			if err := ensureDir(filepath.Join(dest, name)); err != nil {
 				return err
 			}
 		}
 	}
-	if src == "" {
-		return nil
-	}
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "__pycache__" {
-				return fs.SkipDir
+	if src != "" {
+		if err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
-			if rel != "." {
-				if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "__pycache__" {
 					return fs.SkipDir
 				}
+				// A plugin directory is <name>/plugin.yaml; gated names skip wholesale.
+				if rel != "." {
+					if feature, gated := hubGatedPlugins[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
+						return fs.SkipDir
+					}
+					wanted[rel] = true
+				}
+				return ensureDir(filepath.Join(dest, rel))
 			}
-			return os.MkdirAll(filepath.Join(dest, rel), 0755)
+			if strings.HasSuffix(d.Name(), ".pyc") {
+				return nil
+			}
+			wanted[rel] = true
+			body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned plugins dir
+			if err != nil {
+				return err
+			}
+			mode := fs.FileMode(0644)
+			if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+				mode = info.Mode().Perm()
+			}
+			output := filepath.Join(dest, rel)
+			if info, err := os.Lstat(output); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+				return fmt.Errorf("unsafe generated plugin file")
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if current, err := os.ReadFile(output); err == nil && bytes.Equal(current, body) {
+				return nil
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			tmp, err := os.CreateTemp(filepath.Dir(output), ".hub-plugin-*")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(tmp.Name())
+			if err := tmp.Chmod(mode); err != nil {
+				_ = tmp.Close()
+				return err
+			}
+			if _, err := tmp.Write(body); err != nil {
+				_ = tmp.Close()
+				return err
+			}
+			if err := tmp.Close(); err != nil {
+				return err
+			}
+			return replaceRenderedFile(tmp.Name(), output) // #nosec G703 -- output is under the generated plugins directory
+		}); err != nil {
+			return err
 		}
-		if strings.HasSuffix(d.Name(), ".pyc") {
-			return nil
-		}
-		body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned plugins dir
+	}
+	// Keep top-level plugin directory inodes: running containers bind them.
+	var prune func(string, string) error
+	prune = func(path, rel string) error {
+		entries, err := os.ReadDir(path)
 		if err != nil {
 			return err
 		}
-		mode := fs.FileMode(0644)
-		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
-			mode = info.Mode().Perm()
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".hub-plugin-") {
+				continue // another materialization may still be replacing this file
+			}
+			childRel := filepath.Join(rel, entry.Name())
+			child := filepath.Join(path, entry.Name())
+			if entry.IsDir() && wanted[childRel] {
+				if err := prune(child, childRel); err != nil {
+					return err
+				}
+				continue
+			}
+			if entry.IsDir() {
+				if err := prune(child, childRel); err != nil {
+					return err
+				}
+			}
+			if !wanted[childRel] {
+				if err := os.RemoveAll(child); err != nil {
+					return err
+				}
+			}
 		}
-		return os.WriteFile(filepath.Join(dest, rel), body, mode) // #nosec G703 -- dest join of a walked rel path
-	})
+		return nil
+	}
+	return prune(dest, "")
 }
 
 // MaterializeGlobalSkills mirrors the shared GlobalSkillsDir into the space's
@@ -416,11 +550,27 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 func MaterializeGlobalSkills(dir string, s Settings) error {
 	src := strings.TrimSpace(s.GlobalSkillsDir)
 	dest := GeneratedSkillsDir(dir)
+	info, err := os.Lstat(dest)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("unsafe generated skills directory")
+	}
 	if filepath.Clean(src) == filepath.Clean(dest) {
 		return materializeSystemGuide(dir)
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return err
+	// Keep the mount inode: a running container may already bind this directory.
+	if err == nil {
+		entries, err := os.ReadDir(dest)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := os.RemoveAll(filepath.Join(dest, entry.Name())); err != nil {
+				return err
+			}
+		}
 	}
 	if err := materializeSystemGuide(dir); err != nil {
 		return err
@@ -428,7 +578,7 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 	if src == "" {
 		return nil
 	}
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

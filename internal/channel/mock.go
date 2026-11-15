@@ -12,7 +12,7 @@ import (
 // MockDeps declares the gateway capabilities the mock adapter borrows: the
 // capture bench and the link table that maps chats to their claimed owner.
 type MockDeps struct {
-	Capture             func(d *commodel.Delivery) error
+	Capture             func(context.Context, *commodel.Delivery) error
 	LinkOwner           func(chatID int64) (string, error)
 	UserByPrincipal     func(id string) commodel.User
 	OwnsRoutineEnvelope func(job commodel.Job, canonical identity.Envelope) bool
@@ -37,7 +37,7 @@ func (c mock) NormalizeDelivery(d *commodel.Delivery) error {
 }
 
 func (c mock) Deliver(ctx context.Context, delivery *commodel.Delivery) error {
-	return c.d.Capture(delivery)
+	return c.d.Capture(ctx, delivery)
 }
 
 func (c mock) ValidateSchedule(in commodel.Schedule) error { return nil }

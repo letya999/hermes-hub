@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -9,7 +10,14 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+var loadOperatorStore = toolhub.Load
+
+func retryableStoreConflict(err error) bool {
+	return errors.Is(err, api.ErrConflict)
+}
 
 // Host-only catalog binding. No credentials or model-selected identity.
 func runCatalog(args []string) error {
@@ -38,18 +46,24 @@ func runCatalog(args []string) error {
 	if *runtimeID == "" {
 		*runtimeID = *principal
 	}
-	store, err := toolhub.Load(*storePath)
-	if err != nil {
-		return err
-	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,
 		ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "catalog", DeliveryTargetID: "catalog", PolicyVersion: *policy}
 	if *profile != "" {
 		auth.CapabilityProfile, auth.Environment, auth.Generation = *profile, *environment, *generation
 	}
-	binding, err := store.EnableCatalog(auth, *definition, *version, *issuer, *extend)
-	if err != nil {
-		return err
+	for attempt := 0; attempt < 3; attempt++ {
+		store, err := loadOperatorStore(*storePath)
+		if err != nil {
+			return err
+		}
+		binding, err := store.EnableCatalog(auth, *definition, *version, *issuer, *extend)
+		_ = store.CloseDB()
+		if err == nil {
+			return json.NewEncoder(os.Stdout).Encode(binding)
+		}
+		if !retryableStoreConflict(err) || attempt == 2 {
+			return err
+		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(binding)
+	return api.ErrConflict
 }

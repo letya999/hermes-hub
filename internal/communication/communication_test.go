@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"io"
 	"log"
 	"net/http"
@@ -340,7 +341,7 @@ func TestMockCaptureUsesConfiguredDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Delivery{ID: "mock-1", Channel: "mock", ChatID: 11, Text: "hi"}
-	if err := g.captureMock(d); err != nil {
+	if err := g.captureMock(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(mockDir, "mock-sent", "mock-1.json")); err != nil {
@@ -662,6 +663,37 @@ func TestJobMappingRejectsMismatchedOutcomeAndCorruptConversation(t *testing.T) 
 	}
 }
 
+func TestChannelConfigCarriesRightsEnvironment(t *testing.T) {
+	t.Setenv("HUB_ENVIRONMENT", "dev")
+	var config Config
+	fillChannelSecrets(&config)
+	if config.Environment != "dev" {
+		t.Fatalf("rights environment = %q, want dev", config.Environment)
+	}
+}
+
+func TestSendRightAssertsConfiguredEnvironment(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_AUTH", "test-control-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Principal   string `json:"principal_id"`
+			Environment string `json:"environment"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Principal != "alice" || request.Environment != "dev" {
+			t.Errorf("rights assertion = %q/%q", request.Principal, request.Environment)
+		}
+		_, _ = w.Write([]byte(`{"allow":true}`))
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, Environment: "dev"}}
+	if !g.sendRight(Delivery{Channel: "telegram_bot"}, "alice") {
+		t.Fatal("configured environment lost before rights request")
+	}
+}
+
 func TestConfigFromEnvAndIDs(t *testing.T) {
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "acme")
@@ -980,7 +1012,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	for range 10 {
 		g.deliverOne(context.Background())
 	}
-	if len(runner.seen) != 1 || len(fake.deleted) != 2 || len(fake.sent) != 7 {
+	if len(runner.seen) != 1 || len(fake.deleted) != 2 || len(fake.sent) != 8 {
 		t.Fatalf("seen=%v deleted=%v sent=%v", runner.seen, fake.deleted, fake.sent)
 	}
 	if strings.Contains(strings.Join(runner.seen, "\n"), "GITHUB_TOKEN=") || strings.Contains(strings.Join(fake.sent, "\n"), "super-secret") || strings.Contains(strings.Join(fake.sent, "\n"), "secret-token") {
@@ -1609,6 +1641,10 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.Audit, err = audit.Open(filepath.Join(filepath.Dir(storePath), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	infos, err := svc.Set("alice", map[string]string{"GOOGLE_TOKEN": "chat-cut-secret"})
 	if err != nil {
 		t.Fatal(err)
@@ -1665,10 +1701,15 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	stops := &chatStopRecorder{}
 	live.Stopper = stops
 	var calls atomic.Int32
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := (&toolhub.Gateway{
-		Store:   live,
-		Tokens:  map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: chatCallCounter{n: &calls},
+		AuditWrite: toolhub.LedgerAuditWriter(ledger),
+		Store:      live,
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Backend:    chatCallCounter{n: &calls},
 	}).Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -1874,7 +1915,7 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
-	if _, err := g.spool.Enqueue(Job{ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: g.user("alice").Envelope(11), IdempotencyKey: "worker-job", ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -1900,7 +1941,7 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 	done = make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
-	if _, err := g.spool.Enqueue(Job{ID: "error-job", UserID: "alice", ChatID: 11, Text: "again"}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: g.user("alice").Envelope(11), IdempotencyKey: "error-job", ID: "error-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Text: "again"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(2 * time.Second)
@@ -1977,9 +2018,11 @@ func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.ControlTokensFile = tokensFile
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
+	g, _, _ := automationGatewayFixture(t, c)
+	g.config.Supervised = true
+	g.config.Users[1].PolicyVersion = "policy-stale"
+	if user := g.user("bob"); !user.Enabled || user.PolicyVersion != "policy-bob" {
+		t.Fatalf("sibling route unavailable: enabled=%t policy=%q", user.Enabled, user.PolicyVersion)
 	}
 	call := func(token, principal string) int {
 		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
@@ -1994,6 +2037,25 @@ func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
 	if code := call("sibling-runtime-token", "bob"); code != http.StatusOK {
 		t.Fatalf("sibling token rejected: %d", code)
 	}
+	if got := g.user("bob").PolicyVersion; got != "policy-bob" {
+		t.Fatalf("sibling route kept authored policy: %q", got)
+	}
+	if user, ok := g.telegramDeps().UserByChat(22); !ok || user.PolicyVersion != "policy-bob" {
+		t.Fatal("channel route did not use enrolled policy")
+	}
+	if user, ok := g.configUser("bob"); !ok || user.PolicyVersion != "policy-bob" {
+		t.Fatal("operations route did not use enrolled policy")
+	}
+	rotated := identity.TelegramEnvelope("bob", 22, "bob", "policy-next")
+	rotatedBody, _ := json.Marshal(map[string]identity.Envelope{"sibling-runtime-token": rotated})
+	if err := os.WriteFile(tokensFile, rotatedBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := call("sibling-runtime-token", "bob"); code != http.StatusOK || g.user("bob").PolicyVersion != "policy-next" {
+		t.Fatalf("policy rotation was not observed without restart: status=%d", code)
+	}
+	g.config.Supervised = false
+	g.config.Users[1].PolicyVersion = ""
 	if code := call("owner-token", "alice"); code != http.StatusOK {
 		t.Fatalf("owner token rejected: %d", code)
 	}

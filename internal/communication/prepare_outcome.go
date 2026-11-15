@@ -16,17 +16,20 @@ import (
 )
 
 type prepareOutcomeRequest struct {
-	OnboardingID     string `json:"onboarding_id"`
-	Phase            string `json:"phase"`
-	DefinitionID     string `json:"definition_id"`
-	ContractID       string `json:"contract_id"`
-	CredentialIntake string `json:"credential_intake"`
-	BrokerRequestID  string `json:"broker_request_id"`
-	Repository       string `json:"repository"`
-	Detail           string `json:"detail"`
-	FormURL          string `json:"form_url"`
-	Event            string `json:"event"`
-	Tools            int    `json:"tools"`
+	Confirmation     *api.HumanConfirmation `json:"confirmation,omitempty"`
+	OnboardingID     string                 `json:"onboarding_id"`
+	Phase            string                 `json:"phase"`
+	DefinitionID     string                 `json:"definition_id"`
+	ContractID       string                 `json:"contract_id"`
+	CredentialIntake string                 `json:"credential_intake"`
+	BrokerRequestID  string                 `json:"broker_request_id"`
+	Repository       string                 `json:"repository"`
+	Detail           string                 `json:"detail"`
+	FormURL          string                 `json:"form_url"`
+	Event            string                 `json:"event"`
+	EventID          string                 `json:"event_id,omitempty"`
+	NoticeVersion    uint64                 `json:"notice_version,omitempty"`
+	Tools            int                    `json:"tools"`
 	// CreatedAt pins the onboarding creation instant so the gateway can find
 	// the message job that was running when the install was requested.
 	CreatedAt string `json:"created_at,omitempty"`
@@ -38,7 +41,10 @@ type prepareOutcomeRequest struct {
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
 // and, when no user login is pending, a continuation job.
 func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, ok := g.authorizeServiceControl(r)
+	if !ok {
+		caller, ok = g.authorizeControl(r)
+	}
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -51,6 +57,19 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(r, &request) != nil {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
+	}
+	if proof := request.Confirmation; proof != nil {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		expectedPolicy := caller.PolicyVersion
+		// Only a separate supervised service bearer can carry a sibling's
+		// newer policy while the gateway's routing snapshot still lags.
+		if g.config.Supervised && g.serviceControlToken() != g.config.ControlAuth {
+			expectedPolicy = proof.Actor.PolicyVersion
+		}
+		if r.Header.Get("Origin") != "" || !g.serviceControlTokenAccepted(token) || !g.config.Supervised && g.serviceControlToken() == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, expectedPolicy) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
+			http.Error(w, "confirmation denied", http.StatusForbidden)
+			return
+		}
 	}
 	if request.ConnectionID != "" || request.ViewerURL != "" {
 		g.handleViewerNotice(w, caller, request)
@@ -68,6 +87,12 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	} else if !knownPreparePhase(request.Phase) {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
+	}
+	if request.EventID != "" {
+		if request.Event != "link-resent" || !api.ValidPrepareEventID(request.EventID) {
+			http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+			return
+		}
 	}
 	if request.Tools < 0 || request.Tools > 500 {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
@@ -159,7 +184,7 @@ func knownPreparePhase(phase string) bool {
 // phase the form link already used).
 func knownPrepareEvent(event string) bool {
 	switch event {
-	case "prepare-started", "credentials-check", "credentials-rejected", "binding-failed", "link-resent":
+	case "prepare-started", "step-artifact", "step-admit", "step-bind", "credentials-check", "credentials-rejected", "binding-failed", "link-resent":
 		return true
 	default:
 		return false
@@ -180,6 +205,12 @@ func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, login
 	switch request.Event {
 	case "prepare-started":
 		return locale.T(lang, "prepare.started", repo)
+	case "step-artifact":
+		return locale.T(lang, "prepare.step-artifact", repo)
+	case "step-admit":
+		return locale.T(lang, "prepare.step-admit", repo)
+	case "step-bind":
+		return locale.T(lang, "prepare.step-bind", repo)
 	case "credentials-check":
 		return locale.T(lang, "prepare.creds-check")
 	case "credentials-rejected":
@@ -261,7 +292,7 @@ func prepareContinuation(request prepareOutcomeRequest, lang locale.Lang) string
 		text = "Service continuation of an MCP install. The user was already sent the form link for " + repo + ", onboarding_id " + request.OnboardingID + ". Do not send another link and do not invent a network error. If the user says the form rejected the token, call mcp__toolhub__status and relay the error. Do not ask for a token in chat. Do not use the terminal and do not edit config.yaml."
 	}
 	if wizardLink(request.FormURL) && (request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth") {
-		text = "Service continuation of an MCP install " + repo + ", phase " + request.Phase + ". The whole setup happens on one page: the link was already sent to the user — tell them to return to that same link; the page itself shows the current step (form, confirmation or Google sign-in). There are no other messages, buttons or confirmation links — do not mention any. If the link does not open or expired, call mcp__toolhub__status with onboarding_id " + request.OnboardingID + " and resend=true. Reply with one short message. Do not construct links and do not ask for data in chat."
+		text = "Service continuation of an MCP install " + repo + ", phase " + request.Phase + ". The setup page link was already sent. After a credential form is accepted, check the exact onboarding_id " + request.OnboardingID + " before saying credentials are missing; the Broker form is one-time and its later expiry does not prove the submission failed. If phase is awaiting-confirm, ask the user to press the protected confirmation button in the original chat. If the link or button is missing, use connector_edit action=resend with that exact onboarding ID. Reply once, briefly, without constructing links or asking for credentials in chat."
 	}
 	return text + modelLangHint(lang)
 }
@@ -270,7 +301,7 @@ func prepareContinuation(request prepareOutcomeRequest, lang locale.Lang) string
 // English stays the instruction scaffold while the visible reply is pinned to
 // the user's own language.
 func modelLangHint(lang locale.Lang) string {
-	return " The user's language is " + locale.Names[lang] + " (" + string(lang) + "); answer the user in that language."
+	return locale.ModelLangHint(lang)
 }
 
 // actionLink returns the validated human-action URL when its path carries the
@@ -305,8 +336,15 @@ func wizardLink(raw string) bool {
 // and the channel never received the fresh URL.
 func prepareOutcomeKey(request prepareOutcomeRequest, loginURL string) string {
 	key := "prepare-" + request.OnboardingID + "-" + request.Phase
+	if request.NoticeVersion > 0 {
+		key += "-v" + strconv.FormatUint(request.NoticeVersion, 10)
+	}
 	if request.Event != "" {
 		key += "-" + request.Event
+		if request.Event == "link-resent" && request.EventID != "" {
+			sum := sha256.Sum256([]byte(request.EventID))
+			key += "-" + hex.EncodeToString(sum[:4])
+		}
 		// Two identical rejections carry the same key and dedupe away; a
 		// different rejection reason must still reach the channel.
 		if request.Event == "credentials-rejected" {
@@ -320,6 +358,13 @@ func prepareOutcomeKey(request prepareOutcomeRequest, loginURL string) string {
 	}
 	if loginURL != "" {
 		sum := sha256.Sum256([]byte(loginURL))
+		key += "-" + hex.EncodeToString(sum[:4])
+	}
+	if proof := request.Confirmation; proof != nil {
+		// A reissued proof must land as a fresh notice: binding only the
+		// onboarding/phase key would dedupe the new proof behind the spent
+		// delivery and leave the user holding a stale callback.
+		sum := sha256.Sum256([]byte(proof.Nonce + "\x00" + proof.ActionDigest))
 		key += "-" + hex.EncodeToString(sum[:4])
 	}
 	return key
@@ -365,18 +410,17 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	}
 	// The initiating tool call runs inside its message job, so the job that
 	// existed — and most recently started — at the onboarding's creation
-	// instant is the initiator. It outranks a persisted route, which older
-	// builds may have bound through the unsafe newest-active heuristic.
+	// instant is the initiator. There is no stored route: a persisted
+	// conversation outlives the session it names and strands notices on a
+	// dead channel, so routing re-resolves from live evidence every time and
+	// falls back to the owner's canonical DM.
 	origin, found := prepareOrigin{}, false
-	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
+	// The initiator window is bounded by the onboarding's own age: a mapping
+	// from days ago describes a session that is gone, not evidence.
+	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() && created.After(now.Add(-prepareOriginMaxAge)) {
 		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
 			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
-		}
-	}
-	if !found {
-		if persisted, ok := g.spool.loadPrepareOrigin(request.OnboardingID); ok {
-			origin, found = persisted, true
 		}
 	}
 	if !found {
@@ -384,11 +428,6 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
-	}
-	if found {
-		// The origin job ends long before the build settles; persist the route
-		// so later outcomes still reach the same session.
-		_ = g.spool.putPrepareOrigin(request.OnboardingID, origin)
 	}
 	if found && origin.ConversationID != "" {
 		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
@@ -403,6 +442,9 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if channelName == "" {
 		channelName = "telegram_bot"
 	}
+	if request.Confirmation != nil && channelName != "telegram_bot" {
+		return errNoPrepareChannel
+	}
 	chatID, topicID := bound.ChatID, bound.TopicID
 	if channelName == "telegram_bot" {
 		if len(user.TelegramIDs) == 0 {
@@ -415,17 +457,31 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		chatID, topicID = origin.ChatID, origin.TopicID
 	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
+	delivery.PrepareKey, delivery.PrepareVersion = prepareDeliveryIdentity(caller, request.OnboardingID), request.NoticeVersion
+	if request.Confirmation != nil {
+		button, err := g.spool.humanConfirmationButton(*request.Confirmation, channelName, chatID)
+		if err != nil {
+			return err
+		}
+		delivery.Kind = "human_confirmation"
+		delivery.Control = true
+		delivery.Buttons = []DeliveryButton{button}
+	}
 	// Each new action link lands as a fresh message; the key dedupes repeats.
 	// Editing the old status can bury the only link the user needs to
-	// continue. The stable wizard link is exempt: it stays the same URL for
-	// the whole flow, so a phase notice refreshes the message in place.
-	if request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
+	// continue. The stable wizard link is exempt for status updates, but
+	// confirmation needs a fresh message because edits omit the keyboard.
+	if request.Confirmation == nil && request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
 		delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
 	}
-	if err := g.spool.EnqueueDelivery(delivery); err != nil {
+	accepted, err := g.spool.enqueuePrepareDelivery(delivery, "prepare-"+request.OnboardingID+"-")
+	if err != nil {
 		return err
 	}
-	if request.Event != "" || waitingForLogin || actionLink(request.FormURL, "/remove/") != "" {
+	if !accepted {
+		return nil
+	}
+	if request.Event != "" || waitingForLogin || request.Confirmation != nil || request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth" || actionLink(request.FormURL, "/remove/") != "" {
 		// Wait for user action before resuming the agent — an armed remove
 		// link is itself the continuation.
 		return nil
@@ -448,7 +504,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	// the spent job's fingerprint.
 	jobKey := key + "-" + jobFingerprint(job)[:8]
 	job.ID, job.IdempotencyKey = jobKey, jobKey
-	_, err := g.spool.Enqueue(job)
+	_, err = g.spool.Enqueue(job)
 	return err
 }
 

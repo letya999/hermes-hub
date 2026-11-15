@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,9 +66,54 @@ func runWithContext(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load ToolHub store: %w", err)
 	}
+	if witness := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_IDENTITY_WITNESS")); witness != "" {
+		if err := store.VerifyInstallationWitness(witness); err != nil {
+			return fmt.Errorf("ToolHub installation witness: %w", err)
+		}
+	}
+	// The PDP's vocabulary is the pinned catalog release the image ships:
+	// manifest digests must verify before any right is enforceable. A host
+	// binary or an older dev image without the baked tree degrades to a
+	// fail-closed PDP — rights deny rather than leak.
+	if docs, err := catalog.LoadPinned(); err == nil {
+		store.RightsDoc = docs.Rights
+	} else {
+		fmt.Fprintln(os.Stderr, "hub-toolhub: rights catalog unavailable, PDP fails closed:", err)
+	}
 	handler, err := toolhub.NewEndpointHandler(config, store)
 	if err != nil {
 		return err
+	}
+	if root := os.Getenv("HUB_AUTOMATION_ROOT"); root != "" {
+		if err := handler.(interface {
+			ConfigureResearch(string, string, string, string) error
+		}).ConfigureResearch(filepath.Join(root, "research"), os.Getenv("HUB_AUTOMATION_JOB_URL"), automationServiceToken(), os.Getenv("HUB_AUTOMATION_JOB_PATH")); err != nil {
+			return err
+		}
+	}
+	controlHandler := http.Handler(handler)
+	var automationTick func(context.Context, time.Time) error
+	var automationCompact func(time.Time, time.Duration) error
+	if os.Getenv("HUB_AUTOMATION_ROOT") != "" {
+		projection, ok := handler.(automationProjection)
+		if !ok {
+			return errors.New("automation: ToolHub projection unavailable")
+		}
+		var overloaded func() bool
+		if og, ok := handler.(interface{ Overloaded() bool }); ok {
+			overloaded = og.Overloaded
+		}
+		host, err := newAutomationHost(ctx, projection, store, overloaded)
+		if err != nil {
+			return err
+		}
+		defer host.Close()
+		automationTick = host.Tick
+		automationCompact = host.CompactOccurrences
+		mux := http.NewServeMux()
+		mux.Handle("/v1/automation/", host.ControlHandler(automationServiceToken()))
+		mux.Handle("/", handler)
+		controlHandler = mux
 	}
 	ctx, stop := context.WithCancel(ctx)
 	var background sync.WaitGroup
@@ -75,7 +122,38 @@ func runWithContext(ctx context.Context) error {
 		background.Add(1)
 		go func() { defer background.Done(); work() }()
 	}
-	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
+	if automationTick != nil {
+		runBackground(func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			var lastCompact time.Time
+			compactInterval := time.Hour
+			for {
+				now := time.Now().UTC()
+				if err := automationTick(ctx, now); err != nil && ctx.Err() == nil {
+					log.Print("ToolHub automation tick pending")
+				}
+				if err := handler.(interface{ ResearchTick(context.Context) error }).ResearchTick(ctx); err != nil && ctx.Err() == nil {
+					log.Print("ToolHub research tick pending")
+				}
+				if now.Sub(lastCompact) >= compactInterval {
+					lastCompact = now
+					if err := automationCompact(now, 72*time.Hour); err == nil {
+						compactInterval = time.Hour
+					} else if ctx.Err() == nil {
+						compactInterval = 5 * time.Minute
+						log.Print("ToolHub occurrence compaction pending")
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		})
+	}
+	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", controlHandler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
 	publicServer, publicLn, err := publicServerFor(handler)
 	if err != nil {
 		return err
@@ -94,6 +172,19 @@ func runWithContext(ctx context.Context) error {
 	runBackground(func() { removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals) })
 	reconciler := handler.(interface{ Reconcile(context.Context) error })
 	runBackground(func() { removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile) })
+	lifecycle := handler.(interface{ ReconcileOnboardings(context.Context) })
+	runBackground(func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			lifecycle.ReconcileOnboardings(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
 		scope := diagnostics.Scope{
 			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),
@@ -101,16 +192,32 @@ func runWithContext(ctx context.Context) error {
 			Owner:    os.Getenv("HUB_DIAGNOSTICS_OWNER"),
 		}
 		runBackground(func() {
-			diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
+			diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), nil, 15*time.Second, scope)
 		})
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
 	restartNotify := api.RuntimeRestartNotifierFromEnv()
+	if restartNotify != nil {
+		restartNotify.State = store
+	}
 	runBackground(func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		pending := false
-		ticks := 0
+		notify := func() {
+			if restartNotify == nil {
+				return
+			}
+			if targets, err := store.ProjectionRevisions(); err == nil {
+				if err := restartNotify.Notify(targets); err != nil {
+					fmt.Fprintln(os.Stderr, "ToolHub restart notify:", err)
+				}
+			}
+		}
+		// A durable pending revision is reported at startup, not one cadence
+		// later: the revision snapshot reloads the store file, so it runs on
+		// a slower cadence than the projection ticker.
+		notify()
 		for {
 			select {
 			case <-ctx.Done():
@@ -125,17 +232,8 @@ func runWithContext(ctx context.Context) error {
 					pending = false
 				}
 				// list_changed only reaches clients holding an open stream;
-				// the restart marker guarantees the next session reload. The
-				// revision snapshot reloads the store file, so it runs on a
-				// slower cadence than the projection ticker.
-				if restartNotify != nil && ticks%8 == 0 {
-					if targets, err := store.ProjectionRevisions(); err == nil {
-						if err := restartNotify.Notify(targets); err != nil {
-							fmt.Fprintln(os.Stderr, "ToolHub restart notify:", err)
-						}
-					}
-				}
-				ticks++
+				// the restart marker guarantees the next session reload.
+				notify()
 			}
 		}
 	})

@@ -1,0 +1,82 @@
+schema: 1
+change: CHG-0208
+title: memory_card contract, soft forget, zone guards
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R6.1, R6.2, R6.3, R6.4, R6.5, R6.6]
+depends_on: [CHG-0204, CHG-0207]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 303
+design_status: accepted
+implementation_status: complete
+slices:
+  S6.1-ops: done
+  S6.2-owner-binding: done
+  S6.3-supersede: done
+  S6.4-zone-guards: done
+  S6.5-write-audit: done
+validation:
+  documents: updated (ADR-0086 M20.6 amendment, docs/tools.md memory_card
+    row + write-contract paragraph, docs/spaces.md vault bullet,
+    internal/stack/prompt_contract.go guidance, e2e registry E2E-185,
+    catalog 5.11.0; docs/routines.md untouched — no routine-tool contract
+    changed)
+  just_check: 'legs green: format/docs/config/vet/lint; go-check full
+    suite red only on the rotating pre-existing Windows env flake family
+    (AV fork/exec on fresh test binaries, lld -T on commops, TSan alloc)
+    — every named failure verified green isolated
+    (TestBrowserSidecarMeetNode, TestDockerScratchExecDurableLease)'
+  docker_check: not_run (no-docker scope, same as M20.1-M20.5)
+  red_team: 'covered by tests: untrusted-provenance stamp denies
+    merge/forget (TestUntrustedTurnCardDenied), expired stamp denied
+    (TestReplayedAuthDenied), argument-claimed auth never mints
+    (TestForgetDeniedArgClaim), re-ingested struck entry stays inert
+    (TestReingestionInert), case/fullwidth/dot-segment zone tricks denied
+    (TestZoneNameUnicodeTricks), junction-aliased write denied via
+    os.Root (TestZoneGuardSymlink)'
+  live_acceptance: 'pending: requires live stack (deferred - no-docker
+    scope); contract verified at unit level through the real dispatch
+    (Call → memoryCard) and real git writer'
+evidence:
+  - internal/agenttools/memory_card.go — ops remember/fact/truth/merge/
+    forget through the governed writer only
+  - internal/agenttools/tools_fs.go — vault: file root + folded-segment
+    zone guard
+  - internal/memory/forget.go — runtime/memory/forget.jsonl strike set
+  - indexer Superseded from strikes + card frontmatter; forget.jsonl in
+    the source fingerprint (no stale-search window)
+  - night promotion skips struck entries (eligibleText)
+  - runtime/memory/writes.jsonl — every mutation and denial with the
+    authorizing turn's SourceRef
+  - tests: TestCardOpsMatrix, TestRememberSearchableSameDay,
+    TestBadSchemaReturnsShape, TestMergeDeniedWithoutOwnerTurn,
+    TestForgetDeniedArgClaim, TestReplayedAuthDenied,
+    TestCardGroupRunDenied, TestForgetExcludedEverywhere,
+    TestForgetSurvivesRestart, TestForgottenVisibleOnlyInHistory,
+    TestReingestionInert, TestForgetCardStruck, TestMergeCards,
+    TestZoneGuardFileTools, TestZoneGuardContractPath,
+    TestZoneNameUnicodeTricks, TestCoreWriterOnly, TestZoneGuardSymlink,
+    TestWriteAuditSourceRef, TestCommitAttribution,
+    TestMemoryCardCatalog, TestStruckEntryNotPromoted,
+    TestUntrustedTurnCardDenied
+  - 'coverage: agenttools 86.6%, night 86.6%, search 91.4%;
+    internal/memory 82.8% measured via exercising packages
+    (-coverpkg shape, floor 75 met)'
+remaining: []
+limitations:
+  - 'POSIX relative in-root symlinks aliasing zones: name guard is
+    segment-based; os.Root confines writes below the vault root but a
+    crafted relative symlink could alias a governed zone on Linux —
+    junctions are denied by os.Root (Windows-verified); Linux coverage
+    pending'
+  - 'run-scope stamps now carry provenance; the JSON format tolerates
+    older stamps without it (provenance empty → owner-required ops
+    denied, private ops allowed)'
+  - 'routines.md intentionally unchanged: no routine-tool contract
+    changed; docs gate covers tools.md only'
+  - 'docker/live acceptance deferred like M20.1-M20.5 (no-docker scope)'
+  - 'go-check suite red only on verified pre-existing Windows env flakes'

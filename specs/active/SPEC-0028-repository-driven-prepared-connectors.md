@@ -58,3 +58,10 @@ Extend SPEC-0026 through one generic lifecycle for the exact repositories
     an OpenAPI schema fetched at startup. The unauthenticated probe then runs
     with egress and placeholder credentials only, matching what the
     credentialed probe already does; unprepared sources keep `--network none`.
+13. A prepared entry may declare named `upgrade_modes` as reviewed environment
+    changes and an exact set of newly advertised write tools. `prepare_source`
+    accepts only `upgrade_mode` plus the exact enabled `onboarding_id` for
+    this path. It reuses that owner's active Broker credential, probes the
+    upgraded definition, rejects any other tool or definition drift, and
+    keeps the old binding until verified confirmation and enable. Projection
+    of each new tool still requires current selection and grants.

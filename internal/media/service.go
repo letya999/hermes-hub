@@ -214,7 +214,7 @@ func (s *Session) MediaFetch(ctx context.Context, jobID, name string) (map[strin
 	case "uncertain":
 		return nil, errors.New("media submission outcome uncertain; do not resubmit before checking provider")
 	case "failed":
-		return nil, fmt.Errorf("media job failed: %s", status.Error)
+		return nil, fmt.Errorf("media job failed: %s", boundedJobError(status.Error))
 	case "done":
 	default:
 		return nil, fmt.Errorf("media job status %q", status.Status)
@@ -250,6 +250,54 @@ func (s *Session) MediaFetch(ctx context.Context, jobID, name string) (map[strin
 	}, nil
 }
 
+// boundedJobError keeps the job error a single bounded line before it
+// reaches the chat surface: hub-media already classifies provider failures,
+// but a spoofed or legacy record could still carry arbitrary text.
+func boundedJobError(msg string) string {
+	msg = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		if r < 0x20 {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(msg))
+	const max = 200
+	if utf8.RuneCountInString(msg) > max {
+		msg = string([]rune(msg)[:max]) + "…"
+	}
+	if msg == "" {
+		return "unknown"
+	}
+	return msg
+}
+
+// mediaReasons is the contract's allowlist of reason tokens hub-media may
+// attach to an error body. Anything else — absent, misspelled, or injected
+// by a proxy in between — is ignored so no arbitrary upstream text reaches
+// the caller's error.
+var mediaReasons = map[string]bool{
+	"provider_denied":       true,
+	"provider_rate_limited": true,
+	"provider_rejected":     true,
+	"upstream_unavailable":  true,
+}
+
+// mediaErrorReason extracts the allowlisted reason token from an error
+// body, returning " (reason: <token>)" or "".
+func mediaErrorReason(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Reason string `json:"reason"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &parsed) != nil || !mediaReasons[parsed.Error.Reason] {
+		return ""
+	}
+	return " (reason: " + parsed.Error.Reason + ")"
+}
+
 // serviceDo reads a bounded response body and returns the content type the
 // service stamped on it.
 func (s *Session) serviceDo(req *http.Request, limit int) ([]byte, string, error) {
@@ -266,7 +314,7 @@ func (s *Session) serviceDo(req *http.Request, limit int) ([]byte, string, error
 		return nil, "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("media service HTTP %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("media service HTTP %d%s", resp.StatusCode, mediaErrorReason(body))
 	}
 	if len(body) == 0 || len(body) > limit {
 		return nil, "", fmt.Errorf("media result outside size bounds")

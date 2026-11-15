@@ -1,0 +1,50 @@
+schema: 1
+change: CHG-0207
+title: memory_search — BM25 + link graph over leaves and cards
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: implementation
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R3.1, R3.2, R3.3, R3.4, R3.5, R3.6]
+depends_on: [CHG-0204, CHG-0205]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 302
+design_status: accepted
+implementation_status: done
+slices:
+  S3.1-bm25-engine: done
+  S3.2-lazy-index: done
+  S3.3-graph-rerank: done
+  S3.4-filters: done
+  S3.5-tool-surface: done
+  S3.6-maintenance: done
+validation:
+  documents: green (devcheck docs + actionlint)
+  just_check: 'lint/docs/config green; go-check: all packages pass; rotating
+    pre-existing Windows flakes only (cmd/toolhub removal-retry, hosting
+    fork/exec, mediasvc file-lock, toolhub/api docker.exe — each passes
+    isolated, untouched packages)'
+  docker_check: not_run
+  red_team: done (keyword stuffing, oversized/binary doc bound, scope
+    injection, index identifier leak matrix)
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
+evidence:
+  - internal/memory/search (tokenizer/BM25/decay/graph expand, lazy mtime
+    index, prov.db+markdown sources, leaf evidence spans, persisted snapshot)
+  - internal/agenttools memory_search (run-scope audience, honest statuses)
+  - gateway run-scope stamp (worker dispatch; fail-closed group; expiry)
+  - hubctl memory search --reindex; stack.MemoryDoctor stale line
+  - catalog 5.10.0 + prompt contract + docs/tools.md
+  - inverted index (postings) + bounded top-k + precomputed doc lengths;
+    BenchmarkSearch10k ~1.4ms/query on the all-match 10k worst case (36x
+    under the 50ms p95 budget); the unit bound is a 250ms load-tolerant
+    tripwire under the shared-CPU gate
+  - e2e registry E2E-184 acceptance row for memory_search
+remaining:
+  - live acceptance (dev stack search end-to-end, deleted-index degraded
+    report) — deferred, no-docker scope
+  - run-scope stamp is per-runtime single-file; a concurrent private+group
+    pair fails closed to group for both (never the reverse)
+limitations: []

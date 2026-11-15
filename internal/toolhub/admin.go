@@ -57,7 +57,7 @@ type adminOnboardingView struct {
 func adminOnboardingOf(o api.Onboarding) adminOnboardingView {
 	code := o.ErrorCode
 	switch code {
-	case "", api.OpCodeAmbiguousTarget, api.OpCodeAmbiguousEntrypoint, api.OpCodeAmbiguousCredentialContract, api.OpCodeUnsupportedAuth, api.OpCodeProbeFailed, api.OpCodeCleanupIncomplete, api.OpCodeNotPermitted, api.OpCodeQuota, "unsupported_credential_contract":
+	case "", api.OpCodeAmbiguousTarget, api.OpCodeAmbiguousEntrypoint, api.OpCodeAmbiguousCredentialContract, api.OpCodeUnsupportedAuth, api.OpCodeProbeFailed, api.OpCodeCleanupIncomplete, api.OpCodeDeliveryUnavailable, api.OpCodeAdmissionUnavailable, api.OpCodeNotPermitted, api.OpCodeQuota, "unsupported_credential_contract":
 	default:
 		code = "unclassified_failure"
 	}
@@ -76,7 +76,7 @@ func adminOnboardingOf(o api.Onboarding) adminOnboardingView {
 		required = append(required, adminField{Name: h.Name})
 	}
 	return adminOnboardingView{
-		OnboardingID: o.OnboardingID, PrincipalID: o.PrincipalID, Phase: o.Phase,
+		OnboardingID: o.OnboardingID, PrincipalID: o.PrincipalID, Phase: o.NoticePhase(),
 		Error: strings.ReplaceAll(code, "_", " "), ErrorCode: code, DefinitionID: o.DefinitionID,
 		SourceURL: o.SourceURL, CommitSHA: o.CommitSHA,
 		Required: required, Finalizers: finalizers,
@@ -212,7 +212,7 @@ func (g *Gateway) serveAdminOnboardings(w http.ResponseWriter, r *http.Request) 
 	}
 	views := make([]adminOnboardingView, 0, len(list))
 	for _, o := range list {
-		views = append(views, adminOnboardingView{OnboardingID: o.OnboardingID, PrincipalID: o.PrincipalID, Phase: o.Phase})
+		views = append(views, adminOnboardingView{OnboardingID: o.OnboardingID, PrincipalID: o.PrincipalID, Phase: o.NoticePhase()})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"onboardings": views})

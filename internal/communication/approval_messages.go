@@ -13,31 +13,27 @@ func (s *Spool) trackApprovalMessage(d Delivery) error {
 		return errors.New("approval message receipt missing")
 	}
 	dir := filepath.Join(s.root, "approval-messages")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := s.mkdirOwned(dir); err != nil {
 		return err
 	}
-	return atomicJSON(filepath.Join(dir, spoolFileID(d.ID)+".json"), d)
+	return s.writeJSON(filepath.Join(dir, spoolFileID(d.ID)+".json"), d)
 }
 
 // Only receipts of messages this gateway sent can be removed. Decisions still
 // use the existing ownership-checked control path; deleting UI never approves.
 func (g *Gateway) closeApprovalMessages(ctx context.Context) {
 	dir := filepath.Join(g.spool.root, "approval-messages")
-	entries, err := os.ReadDir(dir)
+	entries, err := g.spool.fsys.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return
-	}
-	defer root.Close()
-	for _, entry := range entries {
-		if entry.IsDir() {
+	for _, name := range entries {
+		path := filepath.Join(dir, name)
+		info, err := g.spool.fsys.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		b, err := root.ReadFile(entry.Name())
+		b, err := g.spool.fsys.ReadFile(path)
 		var d Delivery
 		if err != nil || json.Unmarshal(b, &d) != nil || d.TelegramMessageID <= 0 {
 			continue
@@ -50,7 +46,7 @@ func (g *Gateway) closeApprovalMessages(ctx context.Context) {
 			continue
 		}
 		if g.api.DeleteMessage(ctx, d.ChatID, d.TelegramMessageID) == nil {
-			_ = os.Remove(path)
+			_ = g.spool.removeOwned(path)
 		}
 	}
 }

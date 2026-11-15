@@ -131,7 +131,7 @@ func readSurfaceConfig(path string) surfaceConfig {
 }
 
 // servedAgentFamilies maps agent-tools catalog names back to their capability
-// families so a manifest name like "terminal" is covered by code_exec.
+// families so a manifest name like "terminal" is covered by terminal_exec.
 func servedAgentFamilies(tools []string) []string {
 	byName := map[string]string{}
 	for _, spec := range agenttools.HubToolsDefinition().Tools {

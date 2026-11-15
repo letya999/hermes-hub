@@ -2,6 +2,8 @@ package toolhub
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -14,6 +16,65 @@ func (s *Store) Definition(id, version string) (api.ToolDefinition, error) {
 		return api.ToolDefinition{}, fmt.Errorf("%w: definition", api.ErrNotFound)
 	}
 	return definition, nil
+}
+
+// BindingsForProfile returns operational bindings for a managed profile;
+// selection is derived separately from the published tools passport.
+func (s *Store) BindingsForProfile(profileID string) ([]api.ToolBinding, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.capabilityProfiles[profileID]
+	if !ok || profile.Status != api.ActiveStatus {
+		return nil, api.ErrNotFound
+	}
+	var out []api.ToolBinding
+	for _, binding := range s.bindings {
+		if binding.Status == api.ActiveStatus && binding.PrincipalID == profile.PrincipalID && binding.ContextID == profile.ContextID && binding.RuntimeID == profile.RuntimeID {
+			out = append(out, binding)
+		}
+	}
+	return out, nil
+}
+
+// SelectionGaps reports, per active managed profile, the selections no
+// capability rule can admit: the digest-split wedge publish leaves when it
+// repins selections ahead of catalog enable. Diagnostics only — it never
+// mutates. Selections whose pinned definition is missing or unreviewed are
+// skipped: they fail earlier at the definition check, not the rule check.
+func (s *Store) SelectionGaps() (map[string][]string, error) {
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now().UTC()
+	out := map[string][]string{}
+	for _, profile := range s.capabilityProfiles {
+		if profile.Status != api.ActiveStatus {
+			continue
+		}
+		policy, ok := s.capabilityPolicies[profile.PolicyID]
+		if !ok || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision {
+			continue
+		}
+		for _, selection := range profile.Selections {
+			definition, ok := s.definitions[definitionKey(selection.DefinitionID, selection.DefinitionVersion)]
+			if !ok || api.DefinitionDigest(definition) != selection.ImplementationDigest {
+				continue
+			}
+			tool, ok := selectionToolSpec(definition, selection)
+			if !ok {
+				continue
+			}
+			if !api.CapabilityCoverage(profile, policy, selection, tool, now) {
+				out[profile.ProfileID] = append(out[profile.ProfileID], selection.Name)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func (s *Store) publicationFor(definition api.ToolDefinition) api.DefinitionPublication {
@@ -60,7 +121,7 @@ func (s *Store) onboardingForConnection(connectionID string) (api.Onboarding, bo
 	found := false
 	for _, onboarding := range s.onboardings {
 		if onboarding.ConnectionID != connectionID || onboarding.SupersededBy != "" ||
-			onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseRevoked {
+			onboarding.Terminal() {
 			continue
 		}
 		if connection.Owner.Type == api.PrincipalOwner && onboarding.PrincipalID != connection.Owner.ID {

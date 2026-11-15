@@ -5,11 +5,39 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestLargeImageUsesBoundedVisionDerivative(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 1600, 1200))
+	var seed uint32 = 1
+	for i := range img.Pix {
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		img.Pix[i] = byte(seed)
+	}
+	var source bytes.Buffer
+	if err := png.Encode(&source, img); err != nil {
+		t.Fatal(err)
+	}
+	if source.Len() <= 5<<20 || source.Len() > MaxImageBytes {
+		t.Fatal("fixture must exceed the former 5 MiB limit but remain within the 20 MiB source limit")
+	}
+	format, body, err := compactVisionImage("png", source.Bytes(), 100_000)
+	if err != nil || format != "jpeg" || len(body) > 100_000 {
+		t.Fatalf("vision derivative format=%s bytes=%d err=%v", format, len(body), err)
+	}
+	width, height, err := imageBounds(body)
+	if err != nil || width >= 1600 || height >= 1200 {
+		t.Fatalf("vision derivative dimensions=%dx%d err=%v", width, height, err)
+	}
+}
 
 func TestInspectManyOneOrderedRequestAndNoPartialSend(t *testing.T) {
 	calls := 0

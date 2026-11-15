@@ -52,6 +52,13 @@ var Names = map[Lang]string{
 // catalog file registered yet.
 var supported = map[Lang]bool{LangEN: true, LangRU: true, LangKK: true, LangES: true}
 
+// ModelLangHint appends the owner's language to a model-facing instruction:
+// English stays the instruction scaffold while the visible reply is pinned to
+// the user's own language (ADR-0084 D5).
+func ModelLangHint(lang Lang) string {
+	return " The user's language is " + Names[lang] + " (" + string(lang) + "); answer the user in that language."
+}
+
 // Parse resolves an IETF-ish tag ("en", "ru-RU", "kk_KZ") to a supported Lang.
 func Parse(tag string) (Lang, bool) {
 	tag = strings.ToLower(strings.TrimSpace(tag))

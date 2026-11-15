@@ -1,0 +1,33 @@
+{
+  "id": "model-api-key",
+  "revision": 1,
+  "title": "Model provider API key",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "api_key",
+      "label": "Provider API key",
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "API-ключ провайдера",
+        "kk": "Провайдердің API кілті",
+        "es": "Clave API del proveedor"
+      }
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "env",
+      "field": "api_key",
+      "target": "MODEL_API_KEY"
+    }
+  ],
+  "title_i18n": {
+    "ru": "API-ключ провайдера модели",
+    "kk": "Модель провайдерінің API кілті",
+    "es": "Clave API del proveedor del modelo"
+  }
+}

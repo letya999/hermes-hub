@@ -1,0 +1,100 @@
+schema: 1
+change: CHG-0210
+title: OK MCP wiring — read-only agent surface
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-11-01
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R9.1, R9.2, R9.3, R9.4]
+depends_on: [CHG-0209, CHG-0208]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 305
+design_status: accepted
+implementation_status: complete
+slices:
+  S9.1-verified-tool-list: done
+  S9.2-read-grant: done
+  S9.3-write-deferred: done
+  S9.4-revocation-failclosed: done
+validation:
+  documents: pass
+  just_check: see notes
+  docker_check: 'not run: no-docker scope — render/pin verified by contract tests only'
+  red_team: pass
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
+evidence:
+  - internal/stack/knowledge.go — okReadTools (8 verbs) / okMutationTools (11
+    verbs) classified from the pinned @inkeep/open-knowledge@0.88.2 dist bundle
+    registerTool calls + per-tool descriptions/annotations; okServer renders
+    url/timeout/skip_preflight/tools.include.
+  - internal/stack/knowledge_test.go — TestOKToolListVerified (exact read
+    surface, no read∩mutation overlap), TestOKSideChannelExcluded (lists
+    partition all 19 registered verbs), TestReadGrantSurfaceExact (endpoint,
+    include list, no stdio shape), TestManagedRenderKnowledgeServer (managed
+    parity + governance deny), TestOKGovernanceDenyRemovesServer (unmanaged
+    deny), TestWriteVerbDeniedDirect (no mutation verb projected, no stray
+    fields), TestWriteDenyReceipt (knowledge_ui_write refused on
+    native/toolhub/mcp spellings), TestOKDownDegradedHonest (skip_preflight),
+    TestOKPathConfined (only vault→/data mounts), TestOKDisabledRendersNothing
+    extended (no mcp_servers entry feature-off).
+  - internal/stack/render.go + hermes_capability.go — unmanaged and managed
+    mcp_servers renders behind Has("knowledge_ui") &&
+    govAllows("native:knowledge_ui").
+  - internal/stack/compose.go — env gained PORT=8080, OK_BIND=0.0.0.0,
+    HOME=/tmp (verified: PORT env → server.port dynamic otherwise; non-loopback
+    bind requires the allowExternal interlock; image HOME sits on read-only
+    rootfs).
+  - Verified surface at 0.88.2 (dist bundle): 19 tools = read{audit, config,
+    exec, history, links, palette, search, skills} + mutation{checkpoint,
+    delete, edit, import, install, lint, move, preview_url, restore_version,
+    share_link, write}. checkpoint/share_link carry upstream readOnlyHint yet
+    persist git history / mint publishing URLs; lint's fix arg mutates (include
+    filters names only); preview_url auto-starts the server on cold calls;
+    exec is upstream-scoped to a read-only shell allowlist.
+  - docs/tools.md + docs/spaces.md + docs/operations.md OK read-surface
+    paragraphs; ADR-0086 M20.9 amendment; follow-up issue #422 for
+    knowledge_ui_write (per-path scoping precondition).
+  - Coverage: internal/stack 88.4% statements.
+red_team:
+  - 'Read-labeled verb with write side-effects: caught — checkpoint
+    (readOnlyHint:true but persists to git) and share_link (readOnlyHint:true
+    but mints a publishing URL) are in the mutation set; lint excluded entirely
+    because fix=true mutates and tools.include cannot filter arguments.'
+  - 'Direct MCP bypass of the projection: no registration path — excluded
+    verbs are absent from tools.include, so a guessed write call dies as an
+    unregistered tool (TestWriteVerbDeniedDirect); feature-off renders no
+    endpoint at all (TestOKDisabledRendersNothing).'
+  - 'Path-arg escape: upstream resolveWithinRoot confines path/cwd to the
+    project root, and the service mounts only vault→/data — no other host path
+    is reachable (TestOKPathConfined).'
+  - 'Governance revocation: denied native:knowledge_ui removes the server on
+    both renders (TestManagedRenderKnowledgeServer,
+    TestOKGovernanceDenyRemovesServer); the explicit-wish evaluation in
+    applyGovernance fails Read on a denied selection anyway.'
+limitations:
+  - 'SPEC R9.1 text admits "lint (read mode)" — not enforceable: tools.include
+    filters by tool name, never by argument, so lint is fully excluded. Recorded
+    in the ADR amendment.'
+  - 'OK writes through the UI are still owner-only (human editor); the
+    agent-side write grant remains deferred to #422 pending upstream
+    sub-tree write scoping.'
+  - 'exec admitted on the strength of the upstream read-only allowlist
+    (cat/ls/grep/find/head/tail/wc/sort/uniq/cut); its cwd arg is confined to
+    the container fs — live verification of the allowlist rides the deferred
+    live-acceptance pass.'
+  - 'Org-scope read_only_mcp projection for knowledge_ui is not separately
+    wired: the feature is a per-space flag behind native:knowledge_ui; org
+    members inherit whatever the space renders. Flagged if org-scoped spaces
+    need a distinct section.'
+  - 'Live acceptance pending (no-docker scope): tool list verification was
+    static (bundle inspection), not a live tools/list call; A9.1–A9.6 live
+    checks deferred.'
+notes: >-
+  just_check legs run during this stage: format/vet/staticcheck/gosec green on
+  the touched files; the go-check suite shows the known Windows env-flake
+  family (AV fork/exec Access denied, lld -T, docker.exe unavailable) — every
+  named knowledge test verified green in isolated reruns. Live stack acceptance
+  deferred per no-docker scope.
+remaining: []

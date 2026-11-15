@@ -197,6 +197,10 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if !ok {
 		return errors.New("unmapped slack sender")
 	}
+	user = g.user(user.ID)
+	if !user.Enabled {
+		return errors.New("unavailable slack route")
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -229,7 +233,7 @@ func (s *Spool) EventSeen(provider, eventID string) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.eventMarkerPath(provider, eventID)); err == nil {
+	if _, err := s.fsys.Lstat(s.eventMarkerPath(provider, eventID)); err == nil {
 		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
@@ -243,10 +247,10 @@ func (s *Spool) MarkEvent(provider, eventID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return atomicJSON(s.eventMarkerPath(provider, eventID), map[string]string{"provider": provider, "event_id": eventID})
+	return s.writeJSON(s.eventMarkerPath(provider, eventID), map[string]string{"provider": provider, "event_id": eventID})
 }
 
 func (s *Spool) eventMarkerPath(provider, eventID string) string {
 	sum := sha256.Sum256([]byte(provider + "\x00" + eventID))
-	return filepath.Join(s.root, "events", hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(s.root, "provider-dedup", hex.EncodeToString(sum[:])+".json")
 }

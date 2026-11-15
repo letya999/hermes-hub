@@ -1,0 +1,32 @@
+apiVersion: six-passport/v2
+kind: tools
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+core:
+  discovery:
+    via: toolhub                 # system_guide, tools_list, invoke
+  files:
+    via: toolhub
+    scope: {paths: [/workspace, /vault, /skills, /shared/acme-docs]}
+    rules:
+      file_write:
+        scope: {paths: [/workspace/work, /workspace/projects,
+                       /workspace/artifacts, /workspace/outbox, /vault/library]}
+  skills:
+    via: toolhub
+    access: read
+
+extended:
+  ssh:
+    via: toolhub
+    tools: {include: [ssh_list, ssh_read]}
+    scope: {hosts: [staging], paths: [/var/log/app]}
+  connectors:
+    via: toolhub
+    tools: {exclude: [connector_install]}
+    access: read
+  watches:
+    via: toolhub
+  browser:
+    via: toolhub
+    access: read
+    scope: {urls: [https://docs.acme.example]}

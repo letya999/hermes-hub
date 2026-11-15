@@ -757,6 +757,7 @@ func TestStopCancelsCurrentTaskJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.deliverOne(ctx)
+	g.deliverOne(ctx)
 	mapping, found, err := g.spool.Mapping(ids[0])
 	if err != nil || !found || mapping.Status != "cancelled" {
 		t.Fatalf("job not cancelled: %+v found=%v err=%v", mapping, found, err)
@@ -1050,6 +1051,7 @@ func TestCancelByJobID(t *testing.T) {
 	if err := g.handleUpdate(ctx, taskUpdate(2, 2, "/cancel "+ids[0], 11, 0)); err != nil {
 		t.Fatal(err)
 	}
+	g.deliverOne(ctx)
 	g.deliverOne(ctx)
 	mapping, found, err := g.spool.Mapping(ids[0])
 	if err != nil || !found || mapping.Status != "cancelled" {

@@ -153,7 +153,10 @@ type Governance struct {
 	Inventory []ToolSection `json:"inventory"`
 	Rules     []PolicyRule  `json:"rules"`
 	Grants    []ToolGrant   `json:"grants"`
-	History   []GovChange   `json:"history,omitempty"`
+	// Rights is the capability-kind ledger (SPEC-0092 R2): host-minted
+	// capability.operation grants the PDP evaluates on every protected call.
+	Rights  []RightGrant `json:"rights,omitempty"`
+	History []GovChange  `json:"history,omitempty"`
 }
 
 // GovChange is one append-only history entry recording what changed, who
@@ -334,6 +337,18 @@ func (g *Governance) Validate() error {
 	}
 	grants := map[string]bool{}
 	for _, grant := range g.Grants {
+		if err := grant.Validate(); err != nil {
+			return err
+		}
+		if grants[grant.GrantID] {
+			return fmt.Errorf("%w: duplicate grant %s", ErrInvalid, grant.GrantID)
+		}
+		grants[grant.GrantID] = true
+	}
+	if len(g.Rights) > 8192 {
+		return fmt.Errorf("%w: governance rights bound", ErrInvalid)
+	}
+	for _, grant := range g.Rights {
 		if err := grant.Validate(); err != nil {
 			return err
 		}

@@ -38,10 +38,10 @@ func confirmLinkFixture(t *testing.T, nonce string, expires time.Time) (*Gateway
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-link-t", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		ConfirmationNonce: nonce, ConfirmationExpires: expires,
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateConfirmSetup, Nonce: nonce, Expires: expires},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestConfirmLinkAcceptsTParam(t *testing.T) {
 	gateway, _, id := confirmLinkFixture(t, "one-time-token", time.Now().Add(time.Hour))
 	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/confirm/"+id+"?t=one-time-token")
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в исходном чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("t-param link status=%d", rec.Code)
 	}
 }
@@ -69,11 +69,15 @@ func TestConfirmLinkReplayReturns410(t *testing.T) {
 	gateway, store, id := confirmLinkFixture(t, "used-token", time.Now().Add(time.Hour))
 	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+id+"?t=used-token")
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("first use status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got, err := store.onboarding(id); err != nil || (got.Phase != api.PhaseConfirmed && got.Phase != api.PhaseEnabled) {
-		t.Fatalf("phase=%v err=%v", got.Phase, err)
+	if pending := mustOnboarding(t, store, id); pending.ConfirmationUsed || pending.BindingID != "" {
+		t.Fatal("bearer page granted consent")
+	}
+	finishAsHuman(t, gateway.Control, id)
+	if got, err := store.onboarding(id); err != nil || (!got.ConfirmationUsed && got.Stage != api.StageLive) {
+		t.Fatalf("phase=%v err=%v", got.NoticePhase(), err)
 	}
 	replay, replayReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/confirm/"+id+"?t=used-token")
 	gateway.serveConfirm(replay, replayReq)
@@ -98,13 +102,13 @@ func TestConfirmLinkCrossOperationRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding.OnboardingID = "onb-link-b"
-	onboarding.ConfirmationNonce = "token-b"
+	onboarding.ArmGate(api.GateConfirmSetup, "token-b", time.Time{})
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/confirm/onb-link-b?t=token-a")
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusUnauthorized {
+	if rec.Code != http.StatusGone {
 		t.Fatalf("cross-operation token status=%d", rec.Code)
 	}
 }
@@ -113,7 +117,7 @@ func TestConfirmPostWithoutTokenRejected(t *testing.T) {
 	gateway, _, id := confirmLinkFixture(t, "csrf-guard", time.Now().Add(time.Hour))
 	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+id)
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusGone && rec.Code != http.StatusForbidden {
 		t.Fatalf("tokenless POST status=%d", rec.Code)
 	}
 }
@@ -131,7 +135,7 @@ func TestPublicMuxServesOnlyHumanPaths(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://hub.example.com/confirm/"+id+"?t=pub-token", nil)
 	req.Host = "hub.example.com"
 	public.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в исходном чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("public confirm status=%d", rec.Code)
 	}
 	blocked := httptest.NewRecorder()
@@ -167,13 +171,24 @@ func TestPublicMuxServesCredentialsRemoveConnect(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-pub-all", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "form-tok", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		FormNonce: "form-tok", FormExpires: time.Now().Add(time.Hour),
-		RemoveNonce: "rm-tok", RemoveExpires: time.Now().Add(time.Hour),
-		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=st-1",
-	}
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=st-1"}
 	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	// The single-gate model gives each record one live link; the remove page
+	// fixture lives on its own record armed with the remove gate.
+	rmOnboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-pub-rm", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StageLive,
+		Gate:         &api.Gate{Kind: api.GateRemove, Nonce: "rm-tok", Expires: time.Now().Add(time.Hour)},
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
+	if err := store.PutOnboarding(rmOnboarding); err != nil {
 		t.Fatal(err)
 	}
 	public := (&Gateway{Control: control}).PublicMux()
@@ -187,7 +202,7 @@ func TestPublicMuxServesCredentialsRemoveConnect(t *testing.T) {
 	if rec := serve("/credentials/onb-pub-all?t=form-tok"); rec.Code != http.StatusOK {
 		t.Fatalf("public credentials status=%d", rec.Code)
 	}
-	if rec := serve("/remove/onb-pub-all?t=rm-tok"); rec.Code != http.StatusOK {
+	if rec := serve("/remove/onb-pub-rm?t=rm-tok"); rec.Code != http.StatusOK {
 		t.Fatalf("public remove status=%d", rec.Code)
 	}
 	rec := serve("/connect/onb-pub-all?state=st-1")
@@ -215,7 +230,7 @@ func TestEndpointHandlerExposesPublicSurface(t *testing.T) {
 	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +247,7 @@ func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
 	config := EndpointConfig{Token: strings.Repeat("p", 40), Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +263,17 @@ func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
 // S2.3: RFC 8628 device flow rides the same one-time link surface — GET
 // renders the user code + verification URI, POST polls and completes.
 func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
+	humanNotices := make(chan bool, 8)
+	notices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseEnabled {
+			humanNotices <- true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer notices.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", notices.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := remoteDefinition()
@@ -284,29 +310,41 @@ func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := store.onboarding(onboardingID)
-	if err != nil || onboarding.FormNonce == "" {
+	if err != nil || onboarding.GateNonce(api.GateCredentials) == "" {
 		t.Fatal("no form nonce minted")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{Control: control}
-	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	gateway.serveDevice(get, getReq)
 	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), "ABCD-1234") || !strings.Contains(get.Body.String(), fixture.Server.URL+"/device") {
 		t.Fatalf("device page status=%d body=%s", get.Code, get.Body.String())
 	}
-	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	postReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
 	gateway.serveDevice(post, postReq)
 	if post.Code != http.StatusOK {
 		t.Fatalf("device poll status=%d body=%s", post.Code, post.Body.String())
 	}
 	latest, err := store.onboarding(onboardingID)
-	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
-		t.Fatalf("device flow did not finish authorization: phase=%v err=%v", latest.Phase, err)
+	// The device-flow credential submit is itself the consent: the record
+	// completes inline with an implicit-consent marker, no second click.
+	if err != nil || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source == "" {
+		t.Errorf("device flow did not record implicit consent: phase=%v used=%v err=%v", latest.NoticePhase(), latest.ConfirmationUsed, err)
 	}
+	select {
+	case <-humanNotices:
+	default:
+		t.Error("device flow did not send completion notice")
+	}
+	if latest.Stage == api.StageLive {
+		return
+	}
+	finishAsHuman(t, control, onboardingID)
 }
 
 // authorization_pending is a waiting state, not a failure — the page tells
@@ -349,20 +387,21 @@ func TestDeviceFlowPendingThenApproved(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := store.onboarding(onboardingID)
-	if err != nil || onboarding.FormNonce == "" {
+	if err != nil || onboarding.GateNonce(api.GateCredentials) == "" {
 		t.Fatal("no form nonce")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{Control: control}
-	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	gateway.serveDevice(get, getReq)
 	if get.Code != http.StatusOK {
 		t.Fatalf("device page status=%d", get.Code)
 	}
-	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	postReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
 	gateway.serveDevice(post, postReq)
 	if post.Code != http.StatusOK || !strings.Contains(post.Body.String(), "Жду подтверждение") {
@@ -371,7 +410,7 @@ func TestDeviceFlowPendingThenApproved(t *testing.T) {
 	fixture.ApproveDevice("dev-code")
 	// PollDevice marks a pending entry used only after a successful exchange —
 	// the broker needs a fresh pending entry per poll attempt, so restart via GET.
-	retry, retryReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	retry, retryReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	retryReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
 	gateway.serveDevice(retry, retryReq)
 	if retry.Code != http.StatusOK || strings.Contains(retry.Body.String(), "Жду") {
@@ -415,15 +454,16 @@ func TestCredentialFormOffersDeviceFlowWhenSupported(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding, err := store.onboarding(onboardingID)
-	if err != nil || onboarding.FormNonce == "" {
+	if err != nil || onboarding.GateNonce(api.GateCredentials) == "" {
 		t.Fatal("no form nonce")
 	}
 	onboarding.OAuthProvider = "fixture"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
 	gateway := &Gateway{Control: control}
-	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/credentials/"+onboardingID+"?t="+onboarding.FormNonce)
+	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/credentials/"+onboardingID+"?t="+onboarding.GateNonce(api.GateCredentials))
 	gateway.serveCredentials(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/device/"+onboardingID) {
 		t.Fatalf("form status=%d, no device offer: %.200s", rec.Code, rec.Body.String())
@@ -445,6 +485,7 @@ func TestDeviceRouteRegisteredOnBothMuxes(t *testing.T) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
 		Tokens: map[string]identity.Envelope{strings.Repeat("t", 40): aliceAuth()}}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -454,9 +495,9 @@ func TestDeviceRouteRegisteredOnBothMuxes(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/device/onb-x?t=nope", nil)
 		req.Host = "127.0.0.1"
 		target.ServeHTTP(rec, req)
-		// 401 proves the route reached serveDevice; a mux 404 would mean the
-		// route is unregistered.
-		if rec.Code != http.StatusUnauthorized {
+		// 410 proves the route reached serveDevice — a dead token lands on
+		// the gone page; a mux 404 would mean the route is unregistered.
+		if rec.Code != http.StatusGone {
 			t.Fatalf("/device route status=%d", rec.Code)
 		}
 	}
@@ -471,8 +512,10 @@ func TestConnectPageOffersPasteRedirectForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -514,10 +557,11 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 		t.Fatal(err)
 	}
-	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb_paste", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb_paste", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Stage: api.StagePending, Gate: &api.Gate{Kind: api.GateConfirmSetup, Nonce: "nonce", Expires: time.Now().Add(time.Hour)}, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, Revision: 1, CreatedAt: time.Now()}
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
+	grantTestControlOperations(t, store, auth.PrincipalID, "confirm")
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "p.enc"), Key: bytes.Repeat([]byte("k"), 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -540,7 +584,7 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 		}
 		return nil
 	}
-	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce})
+	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.GateNonce(api.GateConfirmSetup)})
 	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff phase=%v err=%v", body["phase"], err)
 	}
@@ -570,9 +614,10 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 		t.Fatalf("paste status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	latest, err := store.onboarding(on.OnboardingID)
-	if err != nil || latest.Phase != api.PhaseEnabled {
-		t.Fatalf("paste did not complete: phase=%v err=%v", latest.Phase, err)
+	if err != nil || latest.Stage != api.StageLive || !latest.ConfirmationUsed || latest.HumanConsent == nil || latest.HumanConsent.Source != "oauth_callback" {
+		t.Fatalf("OAuth paste did not record implicit consent: phase=%v err=%v", latest.NoticePhase(), err)
 	}
+	finishAsHuman(t, c, on.OnboardingID)
 }
 
 // S2.4 fail-closed: a pasted redirect whose state does not match the
@@ -583,8 +628,10 @@ func TestConnectPasteRejectsForeignState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.Stage = api.StagePending
+	onboarding.ArmGate(api.GateOAuth, "", time.Time{})
 	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	onboarding.Revision++
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -653,16 +700,16 @@ func TestCredentialFormRendersRecipeProvenance(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-prov", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "prov-tok", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		Required: []api.CredentialHint{
 			{Name: "ACME_API_KEY", Secret: true, Delivery: "env", Source: "server.json"},
 			{Name: "ACME_INSECURE", Delivery: "env", Source: "server.json"},
 			{Name: "ACME_REGION", Delivery: "env", Source: ".env.example"},
 		},
-		FormNonce: "prov-tok", FormExpires: time.Now().Add(time.Hour),
-		RecipeDigest: digest, Recipe: &resolution,
-	}
+		RecipeDigest: digest, Recipe: &resolution}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -730,11 +777,11 @@ func TestCredentialSubmitProbeFailureLeavesNoResidue(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-s26", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StagePending,
+		Gate:         &api.Gate{Kind: api.GateCredentials, Nonce: "s26-tok", Expires: time.Now().Add(time.Hour)},
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Required:  []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}},
-		FormNonce: "s26-tok", FormExpires: time.Now().Add(time.Hour),
-	}
+		Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -758,8 +805,8 @@ func TestCredentialSubmitProbeFailureLeavesNoResidue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Locator != "" || stored.Phase != api.PhaseAwaitingCreds || stored.BindingID != "" {
-		t.Fatalf("residue after probe failure: locator=%q phase=%s binding=%q", stored.Locator, stored.Phase, stored.BindingID)
+	if stored.Locator != "" || !stored.Awaiting(api.GateCredentials) || stored.BindingID != "" {
+		t.Fatalf("residue after probe failure: locator=%q phase=%s binding=%q", stored.Locator, stored.NoticePhase(), stored.BindingID)
 	}
 }
 
@@ -788,12 +835,12 @@ func TestCredentialSubmitAdmissionProbesOnce(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-s26b", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
+		Mode:  api.OnboardingRemote,
+		Stage: api.StagePending,
+		Gate:  &api.Gate{Kind: api.GateCredentials, Nonce: "s26b-tok", Expires: time.Now().Add(time.Hour)}, AdmissionPending: true,
 		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-		Required:  []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}},
-		FormNonce: "s26b-tok", FormExpires: time.Now().Add(time.Hour),
-		Definition: &draft,
-	}
+		Required:   []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}},
+		Definition: &draft}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -828,12 +875,9 @@ func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
 		return value
 	}
 	fill := func(o *api.Onboarding) {
-		o.FormNonce = mark("form")
-		o.FormExpires = time.Now().Add(time.Hour)
-		o.ConfirmationNonce = mark("confirm")
-		o.ConfirmationExpires = time.Now().Add(time.Hour)
-		o.RemoveNonce = mark("remove")
-		o.RemoveExpires = time.Now().Add(time.Hour)
+		o.ArmGate(api.GateCredentials, mark("form"), time.Now().Add(time.Hour))
+		o.ArmGate(api.GateConfirmSetup, mark("confirm"), time.Now().Add(time.Hour))
+		o.ArmGate(api.GateRemove, mark("remove"), time.Now().Add(time.Hour))
 		o.Locator = mark("locator")
 		o.CredentialOwner = mark("owner")
 		o.IdempotencyKey = mark("idem")
@@ -845,16 +889,17 @@ func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
 		o.DeviceUserCode = mark("usercode")
 		o.DeviceVerification = "https://verify.example/" + mark("device")
 	}
-	phases := []string{api.PhasePreparing, api.PhaseReview, api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, api.PhaseAwaitingOAuth, api.PhaseConfirmed, api.PhaseEnabled, api.PhaseDisabled, api.PhaseRevoked, api.PhaseFailed}
+	phases := []string{api.PhasePreparing, "review", api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, api.PhaseAwaitingOAuth, api.PhaseConfirmed, api.PhaseEnabled, "disabled", api.PhaseRevoked, api.PhaseFailed}
 	ids := map[string]string{}
 	for _, phase := range phases {
 		id := "onb-prop-" + strings.ReplaceAll(phase, "-", "")
 		onboarding := api.Onboarding{
 			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-			Mode: api.OnboardingCatalog, Phase: phase,
+			Mode:         api.OnboardingCatalog,
 			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		}
+		applyOnboardingPhase(&onboarding, phase)
 		fill(&onboarding)
 		if err := store.PutOnboarding(onboarding); err != nil {
 			t.Fatalf("%s: %v", phase, err)
@@ -895,7 +940,7 @@ func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce})
+	body, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.GateNonce(api.GateConfirmSetup)})
 	encoded, _ := json.Marshal(body)
 	output := string(encoded)
 	if err != nil {
@@ -923,9 +968,9 @@ func TestRemoveLinkReplayReturns410(t *testing.T) {
 	onboarding := api.Onboarding{
 		Schema: api.SchemaVersion, OnboardingID: "onb-remove-replay", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
-		Mode: api.OnboardingCatalog, Phase: api.PhaseEnabled,
-		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
-	}
+		Mode:         api.OnboardingCatalog,
+		Stage:        api.StageLive,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
@@ -933,16 +978,16 @@ func TestRemoveLinkReplayReturns410(t *testing.T) {
 		t.Fatal(err)
 	}
 	armed, err := store.onboarding("onb-remove-replay")
-	if err != nil || armed.RemoveNonce == "" {
+	if err != nil || armed.GateNonce(api.GateRemove) == "" {
 		t.Fatal("preview did not arm the nonce")
 	}
 	gateway := &Gateway{Control: control}
-	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/remove/onb-remove-replay?t="+armed.RemoveNonce)
+	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/remove/onb-remove-replay?t="+armed.GateNonce(api.GateRemove))
 	gateway.serveRemove(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first use status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	replay, replayReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/remove/onb-remove-replay?t="+armed.RemoveNonce)
+	replay, replayReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/remove/onb-remove-replay?t="+armed.GateNonce(api.GateRemove))
 	gateway.serveRemove(replay, replayReq)
 	if replay.Code != http.StatusGone || !strings.Contains(strings.ToLower(replay.Body.String()), "fresh") {
 		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())

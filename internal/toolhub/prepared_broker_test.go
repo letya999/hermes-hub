@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +92,7 @@ func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 	control := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now}
-	preparing, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "telegram-gate", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	preparing, _, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "telegram-gate", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +186,11 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
 			requestID := "request_1"
-			if requests.Add(1) == 2 {
+			switch n := requests.Add(1); {
+			case n == 2:
 				requestID = "request_2"
+			case n >= 3:
+				requestID = "request_3"
 			}
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: requestID, ContractID: "telegram-session", ContractRevision: 2, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/" + requestID})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
@@ -258,7 +261,7 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		return definition, nil
 	}
 	auth := aliceAuth()
-	preparing, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	preparing, _, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,17 +282,29 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		t.Fatalf("stable wizard link did not reach the channel: %v", noticed)
 	}
 	ready.Store(true)
+	pending, err := control.Store.OnboardingFor(auth, preparing.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.reconcileBrokerReady(t.Context(), auth, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = control.Store.OnboardingFor(auth, preparing.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auth, &pending, pending.BrokerCredentialID); err != nil {
+		t.Fatal(err)
+	}
 	status, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": preparing.OnboardingID})
-	if err != nil || status["phase"] != api.PhaseAwaitingConfirm || status["tools_confirmed"] == false || admitCalls != 1 || grants.Load() != 1 || releases.Load() != 1 || revocations.Load() != 1 {
+	// The submitted credential is the consent: admission completes the bind
+	// inline (permanent grant minted, temp revoked) straight to enabled.
+	if err != nil || status["phase"] != api.PhaseEnabled || status["tools_confirmed"] == false || admitCalls != 1 || grants.Load() != 2 || releases.Load() != 1 || revocations.Load() != 1 {
 		t.Fatalf("Broker admission did not complete and clean up: %+v %v (probe=%d grant=%d release=%d revoke=%d)", status, err, admitCalls, grants.Load(), releases.Load(), revocations.Load())
 	}
 	stored, err := control.Store.OnboardingFor(auth, preparing.OnboardingID)
 	if err != nil || stored.AdmissionPending || stored.BrokerCredentialID != "credential_1" || stored.Definition == nil || len(stored.Definition.Tools) != 1 {
 		t.Fatalf("confirmed tool contract missing: %+v %v", stored, err)
-	}
-	confirmed, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": preparing.OnboardingID, "nonce": stored.ConfirmationNonce})
-	if err != nil || confirmed["phase"] != api.PhaseConfirmed || grants.Load() != 2 || revocations.Load() != 1 {
-		t.Fatalf("owner binding did not mint a permanent grant: %+v %v (grant=%d revoke=%d)", confirmed, err, grants.Load(), revocations.Load())
 	}
 	bound, err := control.Store.OnboardingFor(auth, preparing.OnboardingID)
 	if err != nil {
@@ -301,15 +316,18 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	}
 	control.AdmitWithCredentials = func(_ context.Context, _ api.ToolDefinition, _ map[string]string) (api.ToolDefinition, error) {
 		admitCalls++
-		return api.ToolDefinition{}, errors.New("Telegram session rejected fake-session")
+		return api.ToolDefinition{}, fmt.Errorf("%w: Telegram session rejected fake-session", api.ErrAuthBeforeEffect)
 	}
-	retry, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA)
+	retry, _, err := control.newOnboarding(auth, api.OnboardingSelfInstall, "telegram-broker-retry", definition, telegram.Source.Repository, telegram.Source.CommitSHA, false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The retry attaches to the live record, so the admission probe runs
+	// inline on the still-recorded credential — the rejection re-arms the
+	// credential gate and cleans up its temporary grant.
 	failed, err := control.acceptCredentialGate(t.Context(), auth, retry, api.SourceReview{Definition: definition, AdmissionPending: true, AdmissionDetail: "login required"})
 	if err != nil || failed["phase"] != api.PhaseAwaitingCreds || grants.Load() != 3 || releases.Load() != 2 || revocations.Load() != 2 {
-		t.Fatalf("bad session did not stay pending and clean up: %+v %v", failed, err)
+		t.Fatalf("bad session did not stay pending and clean up: %+v %v (requests=%d grants=%d releases=%d revocations=%d)", failed, err, requests.Load(), grants.Load(), releases.Load(), revocations.Load())
 	}
 	if failed["tools_confirmed"] != false || !strings.HasPrefix(failed["error"].(string), "Проверка не прошла") || strings.Contains(failed["error"].(string), "fake-session") {
 		t.Fatalf("failed Broker admission was not reported: %+v", failed)
@@ -317,6 +335,8 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	if _, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID}); err != nil || admitCalls != 2 {
 		t.Fatalf("bad session was reprobed without rotation: %v (probes=%d)", err, admitCalls)
 	}
+	// Reauth mints the replacement Broker request — the probe-rejected
+	// credential becomes the rotate target.
 	rotated, err := control.Rotate(auth, map[string]any{"onboarding_id": retry.OnboardingID})
 	if err != nil || rotated["phase"] != api.PhaseAwaitingCreds || requests.Load() != 2 {
 		t.Fatalf("reauth did not open a new Broker request: %+v %v", rotated, err)
@@ -325,19 +345,30 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		admitCalls++
 		return definition, nil
 	}
-	rotatedReady.Store(true)
-	rotated, err = control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID})
-	if err != nil || rotated["phase"] != api.PhaseAwaitingConfirm || admitCalls != 3 || grants.Load() != 4 || revocations.Load() != 3 {
-		t.Fatalf("rotated Broker credential was not admitted: %+v %v (probes=%d grants=%d revoked=%d)", rotated, err, admitCalls, grants.Load(), revocations.Load())
-	}
+	// The rotated bind stops the previous workload before the new grant —
+	// admission now drives it inline, so the release hook must exist before
+	// the ready reconcile, not before a confirm click.
 	control.Release = func(context.Context, api.ControllerRelease) error { return nil }
-	reauth, err := control.Store.OnboardingFor(auth, retry.OnboardingID)
+	rotatedReady.Store(true)
+	pending, err = control.Store.OnboardingFor(auth, retry.OnboardingID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotated, err = control.confirm(t.Context(), auth, map[string]any{"onboarding_id": retry.OnboardingID, "nonce": reauth.ConfirmationNonce})
-	if err != nil || rotated["phase"] != api.PhaseConfirmed || grants.Load() != 5 || revocations.Load() != 4 {
-		t.Fatalf("rotation did not replace the owner grant: %+v %v (grants=%d revoked=%d)", rotated, err, grants.Load(), revocations.Load())
+	if err := control.reconcileBrokerReady(t.Context(), auth, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = control.Store.OnboardingFor(auth, retry.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.completeBrokerAdmission(t.Context(), auth, &pending, pending.BrokerCredentialID); err != nil {
+		t.Fatal(err)
+	}
+	// The admitted credential is the consent — admission binds the
+	// replacement grant inline, no confirm click.
+	rotated, err = control.status(context.Background(), auth, map[string]any{"onboarding_id": retry.OnboardingID})
+	if err != nil || rotated["phase"] != api.PhaseEnabled || admitCalls != 3 || grants.Load() != 5 || revocations.Load() != 4 {
+		t.Fatalf("rotated Broker credential was not admitted: %+v %v (probes=%d grants=%d revoked=%d)", rotated, err, admitCalls, grants.Load(), revocations.Load())
 	}
 	_, renewed, err := control.Store.OwnedConnection(auth, bound.ConnectionID)
 	if err != nil || renewed.Locator != "credential_2" || renewed.BrokerGrantID != "grant_5" {

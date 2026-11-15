@@ -16,33 +16,69 @@ import (
 	"time"
 )
 
-func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey string, definition api.ToolDefinition, sourceURL, commit string) (api.Onboarding, error) {
+// newOnboarding mints the durable install record — or attaches to the one
+// already holding the owner's slot for this definition. attached=true means
+// an existing non-terminal record answered: callers resend its links instead
+// of overwriting anything. attached=false means the minted record was
+// committed (fresh create, a retry on the same deterministic id, or the
+// supersede of a failed holder under a different seed). A shared operator
+// install bypasses the slot — it deliberately provisions team scope even
+// when the operator already holds a personal connector.
+func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey string, definition api.ToolDefinition, sourceURL, commit string, shared bool) (api.Onboarding, bool, error) {
 	idSeed := requestKey
 	if idSeed == "" {
 		idSeed = mode + ":" + definition.DefinitionID + "@" + definition.Version + ":" + sourceURL + ":" + commit
 	}
 	onboarding := api.Onboarding{
-		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, idSeed),
-		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion, idSeed),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Initiator: &auth,
 		Mode: mode, SourceURL: sourceURL, CommitSHA: commit, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 		Required: credentialHints(definition), Optional: optionalCredentialHints(definition), Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition),
 		IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 	}
+	onboarding.Stage = api.StagePending
 	if len(onboarding.Required) > 0 {
-		onboarding.Phase = api.PhaseAwaitingCreds
-		onboarding.FormNonce = api.RandomNonce()
-		onboarding.FormExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateCredentials, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	} else {
-		onboarding.Phase = api.PhaseAwaitingConfirm
-		onboarding.ConfirmationNonce = api.RandomNonce()
-		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+		onboarding.ArmGate(api.GateConfirmSetup, api.RandomNonce(), c.now().Add(c.ttl()))
 		c.armWizard(&onboarding)
 	}
-	if err := c.Store.PutOnboarding(onboarding); err != nil {
-		return api.Onboarding{}, err
+	c.Store.mu.Lock()
+	defer c.Store.mu.Unlock()
+	previous, ok := c.Store.onboardings[onboarding.OnboardingID]
+	sameID := ok
+	// A shared operator install never attaches to a personal slot — and a
+	// personal slot holder never claims it. Upgrade records stay parallel.
+	if !ok && !shared && !strings.HasPrefix(requestKey, upgradeKeyPrefix) {
+		if holder, hit := c.Store.onboardingSlotLocked(auth, definition.DefinitionID); hit && !holder.PreparingStub {
+			previous, ok = holder, true
+		}
 	}
-	return onboarding, nil
+	if ok {
+		if auth.Validate(previous.PrincipalID, previous.ContextID, previous.RuntimeID, previous.PolicyVersion) != nil || sameID && previous.Mode != mode {
+			return api.Onboarding{}, false, api.ErrUnauthorized
+		}
+		if previous.Removed() || previous.CleanupIncomplete() {
+			return api.Onboarding{}, false, api.ErrRevoked
+		}
+		if previous.Stage != api.StageFailed && (sameID && !previous.PreparingStub || !sameID) {
+			return cloneOnboarding(previous), true, nil
+		}
+		if !sameID {
+			// A failed holder under a different seed: the retry minted here
+			// wins the slot and the corpse names its replacement.
+			if err := c.Store.supersedeOnboardingLocked(previous, onboarding.OnboardingID); err != nil {
+				return api.Onboarding{}, false, err
+			}
+		} else {
+			onboarding.Revision = previous.Revision + 1
+		}
+	}
+	if err := c.Store.putOnboardingLocked(onboarding); err != nil {
+		return api.Onboarding{}, false, err
+	}
+	return cloneOnboarding(c.Store.onboardings[onboarding.OnboardingID]), false, nil
 }
 
 // bindReviewedContract attaches a reviewed credential-broker contract to a
@@ -283,6 +319,11 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 			return nil, err
 		}
 		if onboarding.BrokerCredentialID == "" {
+			if onboarding.BrokerRequestID != "" {
+				// Reauth on a record already waiting on a Broker request is a
+				// no-op — the pending request is the credential step.
+				return c.statusBody(onboarding, true), nil
+			}
 			// A remote-mcp onboarding stores its credential in the local
 			// encrypted backend, never the Broker; fall through to the local
 			// rotation path instead of deadlocking on a missing record.
@@ -291,7 +332,7 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 			}
 			return c.rotateLocal(auth, onboarding)
 		}
-		if onboarding.BrokerRotateCredentialID != "" && onboarding.Phase == api.PhaseAwaitingCreds {
+		if onboarding.BrokerRotateCredentialID != "" && onboarding.Awaiting(api.GateCredentials) {
 			return c.statusBody(onboarding, true), nil
 		}
 		definition, err := c.definitionOf(onboarding)
@@ -301,10 +342,10 @@ func (c *ControlPlane) Rotate(auth identity.Envelope, args map[string]any) (map[
 		onboarding.BrokerRotateCredentialID = onboarding.BrokerCredentialID
 		onboarding.BrokerRequestID, onboarding.BrokerAuthorizationURL = "", ""
 		onboarding.BrokerAttempts++
-		onboarding.Phase = api.PhaseAwaitingCreds
+		onboarding.Stage = api.StagePending
+		onboarding.ArmGate(api.GateCredentials, "", time.Time{})
 		onboarding.Error = ""
 		onboarding.ErrorCode = ""
-		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationUsed = false
 		onboarding.Revision++
 		if err := c.ensureBrokerRequest(context.Background(), auth, &onboarding, definition); err != nil {
@@ -344,7 +385,7 @@ func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboar
 		return nil, err
 	}
 	onboarding.CredentialRefID = next.CredentialRefID
-	onboarding.Phase = api.PhaseRevoked
+	onboarding.Retire(api.TombstoneRevoked)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -391,12 +432,20 @@ func (c *ControlPlane) revokeAccess(onboarding api.Onboarding, connStatus api.St
 }
 
 func (c *ControlPlane) revokeBrokerCredential(onboarding api.Onboarding) error {
-	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
+	for i, id := range []string{onboarding.BrokerCredentialID, onboarding.BrokerRotateCredentialID} {
+		if id == "" || i == 1 && id == onboarding.BrokerCredentialID {
+			continue
+		}
+		if c.Broker == nil || !c.Broker.Enabled() {
+			return fmt.Errorf("%w: credential broker unavailable", api.ErrCredentialVisibilityUnknown)
+		}
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
-		if control, err := c.brokerControl(auth, c.onboardingShared(onboarding)); err == nil {
-			if err := control.Revoke(context.Background(), onboarding.BrokerCredentialID); err != nil && !brokerclient.IsNotFound(err) {
-				return err
-			}
+		control, err := c.brokerControl(auth, c.onboardingShared(onboarding))
+		if err != nil {
+			return err
+		}
+		if err := control.Revoke(context.Background(), id); err != nil && !brokerclient.IsNotFound(err) {
+			return err
 		}
 	}
 	return nil
@@ -725,7 +774,7 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 		return err
 	}
 	auth := onboardingEnvelope(onboarding)
-	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce})
+	body, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.GateNonce(api.GateConfirmSetup)})
 	if err != nil {
 		return err
 	}
@@ -750,12 +799,15 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 	// notice the owner sees the form's success page but never the chat
 	// confirmation, tools included.
 	if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
-		api.PostPrepareNotice(ctx, auth, latest, "", len(latest.Permissions))
+		c.deliverOutcomeNotice(ctx, auth, &latest)
 	}
 	return nil
 }
 
 func onboardingEnvelope(onboarding api.Onboarding) identity.Envelope {
+	if onboarding.Initiator != nil {
+		return *onboarding.Initiator
+	}
 	return identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 }
 
@@ -784,43 +836,54 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	}
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = auth.PrincipalID
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Stage = api.StagePending
+	onboarding.ClearGate()
+	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	return c.finishAuthorization(context.Background(), onboardingID)
+	// The provider's consent screen is the consent — bind straight through.
+	return c.completeSetup(context.Background(), auth, &onboarding, "oauth_callback")
 }
 
 // completeDeviceAuth finishes an onboarding whose user authorized through
 // RFC 8628 device flow: PollDevice already persisted the token, so the tail
 // matches the authorization-code callback — locator on the onboarding, then
-// the shared finishAuthorization path.
+// the shared completeSetup path.
 func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.Onboarding, meta oauth.TokenMeta) error {
 	onboarding.Locator = meta.Locator
 	onboarding.CredentialOwner = onboarding.PrincipalID
 	onboarding.DeviceCode, onboarding.DeviceUserCode, onboarding.DeviceVerification = "", "", ""
-	onboarding.Phase = api.PhaseAwaitingConfirm
-	onboarding.ConfirmationNonce = api.RandomNonce()
-	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Stage = api.StagePending
+	onboarding.ClearGate()
+	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	return c.finishAuthorization(ctx, onboarding.OnboardingID)
+	// Approving the device code on the provider page is the consent.
+	return c.completeSetup(ctx, onboardingEnvelope(onboarding), &onboarding, "oauth_callback")
 }
+
+type onboardingLookupError string
+
+func (e onboardingLookupError) Error() string      { return api.ErrNotFound.Error() + ": onboarding" }
+func (e onboardingLookupError) Unwrap() error      { return api.ErrNotFound }
+func (e onboardingLookupError) ReasonCode() string { return string(e) }
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (api.Onboarding, error) {
 	if id := api.ArgString(args, "onboarding_id"); id != "" {
 		onboarding, err := c.Store.OnboardingFor(auth, id)
 		if err != nil {
-			return api.Onboarding{}, err
+			if errors.Is(err, api.ErrUnauthorized) {
+				return api.Onboarding{}, onboardingLookupError("scope")
+			}
+			return api.Onboarding{}, onboardingLookupError("unknown")
 		}
 		// Callers may hold a preparing stub that was superseded by the real
 		// record (patch bump or a reviewed definition id): follow the pointer.
-		if onboarding.Phase == api.PhaseRemoved && onboarding.SupersededBy != "" {
+		if onboarding.Stage == api.StageGone && onboarding.SupersededBy != "" {
 			if target, err := c.Store.OnboardingFor(auth, onboarding.SupersededBy); err == nil {
 				return target, nil
 			}
@@ -851,8 +914,16 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
 	var matches []api.Onboarding
+	var versionMismatch bool
+	var terminal bool
 	for _, onboarding := range c.Store.onboardings {
-		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion || onboarding.Phase == api.PhaseRemoved {
+		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
+			continue
+		}
+		if onboarding.DeadEnd() {
+			if definitionID != "" && onboarding.DefinitionID == definitionID && (version == "" || onboarding.DefinitionVersion == version) || selector != "" && onboarding.DefinitionID == selector {
+				terminal = true
+			}
 			continue
 		}
 		if selector != "" {
@@ -862,13 +933,22 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 				continue
 			}
 		} else if onboarding.DefinitionID != definitionID || version != "" && onboarding.DefinitionVersion != version {
+			if onboarding.DefinitionID == definitionID && version != "" && onboarding.DefinitionVersion != version {
+				versionMismatch = true
+			}
 			continue
 		}
 		matches = append(matches, onboarding)
 	}
 	switch len(matches) {
 	case 0:
-		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
+		if terminal {
+			return api.Onboarding{}, onboardingLookupError("terminal")
+		}
+		if versionMismatch {
+			return api.Onboarding{}, onboardingLookupError("version")
+		}
+		return api.Onboarding{}, onboardingLookupError("unknown")
 	case 1:
 		return matches[0], nil
 	}

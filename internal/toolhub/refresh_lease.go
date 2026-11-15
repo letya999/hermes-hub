@@ -205,23 +205,30 @@ func (s *Store) persistLeasesLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".refresh-leases-*")
+	counter, err := s.storageCounter(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err = tmp.Chmod(0600); err == nil {
-		_, err = tmp.Write(body)
+	write := func() error {
+		tmp, err := os.CreateTemp(filepath.Dir(path), ".refresh-leases-*")
+		if err != nil {
+			return err
+		}
+		name := tmp.Name()
+		defer os.Remove(name)
+		if err = tmp.Chmod(0600); err == nil {
+			_, err = tmp.Write(body)
+		}
+		if err == nil {
+			err = tmp.Sync()
+		}
+		if closeErr := tmp.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
+		}
+		return os.Rename(name, path)
 	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return counter.Write(path, int64(len(body)), true, write)
 }

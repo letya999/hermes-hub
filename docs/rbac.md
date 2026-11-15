@@ -1,6 +1,6 @@
 ---
 description: Authorization model — principals, sections, evaluation order, grants, capability policies, profiles, teams, connector lifecycle.
-last_verified: 2026-10-30
+last_verified: 2026-11-06
 ---
 
 # RBAC, grants and capability policy
@@ -29,6 +29,8 @@ or a section the governance document denies, cannot execute.
 
 Every call carries an `identity.Envelope`: `principal_id`, `context_id`,
 `runtime_id`, `organization`, `policy_version` (internal/identity/identity.go).
+Managed calls require its authenticated `organization` to equal the active
+capability policy's organization.
 Adapters mint envelopes from authenticated transport identity — a Telegram
 sender id or Slack user/team id maps to a principal; the model can never set
 `principal_id` itself. `runtime_id` plus policy version fence replay across
@@ -85,12 +87,79 @@ bundle (`personal` / `personal+team`); under `connectors: ""` the strict
 `tools_list` are always projected and never grant anything — both only
 expose the caller's own admitted surface.
 
+## Rights vocabulary and the PDP
+
+`platform/catalogs/<release>/rights.yaml` is the immutable RBAC vocabulary
+shipped in the image: fundamental capability domains (`workspace`, `memory`,
+`models`, `tools`, `skills`, `connectors`, `agents`, `stack`, `config`,
+`channels`, `observability`, `users`) with per-operation `subject`
+(self|cross), `scope`, `issuers`, `pep`, `effect` and a norm description.
+Every operation names its enforcement point; the vocabulary is verified by
+manifest digest and cannot be edited at runtime.
+
+ToolHub's `Store.Decide(envelope, capability, operation, scope)` is the
+single policy decision point. Each verdict intersects four authorities:
+
+1. the vocabulary — an unknown `capability.operation` never allows;
+2. the published ceiling — a managed principal holds only the flattened
+   `grants.yaml` allow its active `CapabilityProfile.Rights` carries;
+3. for an organization policy, its protected `right_ceiling` — every profile
+   right and authored grant must fit; a missing ceiling admits no rights;
+4. the live ledger — `Governance.Rights` grants that are active, unexpired
+   and scope-covering. Cross-subject operations additionally require a
+   scope naming the target and are never operator-minted.
+
+Revocation is immediate: `RevokeRightGrant` flips the ledger record and the
+next Decide denies without a republish or respawn; `RightDecision.epoch`
+reports the governance revision the verdict was taken at.
+
+`/v1/rights/decide` serves both identity modes. Runtime tokens decide
+against the bearer envelope — a body-supplied foreign principal is denied,
+never trusted. The control-plane bearer lets in-space services assert this
+space's principal for their own PEP sites: supervisor gates
+`agents.restart_self`/`inspect_self`/`monitor_self` on runtime-facing
+routes, model-relay gates `models.list`/`switch`/`use`, communication-hub
+gates `channels.send`/`send_voice` (a denied voice leg degrades to text).
+The asserted principal and environment must match an active profile in the
+shared ToolHub store; a missing or mismatched environment denies even with a
+live ledger grant. Multiple active profiles in the same environment deny an
+asserted call because it cannot select a runtime generation. Hub tools enforce
+their declared `requires`
+inside admission itself, so a missing right hides the tool and `tools_list`
+reports it `unavailable` with the missing `capability.operation`.
+
+The protected rights ledger is issued independently of authored passports.
+`space apply` accepts only active self grants already issued to that principal;
+`DeriveRights` stamps `profile.Rights` from the published allow without issuing
+or revoking ledger grants. Revocation takes effect at the next decision even
+when a published passport still names the operation.
+
+## Grants passport (effective view)
+
+Each managed space's `generated/passports/<rev>/grants.yaml` is the
+published imperative for agent rights: `allow: {capability: [operations]}`
+is the ceiling every per-call decision enforces. An empty allow denies all
+operations. Editing the authored file alone changes nothing: only a valid
+whole-set publish updates the profile ceiling, and live decisions also check
+the independently issued ledger grant. An issued `tools.configure` grant must
+also be present in the current published allow before a later `tools.yaml`
+selection change can be applied.
+
+Revocation is immediate on both agent-facing paths. The toolhub gateway
+re-verifies the binding on every admitted call (`ReverifyEffective`), and
+the runtime executor reloads `/config/tool-policy.json` on every direct or
+invoke call (`toolPolicyDeny`), so an explicit deny lands on the next call
+even when the prompt text or the passport snapshot is stale.
+
 ## Capability policy (org ceiling)
 
-`CapabilityPolicy` binds an organization: `ceiling` (the hard maximum),
-`defaults`, `default_groups`, `denies`, member list, revision and
-confirmation. Denies here cap everything below; a profile cannot grant past
-the ceiling.
+`CapabilityPolicy` binds an organization: `ceiling` (the tool tuple maximum),
+`right_ceiling` (the independent rights maximum), `defaults`,
+`default_groups`, `denies`, member list, revision and confirmation. A profile
+cannot publish rights outside `right_ceiling`; `space apply` checks the exact
+active profile, environment and organization before publishing authored grants.
+Per-call decisions intersect the policy ceiling again, so a legacy profile
+with wider rights cannot bypass it.
 
 ## Capability profile (per runtime generation)
 
@@ -103,11 +172,23 @@ definitions project), `allows`/`allow_groups`, `denies`, plus:
 - `control_operations` — reviewed allowlist of control-plane ops for the
   managed token; absent means none.
 - `self_install` — admits the GitHub-source prepare path; installation still
-  requires the single-use human confirmation (SPEC-0041 CP-05).
+  requires the single-use human confirmation (SPEC-0041 CP-05). Installation
+  does not select model tools; a published `tools.yaml` selection is required.
 - `connectors` — projection mode for the nine `connector_*` tools: `""` keeps
   legacy per-operation grants, `none` hides them, `personal` projects them
   over own connections, `personal+team` adds lifecycle on team connections
   where the caller is a member.
+- `rights` — the published grants allow flattened to
+  `capability.operation` ceiling rows; `DeriveRights` rewrites it on every
+  publish, so the row set is always the active passport, never a manual
+  edit.
+
+For managed connector tools, `selections` is replaced from the published
+`tools.yaml` on apply. An old profile selection, active connection or cached
+MCP schema cannot restore a removed tool. Connection records, credential
+references and issued grants have separate lifecycles; selection alone grants
+no right. Connector selection changes keep the session policy version stable,
+while each call still checks the current profile revision and live grants.
 
 ## Capability rules
 
@@ -119,6 +200,9 @@ embedded snapshot with a revision — widening members requires a new policy
 revision, old snapshots never grow. `implementation_digest` pins the reviewed
 code so a re-published tool cannot silently change behavior under a live
 grant.
+For first-party file tools, the published `tools.yaml` path selection further
+narrows the admitted tuple before dispatch. The selected path and the policy
+prefix intersect; neither selection nor `tools.configure` grants `tools.use`.
 
 ## Teams and shared connections
 

@@ -48,6 +48,10 @@ type Message struct {
 	// in message_thread_id.
 	MessageThreadID int64 `json:"message_thread_id,omitempty"`
 	IsTopicMessage  bool  `json:"is_topic_message,omitempty"`
+	// ForwardOrigin is the transport's own mark that the content came from
+	// somewhere else (a forwarded post or channel relay). The hub stamps
+	// untrusted provenance from its presence — never from body text.
+	ForwardOrigin json.RawMessage `json:"forward_origin,omitempty"`
 	// ForumTopicCreated is the group service message emitted when a user
 	// creates a forum topic; the bot's own topic actions never pass the
 	// verified-user gate, so they cannot echo back.

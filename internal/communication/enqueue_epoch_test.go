@@ -173,7 +173,7 @@ func TestEnqueueHoldCheckRunsOutsideSpoolLock(t *testing.T) {
 	}
 	read := make(chan struct{})
 	go func() {
-		_, _ = s.EventStateOf("unrelated")
+		_, _ = s.fsys.Lstat(filepath.Join(s.root, "mappings"))
 		close(read)
 	}()
 	select {

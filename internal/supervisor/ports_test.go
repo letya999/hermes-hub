@@ -86,7 +86,9 @@ func TestEnsureReclaimsDeadStaleContainer(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatalf("stale container blocked respawn: %v", err)
 	}
-	if len(order) != 3 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name {
+	// The managed spawn is relay-first: reclaim, then the control relay,
+	// then the runtime — the stale name must be free before either runs.
+	if len(order) != 4 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name+"-ctl" || order[3] != "run "+name {
 		t.Fatalf("stale container not reclaimed before spawn: %v", order)
 	}
 }
@@ -118,7 +120,7 @@ func TestEnsureReclaimsRunningStaleGeneration(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatalf("stale generation blocked respawn: %v", err)
 	}
-	if len(order) != 3 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name {
+	if len(order) != 4 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name+"-ctl" || order[3] != "run "+name {
 		t.Fatalf("stale generation not reclaimed before spawn: %v", order)
 	}
 }

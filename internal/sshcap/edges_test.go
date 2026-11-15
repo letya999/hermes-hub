@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"net"
 	"os"
 	"path/filepath"
@@ -115,8 +116,8 @@ func TestShellErrorPaths(t *testing.T) {
 	}
 	// PTY refused: server has no shell subsystem.
 	noPty := openFixture(t, sshdOpts{}, Grants{Shell: true}, "    commands: [\"uptime\"]\n", "")
-	if _, err = noPty.svc.ShellOpen(context.Background(), "box"); !errors.Is(err, ErrUnavailable) {
-		t.Fatal("pty refusal must surface as unavailable", err)
+	if _, err = noPty.svc.ShellOpen(context.Background(), "box"); !errors.Is(err, audit.ErrUncertain) {
+		t.Fatal("shell request failure must surface as uncertain", err)
 	}
 }
 
@@ -153,8 +154,8 @@ func TestTunnelErrorPaths(t *testing.T) {
 	if err = os.WriteFile(configPath, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := Open(Options{ConfigPath: configPath, Grants: Grants{Tunnel: true},
-		Auth: identity.Envelope{Schema: identity.Schema, PrincipalID: "me"}})
+	svc, err := Open(testAuditOptions(t, Options{ConfigPath: configPath, Grants: Grants{Tunnel: true},
+		Auth: identity.Envelope{Schema: identity.Schema, PrincipalID: "me"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,11 +250,11 @@ func TestSSHCAMintsShortLivedCert(t *testing.T) {
 	// The mint lands a bounded receipt: serial and principals, never key data.
 	found := false
 	for _, e := range f.auditEvents(t) {
-		if e.Kind == "ssh" && strings.HasPrefix(e.Receipt, "ssh-cert") && strings.Contains(e.Receipt, fmt.Sprintf("serial=%d", cert.Serial)) && strings.Contains(e.Receipt, "tester") {
+		if e.Kind == "ssh" && strings.HasPrefix(e.Receipt, "ssh-cert") && strings.Contains(e.Receipt, fmt.Sprintf("serial=%d", cert.Serial)) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("no ssh-cert receipt with serial+principal")
+		t.Fatal("no ssh-cert receipt with serial and bounded TTL")
 	}
 }

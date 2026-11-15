@@ -34,7 +34,7 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", id+".json")
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := e.readFile(path); err == nil {
 		var existing commodel.RoutineOccurrence
 		if json.Unmarshal(b, &existing) != nil || commodel.JobFingerprint(existing.Job) != commodel.JobFingerprint(o.Job) {
 			return errors.New("occurrence identity conflict")
@@ -44,7 +44,7 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 		return err
 	}
 	for _, dir := range []string{"receipts", "archive", "quarantine"} {
-		_, err := os.Stat(filepath.Join(e.root, "occurrences", dir, id+".json"))
+		_, err := e.lstat(filepath.Join(e.root, "occurrences", dir, id+".json"))
 		if err == nil {
 			if dir == "quarantine" {
 				return errors.New("occurrence quarantined")
@@ -58,13 +58,42 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 	return e.atomicJSON(path, o)
 }
 
+// MutateProbingOccurrence applies mutate to the durable occurrence while it
+// is still probing and writes the result atomically. It reports whether the
+// record was probing; a settled or missing record reports false and is left
+// untouched. The callback runs inside the engine critical section and must
+// not call back into the engine.
+func (e *Engine) MutateProbingOccurrence(o commodel.RoutineOccurrence, mutate func(live *commodel.RoutineOccurrence) error) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
+	body, err := e.readFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var live commodel.RoutineOccurrence
+	if json.Unmarshal(body, &live) != nil {
+		return false, errors.New("invalid probing occurrence")
+	}
+	if live.State != "probing" {
+		return false, nil
+	}
+	if err := mutate(&live); err != nil {
+		return true, err
+	}
+	return true, e.atomicJSON(path, live)
+}
+
 // quarantineOccurrenceLocked preserves a bad durable record outside hot scans.
 func (e *Engine) quarantineOccurrenceLocked(path string) error {
 	dir := filepath.Join(e.root, "occurrences", "quarantine")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := e.mkdirOwned(dir, true); err != nil {
 		return err
 	}
-	if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+	if err := e.renameOwned(path, filepath.Join(dir, filepath.Base(path))); err != nil {
 		return err
 	}
 	log.Printf("quarantined invalid occurrence %s", filepath.Base(path))
@@ -79,22 +108,22 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "occurrences"))
+	entries, err := e.readDir(filepath.Join(e.root, "occurrences"))
 	if err != nil {
 		return err
 	}
 	occurrences := make([]commodel.RoutineOccurrence, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		path := filepath.Join(e.root, "occurrences", entry.Name())
-		b, err := os.ReadFile(path)
+		path := filepath.Join(e.root, "occurrences", name)
+		b, err := e.readFile(path)
 		if err != nil {
 			return err
 		}
 		var o commodel.RoutineOccurrence
-		if len(b) > 128*1024 || json.Unmarshal(b, &o) != nil || ValidateOccurrence(o, o.Job.Envelope, e.deps.ChannelFor) != nil || entry.Name() != occurrenceID(o)+".json" || o.Job.ID != occurrenceID(o) || o.Job.IdempotencyKey != o.Job.ID {
+		if len(b) > 128*1024 || json.Unmarshal(b, &o) != nil || ValidateOccurrence(o, o.Job.Envelope, e.deps.ChannelFor) != nil || name != occurrenceID(o)+".json" || o.Job.ID != occurrenceID(o) || o.Job.IdempotencyKey != o.Job.ID {
 			if err := e.quarantineOccurrenceLocked(path); err != nil {
 				return err
 			}
@@ -121,14 +150,14 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 	active := map[string]string{}
 	blocked := map[string]bool{}
 	for _, o := range occurrences {
-		if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
+		if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" || o.JobKind == "dreaming" {
 			// Probe kinds never admit jobs through this loop; the only
 			// mapping one can carry is the escalation product — a job
 			// deliberately rewritten at settle time, so the binding check
 			// below can only false-positive on it.
 			continue
 		}
-		mapping, err := e.deps.LoadMapping(o.Job.ID)
+		mapping, err := e.deps.Dispatch.LoadMapping(o.Job.ID)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -177,7 +206,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 		if window <= 0 {
 			window = DefaultCatchUp
 		}
-		if !e.OccurrenceCurrentLocked(o) {
+		if !e.OccurrenceCurrent(o) {
 			o.State = "cancelled"
 		} else if now.Sub(o.DueAt) > window {
 			o.State = "missed"
@@ -185,6 +214,8 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			o.State = "blocked"
 		} else if o.JobKind == "script" {
 			o.State = "scripting"
+		} else if o.JobKind == "dreaming" {
+			o.State = "dreaming"
 		} else if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
@@ -192,7 +223,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			pendingProbe := false
 			for _, source := range occurrences {
 				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
-					b, err := os.ReadFile(filepath.Join(e.root, "occurrences", occurrenceID(source)+".json"))
+					b, err := e.readFile(filepath.Join(e.root, "occurrences", occurrenceID(source)+".json"))
 					var live commodel.RoutineOccurrence
 					if err == nil && json.Unmarshal(b, &live) == nil && (live.State == "pending" || live.State == "probing") {
 						pendingProbe = true
@@ -205,7 +236,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 
 			if o.JobKind == "brief" {
-				if item, err := e.LoadScheduleLocked(o.ScheduleID); err == nil && QuietDefer(item, now).After(now) {
+				if item, err := e.LoadSchedule(o.ScheduleID); err == nil && QuietDefer(item, now).After(now) {
 					// A brief's effect is a model call, which cannot ride a
 					// delivery not_before: the whole slot waits out the quiet
 					// window. Still-due occurrences fire after the window;
@@ -225,7 +256,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			if err != nil {
 				return err
 			}
-			if err = e.deps.EnqueueDelivery(d); err != nil {
+			if err = e.deps.Delivery.EnqueueDelivery(d); err != nil {
 				return err
 			}
 			o.State = "dispatched"
@@ -236,7 +267,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 			admitted := o.Job
 			admitted.Envelope.ConversationID = RoutineConversation(o.ScheduleID)
-			if _, err = e.deps.EnqueueJob(admitted); err != nil {
+			if _, err = e.deps.Dispatch.EnqueueJob(admitted); err != nil {
 				return err
 			}
 			o.State = "dispatched"
@@ -257,12 +288,18 @@ func ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope, 
 	if len(o.ScheduleID) > 80 || !commodel.IDPattern.MatchString(o.ScheduleID) || o.Revision == 0 || o.DueAt.IsZero() || !caller.Equal(o.Job.Envelope) || caller.Validate(o.Job.UserID, o.Job.ContextID, o.Job.RuntimeID, o.Job.PolicyVersion) != nil || o.Job.ActorID != caller.PrincipalID || o.Job.ScopeID != "user:"+o.Job.UserID {
 		return errors.New("invalid occurrence ownership")
 	}
-	ch := channelFor(o.Job.Channel)
-	if ch == nil {
-		return errors.New("invalid occurrence ownership")
-	}
-	if err := ch.ValidateOccurrence(o, caller); err != nil {
-		return err
+	if o.JobKind == "dreaming" {
+		if o.ScheduleID != SystemDreamingID || o.Job.Channel != "system" {
+			return errors.New("invalid system occurrence")
+		}
+	} else {
+		ch := channelFor(o.Job.Channel)
+		if ch == nil {
+			return errors.New("invalid occurrence ownership")
+		}
+		if err := ch.ValidateOccurrence(o, caller); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(o.Job.Text) == "" || len(o.Job.Text) > 64*1024 || o.Job.Sensitive || envstore.LooksLikeEnv(o.Job.Text) {
 		return errors.New("invalid routine input")

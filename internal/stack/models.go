@@ -5,18 +5,12 @@ import (
 	"fmt"
 	brokeridentity "github.com/letya999/credential-broker/identity"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
-// ModelRegistry is the merged view of the model/provider layer declared in
-// models.yaml files: shared under spaces/, then the organization space, then
-// the owner's own space — later layers win on the same keys.
+// ModelRegistry is the relay projection of one published models passport.
 type ModelRegistry struct {
 	RuntimeModel string                   `yaml:"runtime_model,omitempty"`
 	Providers    map[string]ModelProvider `yaml:"providers"`
@@ -35,6 +29,12 @@ type ModelProvider struct {
 	AllowPrivate  bool              `yaml:"allow_private,omitempty"`
 	URL           string            `yaml:"url"`
 	KeyEnv        string            `yaml:"key_env,omitempty"`
+	// Via and UpstreamKind are the passport service's transport and upstream
+	// credential kind ("cliproxy"/"openai-compatible", "oauth-session"/
+	// "broker-key") — the relay reads them to decide which limit kinds the
+	// service's own telemetry can measure.
+	Via          string `yaml:"via,omitempty"`
+	UpstreamKind string `yaml:"upstream_kind,omitempty"`
 }
 
 func (p ModelProvider) Allows(owner string) bool {
@@ -42,8 +42,34 @@ func (p ModelProvider) Allows(owner string) bool {
 }
 
 type ModelHopRef struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Provider string       `yaml:"provider"`
+	Model    string       `yaml:"model,omitempty"`
+	Models   []string     `yaml:"models,omitempty"`
+	Limits   []ModelLimit `yaml:"limits,omitempty"`
+	// Reasoning declares the service accepts reasoning parameters; requests
+	// carrying them skip services that never declared support.
+	Reasoning bool `yaml:"reasoning,omitempty"`
+	// Sharing declares who the credential principal serves: "shared" (one
+	// principal for every admitted owner) or "personal" (per-owner
+	// broker-granted material — a shared key_env cannot be personal).
+	Sharing string `yaml:"sharing,omitempty"`
+}
+
+// ModelLimit is one durable quota window for the hop's credential principal:
+// a fixed {of, amount, unit?, per, clock?} grammar. "requests" counts every
+// upstream call, "tokens" reserves the conservative request estimate up
+// front; "provider_quota" and "spend_usd" are declared but only measurable
+// where the service reports per-session usage or a catalog price exists —
+// the relay disables a hop whose limits it cannot measure. Counters live in
+// the relay state directory and never cross spaces; scope "shared" meters
+// the principal, "personal" meters each owner separately.
+type ModelLimit struct {
+	Of     string `yaml:"of"`
+	Amount int64  `yaml:"amount"`
+	Unit   string `yaml:"unit,omitempty"`
+	Per    string `yaml:"per"`
+	Clock  string `yaml:"clock,omitempty"`
+	Scope  string `yaml:"scope,omitempty"`
 }
 
 type ModelEntry struct {
@@ -79,54 +105,14 @@ func validateProviderURL(raw string) error {
 	return nil
 }
 
-// LoadModelRegistry merges spaces/models.yaml, spaces/<org>/models.yaml and
-// spaces/<user>/models.yaml for the space rooted at dir.
-func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
-	reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
-	root := filepath.Dir(filepath.Clean(dir))
-	if filepath.Base(root) != "spaces" {
-		return reg, nil
+// LoadModelRegistry reads only the validated published models passport.
+func LoadModelRegistry(dir string, _ Settings) (*ModelRegistry, error) {
+	layer, err := passportRegistryLayer(dir, "")
+	if err != nil {
+		return nil, err
 	}
-	paths := []string{filepath.Join(root, "models.yaml")}
-	if s.Organization != "" {
-		paths = append(paths, filepath.Join(root, s.Organization, "models.yaml"))
-	}
-	paths = append(paths, filepath.Join(dir, "models.yaml"))
-	for _, path := range paths {
-		layer, err := readModelRegistry(path)
-		if err != nil {
-			return nil, err
-		}
-		for name, p := range layer.Providers {
-			reg.Providers[name] = p
-		}
-		for name, m := range layer.Models {
-			reg.Models[name] = m
-		}
-		if reg.Switch == nil {
-			reg.Switch = map[string]string{}
-		}
-		for name, level := range layer.Switch {
-			reg.Switch[name] = level
-		}
-	}
+	reg := &ModelRegistry{Providers: layer.Providers, Models: layer.Models, Switch: layer.Switch}
 	return reg, reg.Validate()
-}
-
-func readModelRegistry(path string) (modelRegistryYAML, error) {
-	var layer modelRegistryYAML
-	b, err := os.ReadFile(path) // #nosec G304 -- operator-controlled registry path
-	if os.IsNotExist(err) {
-		return layer, nil
-	} else if err != nil {
-		return layer, err
-	}
-	d := yaml.NewDecoder(strings.NewReader(string(b)))
-	d.KnownFields(true)
-	if err := d.Decode(&layer); err != nil {
-		return layer, fmt.Errorf("%s: %w", filepath.Base(path), err)
-	}
-	return layer, nil
 }
 
 // Validate applies the same provider/model contract at render and relay reload.
@@ -173,8 +159,49 @@ func (r *ModelRegistry) Validate() error {
 			if _, ok := r.Providers[hop.Provider]; !ok && hop.Provider != "cliproxy" {
 				return fmt.Errorf("models.yaml: model %q uses unknown provider %q", name, hop.Provider)
 			}
-			if strings.TrimSpace(hop.Model) == "" || !registryModelPattern.MatchString(hop.Model) {
-				return fmt.Errorf("models.yaml: model %q bad provider model id %q", name, hop.Model)
+			ids := hop.Models
+			if len(ids) == 0 {
+				ids = []string{hop.Model}
+			} else if strings.TrimSpace(hop.Model) != "" {
+				return fmt.Errorf("models.yaml: model %q sets both model and models", name)
+			}
+			for _, id := range ids {
+				if strings.TrimSpace(id) == "" || !registryModelPattern.MatchString(id) {
+					return fmt.Errorf("models.yaml: model %q bad provider model id %q", name, id)
+				}
+			}
+			switch hop.Sharing {
+			case "", "shared":
+			case "personal":
+				if p := r.Providers[hop.Provider]; len(p.BrokerGrants) == 0 {
+					return fmt.Errorf("models.yaml: model %q provider %q personal sharing needs broker_grants", name, hop.Provider)
+				}
+			default:
+				return fmt.Errorf("models.yaml: model %q sharing %q unknown", name, hop.Sharing)
+			}
+			for _, limit := range hop.Limits {
+				if limit.Amount <= 0 {
+					return fmt.Errorf("models.yaml: model %q limit needs amount > 0", name)
+				}
+				switch limit.Of {
+				case "requests", "tokens", "provider_quota", "spend_usd":
+				default:
+					return fmt.Errorf("models.yaml: model %q limit of %q unknown", name, limit.Of)
+				}
+				if limit.Unit != "" && limit.Unit != "percent" {
+					return fmt.Errorf("models.yaml: model %q limit unit %q unknown", name, limit.Unit)
+				}
+				if limit.Clock != "" && limit.Clock != "provider" {
+					return fmt.Errorf("models.yaml: model %q limit clock %q unknown", name, limit.Clock)
+				}
+				switch limit.Per {
+				case "5h", "1d", "1w":
+				default:
+					return fmt.Errorf("models.yaml: model %q limit per %q unknown", name, limit.Per)
+				}
+				if limit.Scope != "" && limit.Scope != "shared" && limit.Scope != "personal" {
+					return fmt.Errorf("models.yaml: model %q limit scope %q unknown", name, limit.Scope)
+				}
 			}
 		}
 	}

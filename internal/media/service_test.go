@@ -464,3 +464,61 @@ func TestSmallHelpersCoverage(t *testing.T) {
 		t.Fatal("missing read")
 	}
 }
+
+// The 502 contract: an allowlisted reason token surfaces in the caller
+// error; anything else — absent or injected — stays a bare status.
+func TestServiceDoSurfacesAllowlistedReason(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"denied", `{"error":{"message":"image generation failed","reason":"provider_denied"}}`, " (reason: provider_denied)"},
+		{"rate limited", `{"error":{"message":"image generation failed","reason":"provider_rate_limited"}}`, " (reason: provider_rate_limited)"},
+		{"unavailable", `{"error":{"message":"image generation failed","reason":"upstream_unavailable"}}`, " (reason: upstream_unavailable)"},
+		{"unknown token", `{"error":{"message":"x","reason":"account artemletyushev@gmail.com disabled"}}`, ""},
+		{"free text", `{"error":{"message":"upstream says: disable artemletyushev@gmail.com"}}`, ""},
+		{"not json", `Service Unavailable`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			s := &Session{HTTP: srv.Client()}
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/x", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = s.serviceDo(req, 1<<20)
+			if err == nil {
+				t.Fatal("502 must error")
+			}
+			want := "media service HTTP 502" + tc.want
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err.Error(), want)
+			}
+			if tc.want == "" && strings.Contains(err.Error(), "gmail") {
+				t.Fatalf("unvetted body text leaked into the error: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestBoundedJobError(t *testing.T) {
+	if got := boundedJobError("line1\nline2\r\nline3"); strings.Contains(got, "\n") {
+		t.Fatalf("newlines must collapse: %q", got)
+	}
+	long := strings.Repeat("x", 300)
+	if got := boundedJobError(long); len([]rune(got)) > 201 {
+		t.Fatalf("job error must be capped: %d runes", len([]rune(got)))
+	}
+	if got := boundedJobError("  "); got != "unknown" {
+		t.Fatalf("empty error must read unknown: %q", got)
+	}
+	if got := boundedJobError("provider call failed: provider_denied"); got != "provider call failed: provider_denied" {
+		t.Fatalf("classified errors pass through: %q", got)
+	}
+}

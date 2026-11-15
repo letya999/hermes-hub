@@ -2,6 +2,11 @@
 
 Frozen: 2026-10-06. Issue 172.
 
+2026-11-08 amendment: the per-file bound for document and image artifacts,
+including explicit `MEDIA:` sources, is 20 MiB. The separate video bound
+remains 48 MiB. This replaces the earlier 8 MiB references below; file
+containment, count and durable handoff rules are unchanged.
+
 1. `workspace/artifacts/documents`, `workspace/artifacts/images` and
    `workspace/artifacts/videos` are the
    deliverable area: hub tools place generated files there by contract. On a
