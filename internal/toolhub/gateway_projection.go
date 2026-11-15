@@ -188,7 +188,9 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 		// session detaches the outer request context, so RequestExtra.Header
 		// is the only carrier that reaches the tool call itself.
 		if extra := request.GetExtra(); extra != nil && extra.Header != nil {
-			if corr := api.HeaderCorrelation(extra.Header.Get(api.HeaderJobID), extra.Header.Get(api.HeaderRunID)); corr.JobID != "" || corr.HermesRunID != "" {
+			corr := api.HeaderCorrelation(extra.Header.Get(api.HeaderJobID), extra.Header.Get(api.HeaderRunID))
+			corr.Scoped = extra.Header.Get(api.HeaderRunEndpoint) != ""
+			if corr.JobID != "" || corr.HermesRunID != "" || corr.Scoped {
 				ctx = api.WithCallCorrelation(ctx, corr)
 			}
 		}

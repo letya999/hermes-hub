@@ -88,7 +88,10 @@ func TestDurableToolAdmissionAndRecoveredReplayFence(t *testing.T) {
 	}
 	ctx := api.WithCallCorrelation(context.Background(), api.CallCorrelation{JobID: "job-1", HermesRunID: "run-1", ToolCallID: "call-1"})
 	calls := 0
-	g := &Gateway{Store: store, AuditWrite: LedgerAuditWriter(ledger), Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+	record := privateRunRecord(auth, "job-1", "run-1")
+	g := &Gateway{Store: store, AuditWrite: LedgerAuditWriter(ledger), Runs: runAuthorityFunc(func(context.Context, string) (api.RunContext, error) {
+		return record, nil
+	}), Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		calls++
 		pending, err := ledger.Pending(audit.Scope{PrincipalID: auth.PrincipalID}, 1)
 		if err != nil || len(pending) != 1 || pending[0].Authorization != "allow" || pending[0].Execution != "unknown" || pending[0].JobID != "job-1" {

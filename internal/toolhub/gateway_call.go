@@ -56,6 +56,17 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		corr.ToolCallID = api.NewToolCallID()
 	}
 	ctx = api.WithCallCorrelation(ctx, corr)
+	// Run-scoped surfaces require a verifiable job/run pair; any non-empty
+	// correlation anywhere is a claim that must prove itself against the
+	// supervisor's durable record before it can charge or attribute a call.
+	if corr.Scoped && (corr.JobID == "" || corr.HermesRunID == "") {
+		return nil, fmt.Errorf("%w: run correlation required", api.ErrUnauthorized)
+	}
+	if corr.JobID != "" || corr.HermesRunID != "" {
+		if _, err := g.lookupLiveRun(ctx, auth, corr); err != nil {
+			return nil, err
+		}
+	}
 	if err := g.chargeRunCall(corr); err != nil {
 		return nil, err
 	}
