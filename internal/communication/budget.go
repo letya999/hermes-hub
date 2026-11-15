@@ -30,12 +30,16 @@ type reservation struct {
 }
 
 type scopeBudget struct {
-	PendingJobs    int    `json:"pending_jobs"`
-	ReservedTokens int64  `json:"reserved_tokens"`
-	SettledIn      int64  `json:"settled_in"`
-	SettledOut     int64  `json:"settled_out"`
-	Unknown        int64  `json:"unknown"`
-	Day            string `json:"day,omitempty"`
+	PendingJobs    int   `json:"pending_jobs"`
+	ReservedTokens int64 `json:"reserved_tokens"`
+	SettledIn      int64 `json:"settled_in"`
+	SettledOut     int64 `json:"settled_out"`
+	Unknown        int64 `json:"unknown"`
+	// UnknownTokens is the conservative token liability carried by jobs whose
+	// provider never reported usage: the estimate stays charged against the
+	// daily ceiling so unmeasured spend cannot evaporate on reservation release.
+	UnknownTokens int64  `json:"unknown_tokens"`
+	Day           string `json:"day,omitempty"`
 }
 
 // defaultTokenEstimate prices a job that names none; HUB_JOB_TOKEN_ESTIMATE
@@ -84,7 +88,7 @@ func (s *Spool) bucketLocked(scopeID string) *scopeBudget {
 	today := time.Now().UTC().Format("2006-01-02")
 	if bucket.Day != today {
 		bucket.Day = today
-		bucket.SettledIn, bucket.SettledOut, bucket.Unknown = 0, 0, 0
+		bucket.SettledIn, bucket.SettledOut, bucket.Unknown, bucket.UnknownTokens = 0, 0, 0, 0
 	}
 	return bucket
 }
@@ -150,7 +154,7 @@ func (s *Spool) checkCeilingsLocked(scopeID string, estimate int64) error {
 	}
 	if s.limits.ScopeTokenDaily > 0 {
 		bucket := s.bucketLocked(scopeID)
-		if bucket.SettledIn+bucket.SettledOut+bucket.ReservedTokens+estimate > s.limits.ScopeTokenDaily {
+		if bucket.SettledIn+bucket.SettledOut+bucket.UnknownTokens+bucket.ReservedTokens+estimate > s.limits.ScopeTokenDaily {
 			return fmt.Errorf("scope %s daily token budget exhausted", scopeID)
 		}
 	}
@@ -234,6 +238,7 @@ func (s *Spool) settleReservationLocked(jobID string) error {
 	case !measured:
 		res.State, res.Charged = "settled", res.Estimate
 		bucket.Unknown++
+		bucket.UnknownTokens += res.Charged
 	default:
 		res.State, res.Charged = "settled", in+out
 		bucket.SettledIn += in

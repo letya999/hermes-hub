@@ -471,14 +471,21 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				hop.fail()
 				break
 			}
+			// The budget gate is atomic and durable: no provider attempt leaves
+			// without a persisted reservation, and a refused attempt parks the
+			// hop so the ladder can advance instead of spending blind.
+			if hop.meter != nil {
+				if err := hop.meter.admit(hop.name, hop.limits, hop.owner, hopBody); err != nil {
+					hop.failWith("quota", "local model limit spent")
+					log.Printf("model-relay hop=%s path=%s admission refused (quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+					break
+				}
+			}
 			resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
 			if err != nil {
 				hop.failTransport()
 				log.Printf("model-relay hop=%s path=%s transport error", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				break
-			}
-			if hop.meter != nil {
-				hop.meter.charge(hop.name, hop.limits, hop.owner, hopBody)
 			}
 			// Redirects are denied and quota/account exhaustion falls through;
 			// both park the hop for the cooldown window.
