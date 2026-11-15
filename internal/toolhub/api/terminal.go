@@ -207,7 +207,7 @@ func (e *terminalExecutor) start(ctx context.Context, effective EffectiveBinding
 	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(timeout+15)*time.Second)
 	job.cancel = cancel
 	go e.run(jobCtx, job, image, start)
-	go func() {
+	go func() { // #nosec G118 -- the fence ticker must outlive the request context; the job detaches on purpose.
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -300,7 +300,7 @@ func (e *terminalExecutor) run(ctx context.Context, job *terminalJob, image stri
 		job.fail(err)
 		job.cancel()
 		_ = cmd.Wait()
-		e.cleanup(job)
+		_ = e.cleanup(job)
 		return
 	}
 	reader := bufio.NewReaderSize(stdout, 64*1024)

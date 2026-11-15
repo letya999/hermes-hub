@@ -924,14 +924,14 @@ func connectorServiceCall(ctx context.Context, base, token, tool string, args ma
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, connectorServiceBase(base)+"/v1/connectors:invoke", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, connectorServiceBase(base)+"/v1/connectors:invoke", strings.NewReader(string(body))) // #nosec G704 -- base is the operator's --service target.
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- same operator-supplied base.
 	if err != nil {
 		return nil, fmt.Errorf("connector service call: %w", err)
 	}
@@ -950,13 +950,13 @@ func connectorServiceCall(ctx context.Context, base, token, tool string, args ma
 // listener's own connector view — projected surfaces plus the onboarding
 // inventory — read straight off GET /v1/connectors.
 func connectorServiceList(ctx context.Context, base, token string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, connectorServiceBase(base)+"/v1/connectors", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, connectorServiceBase(base)+"/v1/connectors", nil) // #nosec G704 -- base is the operator's --service target.
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- same operator-supplied base.
 	if err != nil {
 		return fmt.Errorf("connector service list: %w", err)
 	}

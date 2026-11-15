@@ -453,7 +453,7 @@ func shareGeneratedRuntimeViews(dir string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.Chown(path, -1, os.Getgid()); err != nil {
+			if err := os.Chown(path, -1, os.Getgid()); err != nil { // #nosec G122 -- path is a walk entry under the generated view we just symlink-checked.
 				return err
 			}
 			mode := info.Mode().Perm() | 0060
@@ -462,7 +462,7 @@ func shareGeneratedRuntimeViews(dir string) error {
 			} else if info.Mode().Perm()&0100 != 0 {
 				mode |= 0010
 			}
-			return os.Chmod(path, mode)
+			return os.Chmod(path, mode) // #nosec G122 -- same walk-entry path under the generated view.
 		}); err != nil {
 			return err
 		}

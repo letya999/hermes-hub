@@ -242,7 +242,7 @@ func stageDevCatalog(root, buildDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(target, name), body, 0o444); err != nil {
+		if err := os.WriteFile(filepath.Join(target, name), body, 0o444); err != nil { // #nosec G703 -- name is a directory entry name, never a path.
 			return err
 		}
 	}

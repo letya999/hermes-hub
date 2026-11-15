@@ -299,7 +299,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 		boundaryPath = "/config/workspace.yaml"
 	}
 	if !managed && !explicitBoundary {
-		if _, err := os.Lstat(boundaryPath); os.IsNotExist(err) {
+		if _, err := os.Lstat(boundaryPath); os.IsNotExist(err) { // #nosec G703 -- boundaryPath is the packaged default or operator env, probed for existence only.
 			boundaryPath = ""
 		}
 	}

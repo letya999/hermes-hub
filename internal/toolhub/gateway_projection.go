@@ -65,7 +65,7 @@ func (g *Gateway) projectionFingerprint(auth identity.Envelope) ([32]byte, bool,
 		}
 		h.Write([]byte(rev))
 		for _, name := range passportview.Names {
-			body, err := os.ReadFile(filepath.Join(space, "passports", rev, name+".yaml"))
+			body, err := os.ReadFile(filepath.Join(space, "passports", rev, name+".yaml")) // #nosec G703 -- rev is validated filepath.IsLocal; names come from the fixed passport view list.
 			if err != nil {
 				return empty, false, err
 			}

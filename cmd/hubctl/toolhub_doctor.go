@@ -18,8 +18,8 @@ import (
 func toolhubDoctorWarnings(dir string, lang locale.Lang) []string {
 	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
 	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
-		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil { // #nosec G703 -- root is built under the operator's space dir.
+		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) { // #nosec G703 -- same operator space root.
 			storePath = filepath.Join(root, "store.db")
 		}
 	}

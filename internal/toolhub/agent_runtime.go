@@ -56,13 +56,13 @@ func (g *Gateway) acquireAgentRuntime(ctx context.Context, effective api.Effecti
 		return nil, api.ErrInvalid
 	}
 	client := &http.Client{Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String()+"/v1/leases", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String()+"/v1/leases", bytes.NewReader(body)) // #nosec G704 -- endpoint is the configured control-plane URL, not request input.
 	if err != nil {
 		return nil, api.ErrIsolation
 	}
 	req.Header.Set("Authorization", "Bearer "+g.ControlToken)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(req)
+	response, err := client.Do(req) // #nosec G704 -- same fixed control-plane endpoint.
 	if err != nil {
 		return nil, api.ErrIsolation
 	}
@@ -97,13 +97,13 @@ func (g *Gateway) acquireAgentRuntime(ctx context.Context, effective api.Effecti
 	return func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(cleanup, http.MethodDelete, endpoint.String()+"/v1/leases/"+url.PathEscape(lease.ID), nil)
+		req, err := http.NewRequestWithContext(cleanup, http.MethodDelete, endpoint.String()+"/v1/leases/"+url.PathEscape(lease.ID), nil) // #nosec G704 -- endpoint is the configured control-plane URL, not request input.
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+g.ControlToken)
 			var response *http.Response
-			response, err = client.Do(req)
+			response, err = client.Do(req) // #nosec G704 -- same fixed control-plane endpoint.
 			if err == nil {
-				response.Body.Close()
+				_ = response.Body.Close()
 				if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNotFound {
 					return
 				}

@@ -609,7 +609,7 @@ var storeLoad = loadStoreSnapshot
 func copyStoreFiles(path, dir string) {
 	for _, suffix := range []string{"", "-wal"} {
 		if body, err := os.ReadFile(path + suffix); err == nil {
-			_ = os.WriteFile(filepath.Join(dir, "store.db"+suffix), body, 0600) // #nosec G306 -- copy of an already store-scoped file.
+			_ = os.WriteFile(filepath.Join(dir, "store.db"+suffix), body, 0600) // #nosec G306 G703 -- copy of an already store-scoped file.
 		}
 	}
 }

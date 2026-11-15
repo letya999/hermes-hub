@@ -20,7 +20,7 @@ func stopSignals(ch chan os.Signal)             { signal.Stop(ch) }
 // An atomic rename only reaches stable storage once the parent directory
 // entry is flushed; without it a crash can drop the acknowledged marker.
 func syncRuntimeDirectory(dir string) error {
-	f, err := os.Open(dir)
+	f, err := os.Open(dir) // #nosec G703 -- dir is the supervisor's own runtime directory.
 	if err != nil {
 		return err
 	}

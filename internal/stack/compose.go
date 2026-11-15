@@ -665,7 +665,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
-		if info, err := os.Lstat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Lstat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed filename under the operator-selected space root
 			adminFile := filepath.Join(dir, "model-relay-admins.json")
 			toolhubEnv["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(adminFile), "target": "/config/model-relay-admins.json", "read_only": true})

@@ -304,7 +304,7 @@ func (g *Gateway) pumpCaptures(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if g.captureThrottled(time.Now(), rand.Float64()) {
+		if g.captureThrottled(time.Now(), rand.Float64()) { // #nosec G404 -- throttle jitter, not a security decision.
 			break
 		}
 		if time.Since(ev.ObservedAt) > captureMaxAge {

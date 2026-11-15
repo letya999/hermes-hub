@@ -254,7 +254,7 @@ func recoverApplyWithRebuiltImage(_ context.Context, dir, root, environment stri
 	if record.Environment != environment {
 		return errors.New("apply recovery: different environment is pending")
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current")) // #nosec G703 -- fixed pointer filename under the operator's space dir.
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("apply recovery: current pointer: %w", err)
 	}
