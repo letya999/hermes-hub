@@ -2,6 +2,8 @@ package communication
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -121,6 +123,55 @@ func (g *Gateway) statusView(ctx context.Context, caller identity.Envelope) Gate
 		}
 	}
 	return view
+}
+
+// Metrics renders the gateway status as bounded prometheus text (#199) —
+// loopback scraping, closed label sets, never job content or secrets.
+func (v GatewayStatusView) Metrics(w io.Writer) {
+	fmt.Fprintf(w, "# HELP hub_gateway_queue Durable job queue depth by state.\n# TYPE hub_gateway_queue gauge\n")
+	for _, s := range []struct {
+		state string
+		n     int
+	}{
+		{"pending", v.Queue.Pending}, {"running", v.Queue.Running}, {"failed", v.Queue.Failed},
+	} {
+		fmt.Fprintf(w, "hub_gateway_queue{state=%q} %d\n", s.state, s.n)
+	}
+	fmt.Fprintf(w, "# HELP hub_gateway_outbox Outbound delivery depth by state.\n# TYPE hub_gateway_outbox gauge\n")
+	for _, s := range []struct {
+		state string
+		n     int
+	}{
+		{"pending", v.Outbox.Pending}, {"sending", v.Outbox.Sending}, {"failed", v.Outbox.Failed},
+	} {
+		fmt.Fprintf(w, "hub_gateway_outbox{state=%q} %d\n", s.state, s.n)
+	}
+	fmt.Fprintf(w, "# HELP hub_gateway_outbox_oldest_seconds Age of the oldest pending delivery.\n# TYPE hub_gateway_outbox_oldest_seconds gauge\n")
+	fmt.Fprintf(w, "hub_gateway_outbox_oldest_seconds %d\n", v.Outbox.OldestPendingSeconds)
+	fmt.Fprintf(w, "# HELP hub_gateway_routines_enabled Enabled routines.\n# TYPE hub_gateway_routines_enabled gauge\n")
+	fmt.Fprintf(w, "hub_gateway_routines_enabled %d\n", v.Routines.Enabled)
+	fmt.Fprintf(w, "# HELP hub_gateway_routines_overdue Enabled routines past their next-due.\n# TYPE hub_gateway_routines_overdue gauge\n")
+	fmt.Fprintf(w, "hub_gateway_routines_overdue %d\n", v.Routines.Overdue)
+	fmt.Fprintf(w, "# HELP hub_gateway_routines_known Routines inventory visibility (1 = listed, 0 = unavailable).\n# TYPE hub_gateway_routines_known gauge\n")
+	known := 0
+	if v.Routines.State == "ok" {
+		known = 1
+	}
+	fmt.Fprintf(w, "hub_gateway_routines_known %d\n", known)
+}
+
+func (g *Gateway) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	caller, ok := g.authorizeControl(r)
+	if !ok {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	g.statusView(r.Context(), caller).Metrics(w)
 }
 
 func (g *Gateway) handleStatus(w http.ResponseWriter, r *http.Request) {

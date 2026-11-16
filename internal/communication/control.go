@@ -91,11 +91,16 @@ func (g *Gateway) controlLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var lastNoticeSync time.Time
+	var lastAlertSweep time.Time
 	pendingNotice := true // first pass always syncs
 	for {
 		if pendingNotice || g.now().Sub(lastNoticeSync) >= 10*time.Second {
 			pendingNotice, _ = g.syncMasterNotices(ctx)
 			lastNoticeSync = g.now()
+		}
+		if g.now().Sub(lastAlertSweep) >= supervisorStatusSweep {
+			lastAlertSweep = g.now()
+			g.alertCrashBudgets(ctx)
 		}
 		g.controlOne(ctx)
 		g.maintainStorage(g.now())

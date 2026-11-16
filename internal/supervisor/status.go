@@ -3,6 +3,8 @@ package supervisor
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -304,6 +306,41 @@ func (m *Manager) StatusView() StatusView {
 	}
 	sort.Slice(view.Jobs.Open, func(i, j int) bool { return view.Jobs.Open[i].JobID < view.Jobs.Open[j].JobID })
 	return view
+}
+
+// Metrics renders the status document as bounded prometheus text (#199) —
+// loopback scraping, closed label sets, never job content or secrets.
+func (v StatusView) Metrics(w io.Writer) {
+	fmt.Fprintf(w, "# HELP hub_supervisor_runtimes Runtimes by legible phase.\n# TYPE hub_supervisor_runtimes gauge\n")
+	byPhase := map[string]int{}
+	for _, rt := range v.Runtimes {
+		byPhase[rt.Phase]++
+	}
+	for _, phase := range []string{PhasePending, PhaseRunning, PhaseDegraded, PhaseSuspended, PhaseFailed, PhaseStopped, PhaseTerminating, PhaseUnknown} {
+		fmt.Fprintf(w, "hub_supervisor_runtimes{phase=%q} %d\n", phase, byPhase[phase])
+	}
+	fmt.Fprintf(w, "# HELP hub_supervisor_crash_budget_exhausted Runtimes whose crash budget is consumed.\n# TYPE hub_supervisor_crash_budget_exhausted gauge\n")
+	exhausted := 0
+	for _, rt := range v.Runtimes {
+		for _, c := range rt.Conditions {
+			if c.Name == CondCrashBudget && c.Reason == ReasonBudgetExhausted {
+				exhausted++
+			}
+		}
+	}
+	fmt.Fprintf(w, "hub_supervisor_crash_budget_exhausted %d\n", exhausted)
+	fmt.Fprintf(w, "# HELP hub_supervisor_jobs Supervisor job ledger by phase.\n# TYPE hub_supervisor_jobs gauge\n")
+	for _, phase := range []string{phaseAccepted, phaseWaking, phaseAdmitted, phaseRunning, phaseWaitingApproval, phaseCompleted, phaseFailed, phaseCancelled, phaseInterrupted, PhaseUnknown} {
+		fmt.Fprintf(w, "hub_supervisor_jobs{phase=%q} %d\n", phase, v.Jobs.ByPhase[phase])
+	}
+	fmt.Fprintf(w, "# HELP hub_supervisor_jobs_unconfirmed Jobs whose outcome is unconfirmed.\n# TYPE hub_supervisor_jobs_unconfirmed gauge\n")
+	fmt.Fprintf(w, "hub_supervisor_jobs_unconfirmed %d\n", v.Jobs.Unconfirmed)
+	fmt.Fprintf(w, "# HELP hub_supervisor_holds_active Active administrative holds.\n# TYPE hub_supervisor_holds_active gauge\n")
+	fmt.Fprintf(w, "hub_supervisor_holds_active %d\n", len(v.Holds))
+	fmt.Fprintf(w, "# HELP hub_supervisor_watchdog_sweeps Watchdog sweeps since boot.\n# TYPE hub_supervisor_watchdog_sweeps counter\n")
+	fmt.Fprintf(w, "hub_supervisor_watchdog_sweeps %d\n", v.Watchdog.Sweeps)
+	fmt.Fprintf(w, "# HELP hub_supervisor_watchdog_last_sweep_ms Duration of the last watchdog sweep in milliseconds.\n# TYPE hub_supervisor_watchdog_last_sweep_ms gauge\n")
+	fmt.Fprintf(w, "hub_supervisor_watchdog_last_sweep_ms %d\n", v.Watchdog.LastSweepMS)
 }
 
 // --- transitions journal (#209): watch-able stream --------------------------

@@ -246,6 +246,9 @@ func init() {
 		"job.failed":           "Could not finish the task: agent execution error (run.failed).",
 		"job.goal-paused":      "Goal paused — /goal resume continues it.",
 		"job.uncertain":        "The task outcome is unknown for now. Re-running may duplicate the action.",
+		"alert.job-failed":     "Job %s failed. Run `hubctl status` for the supervisor view.",
+		"alert.crash-budget":   "Runtime %s is wedged: restart budget exhausted after %d crashes.",
+		"alert.suppressed":     "%d hub alerts were suppressed in the last hour to avoid a flood.",
 		"job.recheck":          "Rechecking the original task after losing the connection.",
 		"job.truncated":        "The response is too long for chat — showing only the final part; the full text is attached as a file.",
 

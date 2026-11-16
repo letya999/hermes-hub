@@ -86,6 +86,11 @@ type Gateway struct {
 	holdsLast     []masterHold
 	maintenanceMu sync.Mutex
 	maintenance   storageMaintenanceStatus
+	// alertMu/alertLedger bound owner alerts (#199): at most
+	// ownerAlertLimit deliveries per ownerAlertWindow, overflow counted
+	// and flushed as one suppressed-summary line.
+	alertMu     sync.Mutex
+	alertLedger ownerAlertLedger
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {

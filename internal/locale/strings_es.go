@@ -264,6 +264,9 @@ func init() {
 		"job.failed":           "No se pudo completar la tarea: error del agente (run.failed).",
 		"job.goal-paused":      "Objetivo en pausa — /goal resume lo continúa.",
 		"job.uncertain":        "El resultado de la tarea aún es desconocido. Un nuevo intento puede duplicar la acción.",
+		"alert.job-failed":     "La tarea %s falló. Resumen: `hubctl status`.",
+		"alert.crash-budget":   "El runtime %s está atascado: presupuesto de reinicios agotado tras %d caídas.",
+		"alert.suppressed":     "Se suprimieron %d alertas del hub en la última hora para evitar una avalancha.",
 		"job.recheck":          "Comprobando la tarea original tras perder la conexión.",
 		"job.truncated":        "La respuesta es demasiado larga para el chat — se muestra solo la parte final; el texto completo se adjunta como archivo.",
 

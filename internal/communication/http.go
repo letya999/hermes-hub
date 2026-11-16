@@ -20,6 +20,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
 	mux.HandleFunc("/v1/status", g.handleStatus)
+	mux.HandleFunc("/v1/metrics", g.handleMetrics)
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/goals", g.handleGoals)
 	mux.HandleFunc("/v1/media/speak", g.handleSpeak)
