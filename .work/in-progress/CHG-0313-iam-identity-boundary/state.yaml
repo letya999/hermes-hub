@@ -23,7 +23,7 @@ validation:
   documents: done
   just_check: green
   docker_check: done
-  live_acceptance: authentik_real_idp
+  live_acceptance: authentik_and_zitadel_real_idp
 evidence:
   - "S1: ADR-0100 accepted; Envelope.Issuer/Subject paired+bounded validation; tests green"
   - "S2: internal/iam stdlib OIDC (discovery/JWKS/RS256/kid/nonce/expiry) + LinkStore (atomic json + hashed-subject audit, conflict denial, Close); 5 tests green incl. Windows lock fix"
@@ -40,13 +40,13 @@ evidence:
   - "S8 apply incident + fix: first --confirm apply planned rebuild-* (parent path config.iam unconsumed) and recreate hermes-runtime (iam leaves targeted the runtime, not the gateway); respawn died on unreachable in-network supervisor URL (no HUB_RUNTIME_SUPERVISOR_URL) and its replay failed the same way → diverged rollback, pending pointer, journal kept. Fixes: Plan skips the config.iam parent leaf (config.hosting precedent), runtimeTarget maps config.iam.* → communication-hub, config.iam.mode demoted rebuild→recreate; regression TestPlanIAMBlockLeavesTargetGateway"
   - "S8 recovery evidence: --recover-rebuilt-image replayed the journal cleanly; the live ToolHub's foreign commits on store.db raced restoreApplyState (saveLocked digest arbitration, deterministic under fenced-tick writes) — quiesced the writer (docker stop toolhub) → recovery + fresh apply --confirm published r-f10c6f94c124f3c9: plan narrowed to rebuild{hub-postgres,identity-hub}(no-op image-only) + recreate{communication-hub,hub-postgres,identity-hub}, all applied"
   - "S8 published-revision live check (r-f10c6f94c124f3c9): hub-postgres+identity-hub healthy in shared project; discovery iss=http://idp.localhost:8091 from host and via gateway extra_hosts host-gateway; mock /link → nonce → /iam/oidc/start 303 → ZITADEL /oauth/v2/authorize client_id=hermes-hub PKCE S256; unprovisioned client denies Errors.App.NotFound (fail-closed until bootstrap)"
+  - "S8 bundled LIVE ZITADEL v4.19.1 (r-64f624d13df7a4f8): console-provisioned project hermes-hub + web app hermes (PKCE public client, dev mode, redirect http://localhost:8081/iam/oidc/callback → generated client_id 399894697381724179); apply narrowed to recreate{communication-hub} only; real browser flow: /link nonce → Sign in with SSO → ZITADEL authorize (console session reused) → code → callback 200 'Account linked'; iam-links.json: mock-42→artem_main iss=http://idp.localhost:8091 sub=399890995758039052; audit link event subject_hash only; consumed nonce replay → 410; /unlink → store [] + unlink audit"
 remaining:
-  - "ZITADEL first-boot bootstrap (create org/app client_id=hermes-hub + redirect URI, per operations.md) then a real browser code+PKCE callback — routing verified, full login pending client provisioning; owner-gated"
   - "live enrol path (unmapped transport + oidc_subject match) — unit-tested; needs a second real channel account to prove end-to-end"
   - "slack enrol hint on unmapped slack messages (currently link-issued only)"
   - "linked-transport ingress resolution + provenance stamping live on telegram — unit-tested; mock channel resolves via mock-links by design"
 limitations:
-  - "live acceptance proven against Authentik (real OIDC code+PKCE+RS256); ZITADEL not yet exercised — provider contract is generic OIDC"
+  - "live acceptance proven against two real IdPs — Authentik (external) and bundled ZITADEL — both real OIDC code+PKCE+RS256; provider contract is generic OIDC"
   - "oidc_subject provisioned manually per user record; no group/SCIM sync"
   - "channel-mapped (local) envelopes carry empty provenance — empty means local, not anonymous"
   - "dev-issuer trick: http issuers only on loopback-equivalents (localhost, 127.0.0.1, ::1, host.docker.internal, *.localhost); production requires real https issuer"
