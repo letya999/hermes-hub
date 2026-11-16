@@ -18,7 +18,11 @@ import (
 
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
+	if g.config.SlackTransport != "socket" {
+		// Socket Mode has no webhook surface: the events route stays off the
+		// mux so an inbound POST gets a plain 404, not an HMAC rejection.
+		mux.HandleFunc("/v1/slack/events", g.HandleSlackEvents)
+	}
 	mux.HandleFunc("/v1/routines", g.handleRoutines)
 	mux.HandleFunc("/v1/goals", g.handleGoals)
 	mux.HandleFunc("/v1/media/speak", g.handleSpeak)

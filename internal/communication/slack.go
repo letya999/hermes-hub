@@ -19,6 +19,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
@@ -47,7 +48,7 @@ type slackAPI struct {
 }
 
 func newSlackAPI(token string) SlackAPI {
-	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second}, baseURL: "https://slack.com/api"}
+	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second, Transport: netguard.EgressTransport()}, baseURL: "https://slack.com/api"}
 }
 
 func (s *slackAPI) PostMessage(ctx context.Context, channel, thread, text string) error {
@@ -128,27 +129,7 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	var envelope struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-		TeamID    string `json:"team_id"`
-		EventID   string `json:"event_id"`
-		Event     struct {
-			Type        string `json:"type"`
-			Subtype     string `json:"subtype"`
-			User        string `json:"user"`
-			Text        string `json:"text"`
-			Channel     string `json:"channel"`
-			ChannelType string `json:"channel_type"`
-			TS          string `json:"ts"`
-			ThreadTS    string `json:"thread_ts"`
-			BotID       string `json:"bot_id"`
-			UserProfile struct {
-				Email       string `json:"email"`
-				DisplayName string `json:"display_name"`
-			} `json:"user_profile"`
-		} `json:"event"`
-	}
+	var envelope slackEventEnvelope
 	if json.Unmarshal(body, &envelope) != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return

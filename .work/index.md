@@ -14,6 +14,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 ## In progress
 
+| [CHG-0311](in-progress/CHG-0311-egress-proxy-slack-socket/plan.md) | M9 egress proxy and Slack Socket Mode; live acceptance pending |
 | Change | Summary |
 |---|---|
 | [CHG-0308](in-progress/CHG-0308-hot-ledger-sidecar/plan.md) | Hot ledger off the registry commit channel: broker cursors move to a CursorStore sidecar (JSON temp+rename, 60s flush), heartbeats persist on transition only, lifecycle tick 1s→15s — fixes /v1/rights/decide starvation → agent 403s (repeat of the CHG-0305 class) |
