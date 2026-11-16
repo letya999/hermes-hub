@@ -98,11 +98,11 @@ var Consumers = map[string]Consumer{
 	"config.hosting.slots":   {"compose", EffectRecreate},
 	"config.hosting.image":   {"compose", EffectRecreate},
 	"config.hosting.runtime": {"compose", EffectRecreate},
-	// iam flips the compose topology: appearing/removing the block or
-	// changing mode adds and drops the bundled identity-hub pair —
-	// the same class stack.services changes carry. issuer/client_id
-	// only rewrite the gateway env, so they recreate rather than rebuild.
-	"config.iam.mode":      {"compose", EffectRebuild},
+	// iam rewrites the gateway env (recreate the communication-hub);
+	// the topology delta a mode flip implies is carried by the paired
+	// stack.services.identity-hub/hub-postgres leaf changes, not by a
+	// rebuild — no image content depends on iam.
+	"config.iam.mode":      {"compose", EffectRecreate},
 	"config.iam.issuer":    {"compose", EffectRecreate},
 	"config.iam.client_id": {"compose", EffectRecreate},
 
