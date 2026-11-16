@@ -55,7 +55,10 @@ type Provider struct {
 
 func loopbackURL(u *url.URL) bool {
 	h := u.Hostname()
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	// host.docker.internal is Docker Desktop's designated host alias and
+	// *.localhost is RFC 6761 loopback — either lets a dev IdP live
+	// behind one issuer name that containers and browsers resolve alike.
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "host.docker.internal" || strings.HasSuffix(h, ".localhost")
 }
 
 // NewProvider validates the issuer shape. Discovery is lazy — the first
@@ -260,7 +263,10 @@ func (p *Provider) verifyIDToken(ctx context.Context, raw, expectNonce string) (
 			}
 		}
 	}
-	if claims.Iss != p.Issuer || !audOK || claims.Sub == "" || claims.Nonce != expectNonce {
+	// Issuer comparison tolerates a trailing slash: the configured issuer
+	// is canonicalized in NewProvider while some IdPs (Authentik) assert
+	// iss with a trailing "/" — same origin+path either way.
+	if strings.TrimRight(claims.Iss, "/") != p.Issuer || !audOK || claims.Sub == "" || claims.Nonce != expectNonce {
 		return Claims{}, ErrVerification
 	}
 	if claims.Exp == 0 || p.now().Unix() >= claims.Exp {

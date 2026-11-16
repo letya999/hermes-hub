@@ -101,6 +101,15 @@ func TestOIDCExchangeHappyPath(t *testing.T) {
 	}
 }
 
+func TestOIDCIssuerTrailingSlash(t *testing.T) {
+	idp := newFixtureIdP(t)
+	defer idp.Close()
+	idp.claims["iss"] = idp.issuer + "/" // Authentik asserts iss with a trailing slash
+	if _, err := fixtureProvider(t, idp).Exchange(t.Context(), "c", "v", "n-1"); err != nil {
+		t.Fatalf("slashed iss rejected: %v", err)
+	}
+}
+
 func TestOIDCClaimRejections(t *testing.T) {
 	for name, mutate := range map[string]func(*fixtureIdP){
 		"bad-nonce":   func(i *fixtureIdP) { i.claims["nonce"] = "other" },
@@ -144,7 +153,7 @@ func TestOIDCIssuerValidation(t *testing.T) {
 			t.Fatalf("issuer %q accepted", bad)
 		}
 	}
-	for _, good := range []string{"http://localhost:9000", "https://idp.example.com", "https://auth.example.com/application/o/hub", "https://keycloak.example.com/realms/corp"} {
+	for _, good := range []string{"http://localhost:9000", "http://idp.localhost:9000/app/o/hub", "https://idp.example.com", "https://auth.example.com/application/o/hub", "https://keycloak.example.com/realms/corp"} {
 		if _, err := NewProvider(good, "c", "r"); err != nil {
 			t.Fatalf("issuer %q denied: %v", good, err)
 		}
