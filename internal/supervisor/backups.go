@@ -125,6 +125,8 @@ func backupErrorClass(err error) string {
 		return ""
 	case errors.Is(err, os.ErrNotExist):
 		return "missing_source"
+	case errors.Is(err, os.ErrPermission):
+		return "unwritable_target"
 	default:
 		return "backup_failed"
 	}
@@ -190,7 +192,7 @@ func (m *Manager) backupSpace(user string, now time.Time) {
 		archive := filepath.Join(outDir, "backup-"+stamp+".zip")
 		rec.User = user
 		if err := os.MkdirAll(outDir, 0o700); err != nil {
-			rec.LastError = "missing_source"
+			rec.LastError = backupErrorClass(err)
 		} else if err := contextlife.Backup(spaceDir, user, archive, ""); err != nil {
 			rec.LastError = backupErrorClass(err)
 			_ = os.Remove(archive)

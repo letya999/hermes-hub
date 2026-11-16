@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ type statusOptions struct {
 	SupervisorURL  string
 	GatewayURL     string
 	Token          string
+	GatewayToken   string
 	Timeout        time.Duration
 	Client         *http.Client
 	SkipSupervisor bool
@@ -93,7 +95,11 @@ func collectStatus(ctx context.Context, o statusOptions) hubStatus {
 	}
 	if !o.SkipGateway {
 		var view gatewayStatusWire
-		if err := fetchJSON(ctx, client, strings.TrimRight(o.GatewayURL, "/")+"/v1/status", o.Token, &view); err != nil {
+		token := o.GatewayToken
+		if token == "" {
+			token = o.Token
+		}
+		if err := fetchJSON(ctx, client, strings.TrimRight(o.GatewayURL, "/")+"/v1/status", token, &view); err != nil {
 			status.Errors = append(status.Errors, "gateway: "+err.Error())
 		} else {
 			status.Gateway = &view
@@ -163,7 +169,11 @@ func renderStatus(out io.Writer, s hubStatus) {
 			if rec.DrillResult != "" {
 				drill = rec.DrillResult
 			}
-			w("backup %s last=%s retained=%d drill=%s checked=%d", rec.User, last, rec.Retained, drill, rec.DrillChecked)
+			errWord := ""
+			if rec.LastError != "" {
+				errWord = " err=" + rec.LastError
+			}
+			w("backup %s last=%s retained=%d drill=%s checked=%d%s", rec.User, last, rec.Retained, drill, rec.DrillChecked, errWord)
 		}
 	}
 	if gw := s.Gateway; gw != nil {
@@ -192,4 +202,23 @@ func resolveStatusToken(dir string) string {
 		return strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"])
 	}
 	return ""
+}
+
+// resolveGatewayToken: the gateway's control bearer is ControlAuth —
+// HUB_COMMUNICATION_AUTH, provisioned into the infra space's
+// communication.<env>.env. An explicit --auth or the supervisor token is
+// the fallback (unsupervised gateways accept RuntimeAuth).
+func resolveGatewayToken(dir, env, fallback string) string {
+	if tok := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")); tok != "" {
+		return tok
+	}
+	if env == "" {
+		env = "dev"
+	}
+	if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(dir), "communication."+env+".env")); err == nil {
+		if tok := strings.TrimSpace(auth["HUB_COMMUNICATION_AUTH"]); tok != "" {
+			return tok
+		}
+	}
+	return fallback
 }
