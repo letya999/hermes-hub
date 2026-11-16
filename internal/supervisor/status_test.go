@@ -247,3 +247,20 @@ func TestStatusViewAggregates(t *testing.T) {
 		}
 	}
 }
+
+// A space that never backed up must not emit the year-1 zero time — a
+// negative Unix gauge reads as a real (absurd) timestamp in Prometheus.
+func TestMetricsRendersZeroForNeverBackedUp(t *testing.T) {
+	m := &Manager{
+		cfg:     Config{StateDir: t.TempDir()},
+		backups: map[string]BackupRecord{"alice": {User: "alice", DrillResult: "no_archive"}},
+	}
+	var out strings.Builder
+	m.StatusView().Metrics(&out)
+	if strings.Contains(out.String(), "-62135596800") {
+		t.Fatalf("zero time leaked as a timestamp:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `hub_supervisor_backup_last_success_seconds{user="alice"} 0`) {
+		t.Fatalf("never-backed-up user must render 0:\n%s", out.String())
+	}
+}

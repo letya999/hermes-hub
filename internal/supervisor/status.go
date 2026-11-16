@@ -348,7 +348,11 @@ func (v StatusView) Metrics(w io.Writer) {
 	fmt.Fprintf(w, "hub_supervisor_watchdog_last_sweep_ms %d\n", v.Watchdog.LastSweepMS)
 	fmt.Fprintf(w, "# HELP hub_supervisor_backup_last_success_seconds Unix time of the space's last successful backup.\n# TYPE hub_supervisor_backup_last_success_seconds gauge\n")
 	for _, rec := range v.Backups {
-		fmt.Fprintf(w, "hub_supervisor_backup_last_success_seconds{user=%q} %d\n", rec.User, rec.LastSuccessAt.Unix())
+		var last int64
+		if !rec.LastSuccessAt.IsZero() {
+			last = rec.LastSuccessAt.Unix()
+		}
+		fmt.Fprintf(w, "hub_supervisor_backup_last_success_seconds{user=%q} %d\n", rec.User, last)
 	}
 	fmt.Fprintf(w, "# HELP hub_supervisor_backup_drill_ok Restore-drill outcome per space (1 = last drill passed).\n# TYPE hub_supervisor_backup_drill_ok gauge\n")
 	for _, rec := range v.Backups {
