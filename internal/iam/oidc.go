@@ -64,7 +64,11 @@ func loopbackURL(u *url.URL) bool {
 func NewProvider(issuer, clientID, redirectURL string) (*Provider, error) {
 	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
 	u, err := url.Parse(issuer)
-	if err != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	// Issuers may carry a path — Authentik applications
+	// (/application/o/<slug>) and Keycloak realms (/realms/<name>) issue
+	// them; discovery appends /.well-known/openid-configuration to the
+	// full issuer per RFC 8414. Query/fragment still reject.
+	if err != nil || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
 		return nil, fmt.Errorf("invalid OIDC issuer")
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackURL(u)) {

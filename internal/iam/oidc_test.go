@@ -139,13 +139,15 @@ func TestOIDCKeyRotation(t *testing.T) {
 }
 
 func TestOIDCIssuerValidation(t *testing.T) {
-	for _, bad := range []string{"http://corp.example.com", "https://idp.example.com/path", "not-a-url", "https://idp.example.com?x=1"} {
+	for _, bad := range []string{"http://corp.example.com", "not-a-url", "https://idp.example.com?x=1", "https:///path"} {
 		if _, err := NewProvider(bad, "c", "r"); err == nil {
 			t.Fatalf("issuer %q accepted", bad)
 		}
 	}
-	if _, err := NewProvider("http://localhost:9000", "c", "r"); err != nil {
-		t.Fatalf("loopback http issuer denied: %v", err)
+	for _, good := range []string{"http://localhost:9000", "https://idp.example.com", "https://auth.example.com/application/o/hub", "https://keycloak.example.com/realms/corp"} {
+		if _, err := NewProvider(good, "c", "r"); err != nil {
+			t.Fatalf("issuer %q denied: %v", good, err)
+		}
 	}
 }
 
