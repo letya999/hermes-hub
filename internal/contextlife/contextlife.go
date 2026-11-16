@@ -21,6 +21,7 @@ const Schema = 1
 var excludedNames = map[string]bool{
 	"secrets.dev.env": true, "secrets.prod.env": true, "runtime.auth": true, "store.enc": true,
 	"communication.dev.env": true, "communication.prod.env": true, "supervisor.auth": true,
+	"identity-hub.auth": true,
 }
 
 type Manifest struct {

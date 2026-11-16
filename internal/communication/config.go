@@ -53,25 +53,29 @@ type Config struct {
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// admitted only as their enrolled principal. ControlPrincipal similarly
 	// binds the supervised infra owner's primary runtime bearer.
-	ControlTokensFile string                 `yaml:"-"`
-	controlAuthExtra  []string               `yaml:"-"`
-	ListenAddr        string                 `yaml:"-"`
-	FormOrigin        string                 `yaml:"-"`
-	NativeCron        string                 `yaml:"-"`
-	STTURL            string                 `yaml:"-"`
-	STTAuth           string                 `yaml:"-"`
-	TTSURL            string                 `yaml:"-"`
-	TTSAuth           string                 `yaml:"-"`
-	TTSVoice          string                 `yaml:"-"`
-	TTSVoices         map[locale.Lang]string `yaml:"-"`
-	TTSUploadURL      string                 `yaml:"-"`
-	STTTimeout        time.Duration          `yaml:"-"`
-	MediaMaxDuration  int                    `yaml:"-"`
-	SpoolDir          string                 `yaml:"spool_dir"`
-	RuntimeURL        string                 `yaml:"-"`
-	RuntimeAuth       string                 `yaml:"-"`
-	PollTimeout       time.Duration          `yaml:"-"`
-	HermesCommand     string                 `yaml:"-"`
+	ControlTokensFile string   `yaml:"-"`
+	controlAuthExtra  []string `yaml:"-"`
+	ListenAddr        string   `yaml:"-"`
+	FormOrigin        string   `yaml:"-"`
+	// OIDCIssuer/OIDCClientID enable the optional SSO enrolment and
+	// channel-link flow (ADR-0100); empty keeps channel-mapped local mode.
+	OIDCIssuer       string                 `yaml:"oidc_issuer,omitempty"`
+	OIDCClientID     string                 `yaml:"oidc_client_id,omitempty"`
+	NativeCron       string                 `yaml:"-"`
+	STTURL           string                 `yaml:"-"`
+	STTAuth          string                 `yaml:"-"`
+	TTSURL           string                 `yaml:"-"`
+	TTSAuth          string                 `yaml:"-"`
+	TTSVoice         string                 `yaml:"-"`
+	TTSVoices        map[locale.Lang]string `yaml:"-"`
+	TTSUploadURL     string                 `yaml:"-"`
+	STTTimeout       time.Duration          `yaml:"-"`
+	MediaMaxDuration int                    `yaml:"-"`
+	SpoolDir         string                 `yaml:"spool_dir"`
+	RuntimeURL       string                 `yaml:"-"`
+	RuntimeAuth      string                 `yaml:"-"`
+	PollTimeout      time.Duration          `yaml:"-"`
+	HermesCommand    string                 `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -310,6 +314,12 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+		if iss := os.Getenv("HUB_OIDC_ISSUER"); iss != "" {
+			config.OIDCIssuer = iss
+		}
+		if cid := os.Getenv("HUB_OIDC_CLIENT_ID"); cid != "" {
+			config.OIDCClientID = cid
+		}
 		config.CLIExec, err = api.CLIExecFromEnv()
 		if err != nil {
 			return Config{}, err
@@ -370,6 +380,8 @@ func ConfigFromEnv() (Config, error) {
 	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+	config.OIDCIssuer = envOr("HUB_OIDC_ISSUER", config.OIDCIssuer)
+	config.OIDCClientID = envOr("HUB_OIDC_CLIENT_ID", config.OIDCClientID)
 	config.CLIExec, err = api.CLIExecFromEnv()
 	if err != nil {
 		return Config{}, err

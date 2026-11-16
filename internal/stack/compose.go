@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,6 +40,36 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 // (name is pinned, never project-prefixed) and declared external by secondary
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
+
+// identityHubImage pins the bundled ZITADEL by digest — v4.19.1 is the
+// patched line for GHSA-4hgj-wm6c-q7p2; v3.x is end-of-life. The shared
+// postgres pin follows the same digest-pinned policy.
+const (
+	identityHubImage    = "ghcr.io/zitadel/zitadel:v4.19.1@sha256:f98935f56505ec6fa3e6523261cd1b8ace0c622e16da4a45acd493cb472f003f"
+	identityHubPGImage  = "postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e"
+	identityHubPortBase = 8091
+)
+
+// iamEffectiveIssuer resolves the iam issuer for render: an explicit
+// issuer wins, a bundled deployment without one derives the dev shape
+// http://idp.localhost:<port> — *.localhost is loopback for browsers and
+// a compose alias for containers, so one string serves both.
+func iamEffectiveIssuer(s Settings) string {
+	if s.PassportIAM == nil {
+		return ""
+	}
+	if s.PassportIAM.Issuer != "" {
+		return s.PassportIAM.Issuer
+	}
+	if s.PassportIAM.Mode != "bundled" {
+		return ""
+	}
+	port := identityHubPortBase
+	if s.PassportConfig != nil && s.PassportConfig.Ports["identity-hub"] != 0 {
+		port = s.PassportConfig.Ports["identity-hub"]
+	}
+	return fmt.Sprintf("http://idp.localhost:%d", port)
+}
 
 func voiceServicesEnabled(s Settings) bool {
 	if s.Has("transcription") {
@@ -890,6 +921,86 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["credential-broker"] = broker
 	}
 
+	// iam.mode: bundled (ADR-0100) renders the optional identity hub beside
+	// communication-hub on the shared stack: ZITADEL on the one shared
+	// postgres — nothing else consumes it yet.
+	if infra && s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" {
+		issuer := iamEffectiveIssuer(s)
+		u, _ := url.Parse(issuer)
+		externalPort := u.Port()
+		if externalPort == "" {
+			if u.Scheme == "https" {
+				externalPort = "443"
+			} else {
+				externalPort = "80"
+			}
+		}
+		logging := M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}
+		// https issuers terminate TLS at an edge proxy; the derived dev
+		// issuer is plain http on loopback.
+		tlsMode := "disabled"
+		if u.Scheme == "https" {
+			tlsMode = "external"
+		}
+		postgres := M{
+			"image":       identityHubPGImage,
+			"restart":     "unless-stopped",
+			"environment": M{"POSTGRES_USER": "zitadel", "POSTGRES_DB": "zitadel", "PGUSER": "zitadel"},
+			"env_file":    []any{M{"path": filepath.ToSlash(filepath.Join(dir, "identity-hub.auth")), "format": "raw"}},
+			"volumes":     []any{M{"type": "volume", "source": "hub-postgres-data", "target": "/var/lib/postgresql/data"}},
+			"networks":    sharedNetworks,
+			"healthcheck": M{"test": []string{"CMD-SHELL", "pg_isready -d zitadel -U zitadel"}, "interval": "10s", "timeout": "5s", "retries": 12, "start_period": "10s"},
+			"logging":     logging,
+		}
+		services["hub-postgres"] = postgres
+		zitadel := M{
+			"image":   identityHubImage,
+			"restart": "unless-stopped",
+			"user":    "0",
+			// The masterkey binds from ZITADEL_MASTERKEY in the auth env
+			// file; it encrypts secrets at rest and must never rotate.
+			"command": []string{"start-from-init", "--masterkeyFromEnv", "--tlsMode", tlsMode},
+			"environment": M{
+				"ZITADEL_PORT":                                           fmt.Sprint(identityHubPortBase),
+				"ZITADEL_EXTERNALDOMAIN":                                 u.Hostname(),
+				"ZITADEL_EXTERNALPORT":                                   externalPort,
+				"ZITADEL_EXTERNALSECURE":                                 fmt.Sprint(u.Scheme == "https"),
+				"ZITADEL_TLS_ENABLED":                                    "false",
+				"ZITADEL_PUBLIC_SCHEME":                                  u.Scheme,
+				"ZITADEL_DATABASE_POSTGRES_HOST":                         "hub-postgres",
+				"ZITADEL_DATABASE_POSTGRES_PORT":                         "5432",
+				"ZITADEL_DATABASE_POSTGRES_DATABASE":                     "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_USER_USERNAME":                "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE":                "disable",
+				"ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME":               "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE":               "disable",
+				"ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED": "false",
+				// Login V1 stays hosted on the api container; the v4
+				// login sidecar lands only if a deployment needs it.
+				"ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED": "false",
+			},
+			"env_file": []any{M{"path": filepath.ToSlash(filepath.Join(dir, "identity-hub.auth")), "format": "raw"}},
+			"networks": sharedNetworks,
+			"depends_on": M{
+				"hub-postgres": M{"condition": "service_healthy"},
+			},
+			"healthcheck": M{"test": []string{"CMD", "/app/zitadel", "ready"}, "interval": "10s", "timeout": "30s", "retries": 12, "start_period": "20s"},
+			"logging":     logging,
+		}
+		// The derived dev issuer publishes on every interface: the gateway
+		// container reaches it through host-gateway (see communication-hub
+		// extra_hosts), the browser through 127.0.0.1 — Docker Desktop maps
+		// *.localhost to loopback inside containers, so a network alias
+		// cannot work. An explicit issuer stays loopback-published for the
+		// edge proxy on the same host.
+		if s.PassportIAM.Issuer == "" {
+			zitadel["ports"] = []string{externalPort + ":" + fmt.Sprint(identityHubPortBase)}
+		} else {
+			zitadel["ports"] = []string{"127.0.0.1:" + externalPort + ":" + fmt.Sprint(identityHubPortBase)}
+		}
+		services["identity-hub"] = zitadel
+	}
+
 	// cliproxy: dedicated gives a secondary space its own proxy instance,
 	// reachable as cliproxy-<user> on both networks. The service is named
 	// after the owner so its implicit Compose aliases can never collide
@@ -996,6 +1107,21 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment[key] = value
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+		// SSO enrolment/linking (ADR-0100) stays opt-in: empty values keep
+		// the deployment in channel-mapped local mode. A published iam: block
+		// is authoritative over env passthrough; a bundled hub without a
+		// client_id yet renders empty — bootstrap never half-configures.
+		gatewayEnvironment["HUB_OIDC_ISSUER"] = "${HUB_OIDC_ISSUER:-}"
+		gatewayEnvironment["HUB_OIDC_CLIENT_ID"] = "${HUB_OIDC_CLIENT_ID:-}"
+		if s.PassportIAM != nil {
+			issuer := iamEffectiveIssuer(s)
+			clientID := s.PassportIAM.ClientID
+			if clientID == "" {
+				issuer = ""
+			}
+			gatewayEnvironment["HUB_OIDC_ISSUER"] = issuer
+			gatewayEnvironment["HUB_OIDC_CLIENT_ID"] = clientID
+		}
 		communicationHostPort := 8081
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
@@ -1098,6 +1224,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
+		}
+		// A derived dev issuer names idp.localhost — a network alias cannot
+		// carry it (Docker Desktop maps *.localhost to loopback inside
+		// containers), so the gateway resolves it to the host gateway and
+		// reaches the published port like the browser does.
+		if s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" && s.PassportIAM.Issuer == "" {
+			hosts := M{}
+			maps.Copy(hosts, gateway["extra_hosts"].(M))
+			hosts["idp.localhost"] = "host-gateway"
+			gateway["extra_hosts"] = hosts
 		}
 		gateway["restart"] = "unless-stopped"
 		services["communication-hub"] = gateway
@@ -1290,6 +1426,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
+		if s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" {
+			// The one shared postgres — only the identity hub consumes it.
+			volumes["hub-postgres-data"] = M{}
+		}
 		if voiceServicesEnabled(s) {
 			volumes["hub-stt-data"] = M{}
 			volumes["hub-tts-data"] = M{}

@@ -35,6 +35,14 @@ type Envelope struct {
 	// Scopes grants the bearer extra read-only surfaces (issue 141); only
 	// "admin" is defined. Envelope-bearing endpoints ignore unknown scopes.
 	Scopes []string `json:"scopes,omitempty"`
+	// Issuer records which authority vouched for the principal at
+	// ingress: "local" for channel-mapped traffic, the OIDC issuer for
+	// SSO-linked accounts (issue #53). Provenance only — never a routing
+	// key, never parsed for authorization.
+	Issuer string `json:"issuer,omitempty"`
+	// Subject is the issuer's opaque account id (OIDC `sub`). Empty for
+	// channel-mapped principals.
+	Subject string `json:"subject,omitempty"`
 }
 
 // HasScope reports whether the enrolled envelope carries the named scope.
@@ -107,6 +115,12 @@ func (e Envelope) Validate(principal, context, runtime, policy string) error {
 		if !scopePattern.MatchString(scope) {
 			return errors.New("invalid identity")
 		}
+	}
+	// Provenance is audit metadata, not a routing key: bounded length
+	// only, no id pattern. A subject without its issuer (or the reverse)
+	// is a half-claim — rejected.
+	if len(e.Issuer) > 256 || len(e.Subject) > 256 || (e.Issuer == "") != (e.Subject == "") {
+		return errors.New("invalid identity provenance")
 	}
 	return nil
 }

@@ -170,3 +170,22 @@ or live provider behavior; those acceptance gates remain separate.
 ## Hosted user code
 
 Hosted content is untrusted and has its own origin. Fragment shares exchange into host-only cookies; ambient Hub credentials never reach app relay. Dynamic code requires the inspected non-root secure-runtime envelope, no network/secret defaults and bounded lifetime/resources. Filesystem, revision, route, audit and fleet gates fail closed. Native kernel/browser/sish guarantees require real acceptance; see [hosting boundary](services/hosting.md).
+
+## Identity-provider boundary (ADR-0100)
+
+When `iam:` enables SSO, the OIDC issuer becomes the trust root for
+principal claims. The gateway verifies the contract — signature/RS256
+against provider JWKS, exact `iss` (trailing-slash tolerant), `aud`,
+expiry and the per-flow nonce — and the token never crosses the
+boundary: `sub` resolves to a durable link or a provisioned
+`oidc_subject`, else denial. Provenance (`Issuer`/`Subject`) is audit
+metadata, never an authorization key. A compromised or mispointed
+issuer can mint no principal outside the store it links into; a bundled
+deployment keeps that root inside the same trust domain (ZITADEL +
+shared postgres on the runtime network, loopback-published external
+edge, masterkey materialized into `identity-hub.auth` beside the other
+auth files). One subject binds one principal — conflicts deny and are
+audited; replayed or expired link nonces answer 410. The dev-only
+`*.localhost` issuer path exists so browser and container resolve one
+name; production issuers require real https — plain http off-loopback
+fails startup.

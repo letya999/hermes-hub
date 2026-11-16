@@ -94,7 +94,7 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 	// Slash commands run the same dispatcher as a Telegram command — the mock
 	// channel is the real pipeline, so /model & co. never reach the agent.
 	if strings.HasPrefix(in.Text, "/") {
-		route := commandRoute{channel: "mock", chatID: in.ChatID, sender: in.ChatID}
+		route := commandRoute{channel: "mock", chatID: in.ChatID, sender: in.ChatID, transportID: "mock-" + strconv.FormatInt(in.ChatID, 10), principal: user.ID}
 		if err := g.dispatchChannelCommand(r.Context(), user, task, route, id, in.Text); err != nil {
 			http.Error(w, "command failed", http.StatusInternalServerError)
 			return

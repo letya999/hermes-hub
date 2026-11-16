@@ -34,12 +34,19 @@ func (l SlackLink) Key() string {
 
 // User is the stable internal user plus its channel bindings and runtime roots.
 type User struct {
-	RuntimeID      string            `yaml:"runtime_id,omitempty" json:"runtime_id,omitempty"`
-	PolicyVersion  string            `yaml:"policy_version,omitempty" json:"policy_version,omitempty"`
-	ID             string            `yaml:"id" json:"id"`
-	Enabled        bool              `yaml:"enabled" json:"enabled"`
-	TelegramIDs    []int64           `yaml:"telegram_ids" json:"telegram_ids"`
-	SlackIDs       []SlackLink       `yaml:"slack_ids,omitempty" json:"slack_ids,omitempty"`
+	RuntimeID     string      `yaml:"runtime_id,omitempty" json:"runtime_id,omitempty"`
+	PolicyVersion string      `yaml:"policy_version,omitempty" json:"policy_version,omitempty"`
+	ID            string      `yaml:"id" json:"id"`
+	Enabled       bool        `yaml:"enabled" json:"enabled"`
+	TelegramIDs   []int64     `yaml:"telegram_ids" json:"telegram_ids"`
+	SlackIDs      []SlackLink `yaml:"slack_ids,omitempty" json:"slack_ids,omitempty"`
+	// OIDCSubject provisions the corporate account this user may prove via
+	// SSO enrolment; the issuer is fixed by the configured OIDC provider.
+	OIDCSubject string `yaml:"oidc_subject,omitempty" json:"oidc_subject,omitempty"`
+	// SSOIssuer/SSOSubject carry verified link provenance onto envelopes
+	// minted for this resolved user; empty means channel-mapped (local).
+	SSOIssuer      string            `yaml:"-" json:"-"`
+	SSOSubject     string            `yaml:"-" json:"-"`
 	StateDir       string            `yaml:"state_dir" json:"state_dir"`
 	WorkspaceDir   string            `yaml:"workspace_dir" json:"workspace_dir"`
 	Features       []string          `yaml:"features,omitempty" json:"features,omitempty"`
@@ -57,7 +64,7 @@ func (user User) Envelope(externalID int64) identity.Envelope {
 	if policy == "" {
 		policy = envOr("HUB_POLICY_VERSION", "policy-1")
 	}
-	return identity.TelegramEnvelope(user.ID, externalID, runtimeID, policy)
+	return user.stampProvenance(identity.TelegramEnvelope(user.ID, externalID, runtimeID, policy))
 }
 
 func (user User) SlackEnvelope(teamID, slackUser string) identity.Envelope {
@@ -68,7 +75,16 @@ func (user User) SlackEnvelope(teamID, slackUser string) identity.Envelope {
 	if policy == "" {
 		policy = envOr("HUB_POLICY_VERSION", "policy-1")
 	}
-	return identity.SlackEnvelope(user.ID, teamID, slackUser, runtimeID, policy)
+	return user.stampProvenance(identity.SlackEnvelope(user.ID, teamID, slackUser, runtimeID, policy))
+}
+
+// stampProvenance rides verified SSO attribution on the envelope when the
+// user resolved through an audited link; channel-mapped users stay empty.
+func (user User) stampProvenance(env identity.Envelope) identity.Envelope {
+	if user.SSOIssuer != "" && user.SSOSubject != "" {
+		env.Issuer, env.Subject = user.SSOIssuer, user.SSOSubject
+	}
+	return env
 }
 
 func (user User) MockEnvelope(chatID int64) identity.Envelope {
@@ -79,5 +95,5 @@ func (user User) MockEnvelope(chatID int64) identity.Envelope {
 	if policy == "" {
 		policy = envOr("HUB_POLICY_VERSION", "policy-1")
 	}
-	return identity.MockEnvelope(user.ID, chatID, runtimeID, policy)
+	return user.stampProvenance(identity.MockEnvelope(user.ID, chatID, runtimeID, policy))
 }

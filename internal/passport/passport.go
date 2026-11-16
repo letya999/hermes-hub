@@ -139,7 +139,12 @@ var classes = map[string]map[string]fieldClass{
 		"image_gen.provider":              classChoice,
 		"image_gen.model":                 classChoice,
 		"image_gen.delivery":              classChoice,
-		"web.*":                           classUserData,
+		// iam.mode is a topology choice an org ceiling may bound; the
+		// issuer and client id are operator values, never layered policy.
+		"iam.mode":      classChoice,
+		"iam.issuer":    classUserData,
+		"iam.client_id": classUserData,
+		"web.*":         classUserData,
 	},
 	"models": {
 		"default":    classUserData,

@@ -164,7 +164,7 @@ func (g *Gateway) telegramUserFor(chatID, sender int64) (User, bool) {
 	if chatID >= 0 {
 		user, ok := g.users[sender]
 		if !ok {
-			return User{}, false
+			return g.iamResolveTransport("telegram-" + strconv.FormatInt(sender, 10))
 		}
 		user = g.user(user.ID)
 		return user, user.Enabled
@@ -176,7 +176,7 @@ func (g *Gateway) telegramUserFor(chatID, sender int64) (User, bool) {
 	if group.Mode == "topics" {
 		user, ok := g.users[sender]
 		if !ok {
-			return User{}, false
+			return g.iamResolveTransport("telegram-" + strconv.FormatInt(sender, 10))
 		}
 		user = g.user(user.ID)
 		return user, user.Enabled
