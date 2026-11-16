@@ -4,23 +4,44 @@ title: legible status + hubctl status + metrics/alerts + backup drill
 status: in_progress
 branch: feat/m9-observability
 updated: 2026-11-16
-phase: implementation
+phase: validation
 github_milestone: M9 — Enterprise Readiness
 github_issue: "209,201,199,200(354 tail)"
 design_status: accepted
-implementation_status: in_progress
+implementation_status: complete
 slices:
-  S1-status-model-209: not_started
-  S2-hubctl-status-201: not_started
-  S3-metrics-alerts-199: not_started
-  S4-backup-drill-200: not_started
-  S5-anomaly-watchers-354: tail
+  S1-status-model-209: done
+  S2-hubctl-status-201: done
+  S3-metrics-alerts-199: done
+  S4-backup-drill-200: done
+  S5-anomaly-watchers-354: deferred_no_budget
 validation:
-  documents: pending
-  just_check: not_run
-  docker_check: not_run
+  documents: done
+  just_check: passed
+  docker_check: dev_rebuild_verified
   red_team: not_started
-  live_acceptance: deferred
-evidence: []
-remaining: []
-limitations: []
+  live_acceptance: done
+commits:
+  - 4c183237 S1 #209 bounded phase+conditions status model
+  - b3dcd647 S2 #201 unified hubctl status
+  - bb3c4393 S3 #199 bounded metrics + rate-limited owner alerts
+  - 1447f9d9 S4 #200 scheduled backups + verified restore drill
+  - a8f308ed fixup: alert skips DM-origin failures, sweep waits one interval
+  - a2c286bf fixup: gateway control token resolution for hubctl status
+  - 648c88d3 fixup: legible backup error classes + rendered last_error
+evidence:
+  - "go test -short green: supervisor, contextlife, communication (full pkg), hubctl, stack, locale"
+  - "just check green: format, docs, vet"
+  - "containment tests kept honest: control loop hits only /v1/holds* in notice window; first crash sweep deferred one interval"
+  - "goal-failure UX preserved: DM-origin failures keep the resume-hint delivery; alert only for non-home failures"
+  - "live docker: dev-rebuild supervisor+communication-hub on artem_main, both :local and Healthy"
+  - "live hubctl status: supervisor table + gateway queue/outbox/routines rendered; backup rows live"
+  - "live S4: scheduled sweep wrote spaces/artem_main/archive/backups/backup-20261116T115425Z.zip (20MB, 753 entries, zero secret/env files), drill=ok checked=752; 'me' archive 643B drill=ok"
+  - "live S4 edge: artem_two/local archive dirs are root-owned 755 -> err=unwritable_target recorded and rendered (was missing_source before fix)"
+remaining:
+  - "#354 anomaly watchers: out of budget, parked"
+  - "artem_two/local archive dirs need an ownership fix on the host for their backups to succeed (pre-existing fs state, not a code bug)"
+limitations:
+  - "24h cadence and 7d drill interval verified by unit tests with injected clock; live evidence covers the first-sweep immediate capture"
+  - "alert delivery verified to outbox enqueue; end-to-end telegram send is the standard deliveryLoop path"
+  - "queue failed=16 / outbox failed=33 in gateway section is pre-existing spool state, unrelated to this CHG"
