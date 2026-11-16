@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0313](in-progress/CHG-0313-iam-identity-boundary/plan.md) | IAM-ready identity (M9 #52/#53/#54): verified-principal boundary ADR + envelope provenance, stdlib OIDC + verified channel linking, authz contract verification |
 | [CHG-0306](in-progress/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
 | [CHG-0305](in-progress/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
 | [CHG-0304](in-progress/CHG-0304-connector-slot-fsm/plan.md) | Onboarding lifecycle collapsed to Stage{pending,live,failed,gone}+Gate slot per ADR-0099: production + test migration done, single-link semantics and model contract pending |

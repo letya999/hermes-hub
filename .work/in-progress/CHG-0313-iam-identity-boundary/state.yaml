@@ -1,0 +1,24 @@
+schema: 1
+change: CHG-0313
+title: IAM-ready identity — principal boundary, ZITADEL OIDC linking, authz contract
+status: in_progress
+branch: feat/m9-iam-identity
+updated: 2026-11-16
+phase: implementation
+github_milestone: M9 — Enterprise Readiness
+github_issue: "52,53,54"
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-principal-boundary-52: not_started
+  S2-iam-package-53: not_started
+  S3-communication-linking-53: not_started
+  S4-authz-contract-54: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  live_acceptance: fixture_level
+evidence: []
+remaining: []
+limitations: []

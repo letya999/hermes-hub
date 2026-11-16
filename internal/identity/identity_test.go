@@ -1,6 +1,9 @@
 package identity
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEnvelopeValidation(t *testing.T) {
 	valid := TelegramEnvelope("alice", 11, "alice", "policy-1")
@@ -33,6 +36,14 @@ func TestEnvelopeValidation(t *testing.T) {
 			e.Generation = 1
 			return e
 		}(),
+		"issuer-only":     func() Envelope { e := valid; e.Issuer = "https://idp.example.com"; return e }(),
+		"subject-only":    func() Envelope { e := valid; e.Subject = "auth0|123"; return e }(),
+		"issuer-oversize": func() Envelope {
+			e := valid
+			e.Issuer = strings.Repeat("a", 300)
+			e.Subject = "s"
+			return e
+		}(),
 	} {
 		if envelope.Validate("alice", "alice", "alice", "policy-1") == nil {
 			t.Fatalf("accepted invalid %s envelope", name)
@@ -41,5 +52,12 @@ func TestEnvelopeValidation(t *testing.T) {
 	valid.CapabilityProfile, valid.Environment, valid.Generation = "default", "dev", 1
 	if err := valid.Validate("alice", "alice", "alice", "policy-1"); err != nil {
 		t.Fatal(err)
+	}
+	// SSO provenance (#53): issuer+subject travel as a pair and are
+	// accepted as audit metadata.
+	sso := TelegramEnvelope("alice", 11, "alice", "policy-1")
+	sso.Issuer, sso.Subject = "https://idp.example.com", "auth0|abc123"
+	if err := sso.Validate("alice", "alice", "alice", "policy-1"); err != nil {
+		t.Fatalf("sso provenance rejected: %v", err)
 	}
 }
