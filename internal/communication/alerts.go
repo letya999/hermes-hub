@@ -95,9 +95,19 @@ func (g *Gateway) enqueueAlert(user User, chatID int64, slackChannel, key, text 
 }
 
 // alertJobFailed fires on a durable failed outcome — never on uncertain
-// (the reconciliation window owns that path) and never for content.
+// (the reconciliation window owns that path) and never for content. When
+// the terminal error delivery already landed in the owner's home chat
+// (DM-origin jobs) the alert is skipped: two messages for one failure is
+// noise, and the contextual error carries the better hint.
 func (g *Gateway) alertJobFailed(job Job) {
 	user := g.user(job.UserID)
+	chatID, slackChannel, ok := g.ownerHome(user)
+	if !ok {
+		return
+	}
+	if (chatID != 0 && chatID == job.ChatID) || (slackChannel != "" && slackChannel == job.SlackChannel) {
+		return
+	}
 	lang := locale.LangOf(user.WorkspaceDir)
 	g.alertOwner(user, "job-failed", job.ID, fmt.Sprintf(locale.T(lang, "alert.job-failed"), job.ID))
 }

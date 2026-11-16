@@ -91,7 +91,9 @@ func (g *Gateway) controlLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var lastNoticeSync time.Time
-	var lastAlertSweep time.Time
+	// The first crash-budget sweep waits one interval: at boot the
+	// supervisor is still converging and the notice sync owns the wire.
+	lastAlertSweep := g.now()
 	pendingNotice := true // first pass always syncs
 	for {
 		if pendingNotice || g.now().Sub(lastNoticeSync) >= 10*time.Second {
