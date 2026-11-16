@@ -547,8 +547,12 @@ func (g *Gateway) protect(path string) http.Handler {
 		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
 		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
 		if path == RunEndpointPath {
+			// The endpoint — never the client — asserts run scope; the marker
+			// reaches the detached tool context through RequestExtra.Header.
+			r.Header.Set(api.HeaderRunEndpoint, "1")
 			projection.runHandler.ServeHTTP(w, r)
 		} else {
+			r.Header.Del(api.HeaderRunEndpoint)
 			projection.handler.ServeHTTP(w, r)
 		}
 	})

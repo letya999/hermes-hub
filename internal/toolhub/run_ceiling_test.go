@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,9 @@ func TestToolCallRunCeiling(t *testing.T) {
 		projections: map[string]*gatewayProjection{
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
+		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
+			return privateRunRecord(auth, jobID, "run-1"), nil
+		}),
 	}
 	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
@@ -39,6 +43,7 @@ func TestToolCallRunCeiling(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer alice-principal-token-0000000000000")
 		if jobID != "" {
 			req.Header.Set(api.HeaderJobID, jobID)
+			req.Header.Set(api.HeaderRunID, "run-1")
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
@@ -80,6 +85,9 @@ func TestToolCallRunCeilingMCP(t *testing.T) {
 		projections: map[string]*gatewayProjection{
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
+		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
+			return privateRunRecord(auth, jobID, "run-1"), nil
+		}),
 	}
 	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
@@ -94,6 +102,7 @@ func TestToolCallRunCeilingMCP(t *testing.T) {
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		if jobID != "" {
 			req.Header.Set(api.HeaderJobID, jobID)
+			req.Header.Set(api.HeaderRunID, "run-1")
 		}
 		if sessionID != "" {
 			req.Header.Set("Mcp-Session-Id", sessionID)

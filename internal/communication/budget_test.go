@@ -217,3 +217,56 @@ func TestBudgetUnknownPricing(t *testing.T) {
 		t.Fatalf("unknown pricing not accounted: %+v", scope)
 	}
 }
+
+// Unmeasured usage must keep holding daily capacity after settlement: the
+// estimate moves from ReservedTokens into UnknownTokens instead of
+// evaporating, so a 20k scope refuses the next 10k after a 15k unknown
+// settlement — including after a spool reopen. A new UTC day clears the
+// liability with the rest of the window.
+func TestBudgetUnknownTokensHoldDailyCapacity(t *testing.T) {
+	t.Setenv("HUB_SCOPE_TOKEN_DAILY", "20000")
+	root := t.TempDir()
+	spool, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string, estimate int64) Job {
+		return Job{Envelope: identity.TelegramEnvelope("alice", 1, "runtime", "policy-1"), ID: id, ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "key-" + id, TokenEstimate: estimate, CreatedAt: time.Now().UTC()}
+	}
+	job := mk("job-unknown", 15000)
+	if ok, err := spool.Enqueue(job); err != nil || !ok {
+		t.Fatalf("enqueue: ok=%v err=%v", ok, err)
+	}
+	// The provider metered the run but reported no token counters: settle at
+	// the estimate and carry it as unknown liability.
+	if err := spool.RecordUsage(job, "run-1", hubruntime.SessionUsage{SessionFound: true, SessionID: "s-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.RecordOutcome("job-unknown", RunOutcome{JobID: "job-unknown", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	scope := spool.budgetScope("user:alice")
+	if scope.UnknownTokens != 15000 || scope.ReservedTokens != 0 {
+		t.Fatalf("unknown liability not carried: %+v", scope)
+	}
+	if _, err := spool.Enqueue(mk("job-next", 10000)); err == nil {
+		t.Fatal("10k admission escaped the 15k unknown liability on a 20k cap")
+	}
+	reopened, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope := reopened.budgetScope("user:alice"); scope.UnknownTokens != 15000 {
+		t.Fatalf("unknown liability lost across reopen: %+v", scope)
+	}
+	if _, err := reopened.Enqueue(mk("job-next-2", 10000)); err == nil {
+		t.Fatal("reopen released the unknown liability")
+	}
+	// A new UTC day frees the window like the settled counters.
+	reopened.mu.Lock()
+	reopened.budget.Scopes["user:alice"].Day = "2000-01-01"
+	reopened.mu.Unlock()
+	if ok, err := reopened.Enqueue(mk("job-fresh", 10000)); err != nil || !ok {
+		t.Fatalf("new-day admission refused: ok=%v err=%v", ok, err)
+	}
+}

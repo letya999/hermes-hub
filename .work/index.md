@@ -17,6 +17,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | Change | Summary |
 |---|---|
 | [CHG-0308](in-progress/CHG-0308-hot-ledger-sidecar/plan.md) | Hot ledger off the registry commit channel: broker cursors move to a CursorStore sidecar (JSON temp+rename, 60s flush), heartbeats persist on transition only, lifecycle tick 1s→15s — fixes /v1/rights/decide starvation → agent 403s (repeat of the CHG-0305 class) |
+| [CHG-0310](in-progress/CHG-0310-m30-reliable-execution/plan.md) | M30 reliable multi-user execution (#397–#400): atomic durable model-attempt budgets + UnknownTokens (#400), supervisor-verified run correlation on the call path (#397), stable write-operation correlation fence + cleanup outcome + operator egress (#398), post-admission dispatch + bounded recovery fan-out (#399) — existing state owners, no new contracts |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 

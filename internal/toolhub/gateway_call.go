@@ -56,6 +56,17 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		corr.ToolCallID = api.NewToolCallID()
 	}
 	ctx = api.WithCallCorrelation(ctx, corr)
+	// Run-scoped surfaces require a verifiable job/run pair; any non-empty
+	// correlation anywhere is a claim that must prove itself against the
+	// supervisor's durable record before it can charge or attribute a call.
+	if corr.Scoped && (corr.JobID == "" || corr.HermesRunID == "") {
+		return nil, fmt.Errorf("%w: run correlation required", api.ErrUnauthorized)
+	}
+	if corr.JobID != "" || corr.HermesRunID != "" {
+		if _, err := g.lookupLiveRun(ctx, auth, corr); err != nil {
+			return nil, err
+		}
+	}
 	if err := g.chargeRunCall(corr); err != nil {
 		return nil, err
 	}
@@ -97,6 +108,18 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 		}
 		fields := mergeAudit(auditFields(auth, projected, effective, "admit"), corr)
+		if projected.Tool.Effect == api.WriteEffect {
+			// Write calls carry a stable logical correlation derived from the
+			// admitted arguments: a retry after a lost response replays the
+			// same operation and the audit fence holds it, while a changed
+			// argument list is a different operation. ToolCallID stays the
+			// unique per-attempt identity.
+			canonical, err := json.Marshal(arguments)
+			if err != nil {
+				return fmt.Errorf("%w: canonical arguments", api.ErrInvalid)
+			}
+			fields["correlation_id"] = writeCorrelationID(auth, corr, effective, projected, canonical)
+		}
 		if err := g.audit("admit", fields); err != nil {
 			return err
 		}
@@ -248,6 +271,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		outcome = "ok"
 		if result.IsError {
 			outcome = "backend-error"
+		}
+		if result.CleanupError != "" {
+			outcome = "cleanup-error"
 		}
 		if receipt := api.SafeReceipt(result.Receipt); receipt != "" {
 			fields["receipt"] = receipt
@@ -401,7 +427,22 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 			return nil
 		}
-		return execute(projected, effective)
+		// Every remaining executor runs the backend after admission returns:
+		// the registry fence is never held across a provider call, so a slow
+		// tool cannot starve revocations or other principals' admissions. A
+		// stale decision between admission and dispatch fails closed on the
+		// same recheck the special branches already use.
+		afterAdmission = func() error {
+			authorized = true
+			if err := g.Store.Reload(); err != nil {
+				return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+			}
+			if err := g.Store.ReverifyEffective(effective); err != nil {
+				return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+			}
+			return execute(projected, effective)
+		}
+		return nil
 	})
 	if err == nil && afterAdmission != nil {
 		err = afterAdmission()

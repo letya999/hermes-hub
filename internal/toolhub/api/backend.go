@@ -25,6 +25,10 @@ type BackendResult struct {
 	// identity or a Slack channel plus message timestamp). It is metadata only
 	// and never carries a credential value.
 	Receipt string
+	// CleanupError is a bounded teardown class (for example a remote session
+	// close failure) that must not mask an already-delivered provider result:
+	// the business outcome is known, only cleanup failed.
+	CleanupError string
 }
 
 // ToolBackend is deliberately narrower than an MCP server: the gateway owns

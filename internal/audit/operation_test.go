@@ -295,3 +295,71 @@ func TestUncertainObservationKeepsReserveAndScope(t *testing.T) {
 		t.Fatalf("uncertain observation spent reserve: %v", err)
 	}
 }
+
+// Resolve is the operator egress for unsettled intents: it demands an explicit
+// outcome plus verified evidence, is scoped to the owning principal, and never
+// guesses whether the effect ran.
+func TestResolveRequiresExplicitEvidenceAndScope(t *testing.T) {
+	ledger, _ := operationLedger(t)
+	event := admittedEvent()
+	if _, err := ledger.Begin(event); err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{PrincipalID: "alice"}
+	for _, tc := range []struct {
+		name, op, execution, evidence string
+	}{
+		{"missing evidence", "op-1", "succeeded", ""},
+		{"unverifiable evidence", "op-1", "succeeded", "https://evil.example/token=1"},
+		{"unknown outcome", "op-1", "maybe", "operator-note-1"},
+		{"unknown operation", "op-other", "succeeded", "operator-note-1"},
+	} {
+		err := ledger.Resolve(scope, tc.op, tc.execution, tc.evidence)
+		if tc.name == "unknown operation" {
+			if !errors.Is(err, ErrUncertain) {
+				t.Fatalf("%s: resolve=%v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Fatalf("%s: resolve accepted", tc.name)
+		}
+	}
+	if err := ledger.Resolve(Scope{PrincipalID: "bob"}, "op-1", "succeeded", "operator-note-1"); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("foreign resolve=%v", err)
+	}
+	if err := ledger.Resolve(scope, "op-1", "succeeded", "operator-verified-ticket-9"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := ledger.Pending(scope, 1); err != nil || len(pending) != 0 {
+		t.Fatalf("resolved operation still pending: %+v %v", pending, err)
+	}
+	events, err := ledger.List("alice")
+	if err != nil || len(events) != 2 || events[1].Phase != "completed" || events[1].Outcome != "operator_resolved" || events[1].Receipt != "operator-verified-ticket-9" {
+		t.Fatalf("resolution record=%+v %v", events, err)
+	}
+	if err := ledger.Resolve(scope, "op-1", "failed", "operator-note-2"); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("settled operation re-resolved: %v", err)
+	}
+	// An uncertain-phase record resolves the same way — the phase is durable
+	// evidence of a lost response, not a different state machine.
+	event = admittedEvent()
+	event.OperationID = "op-2"
+	op2, err := ledger.Begin(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncertain := op2.event
+	uncertain.EventID = "evt-2"
+	uncertain.Phase = "uncertain"
+	uncertain.Outcome = "backend-error"
+	if err := ledger.Append(uncertain); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Resolve(scope, "op-2", "not_started", "operator-verified-ticket-10"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := ledger.Pending(scope, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("uncertain resolution pending: %+v %v", pending, err)
+	}
+}

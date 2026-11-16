@@ -235,7 +235,10 @@ type Manager struct {
 	locks   map[string]*sync.Mutex
 	sem     chan struct{}
 	// Warm runtimes hold sem for their lifetime; disposable scripts need their own bound.
-	scriptSem       chan struct{}
+	scriptSem chan struct{}
+	// recoverySem bounds detached observation and missing-work workers so one
+	// stuck runtime cannot delay another owner's recovery sweep.
+	recoverySem     chan struct{}
 	slots           map[string]struct{}
 	gen             uint64
 	leaseSeq        uint64
@@ -449,7 +452,7 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
 		cfg.Decide = relayDecide
 	}
-	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), recoverySem: make(chan struct{}, recoveryWorkers), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
 	if err := m.load(); err != nil {
 		return nil, err
 	}

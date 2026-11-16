@@ -69,14 +69,16 @@ func (b MCPBackend) CallRemoteMCP(ctx context.Context, effective EffectiveBindin
 	if err != nil {
 		return BackendResult{}, fmt.Errorf("%w: remote MCP call: %v", ErrIsolation, sanitizeRemoteError(err))
 	}
-	if closeErr != nil {
-		return BackendResult{}, fmt.Errorf("%w: remote MCP close: %v", ErrIsolation, sanitizeRemoteError(closeErr))
-	}
 	var text strings.Builder
 	for _, content := range result.Content {
 		if value, ok := content.(*mcp.TextContent); ok {
 			text.WriteString(value.Text)
 		}
 	}
-	return BackendResult{Text: text.String(), Content: result.Content, Structured: result.StructuredContent, IsError: result.IsError}, nil
+	out := BackendResult{Text: text.String(), Content: result.Content, Structured: result.StructuredContent, IsError: result.IsError}
+	if closeErr != nil {
+		// The provider already answered — the result is known, not uncertain.
+		out.CleanupError = "remote-mcp-close"
+	}
+	return out, nil
 }

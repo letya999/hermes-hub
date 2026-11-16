@@ -1,0 +1,107 @@
+schema: 1
+change: CHG-0310
+title: M30 — reliable multi-user agent execution
+status: in-progress
+branch: feat/m30-reliable-execution
+updated: "2026-11-15"
+phase: implementation
+requirements: [M30 #397, M30 #398, M30 #399, M30 #400]
+design_status: accepted
+implementation_status: in-progress
+
+scope: |
+  Four targeted fixes to existing state owners per the revised milestone
+  plan: atomic conservative budgets (#400), verified run correlation on the
+  ToolHub call path (#397), stable operation identity + cleanup outcome +
+  operator egress (#398), post-admission dispatch + bounded recovery
+  fan-out (#399). No new contracts, ledgers or queues.
+
+implemented:
+  - internal/communication/budget.go — scopeBudget.UnknownTokens carried on
+    unmeasured settlement, added to the daily admission expression, reset on
+    UTC rollover.
+  - internal/runtime/model_meter.go — load/save return errors; new admit
+    (load→check→reserve→persist under one lock, fail-closed); exhausted kept
+    as pre-skip; charge removed.
+  - internal/runtime/model_relay.go — per-attempt admit immediately before
+    bounded.Do; quota refusal parks the hop for ladder advance.
+  - internal/communication/budget_test.go —
+    TestBudgetUnknownTokensHoldDailyCapacity.
+  - internal/runtime/model_meter_test.go — admit atomicity, per-attempt
+    charging, fail-closed load/save.
+  - internal/toolhub/api/run_status.go, memory_run.go, gateway_call.go,
+    gateway.go — every non-empty job/run claim verified against
+    SupervisorRunAuthority; /mcp-run requires both ids; absent authority
+    fails closed; typed-nil seam safe.
+  - internal/runtime/mcp_proxy_lineage_test.go — real carrier e2e.
+  - internal/toolhub/write_correlation_test.go — stable write correlation
+    fences replay, survives reopen, parallel identical calls admit once,
+    read retries never fenced, cleanup-error preserves provider result.
+  - internal/toolhub/gateway_call.go, audit_ledger.go — write calls carry a
+    stable correlation digest (no argument values); cleanup-error outcome.
+  - internal/toolhub/api/backend.go, backend_remote.go — BackendResult.
+    CleanupError; CallRemoteMCP preserves a known result on close failure.
+  - internal/audit/operation.go — Ledger.Resolve: explicit outcome + bounded
+    verified evidence, scoped to the owning principal.
+  - cmd/hubctl/audit.go — hubctl audit pending|resolve|rollover operator
+    egress; the pre-existing localized rollover implementation moved in
+    verbatim so its contract is preserved under one dispatch.
+  - internal/locale/strings_{en,ru,kk,es}.go — hubctl.audit-usage,
+    hubctl.audit-pending-usage, hubctl.audit-resolve-usage (catalog parity).
+  - cmd/hubctl/main_test.go — TestStatusReportsKnowledgeUIEdge: refreshed the
+    stale pre-existing expectation (doctor reported the retired-edge format
+    after CHG-0309 restored the loopback editor); failure reproduced at
+    merge-base e15ff8ac, unrelated to this change.
+  - internal/toolhub/gateway_call.go — default executor path runs post-
+    admission (Reload + ReverifyEffective) instead of holding s.mu.RLock
+    through the backend.
+  - internal/supervisor/reconcile.go, supervisor.go — recoverySem bounds
+    detached observation + missing-work workers (4); RecoverMissingWork fans
+    out per runtime key, keeps per-key serialization, joins spawned workers.
+  - internal/toolhub/post_admission_test.go — in-flight backend starves
+    neither revocation nor a second owner's call; stale effective denied.
+  - internal/supervisor/recovery_bound_test.go — stuck key does not starve
+    another owner; pool bound + lock hygiene on starvation.
+
+slices:
+  S1-budgets: green
+  S2-run-correlation: green
+  S3-operation-fence: green
+  S4-lock-separation: green
+
+validation:
+  documents: pass  # just check (format + docs + vet) green; docs/spaces.md
+                   # re-verified against cd963583 and last_verified bumped
+  scoped_tests: pass  # affected packages green: communication, runtime,
+                      # audit, toolhub, supervisor, cmd/hubctl, locale
+  live_acceptance: pass  # artem_main + artem_two dev stacks, 2026-11-16.
+    # artem_main: dev-rebuild all six services, healthy on dev-*:local.
+    # #397 gate matrix live: no claims "run correlation required", forged
+    # "run context", completed-run replay "run context"; real run admitted.
+    # artem_two (fault-injection acceptance):
+    # #397: real run_a8f317bd tool calls admitted through gate (memory.search,
+    # memory.read, memory.write in audit.jsonl.v1-000002).
+    # #398 proven end-to-end: docker kill shared toolhub mid-memory_card —
+    # caller saw RemoteDisconnected, admitted op left unsettled (real lost
+    # response), effect verified (vault note landed), hubctl audit resolve
+    # wrote completed/operator_resolved/succeeded with receipt vault-note;
+    # second resolve refused "operation not unsettled". Two concurrent
+    # identical writes carry one stable correlation_id call-e9bf2ed8.
+    # Killed-run job outcome reported honestly: status=uncertain
+    # (terminal_handoff), supervisor job=interrupted.
+    # #399: governance deny rule (user:artem_two/section:toolhub) published
+    # mid-run — subsequent calls got unknown tool (projected filter), the
+    # in-flight run completed; artem_main call under the same revoke was
+    # admitted (cross-owner isolation); rule disabled afterwards. Killed
+    # artem_two runtime respawned (restart + supervisor stream-lost
+    # observation); other owner's runtime untouched.
+    # #400: limits added to artem_two models.yaml (requests/1d) — real calls
+    # wrote durable model-select.json.usage.json (count survived relay
+    # restart); corrupted file + restart -> hop skipped (quota), ladder
+    # advanced, job failed instead of unmetered use; restore -> 200.
+    # Fail-closed proven twice incidentally: broken models.yaml -> 502
+    # model registry unavailable; toolhub down -> relay rights deny.
+    # Unit/e2e-only remainders: unsettled-correlation replay fence (a kill
+    # also ends the run, so same-run replay cannot reach it live),
+    # recoverySem bound under real >4-way degradation, unknown-token
+    # budget branch (needs an unmeasured provider).
