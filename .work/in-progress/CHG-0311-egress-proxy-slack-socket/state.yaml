@@ -1,0 +1,24 @@
+schema: 1
+change: CHG-0311
+title: corporate egress proxy + Slack Socket Mode
+status: in_progress
+branch: feat/m9-egress-slack-socket
+updated: 2026-11-16
+phase: implementation
+github_milestone: M9 — Enterprise Readiness
+github_issue: "353,350"
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-egress-proxy: done
+  S2-slack-socket-mode: in_progress
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: deferred
+evidence: []
+remaining: []
+limitations:
+  - live VPN/proxy acceptance deferred to merge session; offline fixtures only

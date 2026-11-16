@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 // Telegram API subset used by the adapter.
@@ -157,7 +158,7 @@ func newTelegramAPI(baseURL, token string, timeout time.Duration) TelegramAPI {
 	if timeout <= 0 {
 		timeout = 35 * time.Second
 	}
-	return &telegramAPI{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: timeout}}
+	return &telegramAPI{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: timeout, Transport: netguard.EgressTransport()}}
 }
 
 func (t *telegramAPI) call(ctx context.Context, method string, payload any, result any) error {

@@ -1,6 +1,6 @@
 ---
 description: Telegram bot channel — adapter contract, file/usage/voice surfaces, QR auth page, limits.
-last_verified: 2026-11-08
+last_verified: 2026-11-16
 ---
 
 # Channel: Telegram (bot API)
@@ -71,6 +71,16 @@ Unknown run outcomes are observed without replaying input. After the recovery
 budget expires and its one-time uncertainty notice is durable in the outbox,
 automatic observation stops; the outcome stays unknown, including when the
 notice's delivery itself is uncertain.
+
+## Corporate egress proxy
+
+Behind a perimeter without direct outbound, export `HUB_EGRESS_PROXY` (an
+`http(s)` proxy URL, credentials allowed) before `hubctl up`: the Bot API
+client CONNECTs through it — the destination allowlist stays host-side at
+the proxy. Malformed values fail startup closed; an unreachable proxy logs
+the named `telegram-egress` condition once per transition instead of a retry
+storm. The enumerable egress destinations for a firewall team:
+`api.telegram.org` (or the `TELEGRAM_API_BASE_URL` host when overridden).
 
 ## QR login page (telegram_auth, compiled in)
 

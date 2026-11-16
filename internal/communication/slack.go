@@ -19,6 +19,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
@@ -47,7 +48,7 @@ type slackAPI struct {
 }
 
 func newSlackAPI(token string) SlackAPI {
-	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second}, baseURL: "https://slack.com/api"}
+	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second, Transport: netguard.EgressTransport()}, baseURL: "https://slack.com/api"}
 }
 
 func (s *slackAPI) PostMessage(ctx context.Context, channel, thread, text string) error {

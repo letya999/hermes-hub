@@ -86,6 +86,11 @@ type Gateway struct {
 	holdsLast     []masterHold
 	maintenanceMu sync.Mutex
 	maintenance   storageMaintenanceStatus
+	// egressDown tracks which channel transports are currently unreachable —
+	// the named <channel>-egress condition flips once per transition, so an
+	// unreachable proxy is a logged state rather than a per-poll error line.
+	egressMu   sync.Mutex
+	egressDown map[string]bool
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
@@ -341,9 +346,18 @@ func (g *Gateway) Run(ctx context.Context) error {
 				}
 				continue
 			}
+			// A telegramStatusError means the API answered — egress is alive;
+			// every other error class is transport (dial/proxy), which flips
+			// the named telegram-egress condition.
+			if errors.As(err, &status) {
+				g.noteEgress("telegram", nil)
+			} else {
+				g.noteEgress("telegram", err)
+			}
 			time.Sleep(time.Second)
 			continue
 		}
+		g.noteEgress("telegram", nil)
 		offset, err = g.processBatch(ctx, updates, offset)
 		if err != nil {
 			return err
@@ -951,6 +965,25 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 		}
 	}
 	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
+}
+
+// noteEgress flips the named <channel>-egress condition once per transition:
+// a transport-class failure (unreachable proxy or downstream) logs once as a
+// named state and recovery logs once — an outage is diagnosable in the
+// gateway log without a per-retry error storm.
+func (g *Gateway) noteEgress(channel string, err error) {
+	g.egressMu.Lock()
+	defer g.egressMu.Unlock()
+	if g.egressDown == nil {
+		g.egressDown = map[string]bool{}
+	}
+	if err != nil && !g.egressDown[channel] {
+		g.egressDown[channel] = true
+		log.Printf("%s-egress: unreachable: %v", channel, err)
+	} else if err == nil && g.egressDown[channel] {
+		delete(g.egressDown, channel)
+		log.Printf("%s-egress: recovered", channel)
+	}
 }
 
 // notifyTelegramConflict enqueues one owner notice — the idempotency key

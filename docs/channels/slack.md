@@ -1,6 +1,6 @@
 ---
 description: Slack App channel — Events API ingress, HMAC verification, workspace mapping, limits.
-last_verified: 2026-10-30
+last_verified: 2026-11-16
 ---
 
 # Channel: Slack (Events API)
@@ -23,6 +23,16 @@ communication-hub env — channel credentials only; they never enable Slack
 *data* tools (that's the separate `korotovsky/slack-mcp-server` OAuth path,
 docs/integrations.md). Slack App creds and Slack user-token creds are
 different identity planes.
+
+## Corporate egress proxy
+
+Export `HUB_EGRESS_PROXY` (an `http(s)` proxy URL, credentials allowed)
+before `hubctl up` and every Slack Web API call CONNECTs through it — the
+destination allowlist stays host-side. Malformed values fail startup closed;
+an unreachable proxy logs a named `slack-socket-egress`/`slack-egress`
+condition once per transition. Enumerable egress destinations for the
+firewall team: `slack.com` (Web API + `apps.connections.open`) and the
+`wss-*.slack.com` Socket Mode endpoints.
 
 ## Limits
 

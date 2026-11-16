@@ -17,6 +17,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -133,6 +134,11 @@ type ServiceEndpoint struct {
 
 func (c Config) Validate() error {
 	if _, err := spoolStorageLimits(limitsFromEnv()); err != nil {
+		return err
+	}
+	// A malformed egress proxy fails startup closed — the gateway must never
+	// boot into silent direct egress outside the reviewed perimeter.
+	if _, err := netguard.EgressProxy(); err != nil {
 		return err
 	}
 

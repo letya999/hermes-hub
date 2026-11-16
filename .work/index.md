@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0311](in-progress/CHG-0311-egress-proxy-slack-socket/plan.md) | M9 #353/#350: `HUB_EGRESS_PROXY` + `egressTransport` on telegram/slack/oauth egress; `SLACK_TRANSPORT=socket` via `SLACK_APP_TOKEN` + coder/websocket — events stays default |
 | [CHG-0306](in-progress/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
 | [CHG-0305](in-progress/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
 | [CHG-0304](in-progress/CHG-0304-connector-slot-fsm/plan.md) | Onboarding lifecycle collapsed to Stage{pending,live,failed,gone}+Gate slot per ADR-0099: production + test migration done, single-link semantics and model contract pending |
