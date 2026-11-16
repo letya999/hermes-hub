@@ -466,14 +466,68 @@ connection state; it does not print recipe or credential metadata.
 
 ## IAM enrolment and channel linking (SSO)
 
-Opt-in ADR-0100 surface on communication-hub: `HUB_OIDC_ISSUER` +
-`HUB_OIDC_CLIENT_ID` (compose passthrough, works with any OIDC provider —
-ZITADEL, Keycloak, Entra ID). `HUB_OIDC_ISSUER` must be https outside
-loopback; a missing client id fails startup rather than degrading to
-unverified identity. `HUB_PUBLIC_ORIGIN`/`form origin` supplies the
-`/iam/oidc/callback` redirect target — register exactly
-`<form origin>/iam/oidc/callback` in the provider client (OIDC code flow
-+ PKCE, `openid` scope; no client secret is stored).
+Opt-in ADR-0100 surface on communication-hub. Declare it in the published
+passport `config.yaml` — the `iam:` block is compile-validated and renders
+into the gateway env and (bundled only) two extra shared services:
+
+```yaml
+iam:
+    mode: external        # or: bundled
+    issuer: https://sso.example.com/application/o/hermes
+    client_id: hermes-hub
+```
+
+- **`mode: external`** — an upstream OIDC provider you run yourself:
+  Authentik, Keycloak, ZITADEL Cloud, Entra ID. `issuer` (https outside
+  loopback; path issuers like Authentik's `/application/o/<slug>` are
+  legal) and `client_id` are required; declaring `identity-hub` or
+  `hub-postgres` stack services at the same time is a compile error —
+  external means the hub runs no IdP of its own.
+- **`mode: bundled`** — the optional in-stack IdP: `identity-hub`
+  (ZITADEL v4, digest-pinned) plus `hub-postgres` (the one shared
+  postgres — only the IdP consumes it). Declare both in `stack.yaml`
+  with `mode: shared`; anything less fails compile and render.
+  `issuer` may be omitted in dev — the render derives
+  `http://idp.localhost:<ports.identity-hub|8091>` and puts the
+  `idp.localhost` network alias on the IdP, so the browser and the
+  gateway container resolve one issuer string. An explicit issuer must
+  be a host-level URL (ZITADEL serves issuers without a path) and makes
+  the deployment publish `127.0.0.1:<issuer port>:8091`.
+- Absent `iam:` → channel-mapped local mode, unchanged.
+
+`identity-hub.auth` materializes at render (postgres password,
+`ZITADEL_MASTERKEY`, session cookie secret). The masterkey encrypts the
+IdP's secrets at rest and never rotates — losing it bricks the store, so
+back it up with the other auth files.
+
+Direct env override still works for unmanaged stacks: `HUB_OIDC_ISSUER`
++ `HUB_OIDC_CLIENT_ID` compose passthrough — a published `iam:` block
+takes precedence, and a bundled mode without `client_id` renders empty
+env so the gateway boots in local mode until bootstrap finishes (it
+never starts half-configured). `HUB_PUBLIC_ORIGIN`/`form origin`
+supplies the `/iam/oidc/callback` redirect target — register exactly
+`<form origin>/iam/oidc/callback` in the provider client (OIDC code
+flow + PKCE, `openid` scope; no client secret is stored).
+
+**Bundled bootstrap (manual, once).** ZITADEL initializes itself via
+`start-from-init`; after the container is healthy:
+
+1. Open `http://idp.localhost:8091/ui/console` and sign in as
+   `zitadel-admin@zitadel.localhost` with the generated password ZITADEL
+   prints in its logs on first boot (`docker compose logs identity-hub`
+   — the line appears once; rotate the password immediately).
+2. Create a project and an application: type **web**, auth method
+   **PKCE**, redirect URI `<form origin>/iam/oidc/callback`. The
+   application **client id** goes to `iam.client_id` — re-apply the
+   passport to project it into the gateway.
+3. Create users; each user's **subject** (the stable `sub` claim —
+   ZITADEL's opaque user id, not the login name) goes into
+   `communication.users.yaml` → `oidc_subject:` for enrolment.
+4. Backup scope grows: `hub-postgres-data` volume (the IdP's store) in
+   addition to `<spool>/iam/`; `identity-hub.auth` alongside the other
+   auth files. Removal: `/unlink` every linked account, drop the `iam:`
+   block plus the two stack services, re-apply — the postgres volume
+   stays behind for manual deletion, it is never dropped silently.
 
 Two flows, both one-time and 10-minute TTL:
 

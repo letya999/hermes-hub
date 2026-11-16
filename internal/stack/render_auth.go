@@ -102,6 +102,60 @@ func ensureModelRelayAuth(path string) error {
 	return writeEnvFile(path, values)
 }
 
+// ensureIAMAuth provisions the bundled identity-hub's secrets: one postgres
+// password the api and the database share, the 32-char masterkey encrypting
+// secrets at rest, and the login-session cookie secret. Values persist
+// across renders — the masterkey must never rotate once the store exists.
+func ensureIAMAuth(path string) error {
+	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
+	values := map[string]string{}
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("identity-hub auth must be a regular file")
+		}
+		values, err = ReadSecrets(path)
+		if err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	changed := false
+	generate := func(length int) string {
+		value := make([]byte, length)
+		if _, err = rand.Read(value); err != nil {
+			return ""
+		}
+		return hex.EncodeToString(value)
+	}
+	if values["POSTGRES_PASSWORD"] == "" {
+		values["POSTGRES_PASSWORD"] = generate(32)
+		changed = true
+	}
+	// ZITADEL connects as the zitadel user for reads/writes and needs the
+	// same role for schema admin on first init — the shared postgres
+	// currently serves only this consumer, so one credential pair does.
+	for _, key := range []string{"ZITADEL_DATABASE_POSTGRES_USER_PASSWORD", "ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD"} {
+		if values[key] == "" {
+			values[key] = values["POSTGRES_PASSWORD"]
+			changed = true
+		}
+	}
+	// Exactly 32 chars: 16 random bytes hex-encode to 32.
+	if values["ZITADEL_MASTERKEY"] == "" {
+		values["ZITADEL_MASTERKEY"] = generate(16)
+		changed = true
+	}
+	if values["ZITADEL_SESSION_COOKIE_SECRET"] == "" {
+		values["ZITADEL_SESSION_COOKIE_SECRET"] = generate(16)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return writeEnvFile(path, values)
+}
+
 // The shared ToolHub gets only the caller bearer, never relay admin authority.
 func writeModelRelayCallerAuth(dir string) error {
 	values, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))

@@ -98,6 +98,13 @@ var Consumers = map[string]Consumer{
 	"config.hosting.slots":   {"compose", EffectRecreate},
 	"config.hosting.image":   {"compose", EffectRecreate},
 	"config.hosting.runtime": {"compose", EffectRecreate},
+	// iam flips the compose topology: appearing/removing the block or
+	// changing mode adds and drops the bundled identity-hub pair —
+	// the same class stack.services changes carry. issuer/client_id
+	// only rewrite the gateway env, so they recreate rather than rebuild.
+	"config.iam.mode":      {"compose", EffectRebuild},
+	"config.iam.issuer":    {"compose", EffectRecreate},
+	"config.iam.client_id": {"compose", EffectRecreate},
 
 	// models -> relay registry (hot-reloaded live) / service set (recreate)
 	"models.default":                           {"model-relay", EffectLive},

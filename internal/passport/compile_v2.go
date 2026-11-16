@@ -269,6 +269,9 @@ var PortOwners = map[string]string{
 	// open-knowledge is feature-rendered, so its "instance" is the tools
 	// doc's knowledge_ui marker rather than a declared stack service.
 	"knowledge-ui": "open-knowledge",
+	// identity-hub publishes the bundled IdP's external port (the port the
+	// iam issuer points at); absent it derives the dev default.
+	"identity-hub": "identity-hub",
 }
 
 // channelVocabulary is the set of ingress transports config.channels may
@@ -368,6 +371,11 @@ func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo
 			return fmt.Errorf("passport compile: config.image_gen: %w", err)
 		}
 	}
+	if raw, set := cfg["iam"]; set {
+		if err := checkIAM(raw, instances); err != nil {
+			return err
+		}
+	}
 	context := asMap(asMap(cfg["runtime"])["context"])
 	engines := map[string]bool{}
 	for i, raw := range asList(context["engines"]) {
@@ -463,6 +471,52 @@ func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// checkIAM validates config.iam at compile time (ADR-0100): external is a
+// reachable OIDC provider with a client_id and no bundled services;
+// bundled renders the identity-hub/hub-postgres pair it declared shared.
+// The stack projection re-verifies the same contract at render.
+func checkIAM(raw any, instances map[string]instInfo) error {
+	block, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("passport compile: config.iam must be a map")
+	}
+	mode, _ := block["mode"].(string)
+	if mode != "external" && mode != "bundled" {
+		return fmt.Errorf("passport compile: config.iam.mode must be external or bundled")
+	}
+	if iss, _ := block["issuer"].(string); iss != "" {
+		u, err := url.Parse(iss)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("passport compile: config.iam.issuer is not an absolute http(s) URL")
+		}
+		if mode == "bundled" && u.Path != "" && u.Path != "/" {
+			return fmt.Errorf("passport compile: config.iam.issuer bundled identity hub serves a host-level issuer, no path")
+		}
+	}
+	_, hasIDH := instances["identity-hub"]
+	_, hasPG := instances["hub-postgres"]
+	if mode == "external" {
+		if hasIDH || hasPG {
+			return fmt.Errorf("passport compile: config.iam.mode external cannot run the bundled identity-hub/hub-postgres services")
+		}
+		if iss, _ := block["issuer"].(string); strings.TrimSpace(iss) == "" {
+			return fmt.Errorf("passport compile: config.iam.issuer is required with mode external")
+		}
+		if c, _ := block["client_id"].(string); strings.TrimSpace(c) == "" {
+			return fmt.Errorf("passport compile: config.iam.client_id is required with mode external")
+		}
+		return nil
+	}
+	// bundled
+	if !hasIDH || !hasPG {
+		return fmt.Errorf("passport compile: config.iam.mode bundled requires stack services identity-hub and hub-postgres")
+	}
+	if instances["identity-hub"].mode != "shared" || instances["hub-postgres"].mode != "shared" {
+		return fmt.Errorf("passport compile: config.iam.mode bundled requires identity-hub and hub-postgres with mode shared")
 	}
 	return nil
 }

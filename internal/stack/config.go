@@ -172,6 +172,19 @@ type Settings struct {
 	// applies only to legacy-file sources, not the governed authored
 	// declaration. Render state only.
 	PassportConnectors bool `yaml:"-"`
+	// PassportIAM carries the validated iam: block — mode and the resolved
+	// issuer/client pair the shared gateway renders as HUB_OIDC_*. Render
+	// state only, never serialized.
+	PassportIAM *IAMSettings `yaml:"-"`
+}
+
+// IAMSettings is the runtime projection of the passport iam: block.
+// Issuer stays empty when a bundled deployment derives the dev issuer
+// (http://idp.localhost:<port>) at render time.
+type IAMSettings struct {
+	Mode     string // "external" | "bundled"
+	Issuer   string
+	ClientID string
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.

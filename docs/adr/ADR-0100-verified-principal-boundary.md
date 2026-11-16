@@ -63,3 +63,31 @@ ToolHub or Hermes changes.
   the personal-mode default and must not be treated as anonymous.
 - Unauthenticated ingress has no degraded mode: unknown transport ids,
   bad signatures and missing bearers deny, they do not impersonate.
+
+## Appendix A — Deployment shapes (added with the `iam:` stack block)
+
+The boundary is provider-independent; where the issuer lives is a stack
+decision the passport now encodes instead of an env convention:
+
+- **`iam:` absent** — D2 stands alone: trusted local mapping, no IdP
+  containers, the single-user baseline.
+- **`iam.mode: external`** — the issuer is upstream infrastructure the
+  operator already trusts (Authentik, Keycloak, ZITADEL Cloud, Entra
+  ID). The passport carries `issuer` + `client_id`; no IdP container
+  renders. Declaring the bundled services in this mode is a compile
+  error — two issuers for one stack is never coherent.
+- **`iam.mode: bundled`** — the optional in-stack issuer: `identity-hub`
+  (ZITADEL v4, digest-pinned) plus `hub-postgres`, both declared
+  `mode: shared` and rendered only on the infra-owning space. The shared
+  postgres has exactly one consumer today; widening it is a separate
+  decision, not a side effect of this block. A bundled issuer must be
+  host-level — ZITADEL serves issuers without a path, and the derived
+  dev default `http://idp.localhost:<port>` rides a network alias plus
+  `*.localhost` loopback so browser and container agree.
+
+A bundled deployment tolerates an empty `client_id` during first boot —
+the gateway env renders empty and stays in local mode until the operator
+finishes bootstrap and republishes. It never starts half-configured:
+issuer without a client would fail startup, so the render emits neither.
+The `ZITADEL_MASTERKEY` materialized into `identity-hub.auth` encrypts
+the IdP store and must never rotate or be lost.

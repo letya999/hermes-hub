@@ -246,6 +246,11 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		return err
 	}
 	if s.RendersInfra() {
+		if s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" {
+			if err = ensureIAMAuth(filepath.Join(dir, "identity-hub.auth")); err != nil {
+				return err
+			}
+		}
 		if err = enrollSiblingRuntimeTokens(dir, environment, s); err != nil {
 			return err
 		}

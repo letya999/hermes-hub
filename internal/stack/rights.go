@@ -93,6 +93,7 @@ var settingsFieldRights = map[string]string{
 	"PassportServices":  "",
 	"PassportConfig":    "",
 	"PassportWorkspace": "",
+	"PassportIAM":       "",
 	// ScopeKind is the immutable identity stamp projected from the published
 	// revision — grants cannot move it, and PassportConnectors is provenance
 	// metadata (which s.MCP entries the passport declared), not a grant.

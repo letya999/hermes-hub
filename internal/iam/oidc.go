@@ -65,22 +65,31 @@ func loopbackURL(u *url.URL) bool {
 // AuthURL/Exchange fills endpoints, so a hub boots even while the IdP
 // is unreachable.
 func NewProvider(issuer, clientID, redirectURL string) (*Provider, error) {
-	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
-	u, err := url.Parse(issuer)
-	// Issuers may carry a path — Authentik applications
-	// (/application/o/<slug>) and Keycloak realms (/realms/<name>) issue
-	// them; discovery appends /.well-known/openid-configuration to the
-	// full issuer per RFC 8414. Query/fragment still reject.
-	if err != nil || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
-		return nil, fmt.Errorf("invalid OIDC issuer")
-	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackURL(u)) {
-		return nil, fmt.Errorf("OIDC issuer must be https (loopback http allowed)")
+	issuer, err := ValidateIssuer(issuer)
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(redirectURL) == "" {
 		return nil, fmt.Errorf("OIDC client id and redirect url required")
 	}
 	return &Provider{Issuer: issuer, ClientID: clientID, RedirectURL: redirectURL, Client: &http.Client{Timeout: 10 * time.Second}, Now: time.Now, jwks: map[string]*rsa.PublicKey{}}, nil
+}
+
+// ValidateIssuer returns the canonical (unslashed) issuer or an error:
+// issuers may carry a path — Authentik applications
+// (/application/o/<slug>) and Keycloak realms (/realms/<name>) issue
+// them; discovery appends /.well-known/openid-configuration to the
+// full issuer per RFC 8414. Query/fragment still reject.
+func ValidateIssuer(issuer string) (string, error) {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	u, err := url.Parse(issuer)
+	if err != nil || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
+		return "", fmt.Errorf("invalid OIDC issuer")
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackURL(u)) {
+		return "", fmt.Errorf("OIDC issuer must be https (loopback http allowed)")
+	}
+	return issuer, nil
 }
 
 func (p *Provider) httpClient() *http.Client {
