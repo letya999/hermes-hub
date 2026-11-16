@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0312
+title: legible status + hubctl status + metrics/alerts + backup drill
+status: in_progress
+branch: feat/m9-observability
+updated: 2026-11-16
+phase: implementation
+github_milestone: M9 — Enterprise Readiness
+github_issue: "209,201,199,200(354 tail)"
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-status-model-209: not_started
+  S2-hubctl-status-201: not_started
+  S3-metrics-alerts-199: not_started
+  S4-backup-drill-200: not_started
+  S5-anomaly-watchers-354: tail
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: deferred
+evidence: []
+remaining: []
+limitations: []

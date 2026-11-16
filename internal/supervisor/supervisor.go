@@ -249,6 +249,11 @@ type Manager struct {
 	// whose space has no live runtime; in-memory only — a restart grants one
 	// grace period, never a premature stop.
 	sidecarIdle map[string]time.Time
+	// statusSig dedups the transitions journal: last-emitted
+	// phase|condition signature per runtime/job key. In-memory only — on
+	// restart the first persist re-journals current state, a correct
+	// (if slightly chatty) re-baseline.
+	statusSig map[string]string
 }
 
 type persistedManager struct {
@@ -554,7 +559,19 @@ func (m *Manager) persistLocked() error {
 	if err == nil {
 		err = os.Rename(name, m.statePath)
 	}
+	if err == nil {
+		m.emitStatusTransitionsLocked(m.now())
+	}
 	return err
+}
+
+// now tolerates hand-built Manager values in tests where cfg.Now was never
+// normalized by New.
+func (m *Manager) now() time.Time {
+	if m.cfg.Now == nil {
+		return time.Now()
+	}
+	return m.cfg.Now()
 }
 
 func (m *Manager) sweep(ctx context.Context, now time.Time) {
