@@ -44,6 +44,7 @@ type Gateway struct {
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User
+	slackSocket  *slackSocketClient
 	spool        *Spool
 	api          TelegramAPI
 	slack        SlackAPI
@@ -229,6 +230,9 @@ func New(config Config) (*Gateway, error) {
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
 	}
+	if config.SlackTransport == "socket" {
+		g.slackSocket = newSlackSocketClient(config.SlackAppToken)
+	}
 	return g, nil
 }
 
@@ -299,6 +303,17 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
+	socketDone := make(chan struct{})
+	if g.slackSocket != nil {
+		// Socket Mode needs no inbound listener: the loop holds one outbound
+		// WebSocket to Slack and acks each envelope after durable ingest.
+		go func() {
+			defer close(socketDone)
+			g.slackSocketLoop(workerCtx)
+		}()
+	} else {
+		close(socketDone)
+	}
 	captureDone := make(chan struct{})
 	if g.captureKick != nil {
 		// The outbox drain lives with the other loops: it sweeps what a
@@ -314,6 +329,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		cancel()
 		workerWG.Wait()
 		<-deliveryDone
+		<-socketDone
 		<-captureDone
 		<-controlDone
 		<-progressDone

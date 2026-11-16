@@ -44,6 +44,8 @@ type Config struct {
 	APIBaseURL         string `yaml:"api_base_url,omitempty"`
 	SlackSigningSecret string `yaml:"-"`
 	SlackBotToken      string `yaml:"-"`
+	SlackAppToken      string `yaml:"-"`
+	SlackTransport     string `yaml:"-"`
 	ControlAuth        string `yaml:"-"`
 	ControlPrincipal   string `yaml:"-"`
 	AutomationAuth     string `yaml:"-"`
@@ -140,6 +142,15 @@ func (c Config) Validate() error {
 	// boot into silent direct egress outside the reviewed perimeter.
 	if _, err := netguard.EgressProxy(); err != nil {
 		return err
+	}
+	switch c.SlackTransport {
+	case "", "events":
+	case "socket":
+		if c.SlackBotToken == "" || c.SlackAppToken == "" {
+			return errors.New("SLACK_TRANSPORT=socket requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN")
+		}
+	default:
+		return fmt.Errorf("unsupported SLACK_TRANSPORT %q", c.SlackTransport)
 	}
 
 	if c.Supervised && c.RuntimeURL == "" {
@@ -465,6 +476,12 @@ func fillChannelSecrets(config *Config) {
 	}
 	if config.SlackBotToken == "" {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
+	}
+	if config.SlackAppToken == "" {
+		config.SlackAppToken = os.Getenv("SLACK_APP_TOKEN")
+	}
+	if config.SlackTransport == "" {
+		config.SlackTransport = envOr("SLACK_TRANSPORT", "events")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
 	config.ControlPrincipal = strings.TrimSpace(os.Getenv("HUB_USER_ID"))

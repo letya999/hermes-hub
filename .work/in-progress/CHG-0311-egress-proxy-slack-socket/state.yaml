@@ -4,21 +4,34 @@ title: corporate egress proxy + Slack Socket Mode
 status: in_progress
 branch: feat/m9-egress-slack-socket
 updated: 2026-11-16
-phase: implementation
+phase: review
 github_milestone: M9 — Enterprise Readiness
 github_issue: "353,350"
 design_status: accepted
-implementation_status: in_progress
+implementation_status: implemented
 slices:
   S1-egress-proxy: done
-  S2-slack-socket-mode: in_progress
+  S2-slack-socket-mode: done
 validation:
-  documents: pending
-  just_check: not_run
-  docker_check: not_run
+  documents: updated
+  just_check: passed
+  docker_check: dev-rebuild + live container matrix
   red_team: not_started
-  live_acceptance: deferred
-evidence: []
-remaining: []
+  live_acceptance: passed (transport layer; real Slack app token not available locally)
+evidence:
+  - "netguard egress tests: parsing fail-closed, absolute-URI + CONNECT proxy routing, userinfo, OAuth transport, LocalTransport direct"
+  - "communication egress tests: malformed proxy startup refusal, telegram client via proxy, named egress transitions"
+  - "socket tests: transport validation, events route unmounted, ws dial via dead proxy, loopback session event+slash ack+dedupe"
+  - "go test -short ./internal/communication ./internal/netguard ./internal/stack — green"
+  - "just check — green (format, docs, vet); just security — govulncheck 0, npm audit 0"
+  - "live docker: dev-rebuild communication-hub → hermes-hub-dev-artem_main-communication-hub:local, container Healthy, POST /v1/slack/events 401 (events default)"
+  - "live docker: HUB_EGRESS_PROXY='http://' → container refuses boot, 'must be an http(s) proxy URL' in log (fail-closed)"
+  - "live docker: HUB_EGRESS_PROXY=http://127.0.0.1:9 → 'telegram-egress: unreachable ... proxyconnect tcp ... 127.0.0.1:9' — named condition, no direct fallback"
+  - "live docker: HUB_EGRESS_PROXY=http://egress-probe:3128 → probe logs 'CONNECT api.telegram.org:443', telegram polling healthy through the tunnel"
+  - "live docker: SLACK_TRANSPORT=socket + probe → 'CONNECT slack.com:443' + 'slack-socket-egress: unreachable: slack connections.open: invalid_auth' — Slack API answered over the tunnel; /v1/slack/events → 404 (route unmounted)"
+  - "SLACK_APP_TOKEN never logged; live matrix used dummy xapp values"
+remaining:
+  - "real Slack app + workspace end-to-end delivery acceptance (owner gate — no slack credentials in dev spaces)"
 limitations:
-  - live VPN/proxy acceptance deferred to merge session; offline fixtures only
+  - socket-mode message delivery proven to apps.connections.open boundary; real workspace requires owner-supplied app token
+  - socket reconnect is a fixed 5s delay, not exponential — bounded but simple

@@ -129,27 +129,7 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	var envelope struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-		TeamID    string `json:"team_id"`
-		EventID   string `json:"event_id"`
-		Event     struct {
-			Type        string `json:"type"`
-			Subtype     string `json:"subtype"`
-			User        string `json:"user"`
-			Text        string `json:"text"`
-			Channel     string `json:"channel"`
-			ChannelType string `json:"channel_type"`
-			TS          string `json:"ts"`
-			ThreadTS    string `json:"thread_ts"`
-			BotID       string `json:"bot_id"`
-			UserProfile struct {
-				Email       string `json:"email"`
-				DisplayName string `json:"display_name"`
-			} `json:"user_profile"`
-		} `json:"event"`
-	}
+	var envelope slackEventEnvelope
 	if json.Unmarshal(body, &envelope) != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return

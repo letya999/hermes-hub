@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-09
+last_verified: 2026-11-16
 ---
 # Documentation
 
@@ -40,7 +40,7 @@ last_verified: 2026-11-09
 | [prepared-connectors.md](prepared-connectors.md) | Connector pipeline, recipe ledger, tiers, per-connector runbooks |
 | [channels.md](channels.md) | Channel adapter contract, conformance, how to add one |
 | [channels/telegram.md](channels/telegram.md) | Telegram bot channel — files, commands, QR page |
-| [channels/slack.md](channels/slack.md) | Slack App channel — Events API, HMAC, limits |
+| [channels/slack.md](channels/slack.md) | Slack App channel — Events API + Socket Mode, egress, limits |
 | [routines.md](routines.md) | Routine business tools, schedules, probes, delivery |
 | [cli-policy.md](cli-policy.md) | Isolated terminal, private installs, operator catalog |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup |

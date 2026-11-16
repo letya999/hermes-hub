@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/HugoSmits86/nativewebp v1.3.0
 	github.com/andybalholm/cascadia v1.3.3
+	github.com/coder/websocket v1.8.15
 	github.com/gofrs/flock v0.13.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/gotd/td v0.162.0
@@ -29,7 +30,6 @@ require (
 	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.19.0 // indirect
