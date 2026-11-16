@@ -74,18 +74,34 @@ validation:
                    # re-verified against cd963583 and last_verified bumped
   scoped_tests: pass  # affected packages green: communication, runtime,
                       # audit, toolhub, supervisor, cmd/hubctl, locale
-  live_acceptance: pass  # artem_main dev stack, 2026-11-16: dev-rebuild
-    # toolhub/supervisor/communication-hub/model-relay/toolhub-relay/
-    # hermes-runtime, all containers healthy on hermes-hub-dev-artem_main-*.
-    # #397: /mcp-run tools/call denied without claims ("run correlation
-    # required"), denied with forged job/run ("run context"), denied on a
-    # completed run replay ("run context"); real run mock-8a18215 /
-    # run_eb66e2d admitted and files.list completed ok (audit.jsonl.v1-000002
-    # admitted→completed pair, tool_call call-083ea268). #400: model attempts
-    # flowed model-relay→cliproxy 2×200 through the atomic admit path.
-    # #398: hubctl audit pending reads the live segmented ledger; operator
-    # egress verified on real unsettled operations. #399: rebuilt ToolHub
-    # served interleaved rights/memory/tool traffic with post-admission
-    # dispatch; owner answer delivered via mock channel. Remaining unproven
-    # live: write-replay fencing, bounded recovery fan-out, unknown-token
-    # budget path (e2e/unit coverage only).
+  live_acceptance: pass  # artem_main + artem_two dev stacks, 2026-11-16.
+    # artem_main: dev-rebuild all six services, healthy on dev-*:local.
+    # #397 gate matrix live: no claims "run correlation required", forged
+    # "run context", completed-run replay "run context"; real run admitted.
+    # artem_two (fault-injection acceptance):
+    # #397: real run_a8f317bd tool calls admitted through gate (memory.search,
+    # memory.read, memory.write in audit.jsonl.v1-000002).
+    # #398 proven end-to-end: docker kill shared toolhub mid-memory_card —
+    # caller saw RemoteDisconnected, admitted op left unsettled (real lost
+    # response), effect verified (vault note landed), hubctl audit resolve
+    # wrote completed/operator_resolved/succeeded with receipt vault-note;
+    # second resolve refused "operation not unsettled". Two concurrent
+    # identical writes carry one stable correlation_id call-e9bf2ed8.
+    # Killed-run job outcome reported honestly: status=uncertain
+    # (terminal_handoff), supervisor job=interrupted.
+    # #399: governance deny rule (user:artem_two/section:toolhub) published
+    # mid-run — subsequent calls got unknown tool (projected filter), the
+    # in-flight run completed; artem_main call under the same revoke was
+    # admitted (cross-owner isolation); rule disabled afterwards. Killed
+    # artem_two runtime respawned (restart + supervisor stream-lost
+    # observation); other owner's runtime untouched.
+    # #400: limits added to artem_two models.yaml (requests/1d) — real calls
+    # wrote durable model-select.json.usage.json (count survived relay
+    # restart); corrupted file + restart -> hop skipped (quota), ladder
+    # advanced, job failed instead of unmetered use; restore -> 200.
+    # Fail-closed proven twice incidentally: broken models.yaml -> 502
+    # model registry unavailable; toolhub down -> relay rights deny.
+    # Unit/e2e-only remainders: unsettled-correlation replay fence (a kill
+    # also ends the run, so same-run replay cannot reach it live),
+    # recoverySem bound under real >4-way degradation, unknown-token
+    # budget branch (needs an unmeasured provider).
