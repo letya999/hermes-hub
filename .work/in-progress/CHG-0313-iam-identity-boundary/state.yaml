@@ -18,7 +18,7 @@ validation:
   documents: done
   just_check: green
   docker_check: done
-  live_acceptance: fixture_level
+  live_acceptance: authentik_real_idp
 evidence:
   - "S1: ADR-0100 accepted; Envelope.Issuer/Subject paired+bounded validation; tests green"
   - "S2: internal/iam stdlib OIDC (discovery/JWKS/RS256/kid/nonce/expiry) + LinkStore (atomic json + hashed-subject audit, conflict denial, Close); 5 tests green incl. Windows lock fix"
@@ -26,10 +26,15 @@ evidence:
   - "S4: verified existing contract — /v1/rights/decide binds principal from bearer envelope (body principal mismatch → deny), carries capability/operation/scope/environment, pins profile.PolicyRevision via policyAtRevisionLocked, re-checks activation post-decision (stale-revision safe), Store.Decide enforced at execution call sites (memory/research/automation). No OPA/Cedar; contract is the extensible JSON shape + envelope"
   - "docs: operations.md 'IAM enrolment and channel linking (SSO)' section; ADR-0100 wording aligned to empty-is-local"
   - "docker live (artem_main dev): dev-rebuild → :local healthy; HUB_OIDC_* passthrough renders; empty env → /iam/* 404 baseline intact; HUB_OIDC_ISSUER=http://… → startup refused 'oidc provider: OIDC issuer must be https'; restore → healthy"
+  - "LIVE Authentik 2025.10.2 (ghcr.io/goauthentik/server, .work/tmp/authentik compose, issuer http://idp.localhost:9000/application/o/hermes, public client hermes-hub, PKCE S256): mock /link → nonce URL → /iam/oidc/start → authorize → alice executor login → code+state → callback 200 'Account linked'; iam-links.json: mock-11→artem_main iss+sub=1498de78-…; audit subject_hash only; replay link+start → 410; second IdP user (bob) same-transport link → 409 conflict; /unlink → 'link removed' + store [] + unlink audit. Commits 0190f37e (trailing-slash iss + *.localhost), c19f0210 (path issuers)"
+  - "provider-compat fixes from live run: iss compared slash-insensitive (Authentik asserts …/hermes/), *.localhost allowed as loopback http issuer (RFC 6761; browser+container resolve alike), issuer path components accepted"
 remaining:
-  - "live ZITADEL tenant acceptance (issuer discovery + real login) — requires deployed IdP; tracked as owner-gated"
+  - "live ZITADEL tenant acceptance — bundled mode lands with the stack.yaml iam: block work; tracked as owner-gated"
+  - "live enrol path (unmapped transport + oidc_subject match) — unit-tested; needs a second real channel account to prove end-to-end"
   - "slack enrol hint on unmapped slack messages (currently link-issued only)"
+  - "linked-transport ingress resolution + provenance stamping live on telegram — unit-tested; mock channel resolves via mock-links by design"
 limitations:
-  - "fixture IdP (httptest+RSA) verifies the OIDC contract; no live ZITADEL acceptance claimed"
+  - "live acceptance proven against Authentik (real OIDC code+PKCE+RS256); ZITADEL not yet exercised — provider contract is generic OIDC"
   - "oidc_subject provisioned manually per user record; no group/SCIM sync"
   - "channel-mapped (local) envelopes carry empty provenance — empty means local, not anonymous"
+  - "dev-issuer trick: http issuers only on loopback-equivalents (localhost, 127.0.0.1, ::1, host.docker.internal, *.localhost); production requires real https issuer"
