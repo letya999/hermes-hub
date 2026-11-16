@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-14
+last_verified: 2026-11-16
 ---
 
 # Operations
@@ -260,7 +260,16 @@ reasons (`policy_mismatch`, `disabled`, `revoked`, `stale`, `degraded`,
 `not_found`). Needs a `diagnostics` control-operation grant; scoped by
 authenticated identity, never arguments.
 
-Operator ops surface (ADR-0077): `hubctl usage --spool <dir> [--days N]
+Operator ops surface (ADR-0077): `hubctl status [--dir <space>]
+[--supervisor-url <url>] [--gateway-url <url>] [--json]` answers "what is
+running, what failed, how deep is the queue" from the two bounded
+control-plane endpoints — supervisor `GET /v1/status` (runtimes as
+phase+named conditions from the closed #209 vocabulary, holds, crash
+budgets, job counts) and gateway `GET /v1/status` (spool queue counts,
+outbox depth/age, routine next-due/overdue). Read-only and
+bearer-authenticated (supervisor.auth token chain); unreachable planes
+degrade to an `unreachable` line rather than a fabricated section, and it
+never wakes runtimes. `hubctl usage --spool <dir> [--days N]
 [--actor u] [--model m]` aggregates the durable `usage.jsonl` journal per
 scope and actor — read-only, tolerant of a torn tail. `hubctl watch
 (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url>)
@@ -679,6 +688,19 @@ their paths. `context restore` refuses another user and never reactivates
 revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
+
+Scheduled backups (issue #200): the supervisor captures a contextlife
+archive per space every `HUB_BACKUP_EVERY` (default 24h; `0`/`off`
+disables) into `<space>/archive/backups/`, retaining the newest
+`HUB_BACKUP_KEEP` (default 7) archives — the same redaction contract as
+the manual command (secret envs and `.enc` stores never enter the zip).
+Every `HUB_BACKUP_DRILL_EVERY` (default 7d; `0`/`off` disables) the
+newest archive is restored into a scratch dir under the supervisor state
+dir and every manifest hash re-verified — the auditable result lands in
+`<state>/backups.json` and on `hubctl status` as
+`backup <user> last=<ts> retained=<n> drill=<ok|class> checked=<n>`.
+`hubctl context restore-drill --dir <space> [--in <archive>]` runs the
+same drill on demand; a cross-owner restore stays denied at Verify.
 
 A `config.supervision` change needs no respawn: `space apply` re-renders
 `runtime.<env>.policy.json` and the supervisor picks it up on its next

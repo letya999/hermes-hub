@@ -92,6 +92,11 @@ type Gateway struct {
 	// unreachable proxy is a logged state rather than a per-poll error line.
 	egressMu   sync.Mutex
 	egressDown map[string]bool
+	// alertMu/alertLedger bound owner alerts (#199): at most
+	// ownerAlertLimit deliveries per ownerAlertWindow, overflow counted
+	// and flushed as one suppressed-summary line.
+	alertMu     sync.Mutex
+	alertLedger ownerAlertLedger
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {

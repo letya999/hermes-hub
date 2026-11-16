@@ -184,6 +184,9 @@ func (g *Gateway) worker(ctx context.Context) {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
 					continue
 				}
+				if outcome.Status == "failed" {
+					g.alertJobFailed(*job)
+				}
 
 			} else {
 				var delivery *Delivery

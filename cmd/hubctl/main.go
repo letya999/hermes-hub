@@ -198,6 +198,44 @@ func run(ctx context.Context, args []string) error {
 		}
 		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
 	}
+	if op == "status" {
+		f := flag.NewFlagSet("status", flag.ContinueOnError)
+		dir := f.String("dir", ".", "space dir (resolves supervisor.auth via the infra space)")
+		supervisorURL := f.String("supervisor-url", "http://127.0.0.1:8876", "supervisor HTTP base URL; empty skips the supervisor section")
+		gatewayURL := f.String("gateway-url", "http://127.0.0.1:8081", "communication gateway base URL; empty skips the gateway section")
+		token := f.String("auth", "", "control-plane bearer token (default: env or supervisor.auth)")
+		env := f.String("env", "dev", "deployment env for communication.<env>.env token resolution")
+		jsonOut := f.Bool("json", false, "emit the raw status document as JSON")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("usage: hubctl status [--dir <space>] [--env <dev|prod>] [--supervisor-url <url>] [--gateway-url <url>] [--auth <tok>] [--json]")
+		}
+		auth := strings.TrimSpace(*token)
+		if auth == "" {
+			auth = resolveStatusToken(*dir)
+		}
+		gatewayAuth := auth
+		if *token == "" {
+			gatewayAuth = resolveGatewayToken(*dir, *env, auth)
+		}
+		status := collectStatus(ctx, statusOptions{
+			SupervisorURL:  *supervisorURL,
+			GatewayURL:     *gatewayURL,
+			Token:          auth,
+			GatewayToken:   gatewayAuth,
+			SkipSupervisor: *supervisorURL == "",
+			SkipGateway:    *gatewayURL == "",
+		})
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(status)
+		}
+		renderStatus(os.Stdout, status)
+		return nil
+	}
 	if op == "watch" {
 		f := flag.NewFlagSet("watch", flag.ContinueOnError)
 		job := f.String("job", "", "job id to watch to terminal")
