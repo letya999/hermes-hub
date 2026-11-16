@@ -523,6 +523,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// tests; empty resolves to the code defaults (30m / 60s).
 			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",
 			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}",
+			// Scheduled backups (#200): empty resolves to the code
+			// defaults (24h capture, keep 7, 7d drill); "0"/"off" disables.
+			"HUB_BACKUP_EVERY":       "${HUB_BACKUP_EVERY:-}",
+			"HUB_BACKUP_KEEP":        "${HUB_BACKUP_KEEP:-}",
+			"HUB_BACKUP_DRILL_EVERY": "${HUB_BACKUP_DRILL_EVERY:-}",
 			// Rights PDP: runtime-facing routes decide against this
 			// deployment's ToolHub — one control plane serves every space,
 			// and the store's profile set is the cross-space boundary, so

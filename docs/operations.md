@@ -689,6 +689,19 @@ revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
 
+Scheduled backups (issue #200): the supervisor captures a contextlife
+archive per space every `HUB_BACKUP_EVERY` (default 24h; `0`/`off`
+disables) into `<space>/archive/backups/`, retaining the newest
+`HUB_BACKUP_KEEP` (default 7) archives — the same redaction contract as
+the manual command (secret envs and `.enc` stores never enter the zip).
+Every `HUB_BACKUP_DRILL_EVERY` (default 7d; `0`/`off` disables) the
+newest archive is restored into a scratch dir under the supervisor state
+dir and every manifest hash re-verified — the auditable result lands in
+`<state>/backups.json` and on `hubctl status` as
+`backup <user> last=<ts> retained=<n> drill=<ok|class> checked=<n>`.
+`hubctl context restore-drill --dir <space> [--in <archive>]` runs the
+same drill on demand; a cross-owner restore stays denied at Verify.
+
 A `config.supervision` change needs no respawn: `space apply` re-renders
 `runtime.<env>.policy.json` and the supervisor picks it up on its next
 decision sweep — `idle_stop` bounds warm retention, `restart: never` or

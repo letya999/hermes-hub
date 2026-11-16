@@ -154,6 +154,17 @@ func renderStatus(out io.Writer, s hubStatus) {
 		for _, j := range sup.Jobs.Open {
 			w("  open: %s phase=%s %s", j.JobID, j.Phase, conditionSummary(j.Conditions))
 		}
+		for _, rec := range sup.Backups {
+			last := "never"
+			if !rec.LastSuccessAt.IsZero() {
+				last = rec.LastSuccessAt.Format(time.RFC3339)
+			}
+			drill := "-"
+			if rec.DrillResult != "" {
+				drill = rec.DrillResult
+			}
+			w("backup %s last=%s retained=%d drill=%s checked=%d", rec.User, last, rec.Retained, drill, rec.DrillChecked)
+		}
 	}
 	if gw := s.Gateway; gw != nil {
 		w("")

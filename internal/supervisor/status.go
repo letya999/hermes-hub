@@ -113,6 +113,7 @@ type StatusView struct {
 	Runtimes    []RuntimeStatus      `json:"runtimes"`
 	Holds       []AdministrativeHold `json:"holds,omitempty"`
 	Jobs        JobSummary           `json:"jobs"`
+	Backups     []BackupRecord       `json:"backups,omitempty"`
 }
 
 type JobSummary struct {
@@ -305,6 +306,10 @@ func (m *Manager) StatusView() StatusView {
 		}
 	}
 	sort.Slice(view.Jobs.Open, func(i, j int) bool { return view.Jobs.Open[i].JobID < view.Jobs.Open[j].JobID })
+	for _, rec := range m.backups {
+		view.Backups = append(view.Backups, rec)
+	}
+	sort.Slice(view.Backups, func(i, j int) bool { return view.Backups[i].User < view.Backups[j].User })
 	return view
 }
 
@@ -341,6 +346,18 @@ func (v StatusView) Metrics(w io.Writer) {
 	fmt.Fprintf(w, "hub_supervisor_watchdog_sweeps %d\n", v.Watchdog.Sweeps)
 	fmt.Fprintf(w, "# HELP hub_supervisor_watchdog_last_sweep_ms Duration of the last watchdog sweep in milliseconds.\n# TYPE hub_supervisor_watchdog_last_sweep_ms gauge\n")
 	fmt.Fprintf(w, "hub_supervisor_watchdog_last_sweep_ms %d\n", v.Watchdog.LastSweepMS)
+	fmt.Fprintf(w, "# HELP hub_supervisor_backup_last_success_seconds Unix time of the space's last successful backup.\n# TYPE hub_supervisor_backup_last_success_seconds gauge\n")
+	for _, rec := range v.Backups {
+		fmt.Fprintf(w, "hub_supervisor_backup_last_success_seconds{user=%q} %d\n", rec.User, rec.LastSuccessAt.Unix())
+	}
+	fmt.Fprintf(w, "# HELP hub_supervisor_backup_drill_ok Restore-drill outcome per space (1 = last drill passed).\n# TYPE hub_supervisor_backup_drill_ok gauge\n")
+	for _, rec := range v.Backups {
+		ok := 0
+		if rec.DrillResult == "ok" {
+			ok = 1
+		}
+		fmt.Fprintf(w, "hub_supervisor_backup_drill_ok{user=%q} %d\n", rec.User, ok)
+	}
 }
 
 // --- transitions journal (#209): watch-able stream --------------------------

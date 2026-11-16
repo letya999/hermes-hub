@@ -136,6 +136,13 @@ type Config struct {
 	// AllowWildcardListen permits Serve to bind a non-loopback control-plane
 	// address; without it wildcard or empty hosts are refused.
 	AllowWildcardListen bool
+	// BackupEvery is the scheduled contextlife capture cadence per space;
+	// zero disables the backup sweep. BackupKeep bounds retained archives.
+	// BackupDrillEvery is the restore-drill cadence; zero keeps backups
+	// running with drills off.
+	BackupEvery      time.Duration
+	BackupKeep       int
+	BackupDrillEvery time.Duration
 }
 
 type Binding struct {
@@ -254,6 +261,10 @@ type Manager struct {
 	// restart the first persist re-journals current state, a correct
 	// (if slightly chatty) re-baseline.
 	statusSig map[string]string
+	// backups is the per-space scheduled-backup ledger (#200): last
+	// success, last bounded error class, drill result. Persisted in
+	// backups.json next to supervisor.json.
+	backups map[string]BackupRecord
 }
 
 type persistedManager struct {
@@ -449,12 +460,22 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.AdminAuth == "" {
 		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
 	}
+	if cfg.BackupEvery == 0 {
+		cfg.BackupEvery = backupDurationEnv("HUB_BACKUP_EVERY", 24*time.Hour)
+	}
+	if cfg.BackupKeep == 0 {
+		cfg.BackupKeep = backupIntEnv("HUB_BACKUP_KEEP", 7)
+	}
+	if cfg.BackupDrillEvery == 0 {
+		cfg.BackupDrillEvery = backupDurationEnv("HUB_BACKUP_DRILL_EVERY", 7*24*time.Hour)
+	}
 	// The personal supervisor is opt-in: a configured model name activates
 	// the relay decider; without it the machinery never calls a model.
 	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
 		cfg.Decide = relayDecide
 	}
 	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m.loadBackups()
 	if err := m.load(); err != nil {
 		return nil, err
 	}
@@ -589,6 +610,9 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	if sweepCtx.Err() == nil {
 		_ = m.Reap(sweepCtx, now)
 		m.ReapIdleBrowserSidecars(sweepCtx, now)
+	}
+	if sweepCtx.Err() == nil {
+		m.backupSweep(sweepCtx, now)
 	}
 }
 
