@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -165,6 +166,12 @@ func RandomToken() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
+
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32}$`)
+
+// ValidToken bounds tokens minted by RandomToken before they reach a store
+// lookup or an interpolated page — anything else cannot be a live nonce.
+func ValidToken(token string) bool { return tokenPattern.MatchString(token) }
 
 // Exchange runs the code exchange and validates the id_token end to
 // end: RS256 signature against JWKS (kid miss forces one refetch —

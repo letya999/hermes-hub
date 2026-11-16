@@ -42,6 +42,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
 	mux.HandleFunc("/skill-drafts/", g.serveSkillDraft)
 	g.registerTelegramAuth(mux)
+	g.registerIAM(mux)
 	return mux
 }
 

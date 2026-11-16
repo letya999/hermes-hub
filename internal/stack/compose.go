@@ -932,6 +932,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment[key] = value
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+		// SSO enrolment/linking (ADR-0100) stays opt-in: empty values keep
+		// the deployment in channel-mapped local mode.
+		gatewayEnvironment["HUB_OIDC_ISSUER"] = "${HUB_OIDC_ISSUER:-}"
+		gatewayEnvironment["HUB_OIDC_CLIENT_ID"] = "${HUB_OIDC_CLIENT_ID:-}"
 		communicationHostPort := 8081
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"

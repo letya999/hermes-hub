@@ -41,6 +41,9 @@ type LinkStore struct {
 }
 
 func OpenLinkStore(dir string) (*LinkStore, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
 	s := &LinkStore{path: filepath.Join(dir, "iam-links.json"), links: map[string]Link{}}
 	if data, err := os.ReadFile(s.path); err == nil && len(data) > 0 {
 		var list []Link

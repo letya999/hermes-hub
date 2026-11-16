@@ -464,6 +464,42 @@ completes an awaiting-confirmation onboarding through the operator CLI grant.
 The confirmation result prints only phase, status, onboarding, binding and
 connection state; it does not print recipe or credential metadata.
 
+## IAM enrolment and channel linking (SSO)
+
+Opt-in ADR-0100 surface on communication-hub: `HUB_OIDC_ISSUER` +
+`HUB_OIDC_CLIENT_ID` (compose passthrough, works with any OIDC provider —
+ZITADEL, Keycloak, Entra ID). `HUB_OIDC_ISSUER` must be https outside
+loopback; a missing client id fails startup rather than degrading to
+unverified identity. `HUB_PUBLIC_ORIGIN`/`form origin` supplies the
+`/iam/oidc/callback` redirect target — register exactly
+`<form origin>/iam/oidc/callback` in the provider client (OIDC code flow
++ PKCE, `openid` scope; no client secret is stored).
+
+Two flows, both one-time and 10-minute TTL:
+
+- **Link** — a mapped user runs `/link` in Telegram or Slack; the bot
+  replies with `…/iam/link/<nonce>`. The page offers an SSO button,
+  the callback verifies issuer/audience/signature/RS256/`kid`/expiry/
+  nonce, then binds that channel account to the user's principal.
+- **Enrol** — an unmapped Telegram user messages the bot; instead of a
+  bare denial it gets the same link. After SSO the subject must match a
+  user's provisioned `oidc_subject` in `communication.users.yaml`;
+  zero or ambiguous matches deny. Slack accounts enrol through the same
+  link minted for their `slack-<team>-<user>` transport.
+
+`/unlink` drops the channel account's binding. Links persist under
+`<spool>/iam/` (`iam-links.json` + hashed-subject audit journal) — back
+them up with the spool. A linked channel account resolves to its
+principal at ingress and its envelopes carry `Issuer`/`Subject`
+provenance; unlinked transports deny. One subject cannot bind two
+principals — conflicts answer 409 and are audited.
+
+Limitations: provider verification is fixture-tested against the OIDC
+contract, not yet against a live ZITADEL tenant; enrol links are offered
+on the Telegram no-access path only (Slack enrol via an issued link);
+`oidc_subject` is provisioned manually per user — no group/SCIM sync;
+SAML stays outside Hermes (front it through the provider if needed).
+
 ## Outbound exposure (tunnels)
 
 Opt-in per environment: `features.exposure` + a reviewed

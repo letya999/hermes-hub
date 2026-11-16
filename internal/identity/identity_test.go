@@ -36,8 +36,8 @@ func TestEnvelopeValidation(t *testing.T) {
 			e.Generation = 1
 			return e
 		}(),
-		"issuer-only":     func() Envelope { e := valid; e.Issuer = "https://idp.example.com"; return e }(),
-		"subject-only":    func() Envelope { e := valid; e.Subject = "auth0|123"; return e }(),
+		"issuer-only":  func() Envelope { e := valid; e.Issuer = "https://idp.example.com"; return e }(),
+		"subject-only": func() Envelope { e := valid; e.Subject = "auth0|123"; return e }(),
 		"issuer-oversize": func() Envelope {
 			e := valid
 			e.Issuer = strings.Repeat("a", 300)

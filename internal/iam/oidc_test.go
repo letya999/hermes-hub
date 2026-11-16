@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
-	"os"
 	"testing"
 	"time"
 )

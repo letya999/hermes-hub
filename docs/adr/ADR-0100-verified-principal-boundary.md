@@ -37,7 +37,7 @@ ToolHub or Hermes changes.
   one mapped user is the baseline and stays fully supported.
 - **D3 — Provenance rides in the envelope, not in the key.**
   `Envelope.Issuer` and `Envelope.Subject` record which authority
-  vouched for the principal at ingress (`local` for channel-mapped
+  vouched for the principal at ingress (empty for channel-mapped
   traffic today, the OIDC issuer+`sub` once linking is enabled). They
   are audit metadata — never routing keys, never parsed for
   authorization.

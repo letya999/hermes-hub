@@ -22,6 +22,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/commops"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/iam"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -44,6 +45,7 @@ type Gateway struct {
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User
+	iam          *iamState // nil → channel-mapped local mode (ADR-0100)
 	spool        *Spool
 	api          TelegramAPI
 	slack        SlackAPI
@@ -223,6 +225,18 @@ func New(config Config) (*Gateway, error) {
 	}
 	if config.SlackBotToken != "" {
 		g.slack = newSlackAPI(config.SlackBotToken)
+	}
+	if config.OIDCIssuer != "" {
+		// Opt-in SSO enrolment/linking (ADR-0100): a bad provider config is
+		// a startup error, not a silent downgrade to unverified identity.
+		if config.OIDCClientID == "" {
+			return nil, errors.New("HUB_OIDC_CLIENT_ID is required with HUB_OIDC_ISSUER")
+		}
+		links, err := iam.OpenLinkStore(filepath.Join(config.SpoolDir, "iam"))
+		if err != nil {
+			return nil, fmt.Errorf("iam link store: %w", err)
+		}
+		g.iam = &iamState{links: links, nonces: map[string]linkNonce{}, pending: map[string]oidcPending{}}
 	}
 	return g, nil
 }
@@ -467,7 +481,12 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if text == "" && message.Voice == nil && message.Audio == nil && message.Document == nil && len(message.Photo) == 0 {
 			return nil
 		}
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(langForHint(message.From.LanguageCode), "chat.no-access"))
+		lang := langForHint(message.From.LanguageCode)
+		answer := locale.T(lang, "chat.no-access")
+		if hint := g.iamEnrolHint(message.From.ID); hint != "" {
+			answer = locale.T(lang, "chat.no-access-enrol", hint)
+		}
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), answer)
 	}
 	// The locale ladder: strong channel evidence adopts a language once;
 	// otherwise the stored preference decides.
@@ -477,7 +496,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		_ = g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-lang", message.Chat.ID, messageTopicID(message), locale.T(lang, "lang.detected", locale.Names[lang]))
 	case "picker":
 		locale.StoreResult(user.WorkspaceDir, lang, action)
-		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID}
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID}
 		_ = g.languagePicker(ctx, route, messageTopicID(message), "telegram-"+strconv.Itoa(update.UpdateID), lang)
 	}
 	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
@@ -513,7 +532,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if taskErr != nil {
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 		}
-		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID}
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID}
 		return g.dispatchChannelCommand(ctx, user, task, route, "telegram-"+strconv.Itoa(update.UpdateID), text)
 	}
 	if message.Voice != nil || message.Audio != nil {
@@ -550,6 +569,10 @@ type commandRoute struct {
 	deliveryTargetID string
 	slackChannel     string
 	slackThread      string
+	// transportID/principal carry the verified channel identity for
+	// IAM link challenges — never derived from command text.
+	transportID string
+	principal   string
 }
 
 // queueCommandReply enqueues a command answer on the route that carried the
@@ -616,6 +639,10 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return reply(answer)
 		case "start":
 			return reply(locale.T(lang, "chat.started"))
+		case "link":
+			return reply(g.linkCommand(lang, route))
+		case "unlink":
+			return reply(g.unlinkCommand(lang, route))
 		case "new":
 			answer, replyTopic := g.newTaskCommand(ctx, user, chatID, topic, text)
 			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, replyTopic, answer)
