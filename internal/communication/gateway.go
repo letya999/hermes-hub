@@ -232,6 +232,9 @@ func New(config Config) (*Gateway, error) {
 		if config.OIDCClientID == "" {
 			return nil, errors.New("HUB_OIDC_CLIENT_ID is required with HUB_OIDC_ISSUER")
 		}
+		if _, err := iam.NewProvider(config.OIDCIssuer, config.OIDCClientID, "https://placeholder.invalid/iam/oidc/callback"); err != nil {
+			return nil, fmt.Errorf("oidc provider: %w", err)
+		}
 		links, err := iam.OpenLinkStore(filepath.Join(config.SpoolDir, "iam"))
 		if err != nil {
 			return nil, fmt.Errorf("iam link store: %w", err)
