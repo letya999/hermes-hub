@@ -131,11 +131,11 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	}
 	var proxies []uno.Proxy
 	var ports []string
-	for _, arg := range hostArgs {
-		if !strings.HasPrefix(arg, "--add-host ") {
+	for i := 0; i+1 < len(hostArgs); i++ {
+		if hostArgs[i] != "--add-host" {
 			continue
 		}
-		name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--add-host "), ":")
+		name, _, _ := strings.Cut(hostArgs[i+1], ":")
 		if port, ok := fcRelayPorts[name]; ok {
 			// The mux dialed by mini-Uno runs on the control-plane host; the
 			// relay endpoints are published on UnoProxyHost (loopback locally,
