@@ -29,7 +29,10 @@ func (k *kubernetesBackend) relayRuntime(rt Runtime) Runtime {
 func (k *kubernetesBackend) relaySecretName(rt Runtime) string { return k.secretName(rt) + "-relay" }
 
 func relayFile(root, name string, required bool) (map[string]string, error) {
-	info, err := os.Lstat(filepath.Join(root, name))
+	if name != filepath.Base(name) {
+		return nil, errors.New("relay environment source unavailable")
+	}
+	info, err := os.Lstat(filepath.Join(root, name)) // #nosec G703 -- name is restricted to a base filename above; root is the binding context directory
 	if os.IsNotExist(err) && !required {
 		return map[string]string{}, nil
 	}

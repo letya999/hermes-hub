@@ -458,7 +458,7 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.PIDs <= 0 {
 		cfg.PIDs = 1024
 	}
-	if cfg.RuntimePort <= 0 {
+	if cfg.RuntimePort <= 0 || cfg.RuntimePort > 65535 {
 		cfg.RuntimePort = 8080
 	}
 	if cfg.PortBase <= 0 {

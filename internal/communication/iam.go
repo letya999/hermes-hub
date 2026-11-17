@@ -195,7 +195,7 @@ func (g *Gateway) registerIAM(mux *http.ServeMux) {
 func (g *Gateway) iamPage(w http.ResponseWriter, lang locale.Lang, titleKey, bodyKey string, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = io.WriteString(w, `<!doctype html><html lang="`+string(lang)+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, titleKey))+`</title><main><h1>`+html.EscapeString(locale.T(lang, titleKey))+`</h1><p>`+html.EscapeString(locale.T(lang, bodyKey))+`</p></main></html>`)
+	_, _ = io.WriteString(w, `<!doctype html><html lang="`+string(lang)+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, titleKey))+`</title><main><h1>`+html.EscapeString(locale.T(lang, titleKey))+`</h1><p>`+html.EscapeString(locale.T(lang, bodyKey))+`</p></main></html>`) // #nosec G705 -- lang is a constrained locale.Lang enum; every interpolated string is HTML-escaped
 }
 
 // serveIAMLink renders the landing page for a delivered link token. The token
