@@ -349,6 +349,69 @@ func TestApplyCrashRecoveryFirstApplyBeforeEffects(t *testing.T) {
 	}
 }
 
+// A first apply that stops before activation must not strand the next apply:
+// the candidate profile was never live, so recovery leaves it bound and
+// active instead of disabling it (`bound profile unavailable` pathology
+// seen during manual provisioning).
+func TestApplyRecoveryKeepsNeverLiveCandidateProfile(t *testing.T) {
+	root, dir, next, _ := recoveryRevisions(t, map[string]string{
+		"tools": "kind: tools\nbinding: {profile_id: alice-next, generation: 1}\ncore: {files: {via: toolhub}}\n",
+	})
+	if err := passport.RestoreCurrent(dir, "", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store := toolhub.NewStore()
+	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "alice-policy", Members: []string{"alice"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-next", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-1",
+		PolicyID: policy.PolicyID, PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&profile, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
+	if err := store.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	previous := applyStep
+	applyStep = func(step string) {
+		if step == "rights" {
+			panic("synthetic process stop")
+		}
+	}
+	t.Cleanup(func() { applyStep = previous })
+	stopped := false
+	func() {
+		defer func() { stopped = recover() != nil }()
+		if _, err := applyConfirm(context.Background(), dir, root, "dev", next, "", nil, reconcile.Handlers{}); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if !stopped {
+		t.Fatal("first apply did not stop")
+	}
+	applyStep = previous
+	if err := recoverApply(context.Background(), dir, root, "dev", reconcile.Handlers{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := latestRecoveryProfiles(t, storePath)["alice-next"]; got.Status != api.ActiveStatus {
+		t.Fatalf("never-live candidate profile was disabled: %+v", got)
+	}
+}
+
 func TestApplyRecoveryRejectsCorruptAffectedSet(t *testing.T) {
 	root, dir, next, oldID := recoveryRevisions(t, nil)
 	record := applyJournal{Environment: "dev", Previous: oldID, Revision: next.ID, PreviousProfile: "alice-default",

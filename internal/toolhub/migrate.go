@@ -93,6 +93,8 @@ func MigrateProjection(store *Store, principalID, contextID, runtimeID, to strin
 func (s *Store) migrateProjectionOnce(principalID, contextID, runtimeID, to string) (ProjectionMigration, error) {
 	var report ProjectionMigration
 	s.mu.Lock()
+	before := len(s.bindingChanges)
+	var undone []migrationUndo
 	for id, binding := range s.bindings {
 		if binding.PrincipalID != principalID || binding.ContextID != contextID || binding.RuntimeID != runtimeID {
 			continue
@@ -103,6 +105,8 @@ func (s *Store) migrateProjectionOnce(principalID, contextID, runtimeID, to stri
 		from := binding.PolicyVersion
 		binding.PolicyVersion = to
 		binding.Revision++
+		projKey := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
+		undone = append(undone, migrationUndo{id: id, old: s.bindings[id], projKey: projKey, projRev: s.projectionRevisions[projKey]})
 		s.touchProjectionLocked(&binding)
 		s.bindings[id] = binding
 		s.bindingChanges = append(s.bindingChanges, bindingChange{
@@ -127,15 +131,34 @@ func (s *Store) migrateProjectionOnce(principalID, contextID, runtimeID, to stri
 		return report, nil
 	}
 	if err := s.persist(); err != nil {
+		s.mu.Lock()
+		for _, u := range undone {
+			s.bindings[u.id] = u.old
+			s.projectionRevisions[u.projKey] = u.projRev
+		}
+		s.bindingChanges = s.bindingChanges[:before]
+		s.mu.Unlock()
 		_ = s.Reload()
 		return ProjectionMigration{}, err
 	}
 	return report, nil
 }
 
+// migrationUndo restores one binding and its projection cursor when a migrate
+// attempt's persist fails: the next attempt must re-scan pre-mutation state,
+// not the already-rewritten in-memory rows.
+type migrationUndo struct {
+	id      string
+	old     api.ToolBinding
+	projKey string
+	projRev uint64
+}
+
 func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) (int, error) {
 	s.mu.Lock()
 	moved := 0
+	before := len(s.bindingChanges)
+	var undone []migrationUndo
 	for id, binding := range s.bindings {
 		if binding.PrincipalID != principalID || binding.ContextID != contextID || binding.RuntimeID != runtimeID {
 			continue
@@ -145,6 +168,8 @@ func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) 
 		}
 		binding.PolicyVersion = to
 		binding.Revision++
+		projKey := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
+		undone = append(undone, migrationUndo{id: id, old: s.bindings[id], projKey: projKey, projRev: s.projectionRevisions[projKey]})
 		s.touchProjectionLocked(&binding)
 		s.bindings[id] = binding
 		s.bindingChanges = append(s.bindingChanges, bindingChange{
@@ -157,8 +182,16 @@ func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) 
 	}
 	s.mu.Unlock()
 	if err := s.persist(); err != nil {
-		// The in-memory mutations may not have landed on disk; reload so the
-		// registry cannot diverge silently before the caller sees the error.
+		// The in-memory mutations may not have landed on disk; restore the
+		// pre-attempt rows so a retry re-scans unmigrated bindings, then
+		// reload so the registry cannot diverge silently.
+		s.mu.Lock()
+		for _, u := range undone {
+			s.bindings[u.id] = u.old
+			s.projectionRevisions[u.projKey] = u.projRev
+		}
+		s.bindingChanges = s.bindingChanges[:before]
+		s.mu.Unlock()
 		_ = s.Reload()
 		return 0, err
 	}

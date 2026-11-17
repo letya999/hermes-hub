@@ -12,6 +12,12 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
+// Warnf surfaces non-fatal enrollment findings (skipped siblings) to the
+// operator. Callers may replace it in tests; the default writes stderr.
+var Warnf = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "hubctl: enrollment: "+format+"\n", args...)
+}
+
 // EnrollSiblingRuntimeTokens writes each sibling space's HUB_RUNTIME_AUTH into
 // this infra owner's toolhub-tokens.json. The shared ToolHub accepts those
 // bearers as separate identities. The owner's own token stays the primary env
@@ -64,17 +70,21 @@ func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) er
 		}
 		settings, readErr := ReadEffective(sibDir, environment)
 		if readErr != nil {
+			Warnf("sibling %s skipped: %v", sibling.Name(), readErr)
 			continue
 		}
 		token := runtimeAuthToken(filepath.Join(sibDir, "runtime.auth"))
 		if !usableRuntimeToken(token) || token == ownerToken {
+			Warnf("sibling %s skipped: no usable runtime token", sibling.Name())
 			continue
 		}
 		envelope, envErr := runtimeTokenEnvelope(settings)
 		if envErr != nil {
+			Warnf("sibling %s skipped: %v", sibling.Name(), envErr)
 			continue
 		}
 		if other, ok := entries[token]; ok && other.PrincipalID != settings.User {
+			Warnf("sibling %s skipped: token already bound to %s", sibling.Name(), other.PrincipalID)
 			continue
 		}
 		dropPrincipal(entries, settings.User)
@@ -134,11 +144,16 @@ func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
 			continue
 		}
 		settings, readErr := ReadEffective(sibDir, environment)
-		if readErr != nil || settings.CapabilityMode != "managed" {
+		if readErr != nil {
+			Warnf("sibling %s skipped: %v", sibling.Name(), readErr)
+			continue
+		}
+		if settings.CapabilityMode != "managed" {
 			continue
 		}
 		values, authErr := ReadSecrets(filepath.Join(sibDir, "model-relay.auth"))
 		if authErr != nil {
+			Warnf("sibling %s skipped: %v", sibling.Name(), authErr)
 			continue
 		}
 		if admin := strings.TrimSpace(values["HUB_MODEL_RELAY_ADMIN"]); usableRuntimeToken(admin) {

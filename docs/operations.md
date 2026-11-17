@@ -173,6 +173,38 @@ queued for sending; the recovery log records its job ID for investigation.
 
 ## User onboarding — the capability ceremony
 
+**Fast path (standard spaces).** With an infra space already running, a
+reviewed provisioning profile and per-space secrets in place, one command
+takes a principal to a running managed runtime:
+
+```
+hubctl provision --user <id> --env dev            # dry-run plan + digests
+hubctl provision --user <id> --env dev --confirm  # commit and start
+```
+
+It scaffolds `spaces/<id>` from `policies/profiles/<name>/` (default
+`standard-user`) when passports are absent, materializes unique per-space
+ports, runs aggregate preflight (all six passports parse, secrets present,
+grants vocabulary inside the pinned rights catalog, infra store reachable)
+before any write, then commits the capability bundle — ceiling policy,
+bound profile, governance right grants and the agent-tools binding — as
+one confirmed batch, runs `space apply`, starts the space's compose on
+existing images (provisioning never rebuilds; `hubctl build` stays an
+explicit action), and enrolls the sibling runtime/model-relay tokens with
+the infra owner. Re-running converges: identical records replay as no-ops,
+already-active right grants are skipped, missing pieces are filled in.
+`--skip-up` stops after `space apply`.
+
+The `standard-user` profile ships shared cliproxy/infra services with
+per-space browser/egress-relay/model-relay/toolhub-relay, the reviewed
+capability ceiling in `policy.yaml` (stamped with the bound definition
+digest at commit time) and a grants ask equal to the minted right ceiling.
+Fill `secrets.<env>.env` with at least `OPENAI_API_KEY` before running —
+preflight reports every missing requirement in one list.
+
+**Manual ceremony** (custom policies, org ceilings, non-standard toolsets)
+stays the documented path below.
+
 A new space has exactly six authored configuration inputs under
 `spaces/<id>/passports/`: stack/config/models/workspace/tools/grants.yaml.
 Only a validated published revision is consumed. Issued rights, credentials,

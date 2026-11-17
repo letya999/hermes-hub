@@ -31,6 +31,7 @@ type Store struct {
 	dbVersion           int64
 	dbFile              os.FileInfo
 	digestPollUnix      atomic.Int64
+	resyncNeeded        atomic.Bool
 	dbRows              map[dbKey][32]byte
 	dbListCounts        map[string]int
 	diskDigest          [32]byte
@@ -72,6 +73,10 @@ type Store struct {
 	capabilityPolicies map[string]api.CapabilityPolicy
 	capabilityProfiles map[string]api.CapabilityProfile
 	capabilityChanges  []api.CapabilityChange
+	// definitionDigests caches api.DefinitionDigest per definition key: the
+	// digest is a full JSON marshal of the catalog definition, and profile
+	// admission (including store Load replay) recomputed it per selection.
+	definitionDigests map[string]string
 	// RightsDoc is the pinned RBAC vocabulary the PDP enforces (SPEC-0092
 	// R2): wired at server start from the image's platform catalog release.
 	// An empty doc fails Decide closed — unknown rights never allow.
@@ -136,6 +141,9 @@ func (s *Store) AppliedRestartDigest(target api.ProjectionTarget) string {
 }
 
 func (s *Store) MarkRestartApplied(target api.ProjectionTarget) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)
@@ -222,6 +230,15 @@ func (s *Store) ProjectionRevisions() ([]api.ProjectionTarget, error) {
 func definitionKey(id, version string) string { return id + "@" + version }
 
 func (s *Store) RegisterDefinition(definition api.ToolDefinition) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
+	return s.registerDefinitionRecord(definition)
+}
+
+// registerDefinitionRecord is the replay-safe admission path: the snapshot
+// loader and the resynced public entry share it.
+func (s *Store) registerDefinitionRecord(definition api.ToolDefinition) error {
 	if err := definition.Validate(); err != nil {
 		return err
 	}
@@ -243,12 +260,16 @@ func (s *Store) RegisterDefinition(definition api.ToolDefinition) error {
 		return fmt.Errorf("%w: immutable definition %s", api.ErrConflict, key)
 	}
 	s.definitions[key] = definition
+	delete(s.definitionDigests, key)
 	return nil
 }
 
 func (s *Store) PutCredentialReference(reference api.CredentialReference) error {
 	if err := reference.Validate(); err != nil {
 		return err
+	}
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,6 +283,9 @@ func (s *Store) PutCredentialReference(reference api.CredentialReference) error 
 func (s *Store) PutConnection(connection api.Connection) error {
 	if err := connection.Validate(); err != nil {
 		return err
+	}
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -285,6 +309,9 @@ func (s *Store) PutConnection(connection api.Connection) error {
 // HasConnection reports whether a connection record exists in the store —
 // the reconciler uses it to tell orphans from desired resources.
 func (s *Store) PutTeam(team api.Team) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	if err := team.Validate(); err != nil {
 		return err
 	}
@@ -600,6 +627,9 @@ func (s *Store) PutBinding(binding api.ToolBinding) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
@@ -761,6 +791,9 @@ func selectionsEqual(a, b []api.CapabilitySelection) bool {
 }
 
 func (s *Store) PutWorkloadInstance(workload api.WorkloadInstance) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	if err := workload.Validate(); err != nil {
 		return err
 	}

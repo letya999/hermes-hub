@@ -1,0 +1,17 @@
+memory:
+    backend: local
+    enabled: true
+ports:
+    browser-vnc: __PORT_BROWSER_VNC__
+    oauth-callback: __PORT_OAUTH_CALLBACK__
+runtime:
+    timezone: UTC
+    compression: {}
+web:
+    search_backend: exa
+    extract_backend: exa
+    search_providers: [exa, parallel, firecrawl, keenable]
+image_gen:
+    delivery: workspace
+    model: gemini-3.1-flash-image
+    provider: cliproxy
