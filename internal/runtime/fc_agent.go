@@ -258,7 +258,30 @@ func (m *fcMux) proxy(local net.Conn, guestPort int) {
 	}()
 }
 
+// fcLoopbackUp brings `lo` up — kernel boots with it down and every
+// guest-local dial (runtime API, gateway health, proxies) would fail with
+// ENETUNREACH without it.
+func fcLoopbackUp() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return fmt.Errorf("lo socket: %w", err)
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return fmt.Errorf("lo ifreq: %w", err)
+	}
+	ifr.SetUint32(uint32(unix.IFF_UP | unix.IFF_RUNNING))
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("lo up: %w", err)
+	}
+	return nil
+}
+
 func runFCAgent(_ context.Context) error {
+	if err := fcLoopbackUp(); err != nil {
+		return err
+	}
 	execLn, err := fcVsockListen(5000)
 	if err != nil {
 		return err
