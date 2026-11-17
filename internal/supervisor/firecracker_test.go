@@ -134,6 +134,28 @@ func TestFCGuestEnvRewritesSpacePaths(t *testing.T) {
 	}
 }
 
+func TestFirecrackerBackendRequiresUnoConfig(t *testing.T) {
+	if _, err := newFirecrackerBackend(&Manager{cfg: Config{}}); err == nil {
+		t.Fatal("expected error without Uno config")
+	}
+	if _, err := newFirecrackerBackend(&Manager{cfg: Config{UnoURL: "http://u", UnoToken: "t"}}); err == nil {
+		t.Fatal("expected error without Uno image")
+	}
+	if _, err := newFirecrackerBackend(&Manager{cfg: Config{UnoURL: "http://u", UnoToken: "t", UnoImage: "img"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFirecrackerBackendManagedOnly(t *testing.T) {
+	b, err := newFirecrackerBackend(&Manager{cfg: Config{UnoURL: "http://u", UnoToken: "t", UnoImage: "img"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Spawn(t.Context(), SpawnRequest{Runtime: Runtime{Managed: false}}); err == nil {
+		t.Fatal("expected managed-only rejection")
+	}
+}
+
 func TestFCGuestBootScriptMountContract(t *testing.T) {
 	script := fcGuestBootScript([]fcMount{
 		{dst: "/state/hermes/config.yaml", src: "/persist/generated/config.yaml", ro: true},
