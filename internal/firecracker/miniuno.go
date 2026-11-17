@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/uno"
@@ -146,6 +147,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	logFile, _ := os.Create(filepath.Join(b.dir, "console.log"))
 	b.proc = exec.CommandContext(context.Background(), m.cfg.FCBin, "--no-api", "--config-file", cfgPath)
 	b.proc.Stdout, b.proc.Stderr = logFile, logFile
+	b.proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := b.proc.Start(); err != nil {
 		logFile.Close()
 		cleanup()
