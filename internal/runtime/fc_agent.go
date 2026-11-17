@@ -39,7 +39,11 @@ type fcExecResponse struct {
 	Stderr   string `json:"stderr,omitempty"`
 }
 
-func fcVsockListen(port uint32) (net.Listener, error) {
+// vsockLn is a raw-fd vsock listener: the stdlib net package cannot wrap
+// AF_VSOCK sockets, so accept returns *os.File streams directly.
+type vsockLn struct{ fd int }
+
+func fcVsockListen(port uint32) (*vsockLn, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return nil, fmt.Errorf("vsock socket: %w", err)
@@ -52,13 +56,18 @@ func fcVsockListen(port uint32) (net.Listener, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("vsock listen: %w", err)
 	}
-	f := os.NewFile(uintptr(fd), fmt.Sprintf("vsock-listen-%d", port))
-	ln, err := net.FileListener(f)
-	f.Close()
-	return ln, err
+	return &vsockLn{fd: fd}, nil
 }
 
-func fcBridge(a, b net.Conn) {
+func (l *vsockLn) Accept() (*os.File, error) {
+	nfd, _, err := unix.Accept(l.fd)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(nfd), "vsock-conn"), nil
+}
+
+func fcBridge(a, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(a, b); done <- struct{}{} }()
 	go func() { io.Copy(b, a); done <- struct{}{} }()
@@ -67,7 +76,7 @@ func fcBridge(a, b net.Conn) {
 	b.Close()
 }
 
-func fcHandleExec(conn net.Conn) {
+func fcHandleExec(conn *os.File) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Minute))
 	var req fcExecRequest
@@ -101,7 +110,7 @@ func fcHandleExec(conn net.Conn) {
 	json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: code, Stdout: stdout.String(), Stderr: stderr.String()})
 }
 
-func fcHandleDial(conn net.Conn) {
+func fcHandleDial(conn *os.File) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	line, err := fcReadLine(conn, 256)
@@ -141,12 +150,12 @@ func fcReadLine(r io.Reader, max int) (string, error) {
 
 type fcMux struct {
 	mu      sync.Mutex
-	conn    net.Conn
+	conn    io.WriteCloser
 	nextID  uint32
 	targets map[uint32]net.Conn
 }
 
-func (m *fcMux) setConn(c net.Conn) {
+func (m *fcMux) setConn(c *os.File) {
 	m.mu.Lock()
 	m.conn = c
 	m.mu.Unlock()
@@ -173,7 +182,7 @@ func (m *fcMux) send(op byte, id uint32, payload []byte) error {
 	return nil
 }
 
-func (m *fcMux) readLoop(c net.Conn) {
+func (m *fcMux) readLoop(c *os.File) {
 	hdr := make([]byte, 9)
 	for {
 		if _, err := io.ReadFull(c, hdr); err != nil {
