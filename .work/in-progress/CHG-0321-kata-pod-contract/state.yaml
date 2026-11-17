@@ -5,9 +5,11 @@ status: in_progress
 branch: feat/issue-550-no-subpath
 updated: 2026-11-17
 github_issues: [550]
-phase: implementation
+phase: verification
 validation:
-  unit_plan: pending
-  runsc_ready: pending
-  kata_ready: pending
-  check: pending
+  unit_plan: passed
+  supervisor_runtime_packages: passed
+  vet_and_just_check: passed
+  runsc_ready: pending_kind_kvm
+  kata_ready: pending_kind_kvm
+  remote_ci: pending_draft_pr
