@@ -65,7 +65,9 @@ prerequisite; production TLS verification stays enabled.
 For a cloud-free smoke test, create an isolated `registry:2` container bound to
 loopback, then follow the [kind local registry recipe](https://kind.sigs.k8s.io/docs/user/local-registry/)
 to connect it to the kind network and configure the node's registry alias. Use a
-separate kubeconfig and only synthetic Secrets/state. Publish with
+separate kubeconfig and only synthetic Secrets/state. Keep the recipe's containerd
+config patch when the selected node image has an empty registry `config_path`.
+Publish with
 `go run ./cmd/devcheck docker-publish-to localhost:5001/check/<image> <target> dev`
 for each matrix target. Point the chart at those SHA refs with `IfNotPresent`;
 do not preload application images with `kind load`. Install, check Pod image
