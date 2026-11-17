@@ -16,6 +16,9 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0316](in-progress/CHG-0316-user-provisioning-command/plan.md) | `hubctl provision`: one-command onboarding — profile scaffold + capability bundle + apply + no-build up + enrollment; recovery stops disabling never-live profiles; enrollment warns on skipped siblings |
+| [CHG-0315](in-progress/CHG-0315-sso-gated-bearer-links/plan.md) | SSO-gated bearer links (M9 post-IAM): minted interactive links (connector onboarding, device, memory_open, wizard) bound to verified principal via shared-HMAC session cookie; IAM off stays bearer |
+| [CHG-0314](in-progress/CHG-0314-rights-derive-in-writer/plan.md) | Rights derivation inside the ToolHub writer (M9 hardening): derive/restore via ToolHub control endpoint under its write lock — apply/recovery stops racing store.db; incident from CHG-0313 |
 | [CHG-0313](in-progress/CHG-0313-iam-identity-boundary/plan.md) | IAM-ready identity (M9 #52/#53/#54): verified-principal boundary ADR + envelope provenance, stdlib OIDC + verified channel linking, authz contract verification |
 | [CHG-0306](in-progress/CHG-0306-overload-admission/plan.md) | Overload as explicit state: interactive-EMA loadGate + background shed (429), SRE adaptive throttle on capture pump + fail-stop, automation tick defers under overload — incident restart backlog storm |
 | [CHG-0305](in-progress/CHG-0305-connector-selection-pending/plan.md) | Connector selection pending as first-class state: deferred apply, PutBinding materialization, tools_list pending marker, dead-link landing, hubctl --service |
