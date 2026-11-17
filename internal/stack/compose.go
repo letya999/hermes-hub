@@ -35,6 +35,16 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, false)["services"].(M)["hermes-runtime"].(M)
 }
 
+// RuntimeEgressEnvironment exposes only the approved relay configuration to
+// compute backends, without rendering or inspecting unrelated control services.
+func RuntimeEgressEnvironment(s Settings, dir string) map[string]string {
+	hosts, target := managedEgressHosts(s, dir), managedExposureRelay(s, dir)
+	if len(hosts) == 0 && target == "" {
+		return nil
+	}
+	return map[string]string{"HUB_EGRESS_RELAY_HOSTS": strings.Join(hosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": target}
+}
+
 // sharedNetworkName is the single external-facing network shared infra and all
 // spawned runtimes join. It is created once by the infra-owning compose project
 // (name is pinned, never project-prefixed) and declared external by secondary

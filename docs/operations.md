@@ -86,11 +86,103 @@ status/metrics, unauthenticated 401, restart persistence, DNS/TLS channel API eg
 and policy denial on an enforcing CNI. TLS reachability does not prove account delivery;
 real channel acceptance requires provisioned accounts and explicit sends.
 
-The supervisor currently spawns Docker containers. Native runtime Pods (#58), runtime
-RuntimeClass propagation, per-space model relays, workload-controller and media
-deployments remain separate work. This chart grants no Kubernetes API authority,
-mounts no Docker socket/hostPath and runs no privileged compatibility daemon.
-An empty-runtime status response does not prove a functioning agent deployment.
+### Optional Kubernetes space execution
+
+Docker remains the local default (`HUB_EXECUTION_BACKEND=docker`). To run managed
+gateway spaces as Pods, set `execution.backend: kubernetes`. The mandatory
+[ToolHive Operator evaluation](../.work/in-progress/CHG-0319-kubernetes-runtime/operator-eval.md)
+rejected its MCPServer lifecycle for Hermes runtime spawning. No operator/CRD is
+required for the native driver. Connector cells and media scheduling remain separate.
+
+Pre-create a dedicated namespace for each environment, separate from the control
+namespace, with an enforcing CNI, restricted Pod Security and a provisioned
+StorageClass. The chart defaults its name to `<control-namespace>-runtimes`:
+
+```bash
+kubectl create namespace hermes-hub-dev-runtimes
+kubectl label namespace hermes-hub-dev-runtimes \
+  pod-security.kubernetes.io/enforce=restricted
+```
+
+Private values select `execution.kubernetes.namespace`, `storageClass`, `storageSize`
+and optional `runtimeClassName`. Empty class omits the Pod field, using the installed
+cluster default; a configured class must already exist. `imagePullSecrets` must be
+provisioned separately in both namespaces. Set `runtimeImage` and the supervisor
+image to compatible immutable source versions. `execution.kubernetes.apiServerCIDRs`
+and `apiServerPorts` must cover the API Service address and actual endpoint addresses
+as seen by the CNI; discover them from the selected cluster, never open all egress.
+The chart requires API CIDRs when Kubernetes and NetworkPolicy are enabled.
+
+Only supervisor receives a bound, rotating service-account token. Its Role in the
+runtime namespace permits Pod lifecycle/finalizer updates, Secret lifecycle,
+NetworkPolicy reconciliation and PVC get/create, without PVC deletion or cluster
+authority. Other control services and all runtime/relay Pods have no API identity,
+hostPath, Docker socket or privileged daemon. Outside Helm the same driver uses
+`HUB_EXECUTION_BACKEND=kubernetes`, `HUB_KUBERNETES_NAMESPACE`,
+`HUB_KUBERNETES_CONTROL_NAMESPACE`, `HUB_KUBERNETES_CONTROL_RELEASE`,
+`HUB_RUNTIME_CLASS_NAME`, `HUB_KUBERNETES_STORAGE_CLASS`,
+`HUB_KUBERNETES_STORAGE_SIZE`, `HUB_KUBERNETES_PULL_SECRETS`,
+`HUB_KUBERNETES_RELAY_IMAGE`, `HUB_KUBERNETES_TOOLHUB_URL` and
+`HUB_KUBERNETES_CLIPROXY_URL`. In-cluster verified TLS is the default; an explicit
+operator-owned `HUB_KUBECONFIG` may select another verified API. Never project that
+file or token into a space.
+
+Each published space gets its own retained RWO PVC, a gateway Pod, a separate Pod
+for its existing model/ToolHub relays (optional egress relay), and immutable bounded
+generation Secrets. RuntimeClass applies to the gateway; relays use the cluster
+default. Relays and runtime co-locate for RWO storage. All use uid/gid 10001,
+read-only roots, dropped capabilities and RuntimeDefault seccomp. Published config
+is copied into private memory and mounted read-only where required. The space PVC
+owns mutable workspace, Hermes state, skills drafts and relay counters. Host-side
+runtime data is **not** implicitly imported: stop Docker execution, back up and
+restore the reviewed space layout into its PVC before switching existing spaces.
+Never run Docker and Kubernetes controllers against the same logical space.
+
+The persistent per-space deny policy closes generation transitions. Gateway egress
+permits DNS and only its own relays; relay egress permits DNS and selected core
+ToolHub/cliproxy/broker peers. Core services admit runtime traffic from relays only.
+For direct external model services or an approved egress proxy, the operator must
+add a narrow relay policy and configure published fixed endpoints accordingly.
+Use core service FQDNs across namespaces. Broker delivery stays native TLS/signed
+authorization: provision the reviewed per-space `<claim-name>-broker` Secret and
+matching `model-relay.<env>.env` file references; runtime receives neither that
+profile nor control/provider credentials. A controller-authored isolation receipt
+binds Pod, generation and applied policy. It does not prove that the CNI enforces
+policy; run negative network checks before admitting real work.
+
+The same supervisor wake, leases, job dispatch, hold, suspend and respawn contracts
+select either backend. Pod phases and standard conditions appear alongside Hermes
+readiness; Pod Ready alone is not agent acceptance. Suspend deletes both Pods and
+generation Secrets, retaining PVC and ledger. Respawn preserves logical identity
+and data while replacing generation and compute UID. UID-preconditioned deletion
+and the compute finalizer wait for kubelet termination before releasing capacity
+or advancing generation. Node loss/unknown termination stays blocked: fence the
+node/process before any operator removal of finalizers. Never force-delete Pods
+to turn an uncertain job into a confirmed failure.
+
+Current Kubernetes scope is the managed `gateway` runtime used by normal messages.
+Historical additional runtime modes, browser/meet sidecars, Docker script-job
+execution, shared host mounts and cross-space writable mounts are not supported;
+incompatible spawn plans fail closed. This is one supervisor writer, not HA.
+Back up each space PVC separately from the control `spaces`/spool claims; the
+control snapshot contains published inputs and ledger, not runtime PVC contents.
+Uninstall leaves PVCs and runtime objects in the separate namespace: suspend and
+verify process termination before uninstalling RBAC. PVC deletion is an explicit
+operator retention decision after verified backup.
+
+For kind acceptance disable its default CNI and install an enforcing CNI before
+loading source runtime/control images. Use a separate kubeconfig on every command.
+The managed preflight also requires control/host aliases to remain unresolvable.
+If a development DNS forwarder publishes `host.docker.internal`, block that zone
+in this isolated cluster's DNS (for CoreDNS, a
+[template](https://coredns.io/plugins/template/) with `rcode NXDOMAIN`), then verify
+the negative lookup. Do not disable the managed preflight to accommodate host DNS.
+With synthetic published passports, verify authenticated message dispatch through
+supervisor into real Hermes, retained workspace marker and runtime identity across
+suspend/respawn, new compute UID/generation, Secret cleanup, unauthorized HTTP 401,
+and denial of gateway traffic to public/core/another space. Record source/image
+digests and CNI versions. Local model/PDP fixtures prove runtime transport only;
+they do not establish real provider or channel account acceptance.
 
 `hubctl --user <id> --env dev|prod` (prod default; `--dir spaces/<id>` is the
 explicit form). `render` writes generated files under `spaces/<user>/

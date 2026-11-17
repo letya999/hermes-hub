@@ -195,12 +195,13 @@ func runtimeStatusLocked(e *runtimeEntry, held bool, now time.Time) RuntimeStatu
 		budget = Condition{Name: CondCrashBudget, OK: true, Reason: ReasonWithinBudget}
 	}
 	st.Conditions = []Condition{ready, own, conn, budget}
+	st.Conditions = append(st.Conditions, rt.ComputeConditions...)
 
 	health := rt.RuntimeHealth
 	switch {
 	case held:
 		st.Phase = PhaseSuspended
-	case e.State == Stopping:
+	case e.State == Stopping || rt.RuntimeHealth == "stopping":
 		st.Phase = PhaseTerminating
 	case !rt.Desired:
 		// wind-down: a still-alive container is terminating, anything
@@ -232,6 +233,14 @@ func runtimeStatusLocked(e *runtimeEntry, held bool, now time.Time) RuntimeStatu
 		// never probed or unrecognized docker state — pending until the
 		// next probe rather than a guessed string
 		st.Phase = PhasePending
+	}
+	if st.Phase == PhaseRunning {
+		for _, condition := range rt.ComputeConditions {
+			if !condition.OK {
+				st.Phase = PhaseDegraded
+				break
+			}
+		}
 	}
 	return st
 }

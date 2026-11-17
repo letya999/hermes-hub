@@ -33,6 +33,12 @@ implementation: see operator-eval.md and ADR-0101 for the accepted boundary.
 
 ## Acceptance
 
+The implemented slice is the managed gateway used by normal messages. Extra
+runtime modes, browser/meet and Docker script jobs fail closed on Kubernetes.
+Live testing also found a shared health-probe bug: managed MCP uses a loopback
+proxy, while connector inventory belongs to the reviewed ToolHub relay. The
+regression keeps inventory authorization and fixes the observation path.
+
 just check, affected-package just test, dependency security gate, Helm contracts;
 kind spawn/suspend/respawn with stable runtime identity, retained data, authorized
 message delivery and negative scope checks. Full CI and real external provider

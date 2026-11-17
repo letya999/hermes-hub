@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -94,7 +93,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		}
 	}
 	if current != nil && current.restored && current.State != Stopped {
-		container, address, auth := current.Container, current.Address, binding.runtimeAuth
+		address, auth := current.Address, binding.runtimeAuth
 		snapshot := current.Runtime
 		_, slotHeld := m.slots[key]
 		m.mu.Unlock()
@@ -102,11 +101,14 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		if ownershipErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
 			return snapshot, ownershipErr
 		}
-		out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container)
+		observation, inspectErr := m.observeCompute(ctx, snapshot)
 		if inspectErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
 			return snapshot, errors.New("restored runtime health unavailable")
 		}
-		if inspectErr == nil && strings.TrimSpace(string(out)) == "running" {
+		if inspectErr == nil && observation.State == "running" {
+			if m.usingKubernetes() && observation.Address != "" {
+				address = observation.Address
+			}
 			if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
 				return snapshot, readinessErr
 			}
@@ -128,6 +130,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			}
 			previous := current.Runtime
 			current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
+			current.Address = address
 			m.slots[key] = struct{}{}
 			result := current.Runtime
 			if err := m.persistLocked(); err != nil {
@@ -140,7 +143,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			return result, nil
 		}
 		if !errors.Is(ownershipErr, ErrRuntimeMissing) {
-			status := strings.TrimSpace(string(out))
+			status := observation.State
 			if status != "exited" && status != "dead" {
 				return snapshot, errors.New("runtime state is not safely replaceable")
 			}
@@ -166,6 +169,20 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	m.mu.Lock()
 	if current := m.items[key]; current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
+		if m.usingKubernetes() {
+			snapshot := current.Runtime
+			m.mu.Unlock()
+			observed, err := m.observeCompute(ctx, snapshot)
+			if err != nil {
+				return snapshot, err
+			}
+			if observed.State != "running" {
+				return snapshot, errors.New("runtime Pod is not running")
+			}
+			m.mu.Lock()
+			current = m.items[key]
+			current.Address, current.ComputeConditions = observed.Address, observed.Conditions
+		}
 		previous := current.Runtime
 		current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
 		result := current.Runtime
@@ -178,6 +195,12 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		return result, nil
 	}
 	m.mu.Unlock()
+	if m.usingKubernetes() {
+		// Fence the old process before changing the durable generation used by jobs.
+		if err := m.prepareKubernetesReplacement(ctx, key, containerName(key)); err != nil {
+			return Runtime{}, err
+		}
+	}
 	m.mu.Lock()
 	_, slotHeld := m.slots[key]
 	if !slotHeld && len(m.orphans) != 0 {
@@ -210,6 +233,9 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	container := containerName(key)
 	m.mu.Lock()
 	port, portErr := m.allocatePortLocked(key)
+	if m.usingKubernetes() {
+		port, portErr = m.cfg.RuntimePort, nil
+	}
 	if portErr != nil {
 		m.mu.Unlock()
 		if !slotHeld {
@@ -245,8 +271,12 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	m.mu.Unlock()
 	status := ""
-	if out, inspectErr := m.command(ctx, "inspect", "--format", "{{.State.Status}}", container); inspectErr == nil {
-		status = strings.TrimSpace(string(out))
+	if observation, inspectErr := m.observeCompute(ctx, logical.Runtime); inspectErr == nil {
+		status = observation.State
+	} else if m.usingKubernetes() {
+		if present, presenceErr := m.containerPresent(ctx, container); presenceErr == nil && present {
+			status = "present"
+		}
 	}
 	if status == "running" {
 		if _, ownershipErr := m.ownedContainerID(ctx, logical.Runtime); ownershipErr != nil {
@@ -267,7 +297,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		} else {
 			// Port allocation may have moved since this container started;
 			// reuse requires its actually published port.
-			if m.cfg.HostSpacesRoot == "" {
+			if !m.usingKubernetes() && m.cfg.HostSpacesRoot == "" {
 				if hostPort, portErr := m.publishedPort(ctx, logical.Runtime); portErr == nil {
 					address = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 				}
@@ -291,74 +321,26 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		// the name; remove it only when it is verifiably ours and stale.
 		m.reclaimStaleRuntime(ctx, binding, container, logical.Generation)
 	}
-	var spawnFilesLock *sync.Mutex
-	if managed {
-		preparation := binding
-		preparation.RuntimeMode = "spawn-files"
-		spawnFilesLock = m.lockFor(runtimeKey(preparation))
-		spawnFilesLock.Lock()
-	}
-	args, err := m.runArgsWithGeneration(binding, container, port, logical.Generation)
-	if err != nil {
-		if managed {
-			spawnFilesLock.Unlock()
-		}
+	observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Port: port})
+	if spawnErr != nil {
 		m.markDegraded(key)
-		return Runtime{}, fmt.Errorf("prepare runtime launch: %w", err)
-	}
-	if managed {
-		if err := m.ensureManagedInfra(ctx, binding, managedSettings, container, port, logical.Generation); err != nil {
-			spawnFilesLock.Unlock()
-			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
-			m.markDegraded(key)
-			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
-				m.releaseSlot(key)
-			}
-			return Runtime{}, fmt.Errorf("managed topology: %w", err)
-		}
-	}
-	out, runErr := m.command(ctx, args...)
-	if managed {
-		spawnFilesLock.Unlock()
-	}
-	if runErr != nil {
-		m.markDegraded(key)
-		// Docker may have created the container before its acknowledgement was lost.
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
 			m.releaseSlot(key)
 		}
-		return Runtime{}, fmt.Errorf("start runtime: %w: %s", runErr, firstLine(string(out)))
+		return Runtime{}, spawnErr
 	}
-	if managedSettings.Has("browser") || managedSettings.Has("meet") {
-		// SPEC-0083 R2: the sidecar sleeps between uses; `docker start` is
-		// idempotent — running is a no-op, a slept one resumes before the
-		// runtime probes readiness. A failed start is the same severity class
-		// as a missing space network: fail the spawn and reclaim.
-		if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
-			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
-			m.markDegraded(key)
-			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
-				m.releaseSlot(key)
-			}
-			return Runtime{}, err
-		}
+	if observed.Address != "" {
+		address = observed.Address
 	}
-	if !managed && (managedSettings.Has("browser") || managedSettings.Has("meet")) {
-		// The browser sidecar answers as browser-<user> on the space's compose
-		// default network; spawned runtimes join the shared net only, so
-		// dual-home them here. Managed runtimes already sit on the agent net
-		// the sidecar aliases into.
-		spaceNet := "hermes-hub-" + binding.UserID + "-" + m.environment() + "_default"
-		if out, connectErr := m.command(ctx, "network", "connect", spaceNet, container); connectErr != nil {
-			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
-			m.markDegraded(key)
-			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
-				m.releaseSlot(key)
-			}
-			return Runtime{}, fmt.Errorf("attach browser network %s (run hubctl up for this space): %w: %s", spaceNet, connectErr, firstLine(string(out)))
-		}
+	m.mu.Lock()
+	logical.Address, logical.ComputeID, logical.ComputeConditions = address, observed.ID, observed.Conditions
+	if persistErr := m.persistLocked(); persistErr != nil {
+		m.mu.Unlock()
+		m.markDegraded(key)
+		return Runtime{}, persistErr
 	}
+	m.mu.Unlock()
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		m.markDegraded(key)
@@ -937,6 +919,9 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 }
 
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
+	if m.usingKubernetes() {
+		return nil, errors.New("Docker operation is unavailable on the Kubernetes backend")
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if m.cfg.HostSpacesRoot != "" && len(args) > 0 && args[0] == "run" {

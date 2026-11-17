@@ -235,6 +235,9 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	if busy {
 		return false, nil
 	}
+	if m.usingKubernetes() {
+		return m.restartKubernetesLocked(ctx, runtime)
+	}
 	container, err := m.ownedContainerID(ctx, runtime)
 	if err != nil {
 		return false, err

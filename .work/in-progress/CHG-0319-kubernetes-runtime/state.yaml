@@ -5,12 +5,15 @@ status: in_progress
 branch: feat/m9-k8s-runtime
 updated: 2026-11-17
 github_issue: 58
-phase: implementation
+phase: verification
 operator_spike: rejected_for_runtime_spawning
 validation:
   operator_chart_render: passed
-  backend_regression: pending
-  live_kind: pending
+  backend_regression: passed
+  helm_contract: passed
+  dependency_security: passed
+  live_kind: in_progress
   remote_ci: not_run
 remaining:
-  - Implement and verify the backend vertical slice.
+  - Verify the final runtime health fix and record immutable image/source evidence.
+  - Owner-authorized publication, remote CI acceptance and merge remain separate.

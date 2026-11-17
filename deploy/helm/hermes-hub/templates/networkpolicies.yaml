@@ -13,6 +13,15 @@ spec:
       {{- include "hub.selector" (dict "root" $root "name" $name) | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
+    {{- if and (eq $root.Values.execution.backend "kubernetes") (has $name (list "toolhub" "cliproxy" "credential-broker")) }}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ include "hub.runtimeNamespace" $root | quote }}}
+          podSelector:
+            matchLabels:
+              {{- include "hub.selector" (dict "root" $root "name" "runtime-relay") | nindent 14 }}
+      ports: [{protocol: TCP, port: {{ $service.port }}}]
+    {{- end }}
     {{- range $caller, $targets := $dependencies }}
     {{- if hasKey $targets $name }}
     - from:
@@ -42,6 +51,23 @@ spec:
     {{- toYaml . | nindent 4 }}
     {{- end }}
   egress:
+    {{- if and (eq $name "supervisor") (eq $root.Values.execution.backend "kubernetes") }}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ include "hub.runtimeNamespace" $root | quote }}}
+          podSelector:
+            matchLabels:
+              {{- include "hub.selector" (dict "root" $root "name" "runtime") | nindent 14 }}
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        {{- range $cidr := required "execution.kubernetes.apiServerCIDRs is required with Kubernetes NetworkPolicy" $root.Values.execution.kubernetes.apiServerCIDRs }}
+        - ipBlock: {cidr: {{ $cidr | quote }}}
+        {{- end }}
+      ports:
+        {{- range $port := $root.Values.execution.kubernetes.apiServerPorts }}
+        - {protocol: TCP, port: {{ $port }}}
+        {{- end }}
+    {{- end }}
     - to:
         - namespaceSelector:
             matchLabels: {{ toYaml $root.Values.networkPolicy.dnsNamespaceSelector | nindent 14 }}

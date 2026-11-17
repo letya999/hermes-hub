@@ -25,7 +25,7 @@ import (
 )
 
 // Package supervisor owns the host-side scale-to-zero runtime lifecycle.
-// It is deliberately small: Docker is the only compute backend and the
+// Docker is the default compute backend; Kubernetes is opt-in. The
 // pinned runtime remains the source of truth for Hermes state.
 
 type State string
@@ -89,12 +89,15 @@ type LeaseConsumer struct {
 const DefaultWarmTTL = 30 * time.Minute
 
 type Config struct {
-	Docker         string
-	Image          string
-	ScriptImage    string
-	Network        string
-	SpacesRoot     string
-	HostSpacesRoot string
+	ExecutionBackend string
+	Kubernetes       KubernetesConfig
+	Backend          ComputeBackend
+	Docker           string
+	Image            string
+	ScriptImage      string
+	Network          string
+	SpacesRoot       string
+	HostSpacesRoot   string
 	// SettingsEdit publishes one config passport change after the HTTP control
 	// request is authenticated. Nil denies settings edits.
 	SettingsEdit func(context.Context, string, string, string, *string, string) (map[string]any, error)
@@ -161,15 +164,17 @@ type Binding struct {
 }
 
 type Runtime struct {
-	ConnectorHealth   string    `json:"connector_health,omitempty"`
-	FailureGeneration string    `json:"failure_generation,omitempty"`
-	Ownership         string    `json:"ownership,omitempty"`
-	CrashCount        int       `json:"crash_count,omitempty"`
-	CrashWindowStart  time.Time `json:"crash_window_start,omitempty"`
-	NextRetryAt       time.Time `json:"next_retry_at,omitempty"`
-	RuntimeHealth     string    `json:"runtime_health,omitempty"`
-	HermesReadiness   string    `json:"hermes_readiness,omitempty"`
-	HealthCheckedAt   time.Time `json:"health_checked_at,omitempty"`
+	ComputeID         string      `json:"compute_id,omitempty"`
+	ComputeConditions []Condition `json:"compute_conditions,omitempty"`
+	ConnectorHealth   string      `json:"connector_health,omitempty"`
+	FailureGeneration string      `json:"failure_generation,omitempty"`
+	Ownership         string      `json:"ownership,omitempty"`
+	CrashCount        int         `json:"crash_count,omitempty"`
+	CrashWindowStart  time.Time   `json:"crash_window_start,omitempty"`
+	NextRetryAt       time.Time   `json:"next_retry_at,omitempty"`
+	RuntimeHealth     string      `json:"runtime_health,omitempty"`
+	HermesReadiness   string      `json:"hermes_readiness,omitempty"`
+	HealthCheckedAt   time.Time   `json:"health_checked_at,omitempty"`
 	// R1.4-R1.6 observations persisted from the runtime's own surface probe.
 	// Reporting only: they never feed remediation decisions or grants.
 	ToolSurface  string            `json:"tool_surface,omitempty"`
@@ -233,6 +238,7 @@ type runtimeEntry struct {
 }
 
 type Manager struct {
+	backend ComputeBackend
 	holds   map[string]AdministrativeHold
 	pins    map[string]hubruntime.ExecuteRequest
 	orphans []OrphanRuntime
@@ -271,6 +277,7 @@ type Manager struct {
 }
 
 type persistedManager struct {
+	Backend    string                               `json:"execution_backend,omitempty"`
 	Holds      map[string]AdministrativeHold        `json:"holds,omitempty"`
 	Pins       map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
 	Orphans    []OrphanRuntime                      `json:"orphans,omitempty"`
@@ -379,6 +386,15 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 }
 
 func New(cfg Config) (*Manager, error) {
+	if cfg.ExecutionBackend == "" {
+		cfg.ExecutionBackend = os.Getenv("HUB_EXECUTION_BACKEND")
+	}
+	if cfg.ExecutionBackend == "" {
+		cfg.ExecutionBackend = "docker"
+	}
+	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" {
+		return nil, errors.New("unsupported execution backend")
+	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {
 		return nil, errors.New("spaces root, runtime auth and image are required")
 	}
@@ -387,13 +403,15 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("spaces root: %w", err)
 	}
 	cfg.SpacesRoot = root
-	if cfg.HostSpacesRoot == "" {
+	if cfg.ExecutionBackend == "kubernetes" {
+		cfg.HostSpacesRoot = ""
+	} else if cfg.HostSpacesRoot == "" {
 		cfg.HostSpacesRoot = os.Getenv("HUB_SUPERVISOR_HOST_SPACES")
 	}
 	if strings.ContainsAny(cfg.HostSpacesRoot, ",\r\n") {
 		return nil, errors.New("invalid host spaces root")
 	}
-	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); err != nil {
+	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); cfg.ExecutionBackend == "docker" && err != nil {
 		return nil, err
 	}
 	if cfg.StateDir == "" {
@@ -457,7 +475,7 @@ func New(cfg Config) (*Manager, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
 		}
 	}
-	if cfg.Stats == nil {
+	if cfg.Stats == nil && cfg.ExecutionBackend == "docker" {
 		cfg.Stats = dockerStatsCommand(cfg.Command)
 	}
 	if cfg.AdminAuth == "" {
@@ -478,6 +496,17 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Decide = relayDecide
 	}
 	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), recoverySem: make(chan struct{}, recoveryWorkers), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m.backend = cfg.Backend
+	if m.backend == nil {
+		if m.usingKubernetes() {
+			m.backend, err = newKubernetesBackend(m)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			m.backend = dockerBackend{m}
+		}
+	}
 	m.loadBackups()
 	if err := m.load(); err != nil {
 		return nil, err
@@ -496,6 +525,28 @@ func (m *Manager) load() error {
 	var state persistedManager
 	if err := json.Unmarshal(b, &state); err != nil {
 		return fmt.Errorf("invalid supervisor state: %w", err)
+	}
+	backend := state.Backend
+	if backend == "" {
+		backend = "docker"
+	}
+	if backend != "docker" && backend != "kubernetes" {
+		return errors.New("invalid persisted execution backend")
+	}
+	if backend != m.cfg.ExecutionBackend {
+		if len(state.Orphans) != 0 {
+			return errors.New("execution backend change requires cleared orphans")
+		}
+		for _, item := range state.Items {
+			if item.Runtime.State != Stopped {
+				return errors.New("execution backend change requires stopped runtimes")
+			}
+		}
+		for _, record := range state.Jobs {
+			if !terminalRunStatus(record.Status) {
+				return errors.New("execution backend change requires settled jobs")
+			}
+		}
 	}
 	m.gen, m.leaseSeq, m.orphans = state.Generation, state.LeaseSeq, state.Orphans
 	if state.Holds != nil {
@@ -557,7 +608,7 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
+	state := persistedManager{Backend: m.cfg.ExecutionBackend, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
 		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents})
 	}

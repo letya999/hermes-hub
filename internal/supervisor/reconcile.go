@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -74,13 +73,15 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		connectorHealth := "not_checked"
 		ownership := "not_checked"
 		var observed *hubruntime.RuntimeHealth
+		var compute ComputeObservation
 		if snapshot.State != Stopped {
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			ownership = "unverified"
 			if m.VerifyOwnership(probeCtx, snapshot) == nil {
 				ownership = "verified"
 			}
-			out, err := m.command(probeCtx, "inspect", "--format", "{{.State.Status}}", snapshot.Container)
+			observation, err := m.observeCompute(probeCtx, snapshot)
+			compute = observation
 			if err != nil {
 				health = "unknown"
 				if present, presenceErr := m.containerPresent(probeCtx, snapshot.Container); presenceErr == nil && !present {
@@ -88,7 +89,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 					ownership = "absent"
 				}
 			} else {
-				health = strings.TrimSpace(string(out))
+				health = observation.State
 				if health == "running" {
 					readiness = "unavailable"
 					if auth != "" && m.ready(probeCtx, snapshot.Address, auth) == nil {
@@ -104,6 +105,16 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 						}
 					}
 
+					for _, condition := range compute.Conditions {
+						if condition.Name == "relays_ready" && !condition.OK {
+							readiness = "unavailable"
+						}
+					}
+				}
+			}
+			if m.usingKubernetes() && health == "missing" && !desired {
+				if err := m.removeOwnedRuntime(probeCtx, snapshot); err != nil {
+					health = "unknown"
 				}
 			}
 			cancel()
@@ -116,6 +127,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 			previous := current.Runtime
 			current.RuntimeHealth, current.HermesReadiness, current.HealthCheckedAt, current.Desired = health, readiness, now, desired
+			current.ComputeConditions = compute.Conditions
 			current.Ownership = ownership
 			current.ConnectorHealth = connectorHealth
 			if observed != nil {
@@ -167,7 +179,20 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			}
 		}
 		m.mu.Unlock()
-		if remediate && snapshot.Container != "" {
+		if remediate && snapshot.Container != "" && m.usingKubernetes() && m.tryRecoveryWorker() {
+			m.mu.Lock()
+			if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
+				current.lastRemediatedAt = now
+			}
+			m.mu.Unlock()
+			go func() { // #nosec G118 -- bounded recovery worker owns the acquisition lock
+				defer lock.Unlock()
+				defer func() { <-m.recoverySem }()
+				_, _ = m.restartKubernetesLocked(context.Background(), snapshot)
+			}()
+			continue
+		}
+		if remediate && snapshot.Container != "" && !m.usingKubernetes() {
 			if _, err := m.command(ctx, "restart", "--time", "30", snapshot.Container); err == nil {
 				m.mu.Lock()
 				if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {

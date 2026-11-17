@@ -13,3 +13,9 @@ app.kubernetes.io/component: {{ .name | quote }}
 {{ .repository }}:{{ .tag }}
 {{- end -}}
 {{- end -}}
+{{- define "hub.runtimeNamespace" -}}
+{{- default (printf "%s-runtimes" .Release.Namespace) .Values.execution.kubernetes.namespace -}}
+{{- end -}}
+{{- define "hub.pullSecretNames" -}}
+{{- range $i, $secret := .Values.imagePullSecrets -}}{{- if $i -}},{{- end -}}{{ $secret.name }}{{- end -}}
+{{- end -}}

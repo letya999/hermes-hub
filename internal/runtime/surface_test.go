@@ -73,6 +73,38 @@ func TestSurfaceProbeAbsentManifestNotProbed(t *testing.T) {
 	}
 }
 
+func TestManagedSurfaceInventoryUsesAuthenticatedRelay(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inventory reached MCP-only loopback proxy")
+		http.NotFound(w, r)
+	}))
+	defer proxy.Close()
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/connectors" || r.Header.Get("Authorization") != "Bearer runtime-token" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}}}})
+	}))
+	defer relay.Close()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("mcp_servers:\n  toolhub:\n    url: "+proxy.URL+"/mcp\n    headers:\n      Authorization: Bearer ${HUB_RUNTIME_AUTH}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_CAPABILITY_MODE", "managed")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", relay.URL+"/mcp")
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-token")
+	t.Setenv("HUB_TOOLHUB_TOKEN_ENV", "")
+	views, err := probeConnectors(t.Context(), readSurfaceConfig(path))
+	if err != nil || len(views) != 1 || views[0].DefinitionID != "hub-agent-tools" {
+		t.Fatalf("authenticated relay inventory unavailable: %v", err)
+	}
+	t.Setenv("HUB_RUNTIME_AUTH", "wrong")
+	if _, err := probeConnectors(t.Context(), readSurfaceConfig(path)); err == nil {
+		t.Fatal("inventory ignored relay authorization")
+	}
+}
+
 // SPEC-0053 R1.5: an unresolved identity/plumbing env reference in the hub
 // stdio child config degrades readiness with a reason; optional secrets left
 // unset (HH_TOKEN) never flag the child broken.

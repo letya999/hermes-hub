@@ -20,6 +20,13 @@ type OrphanRuntime struct {
 var ErrRuntimeMissing = errors.New("runtime container missing")
 
 func (m *Manager) containerPresent(ctx context.Context, container string) (bool, error) {
+	if k, ok := m.backend.(*kubernetesBackend); ok {
+		_, err := k.pod(ctx, Runtime{Container: container})
+		if errors.Is(err, ErrRuntimeMissing) {
+			return false, nil
+		}
+		return err == nil, err
+	}
 	if strings.ContainsAny(container, "\r\n") || container == "" {
 		return false, errors.New("invalid container name")
 	}
@@ -37,9 +44,18 @@ func (m *Manager) containerPresent(ctx context.Context, container string) (bool,
 	return true, nil
 }
 
-func (m *Manager) ownerID() string { return hex.EncodeToString(hashBytes(m.statePath)) }
+func (m *Manager) ownerID() string {
+	identity := m.statePath
+	if m.usingKubernetes() {
+		identity += "\x00" + m.cfg.Kubernetes.Namespace + "\x00" + m.cfg.Kubernetes.ControlNamespace + "\x00" + m.cfg.Kubernetes.ControlRelease
+	}
+	return hex.EncodeToString(hashBytes(identity))
+}
 
 func (m *Manager) runtimeLabels(ctx context.Context, container string) (map[string]string, error) {
+	if k, ok := m.backend.(*kubernetesBackend); ok {
+		return k.runtimeLabels(ctx, container)
+	}
 	labels, err := m.command(ctx, "inspect", "--format", "{{json .Config.Labels}}", container)
 	var metadata map[string]string
 	if err != nil || len(labels) > 64*1024 || json.Unmarshal(labels, &metadata) != nil {
@@ -48,7 +64,7 @@ func (m *Manager) runtimeLabels(ctx context.Context, container string) (map[stri
 	return metadata, nil
 }
 
-func (m *Manager) VerifyOwnership(ctx context.Context, runtime Runtime) error {
+func (m *Manager) verifyDockerOwnership(ctx context.Context, runtime Runtime) error {
 	metadata, err := m.runtimeLabels(ctx, runtime.Container)
 	if err != nil {
 		if present, presenceErr := m.containerPresent(ctx, runtime.Container); presenceErr == nil && !present {
@@ -126,6 +142,13 @@ func dockerDesktopWindowsSource(source string) (string, bool) {
 }
 
 func (m *Manager) ownedContainerID(ctx context.Context, runtime Runtime) (string, error) {
+	if m.usingKubernetes() {
+		if err := m.VerifyOwnership(ctx, runtime); err != nil {
+			return "", err
+		}
+		observed, err := m.observeCompute(ctx, runtime)
+		return observed.ID, err
+	}
 	out, err := m.command(ctx, "inspect", "--format", "{{.Id}}", runtime.Container)
 	id := strings.TrimSpace(string(out))
 	if err != nil {
@@ -145,7 +168,7 @@ func (m *Manager) ownedContainerID(ctx context.Context, runtime Runtime) (string
 	return id, nil
 }
 
-func (m *Manager) removeOwnedRuntime(ctx context.Context, runtime Runtime) error {
+func (m *Manager) removeDockerRuntime(ctx context.Context, runtime Runtime) error {
 	id, err := m.ownedContainerID(ctx, runtime)
 	var result error
 	if err != nil {
@@ -165,6 +188,9 @@ func (m *Manager) removeOwnedRuntime(ctx context.Context, runtime Runtime) error
 // belongs to this supervisor, context and generation. A name that cannot be
 // inspected is treated as absent: an unverifiable container is never removed.
 func (m *Manager) removeOwnedSidecar(ctx context.Context, runtime Runtime) error {
+	if m.usingKubernetes() {
+		return nil
+	}
 	// Only managed runtimes carry a control-relay sidecar; legacy teardown
 	// paths must not even inspect other contexts' containers.
 	if !runtime.Managed || runtime.Container == "" || runtime.Generation == "" {
@@ -223,6 +249,9 @@ func (m *Manager) reclaimStaleRuntime(ctx context.Context, binding Binding, cont
 	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] == "" || metadata["hermes-hub.generation"] == generation || metadata["hermes-hub.role"] != "" {
 		return false
 	}
+	if m.usingKubernetes() {
+		return m.removeOwnedRuntime(ctx, Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Container: container, Generation: metadata["hermes-hub.generation"]}) == nil
+	}
 	if _, err := m.command(ctx, "rm", "-f", container); err != nil {
 		return false
 	}
@@ -233,6 +262,34 @@ func (m *Manager) reclaimStaleRuntime(ctx context.Context, binding Binding, cont
 // DetectOrphans inventories only this supervisor's labelled containers.
 // Detection never deletes a home, volume, job or an unrecognized container.
 func (m *Manager) DetectOrphans(ctx context.Context) error {
+	if k, ok := m.backend.(*kubernetesBackend); ok {
+		inventory, err := k.inventory(ctx)
+		if err != nil {
+			return err
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var orphans []OrphanRuntime
+		for _, observed := range inventory {
+			current := false
+			for key, entry := range m.items {
+				if hex.EncodeToString(hashBytes(key)) == observed.ContextKey && entry.Generation == observed.Generation && entry.Container == observed.Name && entry.State != Stopped {
+					current = true
+					break
+				}
+			}
+			if !current {
+				orphans = append(orphans, observed)
+			}
+		}
+		previous := m.orphans
+		m.orphans = orphans
+		if err := m.persistLocked(); err != nil {
+			m.orphans = previous
+			return err
+		}
+		return nil
+	}
 	out, err := m.command(ctx, "ps", "-a", "--filter", "label=hermes-hub.owner="+m.ownerID(), "--format", "{{.ID}}")
 	if err != nil {
 		return errors.New("owned runtime inventory unavailable")
@@ -335,6 +392,9 @@ func (m *Manager) ReapOrphans(ctx context.Context) {
 		// Removal inspects either form, but the control relay is named
 		// <container>-ctl, so prefer the recorded name when it is known.
 		runtime.Container, runtime.Generation = orphan.Container, orphan.Generation
+		if m.usingKubernetes() {
+			runtime.ComputeID = orphan.Container
+		}
 		if orphan.Name != "" {
 			runtime.Container = orphan.Name
 		}

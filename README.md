@@ -166,8 +166,10 @@ is exactly what the microVM/Kubernetes roadmap is for.
 
 - **microVM isolation** — per-user runtimes in dedicated microVMs instead of
   containers, for a harder security boundary.
-- **Kubernetes** — control-plane and runtime orchestration across multiple
-  hosts; the 100-user row becomes horizontal scaling, not vertical.
+- **Kubernetes** — optional native backend for managed gateway spaces beside
+  Docker, with retained PVCs and per-space network isolation; see
+  [operations](docs/operations.md#optional-kubernetes-space-execution).
+  Multi-host capacity and HA acceptance remain ahead.
 - **Bare metal** — installation on a plain Linux host without Docker Desktop.
 
 ## Feature inventory
