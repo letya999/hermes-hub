@@ -218,7 +218,7 @@ func provisionPorts(dir string) (map[string]int, error) {
 		"__PORT_BROWSER_VNC__", fmt.Sprint(allocated["browser-vnc"]),
 		"__PORT_OAUTH_CALLBACK__", fmt.Sprint(allocated["oauth-callback"]),
 	).Replace(string(body))
-	return allocated, os.WriteFile(path, []byte(replaced), 0600)
+	return allocated, os.WriteFile(path, []byte(replaced), 0600) // #nosec G703 -- path is fixed under the operator-selected provisioning directory
 }
 
 func sameTextDir(name, base string) bool { return strings.EqualFold(name, base) }
@@ -581,7 +581,7 @@ func provisionComposeUp(ctx context.Context, dir, root, env string) error {
 	composePath := filepath.Join(abs, "generated", "compose."+env+".yaml")
 	composeEnv := supervisorComposeEnv(abs)
 	docker := func(a ...string) error {
-		cmd := exec.CommandContext(ctx, "docker", append([]string{"compose", "-f", composePath}, a...)...) // #nosec G204 -- fixed docker executable
+		cmd := exec.CommandContext(ctx, "docker", append([]string{"compose", "-f", composePath}, a...)...) // #nosec G204 G702 -- fixed docker executable; args are fixed compose subcommands on an operator-selected file
 		cmd.Env = composeEnv
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

@@ -57,6 +57,13 @@ symlink enabled the CLH PoC. Do not bypass that guard in Hermes. VMM selection
 belongs to node configuration. Raw synthetic artifacts and Go probe are ignored
 under .work/tmp/sandbox-spike; actual deployments are not committed.
 
+Update during validation: on the kind node (containerd, nested KVM) the same
+Kata install booted both shipped VMMs — QEMU and CLH Pods reached `Running`
+with guest kernel `6.18.56` against the node's `6.6.87` WSL2 kernel, so the
+DinD vsock failure was fixture-specific and QEMU itself is viable. The managed
+Kubernetes path then surfaced a real Kata incompatibility in Hermes' own volume
+contract, recorded in validation.md.
+
 ## Compatibility and boundary
 
 Docker embedded DNS (127.0.0.11) failed inside runsc; identical IP proxy requests
@@ -64,6 +71,16 @@ passed. Pin only the space's private relay aliases at supervised spawn and refus
 missing/ambiguous aliases. Keep the internal network; never repair DNS with host
 networking. Static/unmanaged layouts need operator-supplied sandbox-compatible
 discovery. Managed spaces use the supervisor. Browser/meet remain unqualified.
+
+Kubernetes adds one backend constraint: the supervisor projects runtime inputs
+through a `Medium: Memory` EmptyDir written by an init container and consumed via
+`subPath`. Under Kata those writes live inside the guest, so the runtime
+container sees an empty mount and fails closed at startup. The identical spec
+works under runsc. Choosing Kata in Kubernetes therefore needs the input
+contract reworked (disk-backed EmptyDir or projected volumes) before admission
+can be expected to succeed; until then `container_runtime=kata` in Kubernetes
+fails closed as required — admitted only where the class exists, never silently
+downgraded.
 
 Seccomp restricts host syscalls for runc; it is not a guest kernel. Runsc adds
 userspace syscall mediation; Kata adds a VM/guest kernel. All still trust the

@@ -92,6 +92,12 @@ type Config struct {
 	ExecutionBackend string
 	ContainerRuntime string
 	Kubernetes       KubernetesConfig
+	UnoURL           string
+	UnoToken         string
+	UnoImage         string
+	UnoBoxRAMMB      int
+	UnoBoxVCPU       int
+	UnoProxyHost     string
 	Backend          ComputeBackend
 	Docker           string
 	Image            string
@@ -403,8 +409,22 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.ExecutionBackend == "" {
 		cfg.ExecutionBackend = "docker"
 	}
-	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" {
+	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" && cfg.ExecutionBackend != "firecracker" {
 		return nil, errors.New("unsupported execution backend")
+	}
+	if cfg.ExecutionBackend == "firecracker" {
+		cfg.UnoURL = firstEnv(cfg.UnoURL, "HUB_UNO_URL")
+		cfg.UnoToken = firstEnv(cfg.UnoToken, "HUB_UNO_TOKEN")
+		cfg.UnoImage = firstEnv(cfg.UnoImage, "HUB_UNO_IMAGE")
+		if cfg.UnoBoxRAMMB <= 0 {
+			cfg.UnoBoxRAMMB = intEnv("HUB_UNO_BOX_RAM_MB", 1024)
+		}
+		if cfg.UnoBoxVCPU <= 0 {
+			cfg.UnoBoxVCPU = intEnv("HUB_UNO_BOX_VCPU", 2)
+		}
+		if cfg.UnoProxyHost == "" {
+			cfg.UnoProxyHost = envOr("HUB_UNO_PROXY_HOST", "127.0.0.1")
+		}
 	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {
 		return nil, errors.New("spaces root, runtime auth and image are required")
@@ -458,7 +478,7 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.PIDs <= 0 {
 		cfg.PIDs = 1024
 	}
-	if cfg.RuntimePort <= 0 {
+	if cfg.RuntimePort <= 0 || cfg.RuntimePort > 65535 {
 		cfg.RuntimePort = 8080
 	}
 	if cfg.PortBase <= 0 {
@@ -514,6 +534,11 @@ func New(cfg Config) (*Manager, error) {
 			if err != nil {
 				return nil, err
 			}
+		} else if cfg.ExecutionBackend == "firecracker" {
+			m.backend, err = newFirecrackerBackend(m)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			m.backend = dockerBackend{m}
 		}
@@ -541,7 +566,7 @@ func (m *Manager) load() error {
 	if backend == "" {
 		backend = "docker"
 	}
-	if backend != "docker" && backend != "kubernetes" {
+	if backend != "docker" && backend != "kubernetes" && backend != "firecracker" {
 		return errors.New("invalid persisted execution backend")
 	}
 	runtime := state.ContainerRuntime

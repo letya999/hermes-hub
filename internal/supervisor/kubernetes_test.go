@@ -477,8 +477,70 @@ func TestKubernetesInputBoundsAndSymlinkIsolation(t *testing.T) {
 	}
 	defer anchor.Close()
 	inputs := kubeInputs{root: anchor, data: map[string][]byte{}}
-	if err := inputs.snapshot("escape", "projection"); err == nil || len(inputs.data) != 0 {
+	if err := inputs.snapshot("escape", "projection", "inputs"); err == nil || len(inputs.data) != 0 {
 		t.Fatal("snapshot followed an escaping symlink")
+	}
+}
+
+func podSubPathFree(t *testing.T, pod *core.Pod) {
+	t.Helper()
+	for _, container := range append(append([]core.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		for _, mount := range container.VolumeMounts {
+			if mount.SubPath != "" || mount.SubPathExpr != "" {
+				t.Fatalf("%s mount %s uses subPath", container.Name, mount.MountPath)
+			}
+		}
+	}
+}
+
+func TestKubernetesPodContractHasNoSubPath(t *testing.T) {
+	m, root, client := kubeManager(t)
+	rt, err := m.Ensure(t.Context(), binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := m.backend.(*kubernetesBackend)
+	pod, err := client.CoreV1().Pods("runtime-prod").Get(t.Context(), rt.Container, meta.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	podSubPathFree(t, pod)
+	relay, err := client.CoreV1().Pods("runtime-prod").Get(t.Context(), k.relayRuntime(rt).Container, meta.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	podSubPathFree(t, relay)
+	if len(relay.Spec.InitContainers) != 0 {
+		t.Fatal("relay still stages private inputs")
+	}
+	mounts := map[string]core.VolumeMount{}
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		mounts[mount.MountPath] = mount
+	}
+	for _, path := range []string{"/persist", "/persist-ro", "/private", "/config", "/run/model-config", "/run/hub-isolation", "/run/inputs"} {
+		mount, ok := mounts[path]
+		if !ok {
+			t.Fatalf("contract mount %s missing", path)
+		}
+		if path != "/persist" && path != "/private" && !mount.ReadOnly {
+			t.Fatalf("contract mount %s is writable", path)
+		}
+	}
+	secretEnv := map[string]string{}
+	secret, err := client.CoreV1().Secrets("runtime-prod").Get(t.Context(), k.secretName(rt), meta.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variable := range pod.Spec.Containers[0].Env {
+		if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil {
+			continue
+		}
+		secretEnv[variable.Name] = string(secret.Data[variable.ValueFrom.SecretKeyRef.Key])
+	}
+	for _, pair := range [][2]string{{"HUB_STATE", "/persist/managed/prod/runtime"}, {"HERMES_HOME", "/persist/managed/prod/hermes"}, {"HUB_WORKSPACE", "/persist/managed/prod/workspace"}, {"HUB_MODEL_USAGE_FILE", "/persist-ro/managed/prod/model-relay/model-select.json.usage.json"}} {
+		if secretEnv[pair[0]] != pair[1] {
+			t.Fatalf("%s resolved to %q, want %q", pair[0], secretEnv[pair[0]], pair[1])
+		}
 	}
 }
 

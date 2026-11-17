@@ -195,7 +195,7 @@ func (g *Gateway) registerIAM(mux *http.ServeMux) {
 func (g *Gateway) iamPage(w http.ResponseWriter, lang locale.Lang, titleKey, bodyKey string, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = io.WriteString(w, `<!doctype html><html lang="`+string(lang)+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, titleKey))+`</title><main><h1>`+html.EscapeString(locale.T(lang, titleKey))+`</h1><p>`+html.EscapeString(locale.T(lang, bodyKey))+`</p></main></html>`)
+	_, _ = io.WriteString(w, `<!doctype html><html lang="`+string(lang)+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, titleKey))+`</title><main><h1>`+html.EscapeString(locale.T(lang, titleKey))+`</h1><p>`+html.EscapeString(locale.T(lang, bodyKey))+`</p></main></html>`) // #nosec G705 -- lang is a constrained locale.Lang enum; every interpolated string is HTML-escaped
 }
 
 // serveIAMLink renders the landing page for a delivered link token. The token
@@ -334,6 +334,10 @@ func (g *Gateway) iamEnrolHint(sender int64) string {
 }
 
 // slackEnrolHint is the slack counterpart of iamEnrolHint.
+//
+// get an answer delivery like telegram's chat.no-access-enrol reply.
+//
+//lint:ignore U1000 staged for the slack deny path once its unmapped senders
 func (g *Gateway) slackEnrolHint(teamID, userID string) string {
 	if !g.iamEnabled() || strings.TrimSpace(g.config.FormOrigin) == "" {
 		return ""

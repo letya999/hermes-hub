@@ -124,15 +124,15 @@ func newKubernetesBackend(m *Manager) (*kubernetesBackend, error) {
 			connection, err = rest.InClusterConfig()
 		}
 		if err != nil {
-			return nil, errors.New("Kubernetes client configuration unavailable")
+			return nil, errors.New("kubernetes client configuration unavailable")
 		}
 		if connection.Insecure || !strings.HasPrefix(connection.Host, "https://") {
-			return nil, errors.New("Kubernetes API requires verified TLS")
+			return nil, errors.New("kubernetes API requires verified TLS")
 		}
 		connection.Timeout, connection.QPS, connection.Burst = 15*time.Second, 10, 20
 		client, err = kubernetes.NewForConfig(connection)
 		if err != nil {
-			return nil, errors.New("Kubernetes client unavailable")
+			return nil, errors.New("kubernetes client unavailable")
 		}
 	}
 	m.cfg.Kubernetes = cfg
@@ -398,7 +398,7 @@ func (k *kubernetesBackend) policy(rt Runtime) *networking.NetworkPolicy {
 	selector := k.labels(rt)
 	annotations := k.annotations(rt, false)
 	annotations[kubeContext] = k.annotations(rt, true)[kubeContext]
-	policy := &networking.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: rt.Container, Annotations: annotations, Labels: k.labels(rt)}, Spec: networking.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: selector}, PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress, networking.PolicyTypeEgress}, Ingress: []networking.NetworkPolicyIngressRule{{From: []networking.NetworkPolicyPeer{k.peer("supervisor")}, Ports: []networking.NetworkPolicyPort{kubePort(int32(k.m.cfg.RuntimePort), core.ProtocolTCP)}}}}}
+	policy := &networking.NetworkPolicy{ObjectMeta: meta.ObjectMeta{Name: rt.Container, Annotations: annotations, Labels: k.labels(rt)}, Spec: networking.NetworkPolicySpec{PodSelector: meta.LabelSelector{MatchLabels: selector}, PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress, networking.PolicyTypeEgress}, Ingress: []networking.NetworkPolicyIngressRule{{From: []networking.NetworkPolicyPeer{k.peer("supervisor")}, Ports: []networking.NetworkPolicyPort{kubePort(int32(k.m.cfg.RuntimePort), core.ProtocolTCP)}}}}} // #nosec G115 -- runtime port is normalized to 1-65535 in supervisor config
 	policy.Spec.Egress = []networking.NetworkPolicyEgressRule{{To: []networking.NetworkPolicyPeer{{NamespaceSelector: &meta.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}}, PodSelector: &meta.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}}, Ports: []networking.NetworkPolicyPort{kubePort(53, core.ProtocolUDP), kubePort(53, core.ProtocolTCP)}}}
 	relay := k.labels(rt)
 	relay["app.kubernetes.io/component"] = "runtime-relay"

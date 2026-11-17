@@ -6,6 +6,7 @@ last_verified: "2026-11-17"
 
 | Record | Decision |
 |---|---|
+| [ADR-0104](ADR-0104-external-firecracker-runtime.md) | Accepted: external Firecracker microVM backend behind an Uno-style control plane; relays stay host-side, state rides a per-box share disk |
 | [ADR-0103](ADR-0103-optional-sandbox-runtime.md) | Accepted: optional runc/runsc/Kata selection, private relay discovery and no downgrade; Kata qualification remains node-specific |
 | [ADR-0102](ADR-0102-kubernetes-managed-network-boundary.md) | Accepted: managed Kubernetes preflight with applied-policy receipt and separate relay Pod network boundary |
 | [ADR-0101](ADR-0101-optional-kubernetes-runtime.md) | Accepted: optional Kubernetes runtime backend, retained per-space PVCs, UID-fenced ownership; Docker remains default |

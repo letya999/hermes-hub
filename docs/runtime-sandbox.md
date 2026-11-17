@@ -72,6 +72,32 @@ configured separately at top-level runtimeClassName; relay Pods remain trusted
 default-runtime components. A Pod is one sandbox boundary: do not colocate an
 untrusted runtime with trusted relay credentials in the same Pod.
 
+The managed Pod contract is Kata-compatible: no mount uses `subPath` or
+`subPathExpr`. The space PVC is mounted whole at `/persist` (and read-only
+at `/persist-ro`); PVC-backed roots such as state, workspace, home and
+connection configs resolve through env-pointed paths. Generated inputs
+project from the runtime Secret through dedicated volume groups at
+`/config`, `/run/model-config`, `/run/hub-isolation` and `/run/inputs`, so
+no init copy of private inputs remains. The init container only creates PVC
+directories, stages writable generated trees into the memory-backed
+`/private`, snapshots read-only workspace subtrees into dedicated memory
+volumes, and writes the `/shared/*` and Hermes `config.yaml`/`SOUL.md`
+symlink layout. Relay Pods use the same whole-volume contract and run
+without an init container.
+
+Two contract bounds are enforced fail-closed: a workspace `read_only`
+subtree is snapshotted into a dedicated memory volume capped at 64 MiB
+(larger trees refuse the spawn), and mount targets outside the reviewed
+env-pointed or `/shared/*` contract refuse the plan. Read-only subtree
+content is a spawn-time snapshot — updates on the PVC after spawn do not
+enter the running guest.
+
+This contract is live-qualified on kind+KVM for `runsc`, `kata-clh` and the
+default `kata` class: runtime Pods reach `Ready`, `/readyz` answers with the
+runtime bearer (401 without), real `/v1/execute` jobs complete through the
+model relay, and guest writes persist to the space PVC across respawns and
+runtime-class changes (see CHG-0320/CHG-0321 validation records).
+
 Both backend/runtime and class are saved in the supervisor ledger. To change
 them: settle jobs, suspend runtimes, verify compute termination and clear owned
 orphans, then restart the supervisor with the new selection. Active-state

@@ -863,16 +863,23 @@ func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, setti
 			return fmt.Errorf("managed control network %s unavailable: %w", controlNetworkName, cerr)
 		}
 	}
-	return m.spawnControlRelay(ctx, binding, container, port, generation, agentNet)
+	return m.spawnControlRelay(ctx, binding, container, port, generation, agentNet, "http://"+container+":"+strconv.Itoa(m.cfg.RuntimePort), "", true)
 }
 
-func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
+func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet, target, mountDir string, publish bool) error {
 	relay := container + "-ctl"
 	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, m.cfg.Environment, m.cfg.Image)
 	if err != nil {
 		return err
 	}
-	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort), "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=http://" + container + ":" + strconv.Itoa(m.cfg.RuntimePort), "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime", image, "control-relay"}
+	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=" + target, "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime"}
+	if publish {
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort))
+	}
+	if mountDir != "" {
+		args = append(args, "-v", mountDir+":"+mountDir)
+	}
+	args = append(args, image, "control-relay")
 	if out, err := m.command(ctx, args...); err != nil {
 		// A stale same-name relay from an older generation blocks the spawn;
 		// reclaim it only when its labels still prove our ownership.
@@ -922,7 +929,7 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
 	if m.usingKubernetes() {
-		return nil, errors.New("Docker operation is unavailable on the Kubernetes backend")
+		return nil, errors.New("docker operation is unavailable on the kubernetes backend")
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

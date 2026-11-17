@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,14 +68,25 @@ func TestLoadDeploymentValidation(t *testing.T) {
 	if _, err := LoadDeployment(write(`{"slots":["blog"],"unknown":1}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown field: %v", err)
 	}
-	cfg := validDeployment(t)
+	// The deployment contract stores POSIX absolute paths (path.IsAbs);
+	// Windows native paths can never satisfy it, so every fixture is
+	// normalized to the POSIX spelling and each mutation still reaches its
+	// intended validation branch.
+	posix := func(d Deployment) Deployment {
+		if runtime.GOOS == "windows" {
+			d.Workspace, d.Store = "/w/ws", "/w/store"
+			d.ExposureConfig, d.ControlTokenFile = "/w/exposure.yaml", "/w/control.token"
+		}
+		return d
+	}
+	cfg := posix(validDeployment(t))
 	body, _ := json.Marshal(cfg)
 	if _, err := LoadDeployment(write(string(body))); err != nil {
 		t.Fatalf("valid deployment: %v", err)
 	}
 	mutate := func(f func(*Deployment)) string {
 		t.Helper()
-		bad := validDeployment(t)
+		bad := posix(validDeployment(t))
 		f(&bad)
 		raw, _ := json.Marshal(bad)
 		return write(string(raw))
@@ -96,7 +108,7 @@ func TestLoadDeploymentValidation(t *testing.T) {
 		func(d *Deployment) { d.Domain = "Upper.example.com" },
 		func(d *Deployment) { d.Restart = "always" },
 		func(d *Deployment) { d.Workspace = d.Store },
-		func(d *Deployment) { d.Workspace = filepath.Join(d.Store, "inside") },
+		func(d *Deployment) { d.Workspace = d.Store + "/inside" },
 		func(d *Deployment) { d.MaxSites = 100 },
 		func(d *Deployment) { d.MaxBytes = 1 },
 		func(d *Deployment) { d.MaxFiles = 100001 },
@@ -106,7 +118,7 @@ func TestLoadDeploymentValidation(t *testing.T) {
 		}
 	}
 	// Slot ceiling: MaxSites bounds the deployment slot list.
-	over := validDeployment(t)
+	over := posix(validDeployment(t))
 	over.MaxSites = 1
 	over.Slots = []string{"a", "b"}
 	raw, _ := json.Marshal(over)
