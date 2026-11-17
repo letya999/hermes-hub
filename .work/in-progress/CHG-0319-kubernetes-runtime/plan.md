@@ -33,6 +33,9 @@ implementation: see operator-eval.md and ADR-0101 for the accepted boundary.
 
 ## Acceptance
 
+Local implementation and acceptance are complete; see [evidence](validation.md).
+The change stays in progress until review, remote CI and merge, per status hygiene.
+
 The implemented slice is the managed gateway used by normal messages. Extra
 runtime modes, browser/meet and Docker script jobs fail closed on Kubernetes.
 Live testing also found a shared health-probe bug: managed MCP uses a loopback

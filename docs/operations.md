@@ -160,6 +160,10 @@ or advancing generation. Node loss/unknown termination stays blocked: fence the
 node/process before any operator removal of finalizers. Never force-delete Pods
 to turn an uncertain job into a confirmed failure.
 
+The ledger records the selected backend; legacy ledgers belong to Docker. Changing
+backend is refused until runtimes are stopped, jobs settled and orphans cleared.
+RuntimeClass changes reach the next spawn rather than interrupting active work.
+
 Current Kubernetes scope is the managed `gateway` runtime used by normal messages.
 Historical additional runtime modes, browser/meet sidecars, Docker script-job
 execution, shared host mounts and cross-space writable mounts are not supported;
