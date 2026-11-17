@@ -92,9 +92,9 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 			relay.Spec.Volumes[i].Secret.SecretName = secret.Name
 		}
 	}
-	for i := range relay.Spec.InitContainers {
-		relay.Spec.InitContainers[i].Image = k.cfg.RelayImage
-	}
+	// The relay does no PVC or projection preparation: every mount it needs is
+	// either a whole-volume PVC alias or a direct Secret projection.
+	relay.Spec.InitContainers = nil
 	values := map[string]string{}
 	for _, name := range []string{"runtime." + k.m.environment() + ".env", "model-relay." + k.m.environment() + ".env", "model-relay.auth"} {
 		entries, err := relayFile(request.Binding.ContextRoot, name, name == "model-relay.auth")
@@ -105,9 +105,10 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 			values[key] = value
 		}
 	}
+	modelState := persistPath(false, "managed/"+k.m.environment()+"/model-relay") + "/model-select.json"
 	// The private relay keeps its existing PDP and registry contracts. No
 	// control bearer or provider credential is projected into the runtime.
-	for key, value := range map[string]string{"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml", "HUB_MODEL_RELAY_STATE": "/run/model-state/model-select.json", "HUB_MODEL_RELAY_OWNER": request.Binding.UserID, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL, "HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": k.m.cfg.RuntimeAuth, "HUB_ENVIRONMENT": k.m.environment()} {
+	for key, value := range map[string]string{"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml", "HUB_MODEL_RELAY_STATE": modelState, "HUB_MODEL_RELAY_OWNER": request.Binding.UserID, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL, "HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": k.m.cfg.RuntimeAuth, "HUB_ENVIRONMENT": k.m.environment()} {
 		values[key] = value
 	}
 	modelEnv, err := relayEnvironment(secret, values, "r")
@@ -120,21 +121,18 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	}
 	var modelMounts []core.VolumeMount
 	for _, mount := range main.Spec.Containers[0].VolumeMounts {
-		if mount.MountPath == "/run/model-config/models.yaml" {
+		if mount.MountPath == "/run/model-config" {
 			modelMounts = append(modelMounts, mount)
 		}
 	}
 	if len(modelMounts) != 1 {
 		return nil, nil, errors.New("model relay registry mount unavailable")
 	}
-	modelMounts = append(modelMounts, core.VolumeMount{Name: "space", SubPath: "managed/" + k.m.environment() + "/model-relay", MountPath: "/run/model-state"}, core.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+	modelMounts = append(modelMounts, core.VolumeMount{Name: "space", MountPath: kubePersistRoot}, core.VolumeMount{Name: "tmp", MountPath: "/tmp"})
 	if values["HUB_CREDENTIAL_BROKER_MODEL_PROFILE"] != "" || values["HUB_CREDENTIAL_BROKER_MODEL_KEY_FILE"] != "" {
-		relay.Spec.Volumes = append(relay.Spec.Volumes, core.Volume{Name: "broker-profile", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: k.claimName(request.Runtime) + "-broker"}}})
 		mode := int32(0440)
-		relay.Spec.Volumes[len(relay.Spec.Volumes)-1].Secret.DefaultMode = &mode
-		relay.Spec.InitContainers[0].VolumeMounts = append(relay.Spec.InitContainers[0].VolumeMounts, core.VolumeMount{Name: "broker-profile", MountPath: "/run/broker-input", ReadOnly: true})
-		relay.Spec.InitContainers[0].Args[0] += `; mkdir -p /private/owned/broker; cp -RL /run/broker-input/. /private/owned/broker/; chmod -R u=rwX,go= /private/owned/broker/`
-		modelMounts = append(modelMounts, core.VolumeMount{Name: "private", SubPath: "owned/broker", MountPath: "/run/broker-secrets", ReadOnly: true})
+		relay.Spec.Volumes = append(relay.Spec.Volumes, core.Volume{Name: "broker-profile", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: k.claimName(request.Runtime) + "-broker", DefaultMode: &mode}}})
+		modelMounts = append(modelMounts, core.VolumeMount{Name: "broker-profile", MountPath: "/run/broker-secrets", ReadOnly: true})
 	}
 	base := main.Spec.Containers[0].DeepCopy()
 	base.Image = k.cfg.RelayImage
@@ -171,6 +169,26 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 		egress.VolumeMounts = []core.VolumeMount{{Name: "tmp", MountPath: "/tmp"}}
 		egress.ReadinessProbe = probe(8319)
 		relay.Spec.Containers = append(relay.Spec.Containers, *egress)
+	}
+	// Secret volumes mounted by relay containers project Secret keys that live
+	// in the runtime Secret. Copy only the keys referenced by volumes the relay
+	// actually mounts into the relay Secret, or kubelet fails the mount.
+	mounted := map[string]bool{}
+	for _, container := range relay.Spec.Containers {
+		for _, vm := range container.VolumeMounts {
+			mounted[vm.Name] = true
+		}
+	}
+	for i := range relay.Spec.Volumes {
+		volume := &relay.Spec.Volumes[i]
+		if volume.Secret == nil || !mounted[volume.Name] {
+			continue
+		}
+		for _, item := range volume.Secret.Items {
+			if data, ok := inputs.Data[item.Key]; ok {
+				secret.Data[item.Key] = data
+			}
+		}
 	}
 	// RWO claims may be shared only on one node. The first relay can schedule
 	// freely; the runtime follows that exact relay generation.
@@ -242,17 +260,15 @@ func (k *kubernetesBackend) bindPolicyReceipt(ctx context.Context, pod *core.Pod
 		return errors.New("runtime policy receipt encoding failed")
 	}
 	secret.Data["network-policy"] = body
-	for i := range pod.Spec.Volumes {
-		if pod.Spec.Volumes[i].Secret != nil {
-			pod.Spec.Volumes[i].Secret.Items = append(pod.Spec.Volumes[i].Secret.Items, core.KeyToPath{Key: "network-policy", Path: "isolation/policy.json"})
-		}
-	}
-	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: "private", SubPath: "owned/isolation", MountPath: "/run/hub-isolation", ReadOnly: true})
+	mode := int32(0440)
+	pod.Spec.Volumes = append(pod.Spec.Volumes, core.Volume{Name: "isolation", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: secret.Name, DefaultMode: &mode, Items: []core.KeyToPath{{Key: "network-policy", Path: "policy.json"}}}}})
+	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: "isolation", MountPath: "/run/hub-isolation", ReadOnly: true})
 	pod.Spec.HostAliases = []core.HostAlias{{IP: relayIP, Hostnames: []string{"toolhub", "model-relay", "egress-relay"}}}
+	hermesHome := kubePersistRoot + "/managed/" + k.m.environment() + "/hermes"
 	for _, name := range managedExtensionRootTmpfs {
 		volume := "extension-" + name
 		pod.Spec.Volumes = append(pod.Spec.Volumes, core.Volume{Name: volume, VolumeSource: core.VolumeSource{EmptyDir: &core.EmptyDirVolumeSource{Medium: core.StorageMediumMemory}}})
-		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: volume, MountPath: "/state/hermes/" + name, ReadOnly: true})
+		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: volume, MountPath: hermesHome + "/" + name, ReadOnly: true})
 	}
 	return nil
 }

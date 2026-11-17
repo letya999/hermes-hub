@@ -1,0 +1,13 @@
+schema: 1
+change: CHG-0321
+title: Kata-compatible Pod contract without subPath
+status: in_progress
+branch: feat/issue-550-no-subpath
+updated: 2026-11-17
+github_issues: [550]
+phase: implementation
+validation:
+  unit_plan: pending
+  runsc_ready: pending
+  kata_ready: pending
+  check: pending

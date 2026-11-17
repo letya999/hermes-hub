@@ -175,3 +175,17 @@ retries for timing-sensitive m32 integration tests
 `TestM32FiveManagedSessionsExecuteConcurrently` — a run making zero attributed
 memory searches inside the observation window). Neither failure traces to
 this changeset; the m32 suite's prod timing sensitivity is pre-existing.
+
+## Follow-up — #550 subPath contract rework (CHG-0321)
+
+The kind+KVM finding (Kata guests see neither `emptyDir`+`subPath` input
+staging nor `subPath` file mounts) is addressed by removing every
+`subPath`/`subPathExpr` from the generated runtime and relay Pods: whole-PVC
+mounts at `/persist` + `/persist-ro` with env-pointed roots, direct Secret
+volume groups at `/config`, `/run/model-config`, `/run/hub-isolation` and
+`/run/inputs`, memory-backed `/private` staging, roview memory snapshots for
+workspace `read_only` subtrees and direct broker/model-state mounts on the
+relay. Unit evidence: `TestKubernetesPodContractHasNoSubPath` asserts zero
+subPath entries on both Pods plus the env-redirect table; full supervisor
+and runtime package tests stay green. Kind+KVM requalification under runc,
+runsc and kata remains the open gate.

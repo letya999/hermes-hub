@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0321](in-progress/CHG-0321-kata-pod-contract/plan.md) | #550 runtime Pod contract without subPath so identical spec runs under runc/runsc/Kata |
 | [CHG-0320](in-progress/CHG-0320-sandbox-runtime/plan.md) | M9 #394 → #202 sandbox runtime spike, optional runc/runsc/Kata selection and fail-closed verification |
 | [CHG-0319](in-progress/CHG-0319-kubernetes-runtime/plan.md) | M9 #58 optional Kubernetes runtime substrate; local acceptance passed, awaiting review/remote CI/merge |
 | [CHG-0318](in-progress/CHG-0318-registry-ci/plan.md) | M9 #351 registry-agnostic GitLab gates, five-image publication and optional Helm deployment; local registry-to-kind acceptance passed, target GitLab run pending |

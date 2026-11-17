@@ -34,3 +34,24 @@ inside a Kata guest, so managed kata Pods fail closed at startup; runsc passes
 the identical spec. Kata-in-Kubernetes admission stays an accepted option whose
 end-to-end readiness waits on the volume-contract rework, never a silent
 downgrade.
+
+Update 2026-11-17 (#550): the `subPath` limitation is removed. The generated
+Pod contract now mounts the space PVC once at `/persist` plus a read-only
+alias at `/persist-ro` and resolves every PVC-backed runtime root through
+env-pointed paths (`HUB_STATE`, `HERMES_HOME`, `HOME`, `XDG_CACHE_HOME`,
+`HUB_WORKSPACE`, connection configs, `HUB_MODEL_USAGE_FILE`, skill roots).
+Generated inputs project directly from the Secret through dedicated volume
+groups (`/config`, `/run/model-config`, `/run/hub-isolation`, `/run/inputs`);
+the init container no longer copies private inputs onto a shared volume —
+its remaining duties are PVC directory creation, writable-skill staging into
+the memory-backed `/private`, read-only workspace-subtree snapshots into
+dedicated memory volumes, and symlink layout (`/shared/*`, hermes
+`config.yaml`/`SOUL.md`). Relay Pods drop their own `subPath` mounts
+(model-state via `/persist`, broker Secret mounted directly) and no longer
+carry an init container. Security posture is preserved or improved:
+plaintext inputs stay on memory-backed volumes, `readOnlyRootFilesystem`
+and non-root/drop-ALL are unchanged, read-only workspace subtrees keep
+kernel enforcement, and any mount shape outside the reviewed contract fails
+the plan explicitly rather than degrading. The identical spec is expected
+to reach Ready under runc, runsc and Kata; live kind+KVM requalification is
+the remaining gate before `containerRuntime=kata` is called ready.

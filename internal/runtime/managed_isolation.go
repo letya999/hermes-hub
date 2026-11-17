@@ -99,6 +99,15 @@ func verifyManagedIsolation(hermesHome string) error {
 		_ = file.Close()
 		return fmt.Errorf("managed effective config is writable")
 	}
+	// The published SOUL rides a read-only projection whenever one exists; on
+	// Kubernetes it reaches the home through a symlink, so a writable entry
+	// means the projection was replaced by something the agent could edit.
+	if soul := filepath.Join(hermesHome, "SOUL.md"); fileExists(soul) {
+		if file, err := os.OpenFile(soul, os.O_WRONLY|os.O_APPEND, 0); err == nil { // #nosec G703 -- fixed managed layout names
+			_ = file.Close()
+			return fmt.Errorf("managed effective SOUL is writable")
+		}
+	}
 	// Hermes loads $HERMES_HOME/.env (and .op.env) with override=True at gateway
 	// start and reloads it per turn: either file would re-point pinned discovery
 	// or proxy env after this preflight. Both must be absent, not merely empty —

@@ -72,16 +72,25 @@ configured separately at top-level runtimeClassName; relay Pods remain trusted
 default-runtime components. A Pod is one sandbox boundary: do not colocate an
 untrusted runtime with trusted relay credentials in the same Pod.
 
-Known limitation: managed Kubernetes runtimes project private inputs through a
-memory-backed EmptyDir populated by an init container and mounted via `subPath`.
-Under Kata those writes live inside the guest VM, so the runtime container sees
-an empty mount and exits fail-closed at startup (`passport activation
-mismatch`). The identical spec passes under runsc. `containerRuntime=kata` in
-Kubernetes therefore remains valid configuration — admission and fail-closed
-behavior are verified — but managed Pods cannot reach readiness until the input
-contract is reworked (disk-backed EmptyDir or projected volumes). This is a
-qualified Hermes volume contract gap, not a Kata/VMM failure: both shipped VMMs
-booted real guest kernels on the qualification node.
+The managed Pod contract is Kata-compatible: no mount uses `subPath` or
+`subPathExpr`. The space PVC is mounted whole at `/persist` (and read-only
+at `/persist-ro`); PVC-backed roots such as state, workspace, home and
+connection configs resolve through env-pointed paths. Generated inputs
+project from the runtime Secret through dedicated volume groups at
+`/config`, `/run/model-config`, `/run/hub-isolation` and `/run/inputs`, so
+no init copy of private inputs remains. The init container only creates PVC
+directories, stages writable generated trees into the memory-backed
+`/private`, snapshots read-only workspace subtrees into dedicated memory
+volumes, and writes the `/shared/*` and Hermes `config.yaml`/`SOUL.md`
+symlink layout. Relay Pods use the same whole-volume contract and run
+without an init container.
+
+Two contract bounds are enforced fail-closed: a workspace `read_only`
+subtree is snapshotted into a dedicated memory volume capped at 64 MiB
+(larger trees refuse the spawn), and mount targets outside the reviewed
+env-pointed or `/shared/*` contract refuse the plan. Read-only subtree
+content is a spawn-time snapshot — updates on the PVC after spawn do not
+enter the running guest.
 
 Both backend/runtime and class are saved in the supervisor ledger. To change
 them: settle jobs, suspend runtimes, verify compute termination and clear owned
