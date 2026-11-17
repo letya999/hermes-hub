@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0320](in-progress/CHG-0320-sandbox-runtime/plan.md) | M9 #394 → #202 sandbox runtime spike, optional runc/runsc/Kata selection and fail-closed verification |
 | [CHG-0319](in-progress/CHG-0319-kubernetes-runtime/plan.md) | M9 #58 optional Kubernetes runtime substrate; local acceptance passed, awaiting review/remote CI/merge |
 | [CHG-0318](in-progress/CHG-0318-registry-ci/plan.md) | M9 #351 registry-agnostic GitLab gates, five-image publication and optional Helm deployment; local registry-to-kind acceptance passed, target GitLab run pending |
 | [CHG-0317](in-progress/CHG-0317-portable-helm/plan.md) | M9 #352 portable Helm chart; M9 prerequisites integrated, local gates green, kind five-service/status/metrics/TLS/persistence acceptance passed; runtime Pods and full channel/policy/monitoring acceptance remain |

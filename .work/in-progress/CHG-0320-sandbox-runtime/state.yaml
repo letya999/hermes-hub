@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0320
+title: Optional sandbox runtime
+status: in_progress
+branch: feat/m9-sandbox-runtime
+updated: 2026-11-17
+github_issues: [394, 202]
+phase: spike
+validation:
+  spike: pending
+  live_runsc: pending
+  live_kata: pending_hardware
+  check: pending
+  affected_packages: pending
+  remote_ci: not_run
