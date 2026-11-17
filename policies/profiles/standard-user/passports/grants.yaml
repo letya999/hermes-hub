@@ -1,0 +1,96 @@
+allow:
+    agents:
+        - inspect_self
+        - monitor_self
+        - restart_self
+    browser:
+        - act
+        - capture
+        - open
+        - read
+    channels:
+        - send
+        - send_voice
+    config:
+        - edit_own
+        - read
+    connectors:
+        - disable
+        - discover
+        - enable
+        - prepare
+        - remove
+    context:
+        - edit
+        - read
+    exec:
+        - run
+    exposure:
+        - create
+        - list
+        - remove
+    goals:
+        - edit
+        - read
+        - remove
+    grants:
+        - configure
+    memory:
+        - dreaming
+        - edit
+        - read
+        - remember
+        - search
+    models:
+        - configure
+        - list
+        - switch
+        - use
+    observability:
+        - read_own_logs
+    platform:
+        - bootstrap
+        - guide
+        - status
+        - usage
+    research:
+        - create
+        - read
+    sessions:
+        - list
+        - manage
+        - read
+        - search
+        - switch
+    skills:
+        - draft
+        - invoke
+        - list
+        - publish
+    ssh:
+        - exec
+        - list
+        - read
+        - shell
+        - tunnel
+        - write
+    stack:
+        - change
+        - inspect
+    tasks:
+        - delegate
+        - observe
+        - schedule
+    tools:
+        - configure
+        - list
+        - use
+    web:
+        - cache
+        - read
+        - search
+    workspace:
+        - configure
+        - create_project
+        - read
+        - write

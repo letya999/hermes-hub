@@ -185,7 +185,12 @@ func restoreApplyState(dir, root string, record applyJournal) error {
 			return err
 		}
 	}
-	if record.NextProfile != oldProfile {
+	// Deactivate the candidate only once the journal proves apply actually
+	// activated it. Validation failures before that journal point leave the
+	// bound profile untouched so the next apply can derive against it instead
+	// of stranding on `bound profile unavailable`.
+	nextWentLive := slices.Contains([]string{"activated", "binding", "effects"}, record.Phase)
+	if record.NextProfile != oldProfile && nextWentLive {
 		if err := migration.RestoreSpaceRights(dir, user, record.Environment, record.NextProfile, "", map[string][]string{}, nil, docs, now); err != nil {
 			return err
 		}

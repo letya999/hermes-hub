@@ -1,0 +1,14 @@
+default: main
+routes:
+    main:
+        ladder: [cliproxy]
+services:
+    cliproxy:
+        via: cliproxy
+        endpoint: http://cliproxy:8317/v1
+        auth:
+            proxy_access:
+                kind: broker-key
+                ref: cliproxy-default
+        models:
+            - {id: devin/swe-2-flash, reasoning: high}

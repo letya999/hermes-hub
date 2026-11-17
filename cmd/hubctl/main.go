@@ -404,6 +404,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return runSpaceApply(ctx, args[2:])
 	}
+	if op == "provision" {
+		return runProvision(ctx, args[1:])
+	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	root := f.String("root", ".", "source root")
