@@ -121,6 +121,7 @@ func (m *Manager) newBox(req uno.LaunchRequest) (*box, error) {
 		dir: dir, cid: m.cidSeq.Add(1), exited: make(chan struct{}),
 		runs: map[string]*uno.Run{}, conns: map[uint32]net.Conn{}, proxies: map[int]string{},
 	}
+	b.box.VsockUDS = b.udsPath()
 	for _, p := range req.Proxies {
 		b.proxies[p.GuestPort] = p.Target
 	}

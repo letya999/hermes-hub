@@ -22,6 +22,7 @@ type Box struct {
 	Image     string            `json:"image"`
 	Status    string            `json:"status"` // provisioning, running, failed, deleted
 	Address   string            `json:"address,omitempty"`
+	VsockUDS  string            `json:"vsock_uds,omitempty"` // host path of the box's vsock UDS (mini-Uno)
 	Labels    map[string]string `json:"labels,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`

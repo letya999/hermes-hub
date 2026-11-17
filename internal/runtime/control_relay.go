@@ -1,15 +1,19 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,16 +56,75 @@ func controlBodyDenied(r *http.Request) (denied bool, err error) {
 // supervisor through a fixed reviewed upstream. The managed runtime sits on an
 // internal-only agent network, so this dual-homed relay is the only inbound
 // path; it is the supervisor-facing counterpart of the agent's narrow egress.
+// vsockDial bridges the firecracker vsock UDS into a TCP-like stream for the
+// HTTP transport: dial the unix socket, then send "CONNECT <guestPort>\n" per
+// the firecracker vsock handshake. Used by the firecracker backend where the
+// control relay container mounts the box workdir and has no TCP route to the
+// guest.
+func vsockDialContext(udsPath, guestPort string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, _, _ string) (net.Conn, error) {
+		c, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", udsPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			c.Close()
+			return nil, err
+		}
+		if _, err := fmt.Fprintf(c, "CONNECT %s\n", guestPort); err != nil {
+			c.Close()
+			return nil, err
+		}
+		line, err := bufio.NewReader(c).ReadString('\n')
+		if err != nil || !strings.HasPrefix(line, "OK") {
+			c.Close()
+			return nil, fmt.Errorf("vsock connect refused: %s", strings.TrimSpace(line))
+		}
+		// The buffered reader may already hold proxied bytes; wrap it so the
+		// transport sees a clean stream.
+		if err := c.SetDeadline(time.Time{}); err != nil {
+			c.Close()
+			return nil, err
+		}
+		return &vsockPrefixConn{Conn: c, r: bufio.NewReader(c)}, nil
+	}
+}
+
+type vsockPrefixConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (p *vsockPrefixConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
 func controlRelayHandler(target string) (http.Handler, error) {
 	upstream, err := url.Parse(target)
-	if err != nil || upstream.Scheme != "http" || upstream.Host == "" || upstream.Path != "" || upstream.RawQuery != "" || upstream.User != nil {
+	if err != nil || upstream.User != nil || upstream.RawQuery != "" {
+		return nil, fmt.Errorf("control relay requires a fixed HTTP origin")
+	}
+	var vsockUDS string
+	proxyURL := upstream
+	if upstream.Scheme == "vsock" {
+		port, perr := strconv.Atoi(upstream.Host)
+		if perr != nil || port <= 0 || port > 65535 || !strings.HasPrefix(upstream.Path, "/") || !strings.HasSuffix(upstream.Path, ".sock") || strings.Contains(upstream.Path, "..") {
+			return nil, fmt.Errorf("control relay vsock target must be vsock://<guest-port>/<abs uds path>")
+		}
+		vsockUDS = upstream.Path
+		// The HTTP transport only speaks http(s); the dialer ignores this
+		// authority and connects through the vsock UDS instead.
+		proxyURL = &url.URL{Scheme: "http", Host: "vsock.local"}
+	} else if upstream.Scheme != "http" || upstream.Host == "" || upstream.Path != "" {
 		return nil, fmt.Errorf("control relay requires a fixed HTTP origin")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	if vsockUDS != "" {
+		transport.DialContext = vsockDialContext(vsockUDS, upstream.Host)
+		transport.DisableKeepAlives = true
+	}
 	proxy := &httputil.ReverseProxy{Transport: transport, Rewrite: func(req *httputil.ProxyRequest) {
-		req.SetURL(upstream)
-		req.Out.Host = upstream.Host
+		req.SetURL(proxyURL)
+		req.Out.Host = proxyURL.Host
 		for _, header := range []string{"X-HTTP-Method-Override", "X-Original-URL", "X-Rewrite-URL"} {
 			req.Out.Header.Del(header)
 		}

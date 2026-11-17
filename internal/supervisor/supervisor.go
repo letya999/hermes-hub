@@ -97,6 +97,7 @@ type Config struct {
 	UnoImage         string
 	UnoBoxRAMMB      int
 	UnoBoxVCPU       int
+	UnoProxyHost     string
 	Backend          ComputeBackend
 	Docker           string
 	Image            string
@@ -420,6 +421,9 @@ func New(cfg Config) (*Manager, error) {
 		}
 		if cfg.UnoBoxVCPU <= 0 {
 			cfg.UnoBoxVCPU = intEnv("HUB_UNO_BOX_VCPU", 2)
+		}
+		if cfg.UnoProxyHost == "" {
+			cfg.UnoProxyHost = envOr("HUB_UNO_PROXY_HOST", "127.0.0.1")
 		}
 	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {

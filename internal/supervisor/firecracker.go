@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,26 +90,25 @@ const fcGuestBoot = "mkdir -p /persist && (mountpoint -q /persist || mount -t ex
 	"grep -q 'model-relay' /etc/hosts || echo '127.0.0.1 model-relay toolhub toolhub-relay egress-relay' >> /etc/hosts; " +
 	"mkdir -p /persist/managed && true"
 
-// ensureManagedInfraFC mirrors ensureManagedInfra but points the control
-// relay at the box's host forward on the agent-network gateway IP instead
-// of a docker container name.
-func (m *Manager) ensureManagedInfraFC(ctx context.Context, binding Binding, settings stack.Settings, container string, port int, generation string) (string, error) {
+// ensureManagedNetsFC verifies the Compose-owned internal agent network and
+// the supervisor control network. Unlike the docker path the control relay is
+// spawned after box launch — its upstream is the box's vsock UDS, not a
+// container name.
+func (m *Manager) ensureManagedNetsFC(ctx context.Context, settings stack.Settings) (string, error) {
 	agentNet := managedAgentNetworkName(settings.User, m.environment())
-	out, err := m.command(ctx, "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", agentNet)
+	out, err := m.command(ctx, "network", "inspect", "--format", "{{.Internal}}", agentNet)
 	if err != nil {
 		return "", fmt.Errorf("managed agent network %s unavailable; run hubctl up for this space first", agentNet)
 	}
-	gateway := strings.TrimSpace(string(out))
-	if gateway == "" {
-		return "", fmt.Errorf("managed agent network %s has no gateway", agentNet)
+	if strings.TrimSpace(string(out)) != "true" {
+		return "", fmt.Errorf("managed agent network %s is not internal", agentNet)
 	}
 	if _, err := m.command(ctx, "network", "inspect", "--format", "{{.Id}}", controlNetworkName); err != nil {
 		if _, cerr := m.command(ctx, "network", "create", controlNetworkName); cerr != nil {
 			return "", fmt.Errorf("managed control network %s unavailable: %w", controlNetworkName, cerr)
 		}
 	}
-	target := "http://" + net.JoinHostPort(gateway, strconv.Itoa(port))
-	return gateway, m.spawnControlRelay(ctx, binding, container, port, generation, agentNet, target)
+	return agentNet, nil
 }
 
 func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (ComputeObservation, error) {
@@ -121,7 +121,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	lock := m.lockFor(runtimeKey(preparation))
 	lock.Lock()
 	defer lock.Unlock()
-	gateway, err := m.ensureManagedInfraFC(ctx, binding, request.Settings, rt.Container, request.Port, rt.Generation)
+	agentNet, err := m.ensureManagedNetsFC(ctx, request.Settings)
 	if err != nil {
 		return ComputeObservation{}, fmt.Errorf("managed topology: %w", err)
 	}
@@ -135,9 +135,12 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		if !strings.HasPrefix(arg, "--add-host ") {
 			continue
 		}
-		name, ip, _ := strings.Cut(strings.TrimPrefix(arg, "--add-host "), ":")
-		if port, ok := fcRelayPorts[name]; ok && ip != "" {
-			proxies = append(proxies, uno.Proxy{GuestPort: port, Target: ip + ":" + strconv.Itoa(port)})
+		name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--add-host "), ":")
+		if port, ok := fcRelayPorts[name]; ok {
+			// The mux dialed by mini-Uno runs on the control-plane host; the
+			// relay endpoints are published on UnoProxyHost (loopback locally,
+			// a routable address for external Uno fleets).
+			proxies = append(proxies, uno.Proxy{GuestPort: port, Target: net.JoinHostPort(m.cfg.UnoProxyHost, strconv.Itoa(port))})
 			ports = append(ports, strconv.Itoa(port))
 		}
 	}
@@ -150,7 +153,6 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		RAMMB:    m.cfg.UnoBoxRAMMB,
 		VCPU:     m.cfg.UnoBoxVCPU,
 		Shares:   []uno.Share{{Tag: "space", HostPath: binding.ContextRoot}},
-		Forwards: []uno.Forward{{GuestPort: m.cfg.RuntimePort, Bind: gateway, HostPort: request.Port}},
 		Proxies:  proxies,
 		Env:      map[string]string{"HUB_FC_PROXIES": strings.Join(ports, ",")},
 		Labels: map[string]string{
@@ -165,6 +167,15 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	}
 	if box.Status != "running" {
 		return ComputeObservation{}, fmt.Errorf("box failed to start: %s", box.Error)
+	}
+	// The control relay mounts the box workdir and reaches the guest through
+	// the firecracker vsock UDS — the dual-homed inbound path mirrors the
+	// docker managed topology, just with a vsock upstream instead of a
+	// container name.
+	target := "vsock://" + strconv.Itoa(m.cfg.RuntimePort) + box.VsockUDS
+	if err := m.spawnControlRelay(ctx, binding, rt.Container, request.Port, rt.Generation, agentNet, target, filepath.Dir(box.VsockUDS)); err != nil {
+		f.client.DeleteBox(context.Background(), box.ID)
+		return ComputeObservation{}, fmt.Errorf("control relay: %w", err)
 	}
 	if _, err := f.client.Run(ctx, box.ID, uno.RunRequest{Cmd: fcGuestBoot, TimeoutSeconds: 30, IdempotencyKey: "boot-" + rt.Generation, WaitSeconds: 30}); err != nil {
 		f.client.DeleteBox(context.Background(), box.ID)
@@ -247,14 +258,19 @@ func (f *firecrackerBackend) Observe(ctx context.Context, runtime Runtime) (Comp
 
 func (f *firecrackerBackend) Remove(ctx context.Context, runtime Runtime) error {
 	box, err := f.findBox(ctx, runtime.Container)
-	if errors.Is(err, uno.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
+	var result error
+	if err == nil {
+		if err := f.owned(box, runtime); err != nil {
+			return err
+		}
+		result = f.client.DeleteBox(ctx, box.ID)
+	} else if !errors.Is(err, uno.ErrNotFound) {
 		return err
 	}
-	if err := f.owned(box, runtime); err != nil {
-		return err
+	// The vsock control relay is a same-generation docker sidecar — remove it
+	// with the runtime even when the box itself is already gone.
+	if sidecarErr := f.m.removeOwnedSidecar(ctx, runtime); sidecarErr != nil {
+		result = errors.Join(result, sidecarErr)
 	}
-	return f.client.DeleteBox(ctx, box.ID)
+	return result
 }
