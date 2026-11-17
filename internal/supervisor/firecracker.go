@@ -153,6 +153,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		RAMMB:    m.cfg.UnoBoxRAMMB,
 		VCPU:     m.cfg.UnoBoxVCPU,
 		Shares:   []uno.Share{{Tag: "space", HostPath: binding.ContextRoot}},
+		Forwards: []uno.Forward{{GuestPort: m.cfg.RuntimePort, HostPort: request.Port}},
 		Proxies:  proxies,
 		Env:      map[string]string{"HUB_FC_PROXIES": strings.Join(ports, ",")},
 		Labels: map[string]string{
