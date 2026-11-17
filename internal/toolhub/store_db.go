@@ -584,6 +584,7 @@ func (s *Store) saveDBLocked(path string) error {
 		if s.fileHash != ([32]byte{}) {
 			if hash, ok := storeFileHash(path); ok && hash != s.fileHash {
 				if digest, ok := storeSnapshotDigest(path); !ok || digest != hex.EncodeToString(s.diskDigest[:]) {
+					s.resyncNeeded.Store(true)
 					return api.ErrConflict
 				}
 				s.fileHash = hash
@@ -605,6 +606,7 @@ func (s *Store) saveDBLocked(path string) error {
 				return err
 			}
 			if rowCount > 0 || s.savedPath == path {
+				s.resyncNeeded.Store(true)
 				return api.ErrConflict
 			}
 		} else {
@@ -614,6 +616,7 @@ func (s *Store) saveDBLocked(path string) error {
 			}
 			stored, err := hex.DecodeString(storedDigest)
 			if initialized != "1" || s.savedPath != path || err != nil || !bytes.Equal(stored, s.diskDigest[:]) {
+				s.resyncNeeded.Store(true)
 				return api.ErrConflict
 			}
 		}

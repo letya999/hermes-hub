@@ -48,6 +48,9 @@ func NewStore() *Store {
 }
 
 func (s *Store) Save(path string) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveLocked(path)
@@ -106,6 +109,7 @@ func (s *Store) saveLocked(path string) error {
 		return api.ErrConflict
 	}
 	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
+		s.resyncNeeded.Store(true)
 		return api.ErrConflict
 	}
 	if err != nil && !os.IsNotExist(err) {
@@ -223,7 +227,7 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 	var err error
 	store := NewStore()
 	for _, definition := range state.Definitions {
-		if err := store.RegisterDefinition(definition); err != nil {
+		if err := store.registerDefinitionRecord(definition); err != nil {
 			return nil, err
 		}
 	}
@@ -240,11 +244,11 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 		before := len(store.capabilityChanges)
 		switch {
 		case change.Policy != nil:
-			err = store.PutCapabilityPolicy(*change.Policy)
+			err = store.putCapabilityPolicyRecord(*change.Policy)
 		case change.Profile != nil:
 			err = store.putCapabilityProfile(*change.Profile, true)
 		default:
-			err = store.PutGrant(*change.Grant)
+			err = store.putGrantRecord(*change.Grant)
 		}
 		if err != nil {
 			return nil, err
@@ -807,6 +811,25 @@ func (s *Store) Reload() error {
 	s.connStatus = fresh.connStatus
 	s.leaseMu.Unlock()
 	return s.stopWorkloads(stopped)
+}
+
+// resyncForeignCommit reloads state when an earlier save CAS-refused on a
+// foreign commit: the snapshot's digest no longer matches the file, so writes
+// must rebase before retrying instead of wedging until a process restart.
+// Mutators call it at entry because Reload can only run outside s.mu. It
+// reports whether state was replaced: callers must answer the triggering
+// operation with ErrConflict so a stale writer's retry stays fenced —
+// converging silently would let replayed writes resurrect records their
+// operator never re-reviewed.
+func (s *Store) resyncForeignCommit() bool {
+	if !s.resyncNeeded.Load() {
+		return false
+	}
+	if err := s.Reload(); err != nil {
+		return false
+	}
+	s.resyncNeeded.Store(false)
+	return true
 }
 
 func (s *Store) validateLocked() error {

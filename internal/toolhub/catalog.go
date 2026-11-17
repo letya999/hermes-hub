@@ -207,6 +207,9 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return api.ToolBinding{}, fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
 	}
+	if s.resyncForeignCommit() {
+		return api.ToolBinding{}, api.ErrConflict
+	}
 	s.mu.Lock()
 	definition, ok := s.definitions[definitionKey(definitionID, version)]
 	if !ok {
