@@ -105,10 +105,45 @@ constraint explains transient auxiliary failures and short-lived uncertainty;
 it is not evidence of a runsc isolation failure.
 
 QEMU guest-agent readiness failed locally; Cloud Hypervisor cell and managed
-Docker results remain qualified exactly as recorded in the spike. Neither mocks
-nor names in Docker/RuntimeClass metadata prove that a host administrator
-configured a real sandbox. Full CI, race/shuffle/coverage and deployment
-acceptance remain remote gates.
+Docker results remain qualified exactly as recorded in the spike. Full CI,
+race/shuffle/coverage and deployment acceptance remain remote gates.
+
+## Kubernetes sandbox-runtime live qualification (kind + KVM)
+
+The earlier limitation — RuntimeClass names in metadata do not prove a real
+sandbox — is closed on this fixture. The WSL2 host exposes nested KVM, so the
+kind node received the full Kata install from the DinD image: containerd
+handlers `kata` (QEMU via the default configuration) and `kata-clh` (Cloud
+Hypervisor via `configuration-clh.toml`), plus RuntimeClasses `kata` and
+`kata-clh` alongside the existing `runsc` class.
+
+Probe Pods under both VMMs reached `Running` and reported guest kernel
+`6.18.56` while the node kernel is `6.6.87.2-microsoft-standard-WSL2`; a guest
+`uname` that differs from the host kernel proves a real VM boundary, not a
+relabeled runc. The runsc managed Pod reported `4.19.0-gvisor` — gVisor's
+synthetic kernel — so all three backends now have kernel-level isolation
+evidence, not just `runtimeClassName` assignment.
+
+A published managed space admitted through the supervisor with
+`ContainerRuntime: runsc` produced a runtime Pod `Running`/ready serving real
+HTTP on the runtime port, relay Pod unclassified as designed. The identical
+space with `ContainerRuntime: kata` was admitted to a Pod with
+`runtimeClassName=kata` — VM booted, `private-inputs` init ran, the runtime
+container executed inside the guest — then exited `1` with
+`managed runtime passport activation mismatch`. The mounted `/config/revision`
+input is delivered through a `Medium: Memory` EmptyDir populated by the init
+container and mounted via `subPath`; under Kata that write happens inside the
+guest and the host-resolved `subPath` bind observes an empty directory, so the
+activation file is absent in the runtime container. The identical spec passes
+under runsc, so this is a real Kata substrate incompatibility in the current
+volume contract — surfaced fail-closed (Pod `Failed`, never ready, no runc
+fallback), not silent.
+
+Consequence: `kata` in Kubernetes is now proven to reach real VM isolation but
+is blocked end-to-end by the Memory-EmptyDir subPath input contract. Remediation
+is a concrete follow-up — drop `Medium: Memory` on the `private`/`tmp` volumes
+or replace `subPath` mounts with projected volumes for Kata-class backends —
+tracked below rather than silently worked around.
 
 ## Remote acceptance (draft PR #549)
 

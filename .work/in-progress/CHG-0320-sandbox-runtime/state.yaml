@@ -11,6 +11,8 @@ validation:
   live_runsc: passed_docker_and_kubernetes
   live_kata: cloud_hypervisor_managed_docker_passed_qemu_blocked
   live_mock_channel: passed_all_docker_runtimes_and_fail_closed
+  kubernetes_isolation_evidence: passed_guest_kernel_all_backends
+  kubernetes_kata: blocked_memory_emptydir_subpath_contract
   check: passed
   affected_packages: passed
   remote_ci: passed_draft_pr_549_run_44075592994
