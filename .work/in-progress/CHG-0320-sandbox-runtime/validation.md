@@ -129,3 +129,13 @@ dependency-review, credential-broker, every image build and all twenty
 container-gates (dev/prod × gateway/smoke/network/scratch/native/capabilities/
 m32/supervisor/bench/managed). `main-source` is skipped on non-main branches
 by design. The PR remains an open draft; no merge into `dev` was performed.
+
+Follow-up run <https://github.com/letya999/hermes-hub/actions/runs/44079004907>
+on head `a920b3f3` (this evidence commit) also completed `success`. Two
+container-gate flakes were retried to green: `prod, smoke` failed once on a
+ghcr.io blob pull (`connection reset by peer`), and `prod, m32` needed two
+retries for timing-sensitive m32 integration tests
+(`TestM32RealLifecycleMemoryIsolation`, then
+`TestM32FiveManagedSessionsExecuteConcurrently` — a run making zero attributed
+memory searches inside the observation window). Neither failure traces to
+this changeset; the m32 suite's prod timing sensitivity is pre-existing.
