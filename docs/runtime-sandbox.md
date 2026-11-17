@@ -92,6 +92,12 @@ env-pointed or `/shared/*` contract refuse the plan. Read-only subtree
 content is a spawn-time snapshot — updates on the PVC after spawn do not
 enter the running guest.
 
+This contract is live-qualified on kind+KVM for `runsc`, `kata-clh` and the
+default `kata` class: runtime Pods reach `Ready`, `/readyz` answers with the
+runtime bearer (401 without), real `/v1/execute` jobs complete through the
+model relay, and guest writes persist to the space PVC across respawns and
+runtime-class changes (see CHG-0320/CHG-0321 validation records).
+
 Both backend/runtime and class are saved in the supervisor ledger. To change
 them: settle jobs, suspend runtimes, verify compute termination and clear owned
 orphans, then restart the supervisor with the new selection. Active-state

@@ -187,5 +187,18 @@ volume groups at `/config`, `/run/model-config`, `/run/hub-isolation` and
 workspace `read_only` subtrees and direct broker/model-state mounts on the
 relay. Unit evidence: `TestKubernetesPodContractHasNoSubPath` asserts zero
 subPath entries on both Pods plus the env-redirect table; full supervisor
-and runtime package tests stay green. Kind+KVM requalification under runc,
-runsc and kata remains the open gate.
+and runtime package tests stay green.
+
+Requalification on the same kind+KVM fixture (2026-11-17, branch
+`feat/issue-550-no-subpath` + roview init fix `2f68e845`): **passed for
+runsc, kata-clh and the default `kata` class**. Real `/v1/execute` reached a
+completed `run.completed` with the provider marker text on all three;
+`runtimeClassName` assignments verified (`runsc`, `kata-clh`, `kata`);
+`/readyz` returns 200 with the runtime bearer and 401 without; guest writes
+landed on the local-path PVC backing dir and survived a runsc→kata-clh
+respawn; guest kernel `6.18.56` vs node `6.6.87.2-microsoft-standard-WSL2`
+with `cloud-hypervisor` on the node confirms the VM boundary. A missing
+RuntimeClass (`kata-nonexistent`) produced the same bounded `503` admission
+failure recorded above — zero pods, no runc fallback — and forged
+identity/policy/schema requests stayed fail-closed (`409`/`503`). Full
+evidence is in CHG-0321 `validation.md`.

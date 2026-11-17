@@ -52,6 +52,20 @@ carry an init container. Security posture is preserved or improved:
 plaintext inputs stay on memory-backed volumes, `readOnlyRootFilesystem`
 and non-root/drop-ALL are unchanged, read-only workspace subtrees keep
 kernel enforcement, and any mount shape outside the reviewed contract fails
-the plan explicitly rather than degrading. The identical spec is expected
-to reach Ready under runc, runsc and Kata; live kind+KVM requalification is
-the remaining gate before `containerRuntime=kata` is called ready.
+the plan explicitly rather than degrading.
+
+Update 2026-11-17 (#550, live): the reworked contract is qualified on the
+kind+KVM fixture for `runsc`, `kata-clh` and the default `kata` class.
+Runtime Pods reach `Ready` inside a real guest (`cloud-hypervisor` on the
+node, guest kernel `6.18.56` vs node `6.6.87.2-WSL2`), `/readyz` answers
+with the runtime bearer (401 without), `/v1/execute` completes through the
+model relay with the fixture marker text, PVC content persists in the guest
+across respawns and runtime-class changes, a missing RuntimeClass fails at
+Pod admission with zero compute spawned, and forged identity/policy/schema
+requests stay fail-closed. One defect found only by the live run — the
+roview init `chmod` touched the root-owned EmptyDir mountpoint under uid
+10001 — is fixed (`2f68e845`). `containerRuntime=kata` on Kubernetes is
+ready behind the same operator prerequisites (KVM nodes, installed
+RuntimeClass). Docker `kata` and QEMU-specific VMM acceptance remain as
+previously recorded; the external Firecracker backend stays a separate
+substrate decision.

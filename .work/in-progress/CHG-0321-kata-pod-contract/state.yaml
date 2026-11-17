@@ -10,6 +10,10 @@ validation:
   unit_plan: passed
   supervisor_runtime_packages: passed
   vet_and_just_check: passed
-  runsc_ready: pending_kind_kvm
-  kata_ready: pending_kind_kvm
+  runsc_ready: passed_kind_kvm
+  kata_ready: passed_kind_kvm_clh_and_default
+  pvc_in_guest: passed_kind_kvm
+  readyz_and_noauth: passed_kind_kvm
+  real_execute_completed: passed_runsc_and_kata
+  negatives_missing_class_forged_identity: passed
   remote_ci: pending_draft_pr
