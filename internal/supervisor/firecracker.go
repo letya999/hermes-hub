@@ -73,6 +73,9 @@ func fcGuestEnv(binding Binding, rt Runtime, port int, contextRoot string) map[s
 	} {
 		values[key] = value
 	}
+	if values["PATH"] == "" {
+		values["PATH"] = "/opt/hermes/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
 	root := strings.TrimRight(contextRoot, "/")
 	for k, v := range values {
 		if v == root {
@@ -193,7 +196,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	// tens of seconds, so poll and surface the log on failure.
 	serve, err := f.client.Run(ctx, box.ID, uno.RunRequest{
 		Cmd: "cd /persist && setsid nohup /usr/local/bin/hub-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & " +
-			"for i in $(seq 1 40); do grep -qi ':" + fmt.Sprintf("%04X", m.cfg.RuntimePort) + " ' /proc/net/tcp && exit 0; sleep 2; done; tail -20 /persist/managed/serve.log; exit 1",
+			"for i in $(seq 1 40); do grep -qi ':" + fmt.Sprintf("%04X", m.cfg.RuntimePort) + " ' /proc/net/tcp && exit 0; sleep 2; done; tail -20 /persist/managed/serve.log >&2; exit 1",
 		Env:            env,
 		TimeoutSeconds: 90,
 		IdempotencyKey: "serve-" + rt.Generation,
