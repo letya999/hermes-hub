@@ -114,6 +114,10 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	}
 	var fsd []*exec.Cmd
 	var devs []fsDev
+	os.Remove(b.udsPath())
+	for i := range req.Shares {
+		os.Remove(filepath.Join(b.dir, fmt.Sprintf("vfs-%d.sock", i)))
+	}
 	for i, sh := range req.Shares {
 		sock := filepath.Join(b.dir, fmt.Sprintf("vfs-%d.sock", i))
 		vc := exec.Command(m.cfg.VirtioFSD, "--socket-path", sock, "--shared-dir", sh.HostPath, "--thread-pool-size", "2", "--announce-submounts")
