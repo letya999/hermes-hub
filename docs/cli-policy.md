@@ -69,7 +69,8 @@ to a weaker tier. `cli_per_principal_uid: true` maps each principal to a
 stable uid in the 20000+ range so files a read-write cell leaves in a
 workspace carry a per-principal owner instead of the shared cli uid. Both
 are not exposed by the current six-passport schema. The operator may select the
-cell runtime through `HUB_CLI_RUNTIME` on the workload-controller; it validates
+cell runtime through `HUB_CLI_RUNTIME` on the workload-controller; by default
+cells inherit `HUB_CONTAINER_RUNTIME` (runc when both are unset). It validates
 the selection and always passes an explicit Docker runtime, including runc.
 Managed rendering keeps the shared cell UID; retired root settings cannot
 override either. See [sandbox operations](runtime-sandbox.md).

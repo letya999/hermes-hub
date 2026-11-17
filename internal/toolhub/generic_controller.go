@@ -222,7 +222,7 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	if config.CLI != nil && config.CLI.Runtime == "" {
 		cli := *config.CLI
 		config.CLI = &cli
-		config.CLI.Runtime = api.EnvOr("HUB_CLI_RUNTIME", "runc")
+		config.CLI.Runtime = api.EnvOr("HUB_CLI_RUNTIME", api.EnvOr("HUB_CONTAINER_RUNTIME", "runc"))
 	}
 	if err := api.ValidateCLIConfig(config.CLI); err != nil {
 		return nil, err

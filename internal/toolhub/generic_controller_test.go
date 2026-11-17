@@ -56,13 +56,19 @@ func TestGenericControllerRuntimeEnvironment(t *testing.T) {
 	parts := strings.Split(paths, "\x00")
 	c, _ := cellFixture(t, nil)
 	cfg := GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 2, IdleTTLSeconds: 60, CLI: c.config.CLI}
-	t.Setenv("HUB_CLI_RUNTIME", "runsc")
+	t.Setenv("HUB_CONTAINER_RUNTIME", "runsc")
+	t.Setenv("HUB_CLI_RUNTIME", "")
 	controller, err := newGenericController(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if controller.config.CLI.Runtime != "runsc" || cfg.CLI.Runtime != "" {
 		t.Fatal("operator runtime missing or caller config mutated")
+	}
+	t.Setenv("HUB_CLI_RUNTIME", "kata")
+	controller, err = newGenericController(cfg)
+	if err != nil || controller.config.CLI.Runtime != "kata" {
+		t.Fatalf("explicit cell runtime override=%v", err)
 	}
 	t.Setenv("HUB_CLI_RUNTIME", "missing")
 	if _, err := newGenericController(cfg); err == nil {

@@ -15,8 +15,9 @@ Set `HUB_CONTAINER_RUNTIME=runc|runsc|kata` in the operator process that runs
 `hubctl up` (or in Compose's operator interpolation environment). The rendered
 Hermes service has `runtime: ${HUB_CONTAINER_RUNTIME:-runc}`; the supervisor gets
 the same variable and passes an explicit `--runtime` on supervised runtime and
-isolated script launches. Set `HUB_CLI_RUNTIME=runc|runsc|kata` independently for
-bounded CLI cells; the workload-controller validates it at startup. This is
+isolated script launches. Bounded CLI cells inherit that selection by default.
+`HUB_CLI_RUNTIME=runc|runsc|kata` explicitly overrides it on the workload-controller,
+which validates the choice at startup. This is
 deployment configuration, not a tool grant or a retired settings.yaml override.
 
 Isolated scripts keep 128 MiB/0.5 CPU, with 16 host PIDs on runc and 64 on runsc

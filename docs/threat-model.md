@@ -79,7 +79,10 @@ Kubernetes API/node administrators, CNI enforcement and storage are deployment
 trust roots. The supervisor checks requested runtime/class and ownership;
 it does not attest that an administrator mapped a name to the advertised handler.
 Control plane, relay processes and optional browser workloads remain separate
-trusted components outside the selected agent sandbox. In Kubernetes a Pod shares
+trusted components outside the selected agent sandbox.
+CLI cells inherit the Docker runtime choice unless the operator explicitly sets
+their separate tier; choosing runc for cells retains shared host-kernel exposure.
+In Kubernetes a Pod shares
 one sandbox/network boundary, hence runtime and credential-bearing relays use
 separate Pods. Pinning private Docker relay aliases avoids embedded DNS without
 adding host networking. Missing runtime/class/discovery fails closed; selection

@@ -15,4 +15,8 @@ func TestComposeSandboxRuntimeSelection(t *testing.T) {
 	if _, ok := services["supervisor"].(M)["runtime"]; ok {
 		t.Fatal("sandbox selector spread to control plane")
 	}
+	controller := services["workload-controller"].(M)["environment"].(M)
+	if controller["HUB_CONTAINER_RUNTIME"] != "${HUB_CONTAINER_RUNTIME:-runc}" || controller["HUB_CLI_RUNTIME"] != "${HUB_CLI_RUNTIME:-}" {
+		t.Fatal("cell runtime no longer inherits the operator selection")
+	}
 }
