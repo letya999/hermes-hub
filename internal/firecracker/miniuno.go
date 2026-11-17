@@ -69,9 +69,9 @@ type Manager struct {
 
 // NewManager validates config and returns a manager.
 func NewManager(cfg Config) (*Manager, error) {
-	for _, p := range []string{cfg.Kernel, cfg.RootFS, cfg.FCBin, cfg.VirtioFSD} {
+	for _, p := range []string{cfg.Kernel, cfg.RootFS, cfg.FCBin} {
 		if p == "" {
-			return nil, errors.New("firecracker: kernel, rootfs, fc binary and virtiofsd paths are required")
+			return nil, errors.New("firecracker: kernel, rootfs and fc binary paths are required")
 		}
 		if _, err := os.Stat(p); err != nil {
 			return nil, fmt.Errorf("firecracker: %s: %w", p, err)
@@ -112,26 +112,12 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	if err != nil {
 		return nil, err
 	}
-	var fsd []*exec.Cmd
 	var devs []fsDev
 	os.Remove(b.udsPath())
-	for i := range req.Shares {
-		os.Remove(filepath.Join(b.dir, fmt.Sprintf("vfs-%d.sock", i)))
-	}
-	for i, sh := range req.Shares {
-		sock := filepath.Join(b.dir, fmt.Sprintf("vfs-%d.sock", i))
-		vc := exec.Command(m.cfg.VirtioFSD, "--socket-path", sock, "--shared-dir", sh.HostPath, "--thread-pool-size", "2", "--announce-submounts")
-		vc.Stdout, vc.Stderr = os.Stderr, os.Stderr
-		if err := vc.Start(); err != nil {
-			return nil, fmt.Errorf("virtiofsd %s: %w", sh.HostPath, err)
-		}
-		fsd = append(fsd, vc)
-		devs = append(devs, fsDev{sock: sock, tag: sh.Tag})
+	for _, sh := range req.Shares {
+		devs = append(devs, fsDev{tag: sh.Tag})
 	}
 	cleanup := func() {
-		for _, vc := range fsd {
-			vc.Process.Kill()
-		}
 		os.RemoveAll(b.dir)
 	}
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/fc-init"
@@ -147,7 +133,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	if len(devs) > 0 {
 		var fs []any
 		for i, d := range devs {
-			fs = append(fs, map[string]any{"fs_id": fmt.Sprintf("fs%d", i), "shared_dir": req.Shares[i].HostPath, "socket": d.sock, "tag": d.tag})
+			fs = append(fs, map[string]any{"fs_id": fmt.Sprintf("fs%d", i), "virtio_fs": map[string]any{"source_dir": req.Shares[i].HostPath, "tag": d.tag, "cache_type": "Never"}})
 		}
 		cfg["fs"] = fs
 	}
@@ -170,9 +156,6 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		b.mu.Lock()
 		if b.status() == "running" || b.status() == "provisioning" {
 			b.setStatus("failed", "vm exited")
-		}
-		for _, vc := range fsd {
-			vc.Process.Kill()
 		}
 		b.mu.Unlock()
 		close(b.exited)
