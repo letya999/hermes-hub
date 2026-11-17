@@ -92,6 +92,11 @@ type Config struct {
 	ExecutionBackend string
 	ContainerRuntime string
 	Kubernetes       KubernetesConfig
+	UnoURL           string
+	UnoToken         string
+	UnoImage         string
+	UnoBoxRAMMB      int
+	UnoBoxVCPU       int
 	Backend          ComputeBackend
 	Docker           string
 	Image            string
@@ -403,8 +408,19 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.ExecutionBackend == "" {
 		cfg.ExecutionBackend = "docker"
 	}
-	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" {
+	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" && cfg.ExecutionBackend != "firecracker" {
 		return nil, errors.New("unsupported execution backend")
+	}
+	if cfg.ExecutionBackend == "firecracker" {
+		cfg.UnoURL = firstEnv(cfg.UnoURL, "HUB_UNO_URL")
+		cfg.UnoToken = firstEnv(cfg.UnoToken, "HUB_UNO_TOKEN")
+		cfg.UnoImage = firstEnv(cfg.UnoImage, "HUB_UNO_IMAGE")
+		if cfg.UnoBoxRAMMB <= 0 {
+			cfg.UnoBoxRAMMB = intEnv("HUB_UNO_BOX_RAM_MB", 1024)
+		}
+		if cfg.UnoBoxVCPU <= 0 {
+			cfg.UnoBoxVCPU = intEnv("HUB_UNO_BOX_VCPU", 2)
+		}
 	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {
 		return nil, errors.New("spaces root, runtime auth and image are required")
@@ -511,6 +527,11 @@ func New(cfg Config) (*Manager, error) {
 	if m.backend == nil {
 		if m.usingKubernetes() {
 			m.backend, err = newKubernetesBackend(m)
+			if err != nil {
+				return nil, err
+			}
+		} else if cfg.ExecutionBackend == "firecracker" {
+			m.backend, err = newFirecrackerBackend(m)
 			if err != nil {
 				return nil, err
 			}
