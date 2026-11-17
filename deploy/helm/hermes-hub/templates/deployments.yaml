@@ -100,6 +100,7 @@ spec:
             {{- if eq $name "supervisor" }}
             - {name: HUB_TOOLHUB_URL_PATTERN, value: "http://{{ $base }}-toolhub:8090"}
             - {name: HUB_EXECUTION_BACKEND, value: {{ $root.Values.execution.backend | quote }}}
+            - {name: HUB_CONTAINER_RUNTIME, value: {{ $root.Values.execution.containerRuntime | quote }}}
             {{- if eq $root.Values.execution.backend "kubernetes" }}
             - {name: HUB_KUBERNETES_NAMESPACE, value: {{ include "hub.runtimeNamespace" $root | quote }}}
             - {name: HUB_KUBERNETES_CONTROL_NAMESPACE, value: {{ $root.Release.Namespace | quote }}}
@@ -107,7 +108,7 @@ spec:
             - {name: HUB_KUBERNETES_RELAY_IMAGE, value: {{ include "hub.image" $root.Values.services.supervisor.image | quote }}}
             - {name: HUB_KUBERNETES_TOOLHUB_URL, value: "http://{{ $base }}-toolhub.{{ $root.Release.Namespace }}.svc:8090"}
             - {name: HUB_KUBERNETES_CLIPROXY_URL, value: "http://{{ $base }}-cliproxy.{{ $root.Release.Namespace }}.svc:8317"}
-            - {name: HUB_RUNTIME_CLASS_NAME, value: {{ default $root.Values.runtimeClassName $root.Values.execution.kubernetes.runtimeClassName | quote }}}
+            - {name: HUB_RUNTIME_CLASS_NAME, value: {{ include "hub.spaceRuntimeClass" $root | quote }}}
             - {name: HUB_KUBERNETES_STORAGE_CLASS, value: {{ $root.Values.execution.kubernetes.storageClass | quote }}}
             - {name: HUB_KUBERNETES_STORAGE_SIZE, value: {{ $root.Values.execution.kubernetes.storageSize | quote }}}
             - {name: HUB_KUBERNETES_PULL_SECRETS, value: {{ include "hub.pullSecretNames" $root | quote }}}

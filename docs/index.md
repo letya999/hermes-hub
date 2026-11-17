@@ -19,6 +19,7 @@ last_verified: 2026-11-17
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |
 | [ci-mirror.md](ci-mirror.md) | One-way repository mirror, registry-agnostic GitLab gates/publication and optional Helm deploy |
 | [runtime-operations.md](runtime-operations.md) | Runtime images, supervisor lifecycle, rollout and preparation |
+| [runtime-sandbox.md](runtime-sandbox.md) | Optional runc/runsc/Kata selection, node prerequisites, fail-closed rollout and qualification |
 | [glossary.md](glossary.md) | Canonical terms — feature, tool, toolset, capability, connector, backend/`via` |
 
 ## Access and surface

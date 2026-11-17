@@ -51,6 +51,25 @@ func genericPlan(d api.ToolDefinition) api.ControllerPlan {
 	return api.ControllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution, Definition: d}
 }
 
+func TestGenericControllerRuntimeEnvironment(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	c, _ := cellFixture(t, nil)
+	cfg := GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, MaxActive: 2, IdleTTLSeconds: 60, CLI: c.config.CLI}
+	t.Setenv("HUB_CLI_RUNTIME", "runsc")
+	controller, err := newGenericController(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if controller.config.CLI.Runtime != "runsc" || cfg.CLI.Runtime != "" {
+		t.Fatal("operator runtime missing or caller config mutated")
+	}
+	t.Setenv("HUB_CLI_RUNTIME", "missing")
+	if _, err := newGenericController(cfg); err == nil {
+		t.Fatal("invalid operator runtime accepted")
+	}
+}
+
 // #289: credential staging lives on the shared tmpfs declared by
 // HUB_CRED_STAGING, deliberately outside the persistent state root. Admission
 // must accept a workspace under the declared staging root while still

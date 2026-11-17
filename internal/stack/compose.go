@@ -379,6 +379,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	coreBuild := imageBuild(s.Environment + "-core")
 	runtimeService := cloneMap(runtimeCommon)
+	runtimeService["runtime"] = "${HUB_CONTAINER_RUNTIME:-runc}"
 	// The service builds its own agent tag: renders that drop hermes-runtime
 	// (supervisor/managed) get the image through the explicit hubctl build.
 	runtimeService["build"] = imageBuild(s.Environment)
@@ -612,6 +613,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		svc["build"] = imageBuild(s.Environment + "-control")
 		svc["entrypoint"] = []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
+			"HUB_CONTAINER_RUNTIME": "${HUB_CONTAINER_RUNTIME:-runc}",
 			// Opt-in authorities stay disabled unless the operator provisions
 			// them: admin holds need a separate authority token; the personal
 			// supervisor needs a managed model endpoint + model name.
@@ -908,6 +910,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		spacesHostDir := filepath.ToSlash(filepath.Dir(dir))
 		spacesBind := M{"type": "bind", "source": spacesHostDir, "target": "/spaces", "read_only": true}
 		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
+		controller["environment"].(M)["HUB_CLI_RUNTIME"] = "${HUB_CLI_RUNTIME:-runc}"
 		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind}
 		if s.usesDockerSocket() {
 			controllerVolumes = append(controllerVolumes, dockerSock)

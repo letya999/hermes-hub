@@ -76,6 +76,12 @@ func (m *Manager) verifyDockerOwnership(ctx context.Context, runtime Runtime) er
 	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] != runtime.Generation || runtime.Generation == "" {
 		return errors.New("runtime ownership mismatch")
 	}
+	if m.cfg.ContainerRuntime != "runc" {
+		out, err := m.command(ctx, "inspect", "--format", "{{.HostConfig.Runtime}}", runtime.Container)
+		if err != nil || strings.TrimSpace(string(out)) != m.cfg.ContainerRuntime {
+			return errors.New("runtime container isolation mismatch")
+		}
+	}
 	// The context root carries secrets; even legacy runtimes may only mirror
 	// the workspace into /scope.
 	if !runtime.Managed {

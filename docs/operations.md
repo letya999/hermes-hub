@@ -11,6 +11,10 @@ docs/services/. This file is procedures only.
 
 ## Stack lifecycle
 
+Runtime isolation is selected by the operator: see
+[runc/runsc/Kata setup and qualification](runtime-sandbox.md). Missing selected
+runtimes/classes fail without downgrade; stop compute before changing isolation.
+
 ### Kubernetes control plane
 
 `deploy/helm/hermes-hub` packages five single-replica services: communication-hub,
@@ -162,7 +166,8 @@ to turn an uncertain job into a confirmed failure.
 
 The ledger records the selected backend; legacy ledgers belong to Docker. Changing
 backend is refused until runtimes are stopped, jobs settled and orphans cleared.
-RuntimeClass changes reach the next spawn rather than interrupting active work.
+Runtime and RuntimeClass changes also require stopped compute and settled jobs;
+warm adoption never upgrades or downgrades a live container in place.
 
 Current Kubernetes scope is the managed `gateway` runtime used by normal messages.
 Historical additional runtime modes, browser/meet sidecars, Docker script-job

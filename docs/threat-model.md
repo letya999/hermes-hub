@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-10-29
+last_verified: 2026-11-17
 ---
 # Threat model
 
@@ -60,6 +60,31 @@ leased only for current work and is not an authorization source.
   in `tools/list` is not permission to call.
 - Organization material is read-only unless a separately authorized action permits a
   bounded mutation.
+
+## Runtime isolation backends
+
+Execution substrate (Docker/Kubernetes) and isolation (runc/runsc/Kata) are
+separate choices. Kubernetes alone does not add a guest kernel. See
+[sandbox operations](runtime-sandbox.md) and [ADR-0103](adr/ADR-0103-optional-sandbox-runtime.md).
+
+| Isolation | Actual boundary | Trusted components and remaining exposure |
+|---|---|---|
+| runc | Host-kernel namespaces, cgroups, capabilities, readonly mounts and seccomp | Workload syscalls still reach the host kernel. Kernel escapes and side channels remain possible. |
+| runsc/systrap | gVisor userspace syscall implementation and isolated network stack reduce direct host-kernel API exposure; no KVM required | Sentry/gofer, their restricted host syscalls, host kernel, runtime configuration and approved mounts remain trusted. This is not a hardware VM or a defense against all side channels. |
+| Kata/QEMU or Cloud Hypervisor | Separate guest kernel in a hardware-backed VM; workload kernel exploits target the guest first | VMM/KVM, guest agent/kernel, virtiofs/device backends, shim and host operator remain trusted. Shared storage and hardware side channels remain exposed. QEMU and CLH require separate node qualification. |
+
+No backend hides mounted data from the host administrator, removes denial of
+service risk or replaces ToolHub/broker authorization. Docker/runtime daemon,
+Kubernetes API/node administrators, CNI enforcement and storage are deployment
+trust roots. The supervisor checks requested runtime/class and ownership;
+it does not attest that an administrator mapped a name to the advertised handler.
+Control plane, relay processes and optional browser workloads remain separate
+trusted components outside the selected agent sandbox. In Kubernetes a Pod shares
+one sandbox/network boundary, hence runtime and credential-bearing relays use
+separate Pods. Pinning private Docker relay aliases avoids embedded DNS without
+adding host networking. Missing runtime/class/discovery fails closed; selection
+changes cannot adopt already-running weaker compute. The dated spike records
+local compatibility and unresolved Kata acceptance without a production guarantee.
 
 ## Threats, controls and test ownership
 

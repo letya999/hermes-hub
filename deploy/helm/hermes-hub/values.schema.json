@@ -10,6 +10,7 @@
       "type": "object", "additionalProperties": false, "required": ["backend", "kubernetes"],
       "properties": {
         "backend": {"enum": ["docker", "kubernetes"]},
+        "containerRuntime": {"enum": ["runc", "runsc", "kata"]},
         "kubernetes": {
           "type": "object", "additionalProperties": false,
           "properties": {
@@ -71,7 +72,7 @@
   "definitions": {
     "envName": {
       "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$",
-      "not": {"enum": ["HOME", "HUB_ENVIRONMENT", "HUB_RUNTIME_SUPERVISOR_URL", "HUB_TOOLHUB_URL", "HUB_COMMUNICATION_CONTROL_URL", "HUB_TOOLHUB_URL_PATTERN", "HUB_EXECUTION_BACKEND", "HUB_KUBERNETES_NAMESPACE", "HUB_KUBERNETES_CONTROL_NAMESPACE", "HUB_KUBERNETES_CONTROL_RELEASE", "HUB_RUNTIME_CLASS_NAME", "HUB_KUBERNETES_STORAGE_CLASS", "HUB_KUBERNETES_STORAGE_SIZE", "HUB_KUBERNETES_PULL_SECRETS", "HUB_KUBERNETES_RELAY_IMAGE", "HUB_KUBERNETES_TOOLHUB_URL", "HUB_KUBERNETES_CLIPROXY_URL"]}
+      "not": {"enum": ["HOME", "HUB_ENVIRONMENT", "HUB_RUNTIME_SUPERVISOR_URL", "HUB_TOOLHUB_URL", "HUB_COMMUNICATION_CONTROL_URL", "HUB_TOOLHUB_URL_PATTERN", "HUB_EXECUTION_BACKEND", "HUB_CONTAINER_RUNTIME", "HUB_KUBERNETES_NAMESPACE", "HUB_KUBERNETES_CONTROL_NAMESPACE", "HUB_KUBERNETES_CONTROL_RELEASE", "HUB_RUNTIME_CLASS_NAME", "HUB_KUBERNETES_STORAGE_CLASS", "HUB_KUBERNETES_STORAGE_SIZE", "HUB_KUBERNETES_PULL_SECRETS", "HUB_KUBERNETES_RELAY_IMAGE", "HUB_KUBERNETES_TOOLHUB_URL", "HUB_KUBERNETES_CLIPROXY_URL"]}
     },
     "secretRef": {
       "type": "object", "additionalProperties": false, "required": ["name", "key"],

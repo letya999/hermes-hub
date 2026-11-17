@@ -19,3 +19,12 @@ app.kubernetes.io/component: {{ .name | quote }}
 {{- define "hub.pullSecretNames" -}}
 {{- range $i, $secret := .Values.imagePullSecrets -}}{{- if $i -}},{{- end -}}{{ $secret.name }}{{- end -}}
 {{- end -}}
+{{- define "hub.spaceRuntimeClass" -}}
+{{- if .Values.execution.kubernetes.runtimeClassName -}}
+{{- .Values.execution.kubernetes.runtimeClassName -}}
+{{- else if ne .Values.execution.containerRuntime "runc" -}}
+{{- .Values.execution.containerRuntime -}}
+{{- else -}}
+{{- .Values.runtimeClassName -}}
+{{- end -}}
+{{- end -}}

@@ -23,7 +23,7 @@ type cliCell struct {
 	jobID           string
 	lifecycle       string
 	image           string // image@digest ref the cell was created from
-	runtime         string // OCI runtime the create used ("" = daemon default runc)
+	runtime         string // OCI runtime explicitly selected at create
 	workHost        string // host path bound at /work; "" when tmpfs scratch
 	workRW          bool
 	skillsHost      string // host path bound ro at /skills; "" when no mount
@@ -240,13 +240,12 @@ func (c *genericController) cellUID(req api.CliExecRequest, rw bool) string {
 	return "10001:10001"
 }
 
-// runtimeFlag maps the configured tier onto the docker --runtime flag; empty
-// means runc (daemon default). runsc/kata must be listed by the daemon.
+// Runtime selection is explicit, including runc, regardless of daemon default.
 func (c *genericController) runtimeFlag(ctx context.Context) (string, error) {
 	runtime := c.config.CLI.Runtime
 	switch runtime {
 	case "", "runc":
-		return "", nil
+		return "runc", nil
 	case "runsc", "kata":
 	default:
 		return "", fmt.Errorf("%w: unknown cli runtime %q", api.ErrInvalid, runtime)

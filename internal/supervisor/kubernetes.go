@@ -61,6 +61,12 @@ func newKubernetesBackend(m *Manager) (*kubernetesBackend, error) {
 	if cfg.RuntimeClassName == "" {
 		cfg.RuntimeClassName = os.Getenv("HUB_RUNTIME_CLASS_NAME")
 	}
+	if cfg.RuntimeClassName == "" && m.cfg.ContainerRuntime != "runc" {
+		cfg.RuntimeClassName = m.cfg.ContainerRuntime
+	}
+	if m.cfg.ContainerRuntime != "runc" && (cfg.RuntimeClassName == "runc" || cfg.RuntimeClassName == "runsc" || cfg.RuntimeClassName == "kata") && cfg.RuntimeClassName != m.cfg.ContainerRuntime {
+		return nil, errors.New("selected RuntimeClass conflicts with container runtime")
+	}
 	if cfg.StorageClass == "" {
 		cfg.StorageClass = os.Getenv("HUB_KUBERNETES_STORAGE_CLASS")
 	}
@@ -180,7 +186,18 @@ func (k *kubernetesBackend) Verify(ctx context.Context, rt Runtime) error {
 	if !k.owned(pod, rt, true) {
 		return errors.New("runtime Pod ownership mismatch")
 	}
+	if !k.podIsolationMatches(pod) {
+		return errors.New("runtime Pod isolation mismatch")
+	}
 	return nil
+}
+
+func (k *kubernetesBackend) podIsolationMatches(pod *core.Pod) bool {
+	class := ""
+	if pod.Spec.RuntimeClassName != nil {
+		class = *pod.Spec.RuntimeClassName
+	}
+	return class == k.cfg.RuntimeClassName
 }
 
 func podObservation(pod *core.Pod, port int) ComputeObservation {
@@ -228,6 +245,9 @@ func (k *kubernetesBackend) Observe(ctx context.Context, rt Runtime) (ComputeObs
 	}
 	if !k.owned(pod, rt, true) {
 		return ComputeObservation{}, errors.New("runtime Pod ownership mismatch")
+	}
+	if !k.podIsolationMatches(pod) {
+		return ComputeObservation{}, errors.New("runtime Pod isolation mismatch")
 	}
 	result := podObservation(pod, k.m.cfg.RuntimePort)
 	relay, relayErr := k.pod(ctx, k.relayRuntime(rt))
@@ -310,6 +330,9 @@ func (k *kubernetesBackend) Spawn(ctx context.Context, request SpawnRequest) (Co
 		return ComputeObservation{}, err
 	}
 	if _, err = k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, main, meta.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		if k.cfg.RuntimeClassName != "" {
+			return ComputeObservation{}, errors.New("runtime Pod admission failed; verify selected RuntimeClass and namespace policy")
+		}
 		return ComputeObservation{}, errors.New("runtime Pod creation failed")
 	}
 	ticker := time.NewTicker(200 * time.Millisecond)

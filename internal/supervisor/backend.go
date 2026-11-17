@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -50,6 +51,9 @@ func (d dockerBackend) Observe(ctx context.Context, runtime Runtime) (ComputeObs
 
 func (d dockerBackend) Spawn(ctx context.Context, request SpawnRequest) (ComputeObservation, error) {
 	m, binding, rt := d.m, request.Binding, request.Runtime
+	if err := m.checkContainerRuntime(ctx, request.Settings); err != nil {
+		return ComputeObservation{}, err
+	}
 	if rt.Managed {
 		preparation := binding
 		preparation.RuntimeMode = "spawn-files"
@@ -64,6 +68,13 @@ func (d dockerBackend) Spawn(ctx context.Context, request SpawnRequest) (Compute
 	if rt.Managed {
 		if err := m.ensureManagedInfra(ctx, binding, request.Settings, rt.Container, request.Port, rt.Generation); err != nil {
 			return ComputeObservation{}, fmt.Errorf("managed topology: %w", err)
+		}
+		if m.cfg.ContainerRuntime != "runc" {
+			hosts, err := m.sandboxRelayHosts(ctx, request.Settings, binding.ContextRoot)
+			if err != nil {
+				return ComputeObservation{}, err
+			}
+			args = slices.Insert(args, 1, hosts...)
 		}
 	}
 	if out, err := m.command(ctx, args...); err != nil {

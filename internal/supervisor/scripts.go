@@ -79,7 +79,12 @@ func (m *Manager) scriptHTTP(w http.ResponseWriter, r *http.Request) {
 		defer stop()
 		_, _ = m.command(cleanup, "rm", "-f", name)
 	}()
-	args := []string{"run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "16", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.role=script"}
+	pids := "16"
+	if m.cfg.ContainerRuntime == "runsc" {
+		pids = "64" // runsc's host threads do not fit the runc process budget.
+	}
+	args := []string{"run", "--rm", "--name", name, "--network", "none", "--read-only", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", pids, "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--log-driver", "none", "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.role=script"}
+	args = append(args, "--runtime", m.cfg.ContainerRuntime)
 	if request.MountSpace {
 		watchDir := filepath.Join(m.cfg.SpacesRoot, binding.ContextID, "watch")
 		if err := os.MkdirAll(watchDir, 0750); err != nil {

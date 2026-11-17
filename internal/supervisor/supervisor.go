@@ -90,6 +90,7 @@ const DefaultWarmTTL = 30 * time.Minute
 
 type Config struct {
 	ExecutionBackend string
+	ContainerRuntime string
 	Kubernetes       KubernetesConfig
 	Backend          ComputeBackend
 	Docker           string
@@ -277,14 +278,16 @@ type Manager struct {
 }
 
 type persistedManager struct {
-	Backend    string                               `json:"execution_backend,omitempty"`
-	Holds      map[string]AdministrativeHold        `json:"holds,omitempty"`
-	Pins       map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
-	Orphans    []OrphanRuntime                      `json:"orphans,omitempty"`
-	Generation uint64                               `json:"generation"`
-	LeaseSeq   uint64                               `json:"lease_seq"`
-	Items      []persistedRuntime                   `json:"items"`
-	Jobs       map[string]jobRecord                 `json:"jobs,omitempty"`
+	Backend          string                               `json:"execution_backend,omitempty"`
+	ContainerRuntime string                               `json:"container_runtime,omitempty"`
+	RuntimeClassName string                               `json:"runtime_class_name,omitempty"`
+	Holds            map[string]AdministrativeHold        `json:"holds,omitempty"`
+	Pins             map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
+	Orphans          []OrphanRuntime                      `json:"orphans,omitempty"`
+	Generation       uint64                               `json:"generation"`
+	LeaseSeq         uint64                               `json:"lease_seq"`
+	Items            []persistedRuntime                   `json:"items"`
+	Jobs             map[string]jobRecord                 `json:"jobs,omitempty"`
 }
 
 type persistedRuntime struct {
@@ -386,6 +389,14 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 }
 
 func New(cfg Config) (*Manager, error) {
+	if cfg.ContainerRuntime == "" {
+		cfg.ContainerRuntime = envOr("HUB_CONTAINER_RUNTIME", "runc")
+	}
+	switch cfg.ContainerRuntime {
+	case "runc", "runsc", "kata":
+	default:
+		return nil, errors.New("unsupported container runtime; expected runc, runsc or kata")
+	}
 	if cfg.ExecutionBackend == "" {
 		cfg.ExecutionBackend = os.Getenv("HUB_EXECUTION_BACKEND")
 	}
@@ -533,18 +544,25 @@ func (m *Manager) load() error {
 	if backend != "docker" && backend != "kubernetes" {
 		return errors.New("invalid persisted execution backend")
 	}
-	if backend != m.cfg.ExecutionBackend {
+	runtime := state.ContainerRuntime
+	if runtime == "" {
+		runtime = "runc"
+	}
+	if runtime != "runc" && runtime != "runsc" && runtime != "kata" {
+		return errors.New("invalid persisted container runtime")
+	}
+	if backend != m.cfg.ExecutionBackend || runtime != m.cfg.ContainerRuntime || state.RuntimeClassName != m.cfg.Kubernetes.RuntimeClassName {
 		if len(state.Orphans) != 0 {
-			return errors.New("execution backend change requires cleared orphans")
+			return errors.New("execution backend or isolation change requires cleared orphans")
 		}
 		for _, item := range state.Items {
 			if item.Runtime.State != Stopped {
-				return errors.New("execution backend change requires stopped runtimes")
+				return errors.New("execution backend or isolation change requires stopped runtimes")
 			}
 		}
 		for _, record := range state.Jobs {
 			if !terminalRunStatus(record.Status) {
-				return errors.New("execution backend change requires settled jobs")
+				return errors.New("execution backend or isolation change requires settled jobs")
 			}
 		}
 	}
@@ -608,7 +626,7 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Backend: m.cfg.ExecutionBackend, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
+	state := persistedManager{Backend: m.cfg.ExecutionBackend, ContainerRuntime: m.cfg.ContainerRuntime, RuntimeClassName: m.cfg.Kubernetes.RuntimeClassName, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
 		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents})
 	}
