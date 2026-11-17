@@ -494,6 +494,11 @@ func (m *Manager) Delete(id string) bool {
 	if !ok {
 		return false
 	}
+	// Best-effort flush: guest page cache must reach the share image before
+	// the VMM is killed, or recent writes are lost.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	b.exec(ctx, uno.RunRequest{Cmd: "sync", TimeoutSeconds: 8})
+	cancel()
 	if b.proc != nil && b.proc.Process != nil {
 		b.proc.Process.Kill()
 	}
