@@ -31,6 +31,7 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 	}, nil)
 	m.cfg.Image = "runtime-without-daemons"
 	m.cfg.ScriptImage = "script-core"
+	m.cfg.ContainerRuntime = "runsc"
 	for range cap(m.sem) {
 		m.sem <- struct{}{}
 	}
@@ -71,7 +72,7 @@ func TestM10ScriptIsolationHTTPContract(t *testing.T) {
 			options[args[i]] = args[i+1]
 		}
 	}
-	for key, want := range map[string]string{"--network": "none", "--user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop": "ALL", "--security-opt": "no-new-privileges:true", "--memory": "128m", "--memory-swap": "128m", "--pids-limit": "16", "--log-driver": "none", "--entrypoint": "communication-hub"} {
+	for key, want := range map[string]string{"--runtime": "runsc", "--network": "none", "--user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop": "ALL", "--security-opt": "no-new-privileges:true", "--memory": "128m", "--memory-swap": "128m", "--pids-limit": "64", "--log-driver": "none", "--entrypoint": "communication-hub"} {
 		if options[key] != want {
 			t.Errorf("unbounded option %s=%q", key, options[key])
 		}

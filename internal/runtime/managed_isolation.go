@@ -45,7 +45,8 @@ var (
 		_, err := net.LookupHost(host)
 		return err
 	}
-	managedDialTCP = func(address string) error {
+	managedLookupIPs = net.LookupHost
+	managedDialTCP   = func(address string) error {
 		conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 		if err != nil {
 			return err
@@ -121,12 +122,21 @@ func verifyManagedIsolation(hermesHome string) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("managed scope check: %w", err)
 	}
-	ipv4, ipv6, err := managedReadRoutes()
-	if err != nil {
-		return fmt.Errorf("managed route tables unavailable: %w", err)
-	}
-	if hasDefaultRouteIPv4(ipv4) || hasDefaultRouteIPv6(ipv6) {
-		return fmt.Errorf("managed agent network has a default route")
+	switch os.Getenv("HUB_EXECUTION_SUBSTRATE") {
+	case "", "docker":
+		ipv4, ipv6, err := managedReadRoutes()
+		if err != nil {
+			return fmt.Errorf("managed route tables unavailable: %w", err)
+		}
+		if hasDefaultRouteIPv4(ipv4) || hasDefaultRouteIPv6(ipv6) {
+			return fmt.Errorf("managed agent network has a default route")
+		}
+	case "kubernetes":
+		if err := verifyKubernetesIsolationReceipt(); err != nil {
+			return err
+		}
+	default:
+		return errors.New("unrecognized managed execution substrate")
 	}
 	for _, host := range managedDeniedHosts {
 		if err := managedLookupHost(host); err == nil {

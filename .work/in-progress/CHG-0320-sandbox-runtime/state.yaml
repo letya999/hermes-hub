@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0320
+title: Optional sandbox runtime
+status: in_progress
+branch: feat/m9-sandbox-runtime
+updated: 2026-11-17
+github_issues: [394, 202]
+phase: verification
+validation:
+  spike: passed_with_kata_limits
+  live_runsc: pending
+  live_kata: cloud_hypervisor_cell_poc_qemu_blocked
+  check: passed
+  affected_packages: passed
+  remote_ci: not_run

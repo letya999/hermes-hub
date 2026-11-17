@@ -235,6 +235,18 @@ USER 10001:10001
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
+# Retain a shell for the chart's private Secret materializer; the broker binary
+# remains the same statically linked SQLCipher build used by core.
+FROM debian:13.6-slim AS credential-broker
+COPY --from=broker_build /credential-broker /usr/local/bin/credential-broker
+COPY --from=broker_build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
+USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" org.opencontainers.image.licenses="MIT"
+ENTRYPOINT ["credential-broker"]
+CMD ["serve", "--config", "/run/service-config/private/config.json"]
+
 FROM core AS prod-core
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 ARG GIT_SHA=unknown

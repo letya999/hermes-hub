@@ -1,0 +1,89 @@
+# Trusted, disposable Linux shell runners; no privileged container-in-container.
+stages: [test, build, deploy]
+
+variables:
+  GIT_DEPTH: "0"
+  HUB_ENV: dev
+  HUB_DEPLOY_ENABLED: "false"
+  DOCKER_BUILDKIT: "1"
+  COMPOSE_DOCKER_CLI_BUILD: "1"
+  COMPOSE_BAKE: "true"
+
+default:
+  tags: [$HUB_CI_RUNNER_TAG]
+  interruptible: false
+
+test-job:
+  stage: test
+  timeout: 2h
+  script:
+    - just check
+    - just go-check
+    - just lint
+    - just docs-check
+    - just config-check
+    - just helm-check
+    - GOFLAGS=-tags=libsqlite3 CGO_CFLAGS=-I/usr/include/sqlcipher just credential-broker-check
+    - just security
+    - go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --redact .
+
+build-image:
+  stage: build
+  needs: [test-job]
+  timeout: 2h
+  # One writer per image/environment, including the moving tag.
+  resource_group: publish-$HUB_ENV-$HUB_IMAGE_NAME
+  parallel:
+    matrix:
+      - HUB_IMAGE_NAME: hermes-hub-control
+        HUB_BUILD_TARGET: prod-control
+      - HUB_IMAGE_NAME: hermes-hub-runtime
+        HUB_BUILD_TARGET: prod
+      - HUB_IMAGE_NAME: cli-tools
+        HUB_BUILD_TARGET: cli-tools
+      - HUB_IMAGE_NAME: cell-proxy
+        HUB_BUILD_TARGET: cell-proxy
+      - HUB_IMAGE_NAME: credential-broker
+        HUB_BUILD_TARGET: credential-broker
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_REF_PROTECTED == "true"'
+  script:
+    - |
+      set -euo pipefail
+      : "${HUB_REGISTRY_HOST:?}" "${HUB_REGISTRY_REPO:?}" "${HUB_REGISTRY_USER:?}" "${HUB_REGISTRY_PASSWORD:?}"
+      export DOCKER_CONFIG="$(mktemp -d)"
+      trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+      printf '%s' "$HUB_REGISTRY_PASSWORD" | docker login "$HUB_REGISTRY_HOST" --username "$HUB_REGISTRY_USER" --password-stdin
+      go run ./cmd/devcheck docker-publish-to "$HUB_REGISTRY_HOST/$HUB_REGISTRY_REPO/$HUB_IMAGE_NAME" "$HUB_BUILD_TARGET" "$HUB_ENV"
+
+deploy:
+  stage: deploy
+  needs: [build-image]
+  timeout: 15m
+  resource_group: deploy-$HUB_ENV
+  environment:
+    name: $HUB_ENV
+  rules:
+    - if: '$HUB_DEPLOY_ENABLED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_REF_PROTECTED == "true"'
+      when: manual
+  script:
+    - |
+      set -euo pipefail
+      : "${HUB_REGISTRY_HOST:?}" "${HUB_REGISTRY_REPO:?}" "${HUB_KUBECONFIG:?}" "${HUB_KUBE_CONTEXT:?}"
+      : "${HUB_HELM_RELEASE:?}" "${HUB_HELM_NAMESPACE:?}" "${HUB_HELM_VALUES_FILE:?}"
+      export KUBECONFIG="$HUB_KUBECONFIG"
+      root="$HUB_REGISTRY_HOST/$HUB_REGISTRY_REPO"
+      image_flags=()
+      for service in communication-hub supervisor toolhub cliproxy credential-broker; do
+        image=hermes-hub-control
+        if [ "$service" = credential-broker ]; then image=credential-broker; fi
+        image_flags+=(--set-string "services.$service.image.repository=$root/$image")
+        image_flags+=(--set-string "services.$service.image.tag=$CI_COMMIT_SHA")
+        image_flags+=(--set-string "services.$service.image.digest=")
+        image_flags+=(--set-string "services.$service.image.pullPolicy=IfNotPresent")
+      done
+      helm upgrade --install "$HUB_HELM_RELEASE" deploy/helm/hermes-hub \
+        --kube-context "$HUB_KUBE_CONTEXT" --namespace "$HUB_HELM_NAMESPACE" --create-namespace \
+        --reset-values --atomic --wait --timeout 10m --values "$HUB_HELM_VALUES_FILE" \
+        "${image_flags[@]}" --set-string "runtimeImage=$root/hermes-hub-runtime:$CI_COMMIT_SHA" \
+        --set-string "environment=$HUB_ENV"

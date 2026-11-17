@@ -13,3 +13,18 @@ app.kubernetes.io/component: {{ .name | quote }}
 {{ .repository }}:{{ .tag }}
 {{- end -}}
 {{- end -}}
+{{- define "hub.runtimeNamespace" -}}
+{{- default (printf "%s-runtimes" .Release.Namespace) .Values.execution.kubernetes.namespace -}}
+{{- end -}}
+{{- define "hub.pullSecretNames" -}}
+{{- range $i, $secret := .Values.imagePullSecrets -}}{{- if $i -}},{{- end -}}{{ $secret.name }}{{- end -}}
+{{- end -}}
+{{- define "hub.spaceRuntimeClass" -}}
+{{- if .Values.execution.kubernetes.runtimeClassName -}}
+{{- .Values.execution.kubernetes.runtimeClassName -}}
+{{- else if ne .Values.execution.containerRuntime "runc" -}}
+{{- .Values.execution.containerRuntime -}}
+{{- else -}}
+{{- .Values.runtimeClassName -}}
+{{- end -}}
+{{- end -}}

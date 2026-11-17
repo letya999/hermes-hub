@@ -67,6 +67,86 @@ func helmList(t *testing.T, value any) []any {
 	return list
 }
 
+func TestHelmChartKubernetesBackend(t *testing.T) {
+	counts := map[string]int{}
+	for _, object := range helmRender(t, "alpha", "--set", "execution.backend=kubernetes", "--set", "execution.containerRuntime=runsc", "--set", "execution.kubernetes.runtimeClassName=sandbox", "--set", "execution.kubernetes.apiServerCIDRs[0]=10.96.0.1/32") {
+		kind := object["kind"].(string)
+		counts[kind]++
+		if kind == "Role" {
+			if helmMap(t, object, "metadata")["namespace"] != "contract-runtimes" {
+				t.Fatal("runtime authority escaped environment namespace")
+			}
+			for _, raw := range helmList(t, object["rules"]) {
+				rule := helmMap(t, raw)
+				for _, resource := range helmList(t, rule["resources"]) {
+					for _, verb := range helmList(t, rule["verbs"]) {
+						if resource == "persistentvolumeclaims" && verb == "delete" || resource == "*" || verb == "*" {
+							t.Fatal("unbounded runtime authority")
+						}
+					}
+				}
+			}
+		}
+		if kind != "Deployment" {
+			continue
+		}
+		template := helmMap(t, object, "spec", "template")
+		component := helmMap(t, template, "metadata", "labels")["app.kubernetes.io/component"]
+		pod := helmMap(t, template, "spec")
+		if pod["automountServiceAccountToken"] != false {
+			t.Fatal("implicit API token enabled")
+		}
+		found := false
+		for _, volume := range helmList(t, pod["volumes"]) {
+			if helmMap(t, volume)["name"] == "api-identity" {
+				found = true
+			}
+		}
+		if found != (component == "supervisor") {
+			t.Fatal("API authority projected outside supervisor")
+		}
+		if component == "supervisor" {
+			container := helmMap(t, helmList(t, pod["containers"])[0])
+			values := map[string]any{}
+			for _, raw := range helmList(t, container["env"]) {
+				variable := helmMap(t, raw)
+				values[variable["name"].(string)] = variable["value"]
+			}
+			if values["HUB_EXECUTION_BACKEND"] != "kubernetes" || values["HUB_CONTAINER_RUNTIME"] != "runsc" || values["HUB_RUNTIME_CLASS_NAME"] != "sandbox" || values["HUB_KUBERNETES_NAMESPACE"] != "contract-runtimes" {
+				t.Fatal("runtime backend configuration missing")
+			}
+		}
+	}
+	if counts["Role"] != 1 || counts["RoleBinding"] != 1 || counts["ServiceAccount"] != 1 || counts["ClusterRole"] != 0 {
+		t.Fatal("runtime RBAC scope changed")
+	}
+}
+
+func TestHelmSandboxClassDoesNotInheritControlRuntime(t *testing.T) {
+	for _, runtime := range []string{"runsc", "kata"} {
+		found := false
+		for _, object := range helmRender(t, "alpha", "--set", "execution.backend=kubernetes", "--set", "runtimeClassName=runc", "--set", "execution.containerRuntime="+runtime, "--set", "execution.kubernetes.apiServerCIDRs[0]=10.96.0.1/32") {
+			if object["kind"] != "Deployment" {
+				continue
+			}
+			pod := helmMap(t, object, "spec", "template", "spec")
+			container := helmMap(t, helmList(t, pod["containers"])[0])
+			for _, raw := range helmList(t, container["env"]) {
+				env := helmMap(t, raw)
+				if env["name"] == "HUB_RUNTIME_CLASS_NAME" {
+					found = true
+					if env["value"] != runtime {
+						t.Fatalf("%s inherited control class: %v", runtime, env["value"])
+					}
+				}
+			}
+		}
+		if !found {
+			t.Fatal("supervisor RuntimeClass configuration absent")
+		}
+	}
+}
+
 func TestHelmChartContract(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("Helm CLI required; run just helm-check")
@@ -263,7 +343,7 @@ func TestHelmChartContract(t *testing.T) {
 		}
 	})
 	t.Run("invalid values fail at the boundary", func(t *testing.T) {
-		for _, override := range []string{"environment=test", "services.toolhub.port=80", "services.toolhub.image.digest=bad", "ingress.gatewayPaths[0]=/", "services.toolhub.env.HOME=/root"} {
+		for _, override := range []string{"environment=test", "execution.containerRuntime=missing", "services.supervisor.env.HUB_CONTAINER_RUNTIME=runc", "services.toolhub.port=80", "services.toolhub.image.digest=bad", "ingress.gatewayPaths[0]=/", "services.toolhub.env.HOME=/root"} {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			out, err := exec.CommandContext(ctx, "helm", "template", "invalid", "../../deploy/helm/hermes-hub", "--set", override).CombinedOutput()
 			cancel()

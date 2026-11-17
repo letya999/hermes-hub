@@ -2,6 +2,17 @@
 runtimeClassName: "" # Omitted means the cluster default runtime (normally runc).
 runtimeImage: hermes-hub:0.5.0-prod
 environment: prod
+execution:
+  containerRuntime: runc # runsc/kata select a same-named RuntimeClass unless overridden below.
+  backend: docker
+  kubernetes:
+    namespace: "" # Default: <release namespace>-runtimes; provision it separately.
+    runtimeClassName: ""
+    storageClass: ""
+    storageSize: 10Gi
+    # Exact API service/endpoint CIDRs; required with Kubernetes + NetworkPolicy.
+    apiServerCIDRs: []
+    apiServerPorts: [443, 6443]
 imagePullSecrets: []
 nodeSelector: {}
 tolerations: []
