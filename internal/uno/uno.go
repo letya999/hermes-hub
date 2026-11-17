@@ -47,9 +47,12 @@ type Share struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
-// Forward exposes a guest TCP port on a host-allocated port.
+// Forward exposes a guest TCP port on a host port. Bind selects the host
+// listen address (default 127.0.0.1); HostPort 0 allocates an ephemeral port.
 type Forward struct {
-	GuestPort int `json:"guest_port"`
+	GuestPort int    `json:"guest_port"`
+	HostPort  int    `json:"host_port,omitempty"`
+	Bind      string `json:"bind,omitempty"`
 }
 
 // Proxy binds a guest loopback TCP port that forwards to an allowlisted

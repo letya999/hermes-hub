@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/uno"
 )
 
@@ -54,7 +56,7 @@ func fcGuestEnv(binding Binding, rt Runtime, port int, contextRoot string) map[s
 		}
 	}
 	for key, value := range map[string]string{
-		"HUB_RUNTIME_LISTEN":    "0.0.0.0:" + strconv.Itoa(port),
+		"HUB_RUNTIME_LISTEN":    "127.0.0.1:" + strconv.Itoa(port),
 		"HUB_RUNTIME_AUTH":      binding.runtimeAuth,
 		"API_SERVER_KEY":        binding.runtimeAuth,
 		"HUB_USER_ID":           binding.UserID,
@@ -81,10 +83,33 @@ func fcGuestEnv(binding Binding, rt Runtime, port int, contextRoot string) map[s
 	return values
 }
 
-// fcGuestBoot mounts the space share and prepares loopback relay aliases.
-const fcGuestBoot = "mkdir -p /persist && mountpoint -q /persist || mount -t virtiofs space /persist; " +
+// fcGuestBoot mounts the space share disk (first non-root virtio-blk drive)
+// and prepares loopback relay aliases.
+const fcGuestBoot = "mkdir -p /persist && (mountpoint -q /persist || mount -t ext4 /dev/vdb /persist); " +
 	"grep -q 'model-relay' /etc/hosts || echo '127.0.0.1 model-relay toolhub toolhub-relay egress-relay' >> /etc/hosts; " +
 	"mkdir -p /persist/managed && true"
+
+// ensureManagedInfraFC mirrors ensureManagedInfra but points the control
+// relay at the box's host forward on the agent-network gateway IP instead
+// of a docker container name.
+func (m *Manager) ensureManagedInfraFC(ctx context.Context, binding Binding, settings stack.Settings, container string, port int, generation string) (string, error) {
+	agentNet := managedAgentNetworkName(settings.User, m.environment())
+	out, err := m.command(ctx, "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", agentNet)
+	if err != nil {
+		return "", fmt.Errorf("managed agent network %s unavailable; run hubctl up for this space first", agentNet)
+	}
+	gateway := strings.TrimSpace(string(out))
+	if gateway == "" {
+		return "", fmt.Errorf("managed agent network %s has no gateway", agentNet)
+	}
+	if _, err := m.command(ctx, "network", "inspect", "--format", "{{.Id}}", controlNetworkName); err != nil {
+		if _, cerr := m.command(ctx, "network", "create", controlNetworkName); cerr != nil {
+			return "", fmt.Errorf("managed control network %s unavailable: %w", controlNetworkName, cerr)
+		}
+	}
+	target := "http://" + net.JoinHostPort(gateway, strconv.Itoa(port))
+	return gateway, m.spawnControlRelay(ctx, binding, container, port, generation, agentNet, target)
+}
 
 func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (ComputeObservation, error) {
 	m, binding, rt := f.m, request.Binding, request.Runtime
@@ -96,7 +121,8 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	lock := m.lockFor(runtimeKey(preparation))
 	lock.Lock()
 	defer lock.Unlock()
-	if err := m.ensureManagedInfra(ctx, binding, request.Settings, rt.Container, request.Port, rt.Generation); err != nil {
+	gateway, err := m.ensureManagedInfraFC(ctx, binding, request.Settings, rt.Container, request.Port, rt.Generation)
+	if err != nil {
 		return ComputeObservation{}, fmt.Errorf("managed topology: %w", err)
 	}
 	hostArgs, err := m.sandboxRelayHosts(ctx, request.Settings, binding.ContextRoot)
@@ -124,7 +150,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		RAMMB:    m.cfg.UnoBoxRAMMB,
 		VCPU:     m.cfg.UnoBoxVCPU,
 		Shares:   []uno.Share{{Tag: "space", HostPath: binding.ContextRoot}},
-		Forwards: []uno.Forward{{GuestPort: request.Port}},
+		Forwards: []uno.Forward{{GuestPort: m.cfg.RuntimePort, Bind: gateway, HostPort: request.Port}},
 		Proxies:  proxies,
 		Env:      map[string]string{"HUB_FC_PROXIES": strings.Join(ports, ",")},
 		Labels: map[string]string{
@@ -144,23 +170,26 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("guest boot: %w", err)
 	}
-	env := fcGuestEnv(binding, rt, request.Port, binding.ContextRoot)
+	env := fcGuestEnv(binding, rt, m.cfg.RuntimePort, binding.ContextRoot)
 	serve, err := f.client.Run(ctx, box.ID, uno.RunRequest{
-		Cmd:            "cd /persist && exec hub-runtime serve",
+		Cmd:            "cd /persist && setsid nohup hub-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & sleep 3; pgrep -f 'hub-runtime serve' >/dev/null",
 		Env:            env,
-		TimeoutSeconds: 10,
+		TimeoutSeconds: 15,
 		IdempotencyKey: "serve-" + rt.Generation,
-		WaitSeconds:    10,
+		WaitSeconds:    15,
 	})
 	if err != nil {
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("start runtime: %w", err)
 	}
-	if serve.Status == "failed" {
+	if serve.Status != "succeeded" {
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("start runtime: %s", serve.Stderr)
 	}
-	return ComputeObservation{ID: box.ID, Address: "http://" + box.Address}, nil
+	// Address stays the control-relay published loopback port — identical to
+	// the docker managed topology: supervisor -> 127.0.0.1:port -> relay ->
+	// agentNet gateway forward -> guest :RuntimePort.
+	return ComputeObservation{ID: box.ID, Address: rt.Address}, nil
 }
 
 func (f *firecrackerBackend) findBox(ctx context.Context, name string) (uno.Box, error) {

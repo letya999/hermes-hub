@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,7 +392,11 @@ func (b *box) dropConn(id uint32) {
 // startForwards opens a host TCP listener per forward rule -> guest :5001 dial.
 func (b *box) startForwards(req uno.LaunchRequest) error {
 	for _, f := range req.Forwards {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		bind := f.Bind
+		if bind == "" {
+			bind = "127.0.0.1"
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(f.HostPort)))
 		if err != nil {
 			return err
 		}
