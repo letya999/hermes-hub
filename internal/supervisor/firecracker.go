@@ -155,7 +155,10 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		Shares:   []uno.Share{{Tag: "space", HostPath: binding.ContextRoot}},
 		Forwards: []uno.Forward{{GuestPort: m.cfg.RuntimePort, HostPort: request.Port}},
 		Proxies:  proxies,
-		Env:      map[string]string{"HUB_FC_PROXIES": strings.Join(ports, ",")},
+		Env: map[string]string{
+			"HUB_FC_PROXIES": strings.Join(ports, ","),
+			"HUB_FC_INGRESS": strconv.Itoa(m.cfg.RuntimePort),
+		},
 		Labels: map[string]string{
 			"hermes.context":    binding.ContextID,
 			"hermes.principal":  binding.PrincipalID,
@@ -174,7 +177,9 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	// docker managed topology, just with a vsock upstream instead of a
 	// container name.
 	target := "vsock://" + strconv.Itoa(m.cfg.RuntimePort) + box.VsockUDS
-	if err := m.spawnControlRelay(ctx, binding, rt.Container, request.Port, rt.Generation, agentNet, target, filepath.Dir(box.VsockUDS)); err != nil {
+	// No host publish: the supervisor's inbound seam is the mini-Uno forward
+	// bound on request.Port; publishing the same port would collide.
+	if err := m.spawnControlRelay(ctx, binding, rt.Container, request.Port, rt.Generation, agentNet, target, filepath.Dir(box.VsockUDS), false); err != nil {
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("control relay: %w", err)
 	}

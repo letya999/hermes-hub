@@ -159,6 +159,9 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	if proxies := req.Env["HUB_FC_PROXIES"]; proxies != "" {
 		bootArgs += " fc.proxies=" + proxies
 	}
+	if ingress := req.Env["HUB_FC_INGRESS"]; ingress != "" {
+		bootArgs += " fc.ingress=" + ingress
+	}
 	var drives []any
 	drives = append(drives, map[string]any{"drive_id": "rootfs", "path_on_host": m.cfg.RootFS, "is_root_device": true, "is_read_only": false})
 	for i, sd := range shareDisks {
@@ -186,6 +189,18 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		return nil, fmt.Errorf("firecracker start: %w", err)
 	}
 	b.shareDisks = shareDisks
+	// The firecracker vsock UDS is root-owned; the supervisor's control relay
+	// sidecar (uid 10001) mounts this dir and dials it, so open it up.
+	go func() {
+		for i := 0; i < 100; i++ {
+			if _, err := os.Stat(b.udsPath()); err == nil {
+				_ = os.Chmod(b.dir, 0o755)
+				_ = os.Chmod(b.udsPath(), 0o666)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
 	go func() {
 		b.proc.Wait()
 		b.mu.Lock()

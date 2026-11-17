@@ -271,6 +271,47 @@ func runFCAgent(_ context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Ingress ports: "CONNECT <port>" on the vsock UDS lands on a guest vsock
+	// listener; bridge it to the same TCP port on guest loopback so host-side
+	// relays reach guest services without a guest NIC.
+	ingress := os.Getenv("HUB_FC_INGRESS")
+	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+		for _, field := range strings.Fields(string(cmdline)) {
+			if v, ok := strings.CutPrefix(field, "fc.ingress="); ok {
+				ingress = v
+			}
+		}
+	}
+	for _, p := range strings.Split(ingress, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		var port uint32
+		if _, err := fmt.Sscanf(p, "%d", &port); err != nil || port == 0 {
+			return fmt.Errorf("fc ingress port %q invalid", p)
+		}
+		ln, err := fcVsockListen(port)
+		if err != nil {
+			return err
+		}
+		go func(ln *vsockLn, port uint32) {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					target, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+					if err != nil {
+						c.Close()
+						return
+					}
+					fcBridge(c, target)
+				}()
+			}
+		}(ln, port)
+	}
 	mux := &fcMux{targets: map[uint32]net.Conn{}}
 	go func() {
 		for {
