@@ -95,10 +95,14 @@ type Error struct {
 	Ambiguous bool // submit may have landed; safe to replay by idempotency key
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("uno %s: %s (status %d)", e.Op, e.Message, e.Status) }
+func (e *Error) Error() string {
+	return fmt.Sprintf("uno %s: %s (status %d)", e.Op, e.Message, e.Status)
+}
 
 // Retryable reports whether the caller may retry after a short delay.
-func (e *Error) Retryable() bool { return e.Ambiguous || e.Status == 0 || e.Status >= 500 || e.Status == 429 }
+func (e *Error) Retryable() bool {
+	return e.Ambiguous || e.Status == 0 || e.Status >= 500 || e.Status == 429
+}
 
 var ErrNotFound = errors.New("uno: not found")
 

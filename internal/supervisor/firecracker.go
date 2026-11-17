@@ -110,7 +110,10 @@ func fcGuestEnv(m *Manager, binding Binding, rt Runtime, port int, settings stac
 
 // fcMount is one bind inside the guest: src lives under the space share
 // (/persist maps the host space dir), dst matches the docker contract.
-type fcMount struct{ dst, src string; ro bool }
+type fcMount struct {
+	dst, src string
+	ro       bool
+}
 
 // fcGuestMounts reproduces managedRunArgs' filesystem contract as guest
 // bind-mounts. Host sources must stay under the space dir — a mount that

@@ -9,8 +9,17 @@ import (
 	"net/http"
 )
 
-// Config is a placeholder on non-Linux builds.
-type Config struct{}
+// Config mirrors the Linux daemon fields so cmd/mini-uno compiles everywhere.
+type Config struct {
+	Listen      string
+	Token       string
+	Kernel      string
+	RootFS      string
+	WorkDir     string
+	ForwardBase string
+	FCBin       string
+	VirtioFSD   string
+}
 
 // Manager reports unsupported on non-Linux builds.
 type Manager struct{}

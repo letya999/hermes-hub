@@ -14,8 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -44,20 +44,20 @@ type Config struct {
 
 // box is one managed VM.
 type box struct {
-	mu     sync.Mutex
-	box    uno.Box
-	proc   *exec.Cmd
-	dir    string
-	cid    uint32
-	uds    string
-	exited chan struct{}
-	errMsg string
-	fwds   []net.Listener
-	mux    net.Conn
-	muxMu  sync.Mutex
-	runs   map[string]*uno.Run
-	conns  map[uint32]net.Conn
-	proxies map[int]string
+	mu         sync.Mutex
+	box        uno.Box
+	proc       *exec.Cmd
+	dir        string
+	cid        uint32
+	uds        string
+	exited     chan struct{}
+	errMsg     string
+	fwds       []net.Listener
+	mux        net.Conn
+	muxMu      sync.Mutex
+	runs       map[string]*uno.Run
+	conns      map[uint32]net.Conn
+	proxies    map[int]string
 	shareDisks []shareDisk
 }
 

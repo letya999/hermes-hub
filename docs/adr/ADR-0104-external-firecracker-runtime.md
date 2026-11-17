@@ -1,3 +1,7 @@
+---
+description: External Firecracker microVM backend via Uno-style control plane.
+last_verified: 2026-11-17
+---
 # ADR-0104: External Firecracker runtime backend
 
 ## Status

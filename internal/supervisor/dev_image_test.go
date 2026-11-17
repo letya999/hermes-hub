@@ -112,7 +112,7 @@ func TestControlRelaySelectsDevRuntimeImage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "generated", "dev-runtime-image"), []byte(image+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.spawnControlRelay(context.Background(), binding(root), "runtime", 8091, "generation", "agent-net"); err != nil {
+	if err := m.spawnControlRelay(context.Background(), binding(root), "runtime", 8091, "generation", "agent-net", "http://runtime:8080", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if len(run) < 2 || run[len(run)-2] != image {
