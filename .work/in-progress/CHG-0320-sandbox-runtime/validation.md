@@ -5,7 +5,7 @@ last_verified: 2026-11-17
 # Local verification
 
 The [spike](spike.md) and ADR-0103 were committed as e092c9c6 before code changes.
-Implementation stays local; no remote source/image publication or CI acceptance.
+Remote acceptance on the draft PR is recorded at the end of this document.
 
 Named regression coverage: runtime selection/availability and absence of fallback,
 private relay alias validation/collision, actual supervisor launch arguments,
@@ -24,9 +24,9 @@ full Go/security analysis. No Go dependency changes were needed.
 
 After the managed-live additions, `go test -short ./internal/devcheck`,
 `just test ./internal/devcheck` and `go vet -p=2 ./internal/devcheck` passed.
-A final `just check` reached the docs gate and failed on pre-existing stale
-`.work/index.md` links to dozens of absent `in-progress` CHG plans; `.work/index.md`
-is unchanged in this diff and the failure is unrelated to the sandbox changes.
+An early `just check` reached the docs gate and failed on pre-existing stale
+`.work/index.md` links to dozens of absent `in-progress` CHG plans; those rows
+were repointed to the `done/` plan locations and the gate now passes.
 
 ## Additional real Docker observations
 
@@ -109,3 +109,23 @@ Docker results remain qualified exactly as recorded in the spike. Neither mocks
 nor names in Docker/RuntimeClass metadata prove that a host administrator
 configured a real sandbox. Full CI, race/shuffle/coverage and deployment
 acceptance remain remote gates.
+
+## Remote acceptance (draft PR #549)
+
+Draft PR <https://github.com/letya999/hermes-hub/pull/549> on branch
+`test/m9-sandbox-mock-channel` was validated without merging into `dev`. The
+first run exposed gate debt accumulated by the unpublished M9 wave: stale
+`.work/index.md` links (fixed by repointing rows to `done/` plans), staticcheck
+findings across merged M9 files, five gosec findings (fixed with a relay-file
+base-name guard, a RuntimePort ≤65535 bound and per-site `#nosec`
+justifications), and merged coverage of 84.48% against the 85% floor (restored
+with regression tests for fail-closed, authorization, lifecycle, persistence
+and malformed-input paths; merged local estimate 85.09%).
+
+Full workflow run <https://github.com/letya999/hermes-hub/actions/runs/44075592994>
+on source SHA `b78d6bcf` completed `success`: lint (staticcheck + gosec),
+coverage floor, all four checks shards, docs-config, security, gitleaks,
+dependency-review, credential-broker, every image build and all twenty
+container-gates (dev/prod × gateway/smoke/network/scratch/native/capabilities/
+m32/supervisor/bench/managed). `main-source` is skipped on non-main branches
+by design. The PR remains an open draft; no merge into `dev` was performed.

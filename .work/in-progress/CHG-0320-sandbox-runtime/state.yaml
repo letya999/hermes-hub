@@ -11,6 +11,6 @@ validation:
   live_runsc: passed_docker_and_kubernetes
   live_kata: cloud_hypervisor_managed_docker_passed_qemu_blocked
   live_mock_channel: passed_all_docker_runtimes_and_fail_closed
-  check: blocked_by_stale_work_index_links
+  check: passed
   affected_packages: passed
-  remote_ci: not_run
+  remote_ci: passed_draft_pr_549_run_44075592994
