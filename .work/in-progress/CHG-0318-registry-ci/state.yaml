@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0318
+title: Registry-agnostic GitLab CI
+status: in_progress
+branch: feat/m9-registry-ci
+updated: 2026-11-17
+phase: implementation
+github_issue: 351
+validation:
+  local_contracts: pending
+  local_registry_kind: pending
+  remote_pipeline: not_run
+remaining:
+  - Complete local gates and registry-to-kind acceptance.
+  - Target GitLab CI Lint and pipeline execution require an operator-configured mirror and runner.

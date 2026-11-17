@@ -17,6 +17,7 @@ last_verified: 2026-11-17
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |
+| [ci-mirror.md](ci-mirror.md) | One-way repository mirror, registry-agnostic GitLab gates/publication and optional Helm deploy |
 | [runtime-operations.md](runtime-operations.md) | Runtime images, supervisor lifecycle, rollout and preparation |
 | [glossary.md](glossary.md) | Canonical terms — feature, tool, toolset, capability, connector, backend/`via` |
 

@@ -151,6 +151,8 @@ func run(args []string) error {
 		err = devcheck.DockerPull(context.Background(), args[1], args[2])
 	case len(args) == 2 && args[0] == "docker-publish":
 		err = devcheck.DockerPublish(context.Background(), args[1])
+	case len(args) == 4 && args[0] == "docker-publish-to":
+		err = devcheck.DockerPublishTo(context.Background(), args[1], args[2], args[3])
 	case len(args) == 1 && args[0] == "docker-clean":
 		err = devcheck.DockerClean(context.Background(), ".", false)
 	case len(args) == 2 && args[0] == "docker-clean" && args[1] == "--deep":
