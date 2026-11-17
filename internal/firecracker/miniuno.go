@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -56,6 +57,28 @@ type box struct {
 	runs   map[string]*uno.Run
 	conns  map[uint32]net.Conn
 	proxies map[int]string
+	shareDisks []shareDisk
+}
+
+// shareDisk is one per-box ext4 image attached as a virtio-blk drive.
+type shareDisk struct {
+	img string
+	dev string
+	src string
+	ro  bool
+}
+
+// shareSizeMB sizes the seed image: directory contents + 30% headroom.
+func shareSizeMB(dir string) int {
+	out, err := exec.Command("du", "-sm", dir).Output()
+	mb := 128
+	if err == nil {
+		var du int
+		if _, err := fmt.Sscanf(string(out), "%d", &du); err == nil && du > 0 {
+			mb = du
+		}
+	}
+	return mb + mb/3 + 64
 }
 
 // Manager owns all boxes on this host.
@@ -70,7 +93,7 @@ type Manager struct {
 
 // NewManager validates config and returns a manager.
 func NewManager(cfg Config) (*Manager, error) {
-	for _, p := range []string{cfg.Kernel, cfg.RootFS, cfg.FCBin, cfg.VirtioFSD} {
+	for _, p := range []string{cfg.Kernel, cfg.RootFS, cfg.FCBin} {
 		if p == "" {
 			return nil, errors.New("firecracker: kernel, rootfs, fc binary and virtiofsd paths are required")
 		}
@@ -113,42 +136,37 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	if err != nil {
 		return nil, err
 	}
-	var fsd []*exec.Cmd
-	var devs []fsDev
+	// Shares are per-box ext4 disk images seeded from the host directory —
+	// a real virtio-blk device (PVC-equivalent). On delete, rw shares are
+	// synced back to their source directory.
+	var shareDisks []shareDisk
 	os.Remove(b.udsPath())
 	for i, sh := range req.Shares {
-		sock := filepath.Join(b.dir, fmt.Sprintf("vfs-%d.sock", i))
-		os.Remove(sock)
-		vc := exec.Command(m.cfg.VirtioFSD, "--socket-path", sock, "--shared-dir", sh.HostPath, "--thread-pool-size", "2")
-		vc.Stdout, vc.Stderr = os.Stderr, os.Stderr
-		if err := vc.Start(); err != nil {
-			return nil, fmt.Errorf("virtiofsd %s: %w", sh.HostPath, err)
+		img := filepath.Join(b.dir, fmt.Sprintf("share-%d.img", i))
+		sizeMB := shareSizeMB(sh.HostPath)
+		out, err := exec.CommandContext(ctx, "mkfs.ext4", "-q", "-d", sh.HostPath, "-b", "4096", img, fmt.Sprintf("%dM", sizeMB)).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("share image %s: %w: %s", sh.HostPath, err, strings.TrimSpace(string(out)))
 		}
-		fsd = append(fsd, vc)
-		devs = append(devs, fsDev{sock: sock, tag: sh.Tag})
+		shareDisks = append(shareDisks, shareDisk{img: img, dev: fmt.Sprintf("/dev/vd%c", 'b'+i), src: sh.HostPath, ro: sh.ReadOnly})
 	}
 	cleanup := func() {
-		for _, vc := range fsd {
-			vc.Process.Kill()
-		}
 		os.RemoveAll(b.dir)
 	}
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/fc-init"
 	if proxies := req.Env["HUB_FC_PROXIES"]; proxies != "" {
 		bootArgs += " fc.proxies=" + proxies
 	}
+	var drives []any
+	drives = append(drives, map[string]any{"drive_id": "rootfs", "path_on_host": m.cfg.RootFS, "is_root_device": true, "is_read_only": false})
+	for i, sd := range shareDisks {
+		drives = append(drives, map[string]any{"drive_id": fmt.Sprintf("share%d", i), "path_on_host": sd.img, "is_root_device": false, "is_read_only": sd.ro})
+	}
 	cfg := map[string]any{
 		"boot-source":    map[string]any{"kernel_image_path": m.cfg.Kernel, "boot_args": bootArgs},
-		"drives":         []any{map[string]any{"drive_id": "rootfs", "path_on_host": m.cfg.RootFS, "is_root_device": true, "is_read_only": false}},
+		"drives":         drives,
 		"machine-config": map[string]any{"vcpu_count": req.VCPU, "mem_size_mib": req.RAMMB},
 		"vsock":          map[string]any{"guest_cid": b.cid, "uds_path": b.udsPath()},
-	}
-	if len(devs) > 0 {
-		var fs []any
-		for i, d := range devs {
-			fs = append(fs, map[string]any{"fs_id": fmt.Sprintf("fs%d", i), "shared_dir": req.Shares[i].HostPath, "socket": d.sock, "tag": d.tag})
-		}
-		cfg["fs"] = fs
 	}
 	raw, _ := json.Marshal(cfg)
 	cfgPath := filepath.Join(b.dir, "fc.json")
@@ -165,14 +183,12 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		cleanup()
 		return nil, fmt.Errorf("firecracker start: %w", err)
 	}
+	b.shareDisks = shareDisks
 	go func() {
 		b.proc.Wait()
 		b.mu.Lock()
 		if b.status() == "running" || b.status() == "provisioning" {
 			b.setStatus("failed", "vm exited")
-		}
-		for _, vc := range fsd {
-			vc.Process.Kill()
 		}
 		b.mu.Unlock()
 		close(b.exited)
@@ -488,8 +504,32 @@ func (m *Manager) Delete(id string) bool {
 		b.mux.Close()
 	}
 	<-b.exited
+	for _, sd := range b.shareDisks {
+		syncShareBack(sd)
+	}
 	os.RemoveAll(b.dir)
 	return true
+}
+
+// syncShareBack loop-mounts the share image and copies contents back to
+// the source directory so guest writes reach the host space dir.
+func syncShareBack(sd shareDisk) {
+	if sd.ro {
+		return
+	}
+	mnt, err := os.MkdirTemp("", "fc-share-")
+	if err != nil {
+		return
+	}
+	defer os.Remove(mnt)
+	if out, err := exec.Command("mount", "-o", "loop", sd.img, mnt).CombinedOutput(); err != nil {
+		log.Printf("mini-uno: share mount %s: %v: %s", sd.img, err, strings.TrimSpace(string(out)))
+		return
+	}
+	defer exec.Command("umount", mnt).Run()
+	if out, err := exec.Command("cp", "-a", mnt+"/.", sd.src+"/").CombinedOutput(); err != nil {
+		log.Printf("mini-uno: share sync back %s: %v: %s", sd.img, err, strings.TrimSpace(string(out)))
+	}
 }
 
 // SubmitRun records and executes a run; idempotent by key.
