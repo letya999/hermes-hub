@@ -566,7 +566,7 @@ func (m *Manager) load() error {
 	if backend == "" {
 		backend = "docker"
 	}
-	if backend != "docker" && backend != "kubernetes" {
+	if backend != "docker" && backend != "kubernetes" && backend != "firecracker" {
 		return errors.New("invalid persisted execution backend")
 	}
 	runtime := state.ContainerRuntime
