@@ -191,7 +191,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	// No pgrep in the guest image: the readiness proof is the :RuntimePort
 	// listener itself (hex port in /proc/net/tcp).
 	serve, err := f.client.Run(ctx, box.ID, uno.RunRequest{
-		Cmd:            "cd /persist && setsid nohup hub-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & sleep 3; grep -qi ':" + fmt.Sprintf("%04X", m.cfg.RuntimePort) + " ' /proc/net/tcp",
+		Cmd:            "cd /persist && setsid nohup /usr/local/bin/hub-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & sleep 3; grep -qi ':" + fmt.Sprintf("%04X", m.cfg.RuntimePort) + " ' /proc/net/tcp",
 		Env:            env,
 		TimeoutSeconds: 15,
 		IdempotencyKey: "serve-" + rt.Generation,
