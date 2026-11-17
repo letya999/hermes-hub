@@ -14,11 +14,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 ## In progress
 
+| Change | Summary |
+|---|---|
+| [CHG-0317](in-progress/CHG-0317-portable-helm/plan.md) | M9 #352 portable Helm chart; M9 prerequisites integrated, local gates green, kind five-service/status/metrics/TLS/persistence acceptance passed; runtime Pods and full channel/policy/monitoring acceptance remain |
 | [CHG-0311](in-progress/CHG-0311-egress-proxy-slack-socket/plan.md) | M9 egress proxy and Slack Socket Mode; live acceptance pending |
 | [CHG-0312](in-progress/CHG-0312-observability-status-metrics-backup/plan.md) | M9 status, metrics, bounded alerts and backup drills |
 | [CHG-0313](in-progress/CHG-0313-iam-identity-boundary/plan.md) | M9 verified principal boundary and OIDC channel linking |
-| Change | Summary |
-|---|---|
 | [CHG-0308](in-progress/CHG-0308-hot-ledger-sidecar/plan.md) | Hot ledger off the registry commit channel: broker cursors move to a CursorStore sidecar (JSON temp+rename, 60s flush), heartbeats persist on transition only, lifecycle tick 1s→15s — fixes /v1/rights/decide starvation → agent 403s (repeat of the CHG-0305 class) |
 | [CHG-0310](in-progress/CHG-0310-m30-reliable-execution/plan.md) | M30 reliable multi-user execution (#397–#400): atomic durable model-attempt budgets + UnknownTokens (#400), supervisor-verified run correlation on the call path (#397), stable write-operation correlation fence + cleanup outcome + operator egress (#398), post-admission dispatch + bounded recovery fan-out (#399) — existing state owners, no new contracts |
 

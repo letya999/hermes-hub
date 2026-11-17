@@ -1,12 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: "2026-11-15"
+last_verified: "2026-11-17"
 ---
 # Decisions
 
-| [ADR-0100](ADR-0100-verified-principal-boundary.md) | Accepted: verified-principal boundary and provider-independent identity (M9 #52) |
 | Record | Decision |
 |---|---|
+| [ADR-0100](ADR-0100-verified-principal-boundary.md) | Accepted: verified-principal boundary and provider-independent identity (M9 #52) |
 | [ADR-0099](ADR-0099-connector-slot-fsm.md) | Accepted: one live onboarding per owner/definition, four-stage lifecycle plus a single gate slot, derived you_must/delivery contract, channel-confirmed delivery |
 | [ADR-0098](ADR-0098-durable-connector-state.md) | Accepted: canonical onboarding, Broker event reconciliation, versioned durable notices and incremental SQLite registry commits |
 | [ADR-0097](ADR-0097-m32-bounded-delivery.md) | Accepted — delivered M32: m32 bounded delivery; 2026-11-05 amendment replaces foundation stage with verified direct merge to dev; one automation ownership switch |

@@ -1,6 +1,6 @@
 ---
 description: Slack App channel — Events API + Socket Mode ingress, workspace mapping, limits.
-last_verified: 2026-11-16
+last_verified: 2026-11-17
 ---
 
 # Channel: Slack (Events API / Socket Mode)

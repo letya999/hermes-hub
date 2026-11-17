@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-16
+last_verified: 2026-11-17
 ---
 
 # Operations
@@ -10,6 +10,87 @@ config vocabulary is in docs/spaces.md; per-service internals in
 docs/services/. This file is procedures only.
 
 ## Stack lifecycle
+
+### Kubernetes control plane
+
+`deploy/helm/hermes-hub` packages five single-replica services: communication-hub,
+supervisor, ToolHub, credential-broker and cliproxy. Images, runtime class, storage,
+ingress, network policy and monitoring come from values, without assumptions about
+registry, ingress controller, storage implementation or secret provider. Keep real
+environment overrides private; `values-kind.yaml` is a synthetic local example.
+Verify templates with `just helm-check`.
+
+Prepare these namespaced Secrets and persistent state before installation:
+
+- `hermes-hub-control`: distinct high-entropy `runtime-token`, `supervisor-token`,
+  `communication-token`. Never pass values through Helm values, `--set`, argv or
+  release metadata. `secretEnv` selects individual keys rather than importing all.
+- `hermes-hub-communication`: published `communication.yaml`, with user roots
+  under `/data/spaces/<id>` and spool at `/spool`. Set gateway `HUB_USER_ID` and
+  ToolHub identity to the provisioned principal. Multi-user installations also
+  need their enrolled token file and corresponding service env paths.
+- `hermes-hub-channels`: `telegram-bot-token` for the current gateway's required
+  Telegram transport. Add Slack bot/app Secret references only when enabling Slack.
+- `hermes-hub-broker`: reviewed `config.json`, `master.key`, `tls.crt`, `tls.key`;
+  add trusted signing public keys and reviewed contracts through `configItems`
+  paths. Use native TLS, the correct public origin, trusted callers and approved
+  providers. Place durable state below `/var/lib/credential-broker`, the independent
+  witness below `/var/lib/credential-broker-recovery/state`, and ephemeral runtime
+  material under `/tmp`. Never enable development HTTP for Pods. The chart copies
+  projected files into an owned private memory directory as regular `0600` files.
+- `hermes-hub-cliproxy`: reviewed `config.yaml`, auth directory `/cliproxy/auths`;
+  provision sessions through the approved credential path.
+- Hydrate the spaces PVC with published spaces and the existing ToolHub store at
+  `HUB_TOOLHUB_STORE`. Configure ToolHub's two broker clients and the gateway's
+  approval client through their existing `HUB_CREDENTIAL_BROKER_*` env/file contract
+  when enabled. The chart does not invent accounts, grants or a blank production store.
+
+Alternatively `externalSecrets` accepts remote references and an existing SecretStore.
+The ExternalSecret v1 CRD/operator must already exist; the chart installs neither
+operators nor store credentials. Rotate Secrets externally, then restart affected
+Deployments to refresh env and private file copies.
+
+```bash
+helm upgrade --install hub deploy/helm/hermes-hub --namespace hermes-hub \
+  --create-namespace --values /private/control-plane-values.yaml --wait --timeout 5m
+kubectl -n hermes-hub get deployments,pvc,networkpolicy
+```
+
+PVCs survive uninstall; `existingClaim` reuses prepared storage. Single writers use
+Recreate. Default co-location with supervisor permits shared RWO spaces/spool claims;
+use compatible RWX storage and `colocate: false` to distribute Pods. This is not HA
+or multi-writer storage. Back up state and independent broker recovery before upgrades.
+Empty `runtimeClassName` omits the field and uses the cluster default (normally runc);
+a nonempty value requires an installed RuntimeClass and reaches these control-plane Pods.
+
+Ingress is opt-in and serves human routes only, using ToolHub's separate public
+listener. Set private host, TLS, controller authentication annotations, permitted
+paths and ingress-controller selectors. Keep `/v1` private. NetworkPolicy permits
+DNS, explicit service edges and public HTTPS for gateway/cliproxy only. It requires
+an enforcing CNI. Standard policies cannot allowlist FQDNs: for mandatory egress,
+set `publicHTTPS: false`, configure `HUB_EGRESS_PROXY`, and permit only its exact
+destination/port through per-service `extraEgress`. Telegram polling and Slack Socket
+Mode (`SLACK_TRANSPORT=socket`, bot/app tokens via `secretEnv`) need no public webhook.
+
+ServiceMonitor requires its CRD and matching monitoring selectors. It scrapes the
+implemented gateway/supervisor `/v1/metrics` with separate Secret Bearer references;
+other services have no invented metrics endpoint. TCP probes prove listener
+availability. Authenticated `/v1/status` and metrics remain separate acceptance gates.
+
+For local acceptance create an isolated kind/k3d cluster, build source images through
+scoped `hubctl build`, and load core/control images with `kind load docker-image
+--name hermes-helm <core-image> <control-image>`. Install synthetic state/Secrets and
+the chart with `--kube-context kind-hermes-helm -f deploy/helm/hermes-hub/values-kind.yaml`.
+Use explicit context on all commands. Record source SHA/image IDs; verify authenticated
+status/metrics, unauthenticated 401, restart persistence, DNS/TLS channel API egress
+and policy denial on an enforcing CNI. TLS reachability does not prove account delivery;
+real channel acceptance requires provisioned accounts and explicit sends.
+
+The supervisor currently spawns Docker containers. Native runtime Pods (#58), runtime
+RuntimeClass propagation, per-space model relays, workload-controller and media
+deployments remain separate work. This chart grants no Kubernetes API authority,
+mounts no Docker socket/hostPath and runs no privileged compatibility daemon.
+An empty-runtime status response does not prove a functioning agent deployment.
 
 `hubctl --user <id> --env dev|prod` (prod default; `--dir spaces/<id>` is the
 explicit form). `render` writes generated files under `spaces/<user>/

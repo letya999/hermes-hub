@@ -1,0 +1,45 @@
+schema: 1
+change: CHG-0317
+title: Portable control-plane Helm chart
+status: in_progress
+branch: feat/m9-helm
+updated: 2026-11-17
+phase: acceptance
+github_milestone: MVP M9 — Enterprise Readiness
+github_issue: 352
+implementation_status: complete
+validation:
+  documents: passed
+  just_check: passed
+  helm_contract: passed
+  affected_packages: passed_after_scoped_recheck
+  actionlint: passed
+  gitleaks_chart: passed
+  security: passed
+  live_acceptance: partial
+evidence:
+  - Original checkout at d7009047 preserved with its uncommitted work.
+  - Integrated origin/dev 6505d5aa and local dev/M30, then egress b8c4f342, observability 3a874498 and IAM d7009047 in a managed worktree.
+  - Scoped Go vet of communication, supervisor, netguard, iam and hubctl passed after conflict resolution.
+  - "Production source base: 3356e9f08dde57395001e2c1e6b15ddbf9bb3d48; subsequent changes are chart, tests, CI and documentation. No remote workflow/run URL exists for these changes."
+  - "hubctl build --dir .work/tmp/helm/spaces/checker --env dev communication-hub toolhub passed; no personal Compose service was recreated."
+  - "Core image: sha256:4d8d88409df881f38b4b5bcf1f7c3708b8bbbf3ccbfbec9a43a4d870764328a3; control image: sha256:4cbae08d10d3f072abae49b58e33ed1d01c5fd2d9a2c535d03c137b47eabde19."
+  - "Helm 3.19.0 lint/template and TestHelmChartContract passed; Kubernetes 1.34 server admission accepted all 20 base resources in a restricted namespace. Server validation caught and removed an invalid IPv4-mapped IPv6 policy exception."
+  - "kind hermes-helm: Helm install then upgrade --wait passed; all five Deployments ready. Five retained PVCs bound. All five Deployments restarted successfully; spaces and spool canaries survived."
+  - "Real gateway and supervisor /v1/status and /v1/metrics returned 200 with synthetic Bearer credentials, 401 without. No runtime or provider action was invoked. Gateway routines=unavailable on the minimal synthetic state; this is not a green end-to-end system."
+  - "From the gateway Pod, DNS and certificate-verified TLS egress to api.telegram.org and slack.com passed. Channel polling used a deliberately disabled local endpoint; no real login or message delivery was attempted."
+  - "Broker /healthz returned status=ok over native TLS, with its generated CA and expected DNS name verified; no TLS, Host/Origin, audit or authorization bypass. Reviewed local fixture contract and ephemeral trust key only."
+  - "Affected-package just test passed for devcheck, communication, supervisor, netguard, iam, identity, contextlife, stack and hubctl across the final scoped runs. The initial run had a CI YAML indentation error (fixed) and a communication 300s timeout under concurrent image build; the named test passed alone and the full communication recheck passed in 152.814s."
+  - "Final just helm-check, just check, actionlint and git diff --check passed. just security passed: govulncheck and browser dependency audit found no vulnerabilities. Scoped gitleaks found no leaks."
+  - "Packaged hermes-hub-0.1.0.tgz under ignored .work/tmp/helm; fixture files, credentials, manifests and detailed test output stay ignored."
+  - "After verification the isolated kind hermes-helm cluster and its synthetic Secrets/state were deleted; no personal stack was stopped."
+remaining:
+  - Native spawned runtime Pod backend and runtime-class propagation require issue 58.
+  - Complete production-state provisioning and verify routines readiness.
+  - Real Slack Socket Mode and Telegram account delivery need provisioned credentials and explicit test sends.
+  - Verify NetworkPolicy denial on an enforcing CNI and live discovery by an installed monitoring operator.
+limitations:
+  - Supervisor currently has a Docker compute backend; the chart does not implement issue 58.
+  - Default kind networking does not prove NetworkPolicy enforcement; CRD/operator integrations were rendered, not installed.
+  - "Issue 352 remains open and this CHG stays in progress: code packaging is complete, full deployment acceptance is not."
+  - Unpublished local commits have no remote acceptance or published image/run URL.

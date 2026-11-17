@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-16
+last_verified: 2026-11-17
 ---
 # Documentation
 
@@ -65,7 +65,7 @@ last_verified: 2026-11-16
 | Document | Purpose |
 |---|---|
 | [adr/index.md](adr/index.md) | Append-only decisions and explicitly marked proposals |
-| [M32 execution](../.work/in-progress/CHG-0281-m32-per-space-memory-plane/parallel-work.md) | Small foundation and issue-sized current read sets; planned work, not completed system behavior |
+| [M32 execution archive](../.work/done/CHG-0281-m32-per-space-memory-plane/parallel-work.md) | Historical delivery slices and issue-sized read sets; current behavior lives in docs/ |
 
 Evidence and dated acceptance results live with their change records under
 `.work/done/CHG-*/` — docs/ describes the current system, not its history.

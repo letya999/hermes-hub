@@ -1,6 +1,6 @@
 ---
 description: Telegram bot channel — adapter contract, file/usage/voice surfaces, QR auth page, limits.
-last_verified: 2026-11-16
+last_verified: 2026-11-17
 ---
 
 # Channel: Telegram (bot API)

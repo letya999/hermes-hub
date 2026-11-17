@@ -1,0 +1,19 @@
+{{- range $name, $claim := .Values.persistence }}
+{{- if not $claim.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hub.name" $ }}-{{ $name | lower }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: {{ toJson $claim.accessModes }}
+  {{- if ne $claim.storageClass nil }}
+  storageClassName: {{ $claim.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $claim.size }}
+{{- end }}
+{{- end }}
