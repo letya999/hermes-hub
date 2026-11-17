@@ -14,13 +14,19 @@ script isolation, operator cell runtime configuration and real Helm rendering.
 Test-critic self-review (retained authoring context) traced entrypoints, forbidden
 effects and independent expected values; this is not independent review.
 
-Local just check, stack/devcheck affected-package tests and scoped vet passed.
-The first ToolHub package run failed while compiling its Linux bridge because
-Windows denied compile.exe execution. Its named regression and subsequent full
-package run passed (131.690 s). Supervisor final package passed (119.966 s).
-Opengrep's bundled generic rules reported no findings/parse errors on the selected
-production files; this limited rule pack does not replace CI's full Go/security
-analysis. No Go dependency changes were needed.
+Earlier local `just check`, stack/devcheck affected-package tests and scoped
+vet passed. The first ToolHub package run failed while compiling its Linux
+bridge because Windows denied compile.exe execution. Its named regression and
+subsequent full package run passed (131.690 s). Supervisor final package passed
+(119.966 s). Opengrep's bundled generic rules reported no findings/parse errors
+on the selected production files; this limited rule pack does not replace CI's
+full Go/security analysis. No Go dependency changes were needed.
+
+After the managed-live additions, `go test -short ./internal/devcheck`,
+`just test ./internal/devcheck` and `go vet -p=2 ./internal/devcheck` passed.
+A final `just check` reached the docs gate and failed on pre-existing stale
+`.work/index.md` links to dozens of absent `in-progress` CHG plans; `.work/index.md`
+is unchanged in this diff and the failure is unrelated to the sandbox changes.
 
 ## Additional real Docker observations
 
@@ -36,8 +42,70 @@ positive testing. A Go fixture executable repeatedly overwritten on a Windows
 bind mount produced corrupt executable views; copying the completed binary into
 the daemon's Linux filesystem fixed the fixture. No production workaround added.
 
-Managed Hermes acceptance and cleanup are pending. QEMU guest-agent readiness
-failed locally; Cloud Hypervisor cell PoC and its one external egress timeout
-remain qualified exactly as recorded in the spike. Neither mocks nor names in
-Docker/RuntimeClass metadata prove that a host administrator configured a real
-sandbox. Full CI, race/shuffle/coverage and deployment acceptance remain remote gates.
+## Managed live acceptance
+
+`internal/devcheck/managed_supervisor_integration.go` is parameterized by
+`HUB_CONTAINER_RUNTIME`; it asserts the spawned Docker `HostConfig.Runtime`,
+keeps primary, secondary and respawned control relays on `runc`, rejects
+host-gateway shortcuts and requires the reviewed
+`toolhub`/`model-relay`/`egress-relay` aliases.
+
+The canary's first gate is now a real mock-channel run: it starts a production
+`communication.Gateway` (durable spool, dispatch workers, delivery loop) in
+supervised mode against the in-process supervisor handler with a dead Telegram
+endpoint, posts `/v1/mock/message` with a stable `client_id`, and the admitted
+`mock-…` job itself cold-spawns the managed runtime through supervisor
+`/v1/jobs`. The durable `mock-sent` receipt and `mappings/<job>.json` must show
+`completed` with nonempty run/session identities and matching
+principal/task/channel/chat; re-submitting the same `client_id` must return the
+same job/task and produce exactly one delivery file. The Hermes reply runs
+through the model-relay SSE fixture. Lifecycle assertions then reuse the
+spawned runtime: workspace marker, second-space alias/network parity, marker
+persistence and selected-runtime retention after reap/respawn, plus teardown.
+
+On the isolated Docker daemon with exact image revision
+`590d352e7cdf63dfb509ecd1795206a3a7184f69`, the strengthened full managed
+canary — mock-channel gate included — passed for `runc`, `runsc` and `kata`
+(`mock-a012…`→`run_1e08…`, `mock-3bcf6…`→`run_f16a…`, `mock-d001…`→`run_c2a8…`;
+all `completed`). The Kata result is Cloud Hypervisor on this KVM fixture, not
+QEMU. Selecting `kata` on the main daemon, where that runtime is not
+registered, failed closed through the same real channel: supervisor `/v1/jobs`
+answered `503 runtime unavailable` with `X-Hub-Admission: not-dispatched` on
+every attempt, the gateway retried within the four-minute cold-start budget and
+the job ended `failed` (named outcome, not uncertain). The canary exited with
+`mock channel admission: mock channel job terminated without delivery: failed`;
+no runtime or relay container was spawned and no `runc` fallback was attempted.
+
+On the isolated kind fixture, `substrate-runtimes` scheduled the managed runtime
+Pod with `runtimeClassName=runsc` while the relay Pod stayed unclassified. The
+runtime passed `/readyz` and completed a real `/v1/execute` marker request with
+`kubernetes runtime received message`. A reap/respawn produced `gen-4`, again
+with `runtimeClassName=runsc`; relay remained on the default runtime.
+
+The purpose-built publisher twice saw `HTTP 200` followed by
+`uncertain/run.unknown` after stream loss. Production fail-closed behavior kept
+the runtime busy and refused teardown while the business outcome was
+unconfirmed; observing the exact run through runtime control returned
+`completed`. `ExpireUncertain` then settled `gen-3`/`gen-4` through the durable
+cancel/observe path, `Reap` removed compute Pods and generation Secrets, and the
+publisher's `suspend` stage passed. PVCs and NetworkPolicies remained only as
+the persistent space substrate by design; fixture cleanup then deleted those
+synthetic objects, leaving `substrate-runtimes` empty.
+
+A separate `missing` context with `container_runtime=kata` and no `kata`
+RuntimeClass returned `runtime Pod admission failed; verify selected
+RuntimeClass and namespace policy`. The supervisor state stayed stopped and no
+runtime/relay Pod or Secret survived. Its durable PVC/NetworkPolicy substrate
+was intentionally retained by the manager and removed during fixture cleanup.
+
+The provider fixture only accepts requests containing
+`k8s-user-message-acceptance`; auxiliary model calls without that marker return
+HTTP 400 and surface as model-relay `model_route_unavailable`. That fixture
+constraint explains transient auxiliary failures and short-lived uncertainty;
+it is not evidence of a runsc isolation failure.
+
+QEMU guest-agent readiness failed locally; Cloud Hypervisor cell and managed
+Docker results remain qualified exactly as recorded in the spike. Neither mocks
+nor names in Docker/RuntimeClass metadata prove that a host administrator
+configured a real sandbox. Full CI, race/shuffle/coverage and deployment
+acceptance remain remote gates.
