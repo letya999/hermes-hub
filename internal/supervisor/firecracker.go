@@ -97,12 +97,13 @@ func fcGuestEnv(m *Manager, binding Binding, rt Runtime, port int, settings stac
 	if values["PATH"] == "" {
 		values["PATH"] = "/opt/hermes/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 	}
-	root := strings.TrimRight(binding.ContextRoot, "/")
+	root := strings.TrimRight(filepath.ToSlash(binding.ContextRoot), "/")
 	for k, v := range values {
-		if v == root {
+		sv := filepath.ToSlash(v)
+		if sv == root {
 			values[k] = "/persist"
-		} else if strings.HasPrefix(v, root+"/") {
-			values[k] = "/persist" + strings.TrimPrefix(v, root)
+		} else if strings.HasPrefix(sv, root+"/") {
+			values[k] = "/persist" + strings.TrimPrefix(sv, root)
 		}
 	}
 	return values, nil
@@ -155,17 +156,47 @@ func (m *Manager) fcGuestMounts(binding Binding, settings stack.Settings, envNam
 	if binding.OrganizationRoot != "" {
 		mounts = append(mounts, fcMount{"/org", binding.OrganizationRoot, true})
 	}
-	root := strings.TrimRight(dir, "/")
+	root := strings.TrimRight(filepath.ToSlash(dir), "/")
 	for i, mt := range mounts {
-		if mt.src == root {
+		src := filepath.ToSlash(mt.src)
+		if src == root {
 			mounts[i].src = "/persist"
-		} else if strings.HasPrefix(mt.src, root+"/") {
-			mounts[i].src = "/persist" + strings.TrimPrefix(mt.src, root)
+		} else if strings.HasPrefix(src, root+"/") {
+			mounts[i].src = "/persist" + strings.TrimPrefix(src, root)
 		} else {
 			return nil, fmt.Errorf("mount %s source %s escapes the space share", mt.dst, mt.src)
 		}
+		if !fcShellSafe(mounts[i].src) || !fcShellSafe(mt.dst) {
+			return nil, fmt.Errorf("mount %s path %s is not shell-safe", mt.dst, mounts[i].src)
+		}
 	}
 	return mounts, nil
+}
+
+// fcShellSafe rejects paths that would break the boot script's single-quote
+// quoting or inject shell structure.
+func fcShellSafe(path string) bool {
+	return path != "" && !strings.ContainsAny(path, "'\n")
+}
+
+// fcRelayProxies turns sandboxRelayHosts' --add-host pairs into Uno proxy
+// specs. The mux dialed by mini-Uno runs on the control-plane host; relay
+// endpoints are published on proxyHost (loopback locally, a routable
+// address for external Uno fleets).
+func fcRelayProxies(hostArgs []string, proxyHost string) ([]uno.Proxy, []string) {
+	var proxies []uno.Proxy
+	var ports []string
+	for i := 0; i+1 < len(hostArgs); i++ {
+		if hostArgs[i] != "--add-host" {
+			continue
+		}
+		name, _, _ := strings.Cut(hostArgs[i+1], ":")
+		if port, ok := fcRelayPorts[name]; ok {
+			proxies = append(proxies, uno.Proxy{GuestPort: port, Target: net.JoinHostPort(proxyHost, strconv.Itoa(port))})
+			ports = append(ports, strconv.Itoa(port))
+		}
+	}
+	return proxies, ports
 }
 
 // fcGuestBootScript builds the guest bootstrap shell program: mount the
@@ -272,21 +303,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	if err != nil {
 		return ComputeObservation{}, err
 	}
-	var proxies []uno.Proxy
-	var ports []string
-	for i := 0; i+1 < len(hostArgs); i++ {
-		if hostArgs[i] != "--add-host" {
-			continue
-		}
-		name, _, _ := strings.Cut(hostArgs[i+1], ":")
-		if port, ok := fcRelayPorts[name]; ok {
-			// The mux dialed by mini-Uno runs on the control-plane host; the
-			// relay endpoints are published on UnoProxyHost (loopback locally,
-			// a routable address for external Uno fleets).
-			proxies = append(proxies, uno.Proxy{GuestPort: port, Target: net.JoinHostPort(m.cfg.UnoProxyHost, strconv.Itoa(port))})
-			ports = append(ports, strconv.Itoa(port))
-		}
-	}
+	proxies, ports := fcRelayProxies(hostArgs, m.cfg.UnoProxyHost)
 	if len(proxies) == 0 {
 		return ComputeObservation{}, errors.New("firecracker backend resolved no relay proxies")
 	}
