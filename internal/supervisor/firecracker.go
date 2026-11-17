@@ -38,45 +38,66 @@ func newFirecrackerBackend(m *Manager) (ComputeBackend, error) {
 // fcRelayPorts maps relay hostnames to their well-known service ports.
 var fcRelayPorts = map[string]int{"model-relay": 8318, "toolhub": 8090, "toolhub-relay": 8090, "egress-relay": 8319}
 
-// fcGuestEnv mirrors the docker env contract: env-file values with every
-// ContextRoot prefix rewritten to the virtio-fs mount point, plus the same
-// identity/auth map the kubernetes backend injects.
-func fcGuestEnv(binding Binding, rt Runtime, port int, contextRoot string) map[string]string {
+// fcGuestEnv mirrors the managed docker env contract: the two env files
+// (managed-runtime.<env>.env + runtime.auth), the RuntimeService environment
+// map and the same identity/auth vars runArgs appends. Host paths under the
+// space dir are rewritten to the /persist share; paths escaping the space
+// have no guest counterpart and are rejected by the caller.
+func fcGuestEnv(m *Manager, binding Binding, rt Runtime, port int, settings stack.Settings, envName string) (map[string]string, error) {
 	values := map[string]string{}
-	if raw, err := os.ReadFile(binding.EnvFile); err == nil {
+	load := func(path string) error {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
 		for _, line := range strings.Split(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
 				continue
 			}
 			key, val, _ := strings.Cut(line, "=")
-			if key == "HUB_RUNTIME_AUTH" || key == "API_SERVER_KEY" || key == "HUB_TOOLHUB_AUTH" {
-				continue
-			}
 			values[key] = val
+		}
+		return nil
+	}
+	if err := load(filepath.Join(binding.ContextRoot, "managed-runtime."+envName+".env")); err != nil {
+		return nil, fmt.Errorf("managed env file: %w", err)
+	}
+	if err := load(binding.EnvFile); err != nil {
+		return nil, fmt.Errorf("runtime env file: %w", err)
+	}
+	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
+		if envMap, ok := service["environment"].(stack.M); ok {
+			for key, val := range envMap {
+				values[key] = fmt.Sprint(val)
+			}
 		}
 	}
 	for key, value := range map[string]string{
-		"HUB_RUNTIME_LISTEN":    "127.0.0.1:" + strconv.Itoa(port),
-		"HUB_RUNTIME_AUTH":      binding.runtimeAuth,
-		"API_SERVER_KEY":        binding.runtimeAuth,
-		"HUB_USER_ID":           binding.UserID,
-		"HUB_PRINCIPAL_ID":      binding.PrincipalID,
-		"HUB_CONTEXT_ID":        binding.ContextID,
-		"HUB_RUNTIME_ID":        binding.RuntimeID,
-		"HUB_ORGANIZATION_ID":   binding.OrganizationID,
-		"HUB_POLICY_VERSION":    binding.PolicyVersion,
+		"HUB_RUNTIME_LISTEN":     "127.0.0.1:" + strconv.Itoa(port),
+		"HUB_RUNTIME_AUTH":       binding.runtimeAuth,
+		"API_SERVER_KEY":         binding.runtimeAuth,
+		"HUB_STATE":              "/state",
+		"HUB_WORKSPACE":          "/workspace",
+		"HERMES_HOME":            "/state/hermes",
+		"HOME":                   "/state/home",
+		"HUB_USER_ID":            binding.UserID,
+		"HUB_PRINCIPAL_ID":       binding.PrincipalID,
+		"HUB_CONTEXT_ID":         binding.ContextID,
+		"HUB_RUNTIME_ID":         binding.RuntimeID,
+		"HUB_ORGANIZATION_ID":    binding.OrganizationID,
+		"HUB_POLICY_VERSION":     binding.PolicyVersion,
 		"HUB_RUNTIME_GENERATION": rt.Generation,
-		"API_SERVER_ENABLED":    "true",
-		"API_SERVER_HOST":       "127.0.0.1",
-		"API_SERVER_PORT":       "8642",
+		"API_SERVER_ENABLED":     "true",
+		"API_SERVER_HOST":        "127.0.0.1",
+		"API_SERVER_PORT":        "8642",
 	} {
 		values[key] = value
 	}
 	if values["PATH"] == "" {
 		values["PATH"] = "/opt/hermes/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 	}
-	root := strings.TrimRight(contextRoot, "/")
+	root := strings.TrimRight(binding.ContextRoot, "/")
 	for k, v := range values {
 		if v == root {
 			values[k] = "/persist"
@@ -84,14 +105,112 @@ func fcGuestEnv(binding Binding, rt Runtime, port int, contextRoot string) map[s
 			values[k] = "/persist" + strings.TrimPrefix(v, root)
 		}
 	}
-	return values
+	return values, nil
 }
 
-// fcGuestBoot mounts the space share disk (first non-root virtio-blk drive)
-// and prepares loopback relay aliases.
-const fcGuestBoot = "mkdir -p /persist && (mountpoint -q /persist || mount -t ext4 /dev/vdb /persist); " +
-	"grep -q 'model-relay' /etc/hosts || echo '127.0.0.1 model-relay toolhub toolhub-relay egress-relay' >> /etc/hosts; " +
-	"mkdir -p /persist/managed && true"
+// fcMount is one bind inside the guest: src lives under the space share
+// (/persist maps the host space dir), dst matches the docker contract.
+type fcMount struct{ dst, src string; ro bool }
+
+// fcGuestMounts reproduces managedRunArgs' filesystem contract as guest
+// bind-mounts. Host sources must stay under the space dir — a mount that
+// escapes the share has no guest representation and fails the spawn.
+func (m *Manager) fcGuestMounts(binding Binding, settings stack.Settings, envName, policyPath, effectiveConfig string) ([]fcMount, error) {
+	dir, managedDir := binding.ContextRoot, filepath.Join(binding.ContextRoot, "managed", envName)
+	mounts := []fcMount{
+		{"/state", filepath.Join(managedDir, "runtime"), false},
+		{"/state/hermes", stack.RuntimeHermesHome(dir, settings), false},
+		{"/state/home", filepath.Join(managedDir, "home"), false},
+		{"/state/cache", filepath.Join(managedDir, "cache"), false},
+		{"/state/hermes/config.yaml", effectiveConfig, true},
+		{"/run/model-config/models.yaml", filepath.Join(dir, "generated", "model-registry", envName, "models.yaml"), true},
+		{"/run/model-state", filepath.Join(managedDir, "model-relay"), false},
+	}
+	if soul := filepath.Join(dir, "generated", "soul-effective."+envName+".md"); fileExists(soul) {
+		mounts = append(mounts, fcMount{"/state/hermes/SOUL.md", soul, true})
+	}
+	if settings.PassportWorkspace != nil {
+		for _, pm := range stack.MountPlan(dir, envName, managedDir, settings, *settings.PassportWorkspace) {
+			mounts = append(mounts, fcMount{pm.Target, pm.Source, pm.ReadOnly})
+		}
+	} else {
+		mounts = append(mounts,
+			fcMount{"/config", filepath.Join(dir, "generated", "config-view", envName), true},
+			fcMount{"/workspace", filepath.Join(managedDir, "workspace"), false},
+			fcMount{"/config/tool-policy.json", policyPath, true},
+		)
+		if manifest := filepath.Join(dir, "generated", "tool-manifest."+envName+".json"); fileExists(manifest) {
+			mounts = append(mounts, fcMount{"/config/tool-manifest.json", manifest, true})
+		}
+	}
+	if settings.Has("hosting") {
+		mounts = append(mounts, fcMount{"/run/hosting.key", filepath.Join(dir, "runtime", "hosting."+envName+".key"), true})
+	}
+	for _, c := range stack.RuntimeConnections(settings, dir) {
+		mounts = append(mounts, fcMount{c.Target, c.Source, true})
+	}
+	if binding.OrganizationRoot != "" {
+		mounts = append(mounts, fcMount{"/org", binding.OrganizationRoot, true})
+	}
+	root := strings.TrimRight(dir, "/")
+	for i, mt := range mounts {
+		if mt.src == root {
+			mounts[i].src = "/persist"
+		} else if strings.HasPrefix(mt.src, root+"/") {
+			mounts[i].src = "/persist" + strings.TrimPrefix(mt.src, root)
+		} else {
+			return nil, fmt.Errorf("mount %s source %s escapes the space share", mt.dst, mt.src)
+		}
+	}
+	return mounts, nil
+}
+
+// fcGuestBootScript builds the guest bootstrap shell program: mount the
+// share disk, recreate the docker filesystem contract as bind-mounts, alias
+// relay names to loopback. File mounts need a pre-created target file.
+func fcGuestBootScript(mounts []fcMount) string {
+	var b strings.Builder
+	b.WriteString("mkdir -p /persist && (mountpoint -q /persist || mount -t ext4 /dev/vdb /persist); ")
+	b.WriteString("grep -q 'model-relay' /etc/hosts || echo '127.0.0.1 model-relay toolhub toolhub-relay egress-relay' >> /etc/hosts; ")
+	b.WriteString("mkdir -p /persist/managed /state /config /workspace /run/model-config /run/model-state /org; ")
+	for _, mt := range mounts {
+		// Nested binds need the parent mount present first; targets under a
+		// read-only parent still take an rw bind of their own.
+		b.WriteString("mkdir -p '")
+		b.WriteString(filepath.Dir(mt.dst))
+		b.WriteString("' && (grep -q '")
+		b.WriteString(mt.dst)
+		b.WriteString("' /proc/mounts || { [ -f '")
+		b.WriteString(mt.src)
+		b.WriteString("' ] && touch '")
+		b.WriteString(mt.dst)
+		b.WriteString("' || mkdir -p '")
+		b.WriteString(mt.dst)
+		b.WriteString("'; } && mount -o bind")
+		if mt.ro {
+			b.WriteString(",ro")
+		}
+		b.WriteString(" '")
+		b.WriteString(mt.src)
+		b.WriteString("' '")
+		b.WriteString(mt.dst)
+		b.WriteString("'); ")
+	}
+	// The managed contract seals executable import roots under HERMES_HOME
+	// with empty read-only overlays (managedExtensionRootTmpfs).
+	for _, name := range managedExtensionRootTmpfs {
+		dir := "/state/hermes/" + name
+		b.WriteString("mkdir -p '")
+		b.WriteString(dir)
+		b.WriteString("' && (grep -q '")
+		b.WriteString(dir)
+		b.WriteString("' /proc/mounts || mount -t tmpfs -o ro tmpfs '")
+		b.WriteString(dir)
+		b.WriteString("'); ")
+	}
+	b.WriteString("true")
+	return b.String()
+}
 
 // ensureManagedNetsFC verifies the Compose-owned internal agent network and
 // the supervisor control network. Unlike the docker path the control relay is
@@ -124,6 +243,24 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	lock := m.lockFor(runtimeKey(preparation))
 	lock.Lock()
 	defer lock.Unlock()
+	envName := m.environment()
+	m.prepareSpawnFiles(binding, envName)
+	settings := request.Settings
+	if settings.Environment == "" {
+		settings.Environment = envName
+	}
+	effectiveConfig, err := m.materializeHermesConfig(binding, envName)
+	if err != nil {
+		return ComputeObservation{}, err
+	}
+	policyPath, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings)
+	if err != nil {
+		return ComputeObservation{}, fmt.Errorf("materialize tool policy: %w", err)
+	}
+	mounts, err := m.fcGuestMounts(binding, settings, envName, policyPath, effectiveConfig)
+	if err != nil {
+		return ComputeObservation{}, err
+	}
 	agentNet, err := m.ensureManagedNetsFC(ctx, request.Settings)
 	if err != nil {
 		return ComputeObservation{}, fmt.Errorf("managed topology: %w", err)
@@ -186,11 +323,20 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("control relay: %w", err)
 	}
-	if _, err := f.client.Run(ctx, box.ID, uno.RunRequest{Cmd: fcGuestBoot, TimeoutSeconds: 30, IdempotencyKey: "boot-" + rt.Generation, WaitSeconds: 30}); err != nil {
+	if _, err := f.client.Run(ctx, box.ID, uno.RunRequest{Cmd: fcGuestBootScript(mounts), TimeoutSeconds: 30, IdempotencyKey: "boot-" + rt.Generation, WaitSeconds: 30}); err != nil {
 		f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("guest boot: %w", err)
 	}
-	env := fcGuestEnv(binding, rt, m.cfg.RuntimePort, binding.ContextRoot)
+	env, err := fcGuestEnv(m, binding, rt, m.cfg.RuntimePort, settings, envName)
+	if err != nil {
+		f.client.DeleteBox(context.Background(), box.ID)
+		return ComputeObservation{}, fmt.Errorf("guest env: %w", err)
+	}
+	for _, mt := range mounts {
+		if mt.dst == "/config/tool-manifest.json" {
+			env["HUB_TOOL_MANIFEST"] = "/config/tool-manifest.json"
+		}
+	}
 	// No pgrep in the guest image: the readiness proof is the :RuntimePort
 	// listener itself (hex port in /proc/net/tcp); serve warmup can take
 	// tens of seconds, so poll and surface the log on failure.
