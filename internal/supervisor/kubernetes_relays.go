@@ -73,7 +73,7 @@ func relayEnvironment(secret *core.Secret, values map[string]string, prefix stri
 
 func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inputs *core.Secret) (*core.Pod, *core.Secret, error) {
 	if !request.Runtime.Managed {
-		return nil, nil, errors.New("Kubernetes requires the managed runtime contract")
+		return nil, nil, errors.New("kubernetes requires the managed runtime contract")
 	}
 	relay := main.DeepCopy()
 	relay.Name = k.relayRuntime(request.Runtime).Container

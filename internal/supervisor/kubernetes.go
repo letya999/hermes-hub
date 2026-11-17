@@ -124,15 +124,15 @@ func newKubernetesBackend(m *Manager) (*kubernetesBackend, error) {
 			connection, err = rest.InClusterConfig()
 		}
 		if err != nil {
-			return nil, errors.New("Kubernetes client configuration unavailable")
+			return nil, errors.New("kubernetes client configuration unavailable")
 		}
 		if connection.Insecure || !strings.HasPrefix(connection.Host, "https://") {
-			return nil, errors.New("Kubernetes API requires verified TLS")
+			return nil, errors.New("kubernetes API requires verified TLS")
 		}
 		connection.Timeout, connection.QPS, connection.Burst = 15*time.Second, 10, 20
 		client, err = kubernetes.NewForConfig(connection)
 		if err != nil {
-			return nil, errors.New("Kubernetes client unavailable")
+			return nil, errors.New("kubernetes client unavailable")
 		}
 	}
 	m.cfg.Kubernetes = cfg

@@ -81,7 +81,7 @@ func TestManagedSurfaceInventoryUsesAuthenticatedRelay(t *testing.T) {
 	defer proxy.Close()
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/connectors" || r.Header.Get("Authorization") != "Bearer runtime-token" {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}}}})

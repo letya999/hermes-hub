@@ -334,6 +334,10 @@ func (g *Gateway) iamEnrolHint(sender int64) string {
 }
 
 // slackEnrolHint is the slack counterpart of iamEnrolHint.
+//
+// get an answer delivery like telegram's chat.no-access-enrol reply.
+//
+//lint:ignore U1000 staged for the slack deny path once its unmapped senders
 func (g *Gateway) slackEnrolHint(teamID, userID string) string {
 	if !g.iamEnabled() || strings.TrimSpace(g.config.FormOrigin) == "" {
 		return ""

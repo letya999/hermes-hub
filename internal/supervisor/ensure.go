@@ -922,7 +922,7 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
 	if m.usingKubernetes() {
-		return nil, errors.New("Docker operation is unavailable on the Kubernetes backend")
+		return nil, errors.New("docker operation is unavailable on the kubernetes backend")
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

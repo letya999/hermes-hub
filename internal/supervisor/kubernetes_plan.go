@@ -100,13 +100,13 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	binding, settings, rt := request.Binding, request.Settings, request.Runtime
 	// shortcut: one gateway per space keeps relay state single-writer; extend with shared relays before adding modes.
 	if binding.RuntimeMode != "gateway" {
-		return nil, nil, errors.New("Kubernetes supports the gateway runtime mode")
+		return nil, nil, errors.New("kubernetes supports the gateway runtime mode")
 	}
 	if settings.PassportRevision == "" {
-		return nil, nil, errors.New("Kubernetes runtime requires a published space revision")
+		return nil, nil, errors.New("kubernetes runtime requires a published space revision")
 	}
 	if settings.Has("browser") || settings.Has("meet") {
-		return nil, nil, errors.New("Kubernetes browser sidecar is not configured")
+		return nil, nil, errors.New("kubernetes browser sidecar is not configured")
 	}
 	root, err := os.OpenRoot(binding.ContextRoot)
 	if err != nil {
@@ -213,7 +213,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	for i, raw := range service["volumes"].([]any) {
 		mount, ok := raw.(stack.M)
 		if !ok || mount["type"] != "bind" {
-			return nil, nil, errors.New("Kubernetes requires space-scoped bind inputs")
+			return nil, nil, errors.New("kubernetes requires space-scoped bind inputs")
 		}
 		source, ok := mount["source"].(string)
 		if !ok {
