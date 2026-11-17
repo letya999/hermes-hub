@@ -143,7 +143,8 @@ Consequence: `kata` in Kubernetes is now proven to reach real VM isolation but
 is blocked end-to-end by the Memory-EmptyDir subPath input contract. Remediation
 is a concrete follow-up — drop `Medium: Memory` on the `private`/`tmp` volumes
 or replace `subPath` mounts with projected volumes for Kata-class backends —
-tracked below rather than silently worked around.
+recorded here and in `docs/runtime-sandbox.md` rather than silently worked
+around.
 
 ## Remote acceptance (draft PR #549)
 

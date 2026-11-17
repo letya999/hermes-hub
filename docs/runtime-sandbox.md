@@ -72,6 +72,17 @@ configured separately at top-level runtimeClassName; relay Pods remain trusted
 default-runtime components. A Pod is one sandbox boundary: do not colocate an
 untrusted runtime with trusted relay credentials in the same Pod.
 
+Known limitation: managed Kubernetes runtimes project private inputs through a
+memory-backed EmptyDir populated by an init container and mounted via `subPath`.
+Under Kata those writes live inside the guest VM, so the runtime container sees
+an empty mount and exits fail-closed at startup (`passport activation
+mismatch`). The identical spec passes under runsc. `containerRuntime=kata` in
+Kubernetes therefore remains valid configuration — admission and fail-closed
+behavior are verified — but managed Pods cannot reach readiness until the input
+contract is reworked (disk-backed EmptyDir or projected volumes). This is a
+qualified Hermes volume contract gap, not a Kata/VMM failure: both shipped VMMs
+booted real guest kernels on the qualification node.
+
 Both backend/runtime and class are saved in the supervisor ledger. To change
 them: settle jobs, suspend runtimes, verify compute termination and clear owned
 orphans, then restart the supervisor with the new selection. Active-state

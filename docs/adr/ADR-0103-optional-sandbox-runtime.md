@@ -23,3 +23,14 @@ class change. Verify before adoption to prevent warm reuse of weaker compute.
 Host administrators, runtime binaries, VMMs, network enforcement and exposed
 storage remain trusted. Sandboxes do not hide data from the host administrator
 or replace application authorization.
+
+Update 2026-11-17: kind+KVM qualification corrected two spike limitations. The
+DinD QEMU vsock failure was fixture-specific — both shipped VMMs booted guest
+kernel `6.18.56` under containerd, and a runsc managed Pod reported a
+`4.19.0-gvisor` kernel, so all three backends now carry kernel-level isolation
+evidence rather than class-name metadata. A new Kubernetes limitation replaces
+the old one: the memory-backed EmptyDir + `subPath` input contract is invisible
+inside a Kata guest, so managed kata Pods fail closed at startup; runsc passes
+the identical spec. Kata-in-Kubernetes admission stays an accepted option whose
+end-to-end readiness waits on the volume-contract rework, never a silent
+downgrade.
