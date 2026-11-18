@@ -97,6 +97,13 @@ const (
 	AgentTools Transport = "agent-tools"
 )
 
+// TLSModeOperatorPinned marks a RemoteMCP definition whose endpoint is an
+// operator-pinned private backend (http or https on loopback, RFC-1918 or a
+// compose service name). The URL stays on the immutable Source for
+// observability; the connection's mcp_endpoint must canonical-match it and
+// every hop re-proves the private destination at dial time.
+const TLSModeOperatorPinned = "operator-pinned"
+
 type Effect string
 
 const (

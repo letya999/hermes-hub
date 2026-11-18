@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0325](in-progress/CHG-0325-private-remote-mcp/plan.md) | M9 #340 `connector remote`: operator-pinned private MCP registration, frozen probe tools, per-connection bearer, dial-time private fence |
 | [CHG-0324](in-progress/CHG-0324-base-image-policy/plan.md) | M9 #393 base-image refresh policy: digest-pinned runtime stages, weekly Dependabot cadence, maintainer review, CI + docker-check verification; dist-upgrade rejected |
 | [CHG-0323](in-progress/CHG-0323-security-operations/plan.md) | M9 security operations: introspection policy/audit, bounded SIEM export and audited principal-disable propagation; implementation green, final gates/live acceptance pending |
 | [CHG-0322](in-progress/CHG-0322-external-firecracker/plan.md) | external Firecracker microVM backend via Uno-style control plane; local mini-Uno live acceptance passed on WSL2 |

@@ -223,11 +223,14 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 	}
 	var connection *api.Connection
 	var credential *api.CredentialReference
-	if len(definition.Credentials) > 0 {
+	// Operator-pinned remote definitions may declare no credentials at all,
+	// yet still need their connection: it carries the pinned mcp_endpoint.
+	needsConnection := len(definition.Credentials) > 0 || (definition.Transport == api.RemoteMCP && definition.Source.TLSMode == api.TLSModeOperatorPinned)
+	if needsConnection {
 		matches := s.matchingOwnerConnectionsLocked(auth, definition)
 		if len(matches) == 0 {
 			s.mu.Unlock()
-			return api.ToolBinding{}, fmt.Errorf("%w: active owner connection and credential are required", api.ErrUnauthorized)
+			return api.ToolBinding{}, fmt.Errorf("%w: active owner connection is required", api.ErrUnauthorized)
 		}
 		if len(matches) > 1 {
 			s.mu.Unlock()
@@ -415,19 +418,29 @@ type ownerConnectionMatch struct {
 func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definition api.ToolDefinition) []ownerConnectionMatch {
 	matches := make([]ownerConnectionMatch, 0)
 	for _, candidate := range s.connections {
-		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || candidate.CredentialRefID == "" {
+		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus {
+			continue
+		}
+		// A credential-less connection can only bind a credential-less
+		// definition (the operator-pinned remote case); for credentialed
+		// definitions the reference stays mandatory.
+		if candidate.CredentialRefID == "" && len(definition.Credentials) > 0 {
 			continue
 		}
 		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) && !s.teamConnectionCoversLocked(auth, candidate) {
 			continue
 		}
-		reference, found := s.credentials[candidate.CredentialRefID]
-		if !found || reference.Status != api.ActiveStatus || reference.ConnectionID != candidate.ConnectionID {
-			continue
-		}
+		var reference api.CredentialReference
 		keys := map[string]bool{}
-		for _, key := range reference.Keys {
-			keys[key] = true
+		if candidate.CredentialRefID != "" {
+			found, ok := s.credentials[candidate.CredentialRefID]
+			if !ok || found.Status != api.ActiveStatus || found.ConnectionID != candidate.ConnectionID {
+				continue
+			}
+			reference = found
+			for _, key := range reference.Keys {
+				keys[key] = true
+			}
 		}
 		valid := definition.CredentialsSatisfied(func(name string) bool { return keys[name] })
 		if valid {

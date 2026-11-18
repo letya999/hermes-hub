@@ -292,6 +292,9 @@ func (s *Store) PutConnection(connection api.Connection) error {
 	if !s.hasDefinitionID(connection.DefinitionID) {
 		return fmt.Errorf("%w: connection definition", api.ErrNotFound)
 	}
+	if err := s.pinnedEndpointConsistentLocked(connection); err != nil {
+		return err
+	}
 	if connection.CredentialRefID != "" {
 		reference, ok := s.credentials[connection.CredentialRefID]
 		if !ok || reference.ConnectionID != connection.ConnectionID {
@@ -592,6 +595,24 @@ func (s *Store) hasDefinitionID(id string) bool {
 		}
 	}
 	return false
+}
+
+// pinnedEndpointConsistentLocked requires a connection bound to an
+// operator-pinned remote definition to carry the same canonical endpoint:
+// the immutable Source URL is the pin — a connection can never aim the call
+// at a different backend. Shared by PutConnection and the snapshot loader.
+func (s *Store) pinnedEndpointConsistentLocked(connection api.Connection) error {
+	for key, definition := range s.definitions {
+		if !strings.HasPrefix(key, connection.DefinitionID+"@") || definition.Transport != api.RemoteMCP || definition.Source.TLSMode != api.TLSModeOperatorPinned {
+			continue
+		}
+		pinned, pErr := api.CanonicalBackendURL(definition.Source.URL)
+		got, gErr := api.CanonicalBackendURL(connection.Metadata["mcp_endpoint"])
+		if pErr != nil || gErr != nil || pinned != got {
+			return fmt.Errorf("%w: operator-pinned connection endpoint", api.ErrInvalid)
+		}
+	}
+	return nil
 }
 
 // definitionForConnection resolves the definition version a connection's

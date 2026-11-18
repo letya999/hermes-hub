@@ -272,6 +272,9 @@ func storeFromSnapshot(state snapshot) (*Store, error) {
 		if !store.hasDefinitionID(connection.DefinitionID) {
 			return nil, fmt.Errorf("%w: connection definition", api.ErrNotFound)
 		}
+		if err := store.pinnedEndpointConsistentLocked(connection); err != nil {
+			return nil, err
+		}
 		if connection.CredentialRefID != "" {
 			reference, ok := store.credentials[connection.CredentialRefID]
 			if !ok || reference.ConnectionID != connection.ConnectionID {

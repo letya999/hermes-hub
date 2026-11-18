@@ -172,6 +172,8 @@ func runConnector(ctx context.Context, args []string) error {
 	operationID := f.String("operation", "", "operation ID for connector status")
 	query := f.String("query", "", "connector search query")
 	writesOn := f.Bool("on", false, "allow-writes: enable write tools (omit to disable)")
+	toolAllowlist := f.String("tools", "", "remote: comma-separated tool allowlist (narrow only)")
+	bearer := f.Bool("bearer", false, "remote: read a per-connection bearer token from --from-file or stdin")
 	service := f.Bool("service", false, "route facade verbs through the live ToolHub control listener")
 	toolhubURL := f.String("toolhub-url", os.Getenv("HUB_TOOLHUB_URL"), "ToolHub control URL (default http://127.0.0.1:8090)")
 	serviceToken := f.String("token", os.Getenv("HUB_TOOLHUB_TOKEN"), "service bearer (default: matching principal in toolhub-tokens.json)")
@@ -179,7 +181,7 @@ func runConnector(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 && !(args[0] == "import" && f.NArg() == 1) {
+	if f.NArg() != 0 && !(args[0] == "import" && f.NArg() == 1) && !(args[0] == "remote" && f.NArg() == 1) {
 		return fmt.Errorf("unexpected connector arguments")
 	}
 	if *provider != "google" && *provider != "slack" && *provider != "telegram" {
@@ -246,7 +248,7 @@ func runConnector(ctx context.Context, args []string) error {
 		return fmt.Errorf("connector requires absolute --toolhub-store, --store and --key-file")
 	}
 	registry, err := toolhub.Load(*registryPath)
-	if args[0] == "connect" {
+	if args[0] == "connect" || args[0] == "remote" {
 		registry, err = toolhub.LoadStaged(*registryPath)
 	}
 	if os.IsNotExist(err) {
@@ -354,6 +356,9 @@ func runConnector(ctx context.Context, args []string) error {
 	backend, err := credstore.Open(credstore.Options{Path: *secretPath, KeyFile: *keyPath})
 	if err != nil {
 		return err
+	}
+	if args[0] == "remote" {
+		return connectRemotePrivate(ctx, registry, backend, auth, f.Arg(0), *endpoint, *toolAllowlist, *bearer, *input, *registryPath)
 	}
 	if args[0] == "prepare" {
 		if *localToken != "" {
@@ -975,4 +980,133 @@ func connectorServiceList(ctx context.Context, base, token string) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(pretty)
+}
+
+// connectRemotePrivate registers an operator-pinned private MCP endpoint as
+// an immutable user-scoped definition plus this principal's own connection.
+// The live probe freezes the advertised tool set into the definition; --tools
+// may only narrow it. Re-running the identical registration is a no-op —
+// changing any immutable part requires a new name, never a mutation.
+func connectRemotePrivate(ctx context.Context, registry *toolhub.Store, backend credstore.Backend, auth identity.Envelope, name, endpoint, toolAllowlist string, wantBearer bool, input, registryPath string) error {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(endpoint) == "" {
+		return fmt.Errorf("remote requires a definition name and --endpoint")
+	}
+	if api.ValidateRemoteMCPEndpoint(endpoint) == nil {
+		return fmt.Errorf("public remote MCP endpoints register via connector prepare_source remote_url, not connector remote")
+	}
+	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
+		return fmt.Errorf("remote requires a private MCP endpoint: %v", err)
+	}
+	canonical, err := api.CanonicalBackendURL(endpoint)
+	if err != nil {
+		return err
+	}
+	var allowlist []string
+	for _, item := range strings.Split(toolAllowlist, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			allowlist = append(allowlist, item)
+		}
+	}
+	definitionID := strings.TrimSpace(name)
+	if !strings.HasPrefix(definitionID, "remote-") {
+		definitionID = "remote-" + definitionID
+	}
+	connectionID := api.DeterministicID("conn", auth.PrincipalID, definitionID, canonical)
+	if existing, err := registry.Definition(definitionID, "1.0.0"); err == nil {
+		if existing.Source.TLSMode != api.TLSModeOperatorPinned || existing.Source.URL != canonical {
+			return fmt.Errorf("definition %s@1.0.0 is pinned to a different endpoint — re-register under a new name", definitionID)
+		}
+		if len(allowlist) > 0 {
+			frozen := map[string]bool{}
+			for _, tool := range existing.Tools {
+				frozen[tool.Name] = true
+			}
+			for _, item := range allowlist {
+				if len(allowlist) != len(frozen) || !frozen[item] {
+					return fmt.Errorf("definition %s@1.0.0 tool set is frozen — re-registration cannot change it", definitionID)
+				}
+			}
+		}
+		connection := api.Connection{}
+		found := false
+		for _, candidate := range registry.Connections() {
+			if candidate.ConnectionID == connectionID && candidate.Owner.Matches(auth) {
+				connection, found = candidate, true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("definition %s exists without its owner connection — inspect the store before retrying", definitionID)
+		}
+		if wantBearer && connection.CredentialRefID == "" {
+			return fmt.Errorf("cannot attach a credential to an immutable registration — re-register under a new name")
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"definition_id": definitionID, "version": existing.Version, "connection_id": connectionID, "unchanged": true})
+	}
+	var credentials []api.CredentialInput
+	var values map[string]string
+	headers := map[string]string{}
+	if wantBearer {
+		raw, err := readSecretInput(input)
+		if err != nil {
+			return err
+		}
+		token := strings.TrimSpace(raw)
+		if token == "" || strings.ContainsAny(token, "\r\n\x00") {
+			return fmt.Errorf("remote bearer token is empty or malformed")
+		}
+		credentials = []api.CredentialInput{{Name: "REMOTE_BEARER", Required: true, Delivery: "http_header", Target: "Authorization", Prefix: "Bearer "}}
+		values = map[string]string{"REMOTE_BEARER": token}
+		headers["Authorization"] = "Bearer " + token
+	}
+	probed, err := api.ProbeBackendMCP(ctx, endpoint, headers, os.Getenv("TOOLHIVE_VMCP_TOKEN"))
+	if err != nil {
+		return err
+	}
+	definition, err := api.BackendMCPDefinition(canonical, name, credentials, probed.Tools, allowlist)
+	if err != nil {
+		return err
+	}
+	locator := ""
+	if wantBearer {
+		locator, err = backend.NewLocator()
+		if err != nil {
+			return err
+		}
+		if err := backend.Put(locator, auth.PrincipalID, values); err != nil {
+			return err
+		}
+	}
+	completed := false
+	defer func() {
+		if !completed && locator != "" {
+			_ = backend.Delete(locator, auth.PrincipalID)
+		}
+	}()
+	if err := registry.RegisterDefinition(definition); err != nil {
+		return err
+	}
+	if err := registry.PutPublication(api.DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: api.PublicationUser, OwnerPrincipalID: auth.PrincipalID}); err != nil {
+		return err
+	}
+	credentialRefID := ""
+	if wantBearer {
+		ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: backend.Name(), Locator: locator, Keys: []string{"REMOTE_BEARER"}, Status: api.ActiveStatus}
+		if err := registry.PutCredentialReference(ref); err != nil {
+			return err
+		}
+		credentialRefID = ref.CredentialRefID
+	}
+	if err := registry.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: credentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": canonical}}); err != nil {
+		return err
+	}
+	if err := registry.Save(registryPath); err != nil {
+		return err
+	}
+	completed = true
+	names := make([]string, 0, len(definition.Tools))
+	for _, tool := range definition.Tools {
+		names = append(names, tool.Name)
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "connection_id": connectionID, "tools": names})
 }

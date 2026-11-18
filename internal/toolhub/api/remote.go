@@ -158,6 +158,56 @@ func RemoteDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return nil, lastErr
 }
 
+// BackendAddrAllowed admits loopback and private-range destinations only.
+// Link-local (cloud metadata), CGNAT and public space stay denied — the same
+// rule ValidateBackendEndpoint applies at registration, re-proved per dial.
+func BackendAddrAllowed(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// BackendDial is the private twin of RemoteDial: it resolves the pinned host
+// itself at dial time and dials only resolved addresses that are loopback or
+// private. A rebound name can never steer a per-connection credential onto a
+// public or metadata address.
+func BackendDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	var ips []netip.Addr
+	if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+		ips = []netip.Addr{ip}
+	} else {
+		ips, err = ResolveRemoteIP(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+	}
+	private := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if BackendAddrAllowed(ip) {
+			private = append(private, ip)
+		}
+	}
+	if len(private) == 0 {
+		return nil, fmt.Errorf("%w: backend MCP dial to a non-private address", ErrUnauthorized)
+	}
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	var lastErr error
+	for _, ip := range private {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // PublicHTTPClient shares the dial-time public-address fence with remote MCP.
 // Untrusted fetches cannot use ambient proxies or redirect to internal services.
 func PublicHTTPClient(timeout time.Duration) *http.Client {

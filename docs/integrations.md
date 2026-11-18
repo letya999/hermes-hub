@@ -278,6 +278,16 @@ OAuth for Google/Slack/Atlassian uses the official URLs in SPEC-0020;
 remote MCP discovers `authorization_endpoint`/`token_endpoint` via RFC 9728
 + RFC 8414; tokens persist only in the encrypted store.
 
+Private MCP backends inside the operator's own network (loopback, RFC-1918,
+Compose service names) register through `hubctl connector remote <name>
+--endpoint <url> [--tools a,b] [--bearer]` (SPEC-0045). Registration probes
+the endpoint once and freezes its tool list into an immutable user-scoped
+definition; `--bearer` stores a per-connection token in the credential
+backend — never in argv, metadata or registry — and the shared
+`TOOLHIVE_VMCP_TOKEN` applies only when the connection declares no
+credential. The endpoint is re-validated as private at every call and
+re-resolved inside the dialer, so a rebound name cannot steer the call.
+
 ## Misc contract rules
 
 - `communication-hub` never mounts scope homes. Its `telegram_auth`
