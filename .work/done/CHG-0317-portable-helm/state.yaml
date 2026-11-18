@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0317
 title: Portable control-plane Helm chart
-status: in_progress
+status: done
 branch: feat/m9-helm
-updated: 2026-11-17
-phase: acceptance
+updated: 2026-11-18
+phase: done
 github_milestone: MVP M9 — Enterprise Readiness
 github_issue: 352
 implementation_status: complete

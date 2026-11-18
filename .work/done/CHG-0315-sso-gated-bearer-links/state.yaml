@@ -1,9 +1,10 @@
 schema: 1
 change: CHG-0315
 title: SSO-gated bearer links — minted interactive links bound to verified principal under IAM
-status: in_progress
+status: deferred
+deferred: 2026-11-18
 branch: feat/m9-sso-gated-links
-updated: 2026-11-16
+updated: 2026-11-18
 phase: implementation
 design_status: accepted
 implementation_status: in_progress

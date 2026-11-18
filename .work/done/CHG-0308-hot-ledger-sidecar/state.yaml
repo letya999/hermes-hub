@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0308
 title: Hot ledger moves off the registry commit channel — cursor sidecar + persist-on-transition
-status: in_progress
+status: done
 branch: regress/pre-release
-updated: "2026-11-15"
-phase: implementation
+updated: "2026-11-18"
+phase: done
 requirements: []
 depends_on: [CHG-0305, CHG-0306]
 design_status: accepted

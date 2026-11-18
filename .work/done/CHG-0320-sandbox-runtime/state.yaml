@@ -1,11 +1,11 @@
 schema: 1
 change: CHG-0320
 title: Optional sandbox runtime
-status: in_progress
+status: done
 branch: feat/m9-sandbox-runtime
-updated: 2026-11-17
+updated: 2026-11-18
 github_issues: [394, 202]
-phase: verification
+phase: done
 validation:
   spike: passed_with_kata_limits
   live_runsc: passed_docker_and_kubernetes

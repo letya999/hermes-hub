@@ -11,7 +11,7 @@ Status: Accepted 2026-11-17. Implements the owner-scoped runtime slice of #58.
 Docker remains the default. A configured Kubernetes backend implements the same
 supervisor compute boundary; admission, generation leases, administrative holds,
 job correlation and runtime HTTP authorization stay with their existing owners.
-The [required operator spike](../../.work/in-progress/CHG-0319-kubernetes-runtime/operator-eval.md)
+The [required operator spike](../../.work/done/CHG-0319-kubernetes-runtime/operator-eval.md)
 rejects ToolHive Operator for runtime spawning, while leaving MCP connector
 scheduling undecided. No new operator or CRD is introduced.
 

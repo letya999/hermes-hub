@@ -6,7 +6,7 @@ last_verified: 2026-11-17
 
 Status: Accepted 2026-11-17, before #202 implementation.
 
-The [cell spike](../../.work/in-progress/CHG-0320-sandbox-runtime/spike.md) supports
+The [cell spike](../../.work/done/CHG-0320-sandbox-runtime/spike.md) supports
 optional runsc/systrap. Kata/Cloud Hypervisor has a local cell PoC; QEMU and full
 Kata network acceptance are unqualified. Keep runc default. Missing selected
 runtimes/classes must fail without fallback. RuntimeClass handler/node mapping

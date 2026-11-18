@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0318
 title: Registry-agnostic GitLab CI
-status: in_progress
+status: done
 branch: feat/m9-registry-ci
-updated: 2026-11-17
-phase: acceptance
+updated: 2026-11-18
+phase: done
 github_issue: 351
 implementation_status: complete
 validation:
