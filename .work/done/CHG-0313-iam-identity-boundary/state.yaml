@@ -1,14 +1,14 @@
 schema: 1
 change: CHG-0313
 title: IAM-ready identity — principal boundary, ZITADEL OIDC linking, authz contract
-status: in_progress
+status: done
 branch: feat/m9-iam-identity
-updated: 2026-11-16
-phase: implementation
+updated: 2026-11-18
+phase: done
 github_milestone: M9 — Enterprise Readiness
 github_issue: "52,53,54"
 design_status: accepted
-implementation_status: in_progress
+implementation_status: complete
 slices:
   S1-principal-boundary-52: done
   S2-iam-package-53: done

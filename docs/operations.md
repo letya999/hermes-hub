@@ -94,7 +94,7 @@ real channel acceptance requires provisioned accounts and explicit sends.
 
 Docker remains the local default (`HUB_EXECUTION_BACKEND=docker`). To run managed
 gateway spaces as Pods, set `execution.backend: kubernetes`. The mandatory
-[ToolHive Operator evaluation](../.work/in-progress/CHG-0319-kubernetes-runtime/operator-eval.md)
+[ToolHive Operator evaluation](../.work/done/CHG-0319-kubernetes-runtime/operator-eval.md)
 rejected its MCPServer lifecycle for Hermes runtime spawning. No operator/CRD is
 required for the native driver. Connector cells and media scheduling remain separate.
 

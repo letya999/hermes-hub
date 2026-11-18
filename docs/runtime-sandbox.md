@@ -7,7 +7,7 @@ last_verified: 2026-11-17
 runc is the default. Stronger isolation is an operator deployment choice;
 install and qualify the runtime on the actual execution host first. See
 [ADR-0103](adr/ADR-0103-optional-sandbox-runtime.md) and the measured
-[cell spike](../.work/in-progress/CHG-0320-sandbox-runtime/spike.md).
+[cell spike](../.work/done/CHG-0320-sandbox-runtime/spike.md).
 
 ## Docker and Compose
 

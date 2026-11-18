@@ -6,11 +6,11 @@ last_verified: "2026-11-17"
 
 | Record | Decision |
 |---|---|
-| [ADR-0104](ADR-0104-external-firecracker-runtime.md) | Accepted: external Firecracker microVM backend behind an Uno-style control plane; relays stay host-side, state rides a per-box share disk |
-| [ADR-0103](ADR-0103-optional-sandbox-runtime.md) | Accepted: optional runc/runsc/Kata selection, private relay discovery and no downgrade; Kata qualification remains node-specific |
-| [ADR-0102](ADR-0102-kubernetes-managed-network-boundary.md) | Accepted: managed Kubernetes preflight with applied-policy receipt and separate relay Pod network boundary |
-| [ADR-0101](ADR-0101-optional-kubernetes-runtime.md) | Accepted: optional Kubernetes runtime backend, retained per-space PVCs, UID-fenced ownership; Docker remains default |
-| [ADR-0100](ADR-0100-verified-principal-boundary.md) | Accepted: verified-principal boundary and provider-independent identity (M9 #52) |
+| [ADR-0104](ADR-0104-external-firecracker-runtime.md) | Accepted — delivered M9 (CHG-0322): external Firecracker microVM backend behind an Uno-style control plane; relays stay host-side, state rides a per-box share disk |
+| [ADR-0103](ADR-0103-optional-sandbox-runtime.md) | Accepted — delivered M9 (CHG-0320): optional runc/runsc/Kata selection, private relay discovery and no downgrade; Kata qualification remains node-specific |
+| [ADR-0102](ADR-0102-kubernetes-managed-network-boundary.md) | Accepted — delivered M9 (CHG-0319): managed Kubernetes preflight with applied-policy receipt and separate relay Pod network boundary |
+| [ADR-0101](ADR-0101-optional-kubernetes-runtime.md) | Accepted — delivered M9 (CHG-0319): optional Kubernetes runtime backend, retained per-space PVCs, UID-fenced ownership; Docker remains default |
+| [ADR-0100](ADR-0100-verified-principal-boundary.md) | Accepted — delivered M9 (CHG-0313): verified-principal boundary and provider-independent identity (M9 #52) |
 | [ADR-0099](ADR-0099-connector-slot-fsm.md) | Accepted: one live onboarding per owner/definition, four-stage lifecycle plus a single gate slot, derived you_must/delivery contract, channel-confirmed delivery |
 | [ADR-0098](ADR-0098-durable-connector-state.md) | Accepted: canonical onboarding, Broker event reconciliation, versioned durable notices and incremental SQLite registry commits |
 | [ADR-0097](ADR-0097-m32-bounded-delivery.md) | Accepted — delivered M32: m32 bounded delivery; 2026-11-05 amendment replaces foundation stage with verified direct merge to dev; one automation ownership switch |

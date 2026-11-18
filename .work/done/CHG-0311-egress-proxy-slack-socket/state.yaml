@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0311
 title: corporate egress proxy + Slack Socket Mode
-status: in_progress
+status: done
 branch: feat/m9-egress-slack-socket
-updated: 2026-11-16
-phase: review
+updated: 2026-11-18
+phase: done
 github_milestone: M9 — Enterprise Readiness
 github_issue: "353,350"
 design_status: accepted

@@ -1,13 +1,13 @@
 schema: 1
 change: CHG-0310
 title: M30 — reliable multi-user agent execution
-status: in_progress
+status: done
 branch: feat/m30-reliable-execution
-updated: "2026-11-15"
-phase: implementation
+updated: "2026-11-18"
+phase: done
 requirements: [M30 #397, M30 #398, M30 #399, M30 #400]
 design_status: accepted
-implementation_status: in_progress
+implementation_status: complete
 
 scope: |
   Four targeted fixes to existing state owners per the revised milestone
