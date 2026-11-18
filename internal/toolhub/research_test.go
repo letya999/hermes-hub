@@ -86,6 +86,19 @@ func TestResearchStorageIsolationAndConcurrentCreate(t *testing.T) {
 			}
 		}
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.mu.Lock()
+		n := len(h.active)
+		h.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d research goroutines still active", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestResearchSupervisorStream(t *testing.T) {
