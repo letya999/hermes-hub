@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-14
+last_verified: 2026-11-18
 ---
 
 # Operations
@@ -10,6 +10,188 @@ config vocabulary is in docs/spaces.md; per-service internals in
 docs/services/. This file is procedures only.
 
 ## Stack lifecycle
+
+Runtime isolation is selected by the operator: see
+[runc/runsc/Kata setup and qualification](runtime-sandbox.md). Missing selected
+runtimes/classes fail without downgrade; stop compute before changing isolation.
+
+### Kubernetes control plane
+
+`deploy/helm/hermes-hub` packages five single-replica services: communication-hub,
+supervisor, ToolHub, credential-broker and cliproxy. Images, runtime class, storage,
+ingress, network policy and monitoring come from values, without assumptions about
+registry, ingress controller, storage implementation or secret provider. Keep real
+environment overrides private; `values-kind.yaml` is a synthetic local example.
+Verify templates with `just helm-check`.
+
+Prepare these namespaced Secrets and persistent state before installation:
+
+- `hermes-hub-control`: distinct high-entropy `runtime-token`, `supervisor-token`,
+  `communication-token`. Never pass values through Helm values, `--set`, argv or
+  release metadata. `secretEnv` selects individual keys rather than importing all.
+- `hermes-hub-communication`: published `communication.yaml`, with user roots
+  under `/data/spaces/<id>` and spool at `/spool`. Set gateway `HUB_USER_ID` and
+  ToolHub identity to the provisioned principal. Multi-user installations also
+  need their enrolled token file and corresponding service env paths.
+- `hermes-hub-channels`: `telegram-bot-token` for the current gateway's required
+  Telegram transport. Add Slack bot/app Secret references only when enabling Slack.
+- `hermes-hub-broker`: reviewed `config.json`, `master.key`, `tls.crt`, `tls.key`;
+  add trusted signing public keys and reviewed contracts through `configItems`
+  paths. Use native TLS, the correct public origin, trusted callers and approved
+  providers. Place durable state below `/var/lib/credential-broker`, the independent
+  witness below `/var/lib/credential-broker-recovery/state`, and ephemeral runtime
+  material under `/tmp`. Never enable development HTTP for Pods. The chart copies
+  projected files into an owned private memory directory as regular `0600` files.
+- `hermes-hub-cliproxy`: reviewed `config.yaml`, auth directory `/cliproxy/auths`;
+  provision sessions through the approved credential path.
+- Hydrate the spaces PVC with published spaces and the existing ToolHub store at
+  `HUB_TOOLHUB_STORE`. Configure ToolHub's two broker clients and the gateway's
+  approval client through their existing `HUB_CREDENTIAL_BROKER_*` env/file contract
+  when enabled. The chart does not invent accounts, grants or a blank production store.
+
+Alternatively `externalSecrets` accepts remote references and an existing SecretStore.
+The ExternalSecret v1 CRD/operator must already exist; the chart installs neither
+operators nor store credentials. Rotate Secrets externally, then restart affected
+Deployments to refresh env and private file copies.
+
+```bash
+helm upgrade --install hub deploy/helm/hermes-hub --namespace hermes-hub \
+  --create-namespace --values /private/control-plane-values.yaml --wait --timeout 5m
+kubectl -n hermes-hub get deployments,pvc,networkpolicy
+```
+
+PVCs survive uninstall; `existingClaim` reuses prepared storage. Single writers use
+Recreate. Default co-location with supervisor permits shared RWO spaces/spool claims;
+use compatible RWX storage and `colocate: false` to distribute Pods. This is not HA
+or multi-writer storage. Back up state and independent broker recovery before upgrades.
+Empty `runtimeClassName` omits the field and uses the cluster default (normally runc);
+a nonempty value requires an installed RuntimeClass and reaches these control-plane Pods.
+
+Ingress is opt-in and serves human routes only, using ToolHub's separate public
+listener. Set private host, TLS, controller authentication annotations, permitted
+paths and ingress-controller selectors. Keep `/v1` private. NetworkPolicy permits
+DNS, explicit service edges and public HTTPS for gateway/cliproxy only. It requires
+an enforcing CNI. Standard policies cannot allowlist FQDNs: for mandatory egress,
+set `publicHTTPS: false`, configure `HUB_EGRESS_PROXY`, and permit only its exact
+destination/port through per-service `extraEgress`. Telegram polling and Slack Socket
+Mode (`SLACK_TRANSPORT=socket`, bot/app tokens via `secretEnv`) need no public webhook.
+
+ServiceMonitor requires its CRD and matching monitoring selectors. It scrapes the
+implemented gateway/supervisor `/v1/metrics` with separate Secret Bearer references;
+other services have no invented metrics endpoint. TCP probes prove listener
+availability. Authenticated `/v1/status` and metrics remain separate acceptance gates.
+
+For local acceptance create an isolated kind/k3d cluster, build source images through
+scoped `hubctl build`, and load core/control images with `kind load docker-image
+--name hermes-helm <core-image> <control-image>`. Install synthetic state/Secrets and
+the chart with `--kube-context kind-hermes-helm -f deploy/helm/hermes-hub/values-kind.yaml`.
+Use explicit context on all commands. Record source SHA/image IDs; verify authenticated
+status/metrics, unauthenticated 401, restart persistence, DNS/TLS channel API egress
+and policy denial on an enforcing CNI. TLS reachability does not prove account delivery;
+real channel acceptance requires provisioned accounts and explicit sends.
+
+### Optional Kubernetes space execution
+
+Docker remains the local default (`HUB_EXECUTION_BACKEND=docker`). To run managed
+gateway spaces as Pods, set `execution.backend: kubernetes`. The mandatory
+[ToolHive Operator evaluation](../.work/done/CHG-0319-kubernetes-runtime/operator-eval.md)
+rejected its MCPServer lifecycle for Hermes runtime spawning. No operator/CRD is
+required for the native driver. Connector cells and media scheduling remain separate.
+
+Pre-create a dedicated namespace for each environment, separate from the control
+namespace, with an enforcing CNI, restricted Pod Security and a provisioned
+StorageClass. The chart defaults its name to `<control-namespace>-runtimes`:
+
+```bash
+kubectl create namespace hermes-hub-dev-runtimes
+kubectl label namespace hermes-hub-dev-runtimes \
+  pod-security.kubernetes.io/enforce=restricted
+```
+
+Private values select `execution.kubernetes.namespace`, `storageClass`, `storageSize`
+and optional `runtimeClassName`. Empty class omits the Pod field, using the installed
+cluster default; a configured class must already exist. `imagePullSecrets` must be
+provisioned separately in both namespaces. Set `runtimeImage` and the supervisor
+image to compatible immutable source versions. `execution.kubernetes.apiServerCIDRs`
+and `apiServerPorts` must cover the API Service address and actual endpoint addresses
+as seen by the CNI; discover them from the selected cluster, never open all egress.
+The chart requires API CIDRs when Kubernetes and NetworkPolicy are enabled.
+
+Only supervisor receives a bound, rotating service-account token. Its Role in the
+runtime namespace permits Pod lifecycle/finalizer updates, Secret lifecycle,
+NetworkPolicy reconciliation and PVC get/create, without PVC deletion or cluster
+authority. Other control services and all runtime/relay Pods have no API identity,
+hostPath, Docker socket or privileged daemon. Outside Helm the same driver uses
+`HUB_EXECUTION_BACKEND=kubernetes`, `HUB_KUBERNETES_NAMESPACE`,
+`HUB_KUBERNETES_CONTROL_NAMESPACE`, `HUB_KUBERNETES_CONTROL_RELEASE`,
+`HUB_RUNTIME_CLASS_NAME`, `HUB_KUBERNETES_STORAGE_CLASS`,
+`HUB_KUBERNETES_STORAGE_SIZE`, `HUB_KUBERNETES_PULL_SECRETS`,
+`HUB_KUBERNETES_RELAY_IMAGE`, `HUB_KUBERNETES_TOOLHUB_URL` and
+`HUB_KUBERNETES_CLIPROXY_URL`. In-cluster verified TLS is the default; an explicit
+operator-owned `HUB_KUBECONFIG` may select another verified API. Never project that
+file or token into a space.
+
+Each published space gets its own retained RWO PVC, a gateway Pod, a separate Pod
+for its existing model/ToolHub relays (optional egress relay), and immutable bounded
+generation Secrets. RuntimeClass applies to the gateway; relays use the cluster
+default. Relays and runtime co-locate for RWO storage. All use uid/gid 10001,
+read-only roots, dropped capabilities and RuntimeDefault seccomp. Published config
+is copied into private memory and mounted read-only where required. The space PVC
+owns mutable workspace, Hermes state, skills drafts and relay counters. Host-side
+runtime data is **not** implicitly imported: stop Docker execution, back up and
+restore the reviewed space layout into its PVC before switching existing spaces.
+Never run Docker and Kubernetes controllers against the same logical space.
+
+The persistent per-space deny policy closes generation transitions. Gateway egress
+permits DNS and only its own relays; relay egress permits DNS and selected core
+ToolHub/cliproxy/broker peers. Core services admit runtime traffic from relays only.
+For direct external model services or an approved egress proxy, the operator must
+add a narrow relay policy and configure published fixed endpoints accordingly.
+Use core service FQDNs across namespaces. Broker delivery stays native TLS/signed
+authorization: provision the reviewed per-space `<claim-name>-broker` Secret and
+matching `model-relay.<env>.env` file references; runtime receives neither that
+profile nor control/provider credentials. A controller-authored isolation receipt
+binds Pod, generation and applied policy. It does not prove that the CNI enforces
+policy; run negative network checks before admitting real work.
+
+The same supervisor wake, leases, job dispatch, hold, suspend and respawn contracts
+select either backend. Pod phases and standard conditions appear alongside Hermes
+readiness; Pod Ready alone is not agent acceptance. Suspend deletes both Pods and
+generation Secrets, retaining PVC and ledger. Respawn preserves logical identity
+and data while replacing generation and compute UID. UID-preconditioned deletion
+and the compute finalizer wait for kubelet termination before releasing capacity
+or advancing generation. Node loss/unknown termination stays blocked: fence the
+node/process before any operator removal of finalizers. Never force-delete Pods
+to turn an uncertain job into a confirmed failure.
+
+The ledger records the selected backend; legacy ledgers belong to Docker. Changing
+backend is refused until runtimes are stopped, jobs settled and orphans cleared.
+Runtime and RuntimeClass changes also require stopped compute and settled jobs;
+warm adoption never upgrades or downgrades a live container in place.
+
+Current Kubernetes scope is the managed `gateway` runtime used by normal messages.
+Historical additional runtime modes, browser/meet sidecars, Docker script-job
+execution, shared host mounts and cross-space writable mounts are not supported;
+incompatible spawn plans fail closed. This is one supervisor writer, not HA.
+Back up each space PVC separately from the control `spaces`/spool claims; the
+control snapshot contains published inputs and ledger, not runtime PVC contents.
+Uninstall leaves PVCs and runtime objects in the separate namespace: suspend and
+verify process termination before uninstalling RBAC. PVC deletion is an explicit
+operator retention decision after verified backup.
+
+For kind acceptance disable its default CNI and install an enforcing CNI before
+loading source runtime/control images. Use a separate kubeconfig on every command.
+The managed preflight also requires control/host aliases to remain unresolvable.
+If a development DNS forwarder publishes `host.docker.internal`, block that zone
+in this isolated cluster's DNS (for CoreDNS, a
+[template](https://coredns.io/plugins/template/) with `rcode NXDOMAIN`), then verify
+the negative lookup. Do not disable the managed preflight to accommodate host DNS.
+With synthetic published passports, verify authenticated message dispatch through
+supervisor into real Hermes, retained workspace marker and runtime identity across
+suspend/respawn, new compute UID/generation, Secret cleanup, unauthorized HTTP 401,
+and denial of gateway traffic to public/core/another space. Record source/image
+digests and CNI versions. Local model/PDP fixtures prove runtime transport only;
+they do not establish real provider or channel account acceptance.
 
 `hubctl --user <id> --env dev|prod` (prod default; `--dir spaces/<id>` is the
 explicit form). `render` writes generated files under `spaces/<user>/
@@ -91,6 +273,38 @@ delivery whose channel identity is invalid. The rejected audience is never
 queued for sending; the recovery log records its job ID for investigation.
 
 ## User onboarding — the capability ceremony
+
+**Fast path (standard spaces).** With an infra space already running, a
+reviewed provisioning profile and per-space secrets in place, one command
+takes a principal to a running managed runtime:
+
+```
+hubctl provision --user <id> --env dev            # dry-run plan + digests
+hubctl provision --user <id> --env dev --confirm  # commit and start
+```
+
+It scaffolds `spaces/<id>` from `policies/profiles/<name>/` (default
+`standard-user`) when passports are absent, materializes unique per-space
+ports, runs aggregate preflight (all six passports parse, secrets present,
+grants vocabulary inside the pinned rights catalog, infra store reachable)
+before any write, then commits the capability bundle — ceiling policy,
+bound profile, governance right grants and the agent-tools binding — as
+one confirmed batch, runs `space apply`, starts the space's compose on
+existing images (provisioning never rebuilds; `hubctl build` stays an
+explicit action), and enrolls the sibling runtime/model-relay tokens with
+the infra owner. Re-running converges: identical records replay as no-ops,
+already-active right grants are skipped, missing pieces are filled in.
+`--skip-up` stops after `space apply`.
+
+The `standard-user` profile ships shared cliproxy/infra services with
+per-space browser/egress-relay/model-relay/toolhub-relay, the reviewed
+capability ceiling in `policy.yaml` (stamped with the bound definition
+digest at commit time) and a grants ask equal to the minted right ceiling.
+Fill `secrets.<env>.env` with at least `OPENAI_API_KEY` before running —
+preflight reports every missing requirement in one list.
+
+**Manual ceremony** (custom policies, org ceilings, non-standard toolsets)
+stays the documented path below.
 
 A new space has exactly six authored configuration inputs under
 `spaces/<id>/passports/`: stack/config/models/workspace/tools/grants.yaml.
@@ -260,7 +474,16 @@ reasons (`policy_mismatch`, `disabled`, `revoked`, `stale`, `degraded`,
 `not_found`). Needs a `diagnostics` control-operation grant; scoped by
 authenticated identity, never arguments.
 
-Operator ops surface (ADR-0077): `hubctl usage --spool <dir> [--days N]
+Operator ops surface (ADR-0077): `hubctl status [--dir <space>]
+[--supervisor-url <url>] [--gateway-url <url>] [--json]` answers "what is
+running, what failed, how deep is the queue" from the two bounded
+control-plane endpoints — supervisor `GET /v1/status` (runtimes as
+phase+named conditions from the closed #209 vocabulary, holds, crash
+budgets, job counts) and gateway `GET /v1/status` (spool queue counts,
+outbox depth/age, routine next-due/overdue). Read-only and
+bearer-authenticated (supervisor.auth token chain); unreachable planes
+degrade to an `unreachable` line rather than a fabricated section, and it
+never wakes runtimes. `hubctl usage --spool <dir> [--days N]
 [--actor u] [--model m]` aggregates the durable `usage.jsonl` journal per
 scope and actor — read-only, tolerant of a torn tail. `hubctl watch
 (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url>)
@@ -463,6 +686,96 @@ pending URL and renews an expired confirmation before printing it; `--confirm`
 completes an awaiting-confirmation onboarding through the operator CLI grant.
 The confirmation result prints only phase, status, onboarding, binding and
 connection state; it does not print recipe or credential metadata.
+
+## IAM enrolment and channel linking (SSO)
+
+Opt-in ADR-0100 surface on communication-hub. Declare it in the published
+passport `config.yaml` — the `iam:` block is compile-validated and renders
+into the gateway env and (bundled only) two extra shared services:
+
+```yaml
+iam:
+    mode: external        # or: bundled
+    issuer: https://sso.example.com/application/o/hermes
+    client_id: hermes-hub
+```
+
+- **`mode: external`** — an upstream OIDC provider you run yourself:
+  Authentik, Keycloak, ZITADEL Cloud, Entra ID. `issuer` (https outside
+  loopback; path issuers like Authentik's `/application/o/<slug>` are
+  legal) and `client_id` are required; declaring `identity-hub` or
+  `hub-postgres` stack services at the same time is a compile error —
+  external means the hub runs no IdP of its own.
+- **`mode: bundled`** — the optional in-stack IdP: `identity-hub`
+  (ZITADEL v4, digest-pinned) plus `hub-postgres` (the one shared
+  postgres — only the IdP consumes it). Declare both in `stack.yaml`
+  with `mode: shared`; anything less fails compile and render.
+  `issuer` may be omitted in dev — the render derives
+  `http://idp.localhost:<ports.identity-hub|8091>` and puts the
+  `idp.localhost` network alias on the IdP, so the browser and the
+  gateway container resolve one issuer string. An explicit issuer must
+  be a host-level URL (ZITADEL serves issuers without a path) and makes
+  the deployment publish `127.0.0.1:<issuer port>:8091`.
+- Absent `iam:` → channel-mapped local mode, unchanged.
+
+`identity-hub.auth` materializes at render (postgres password,
+`ZITADEL_MASTERKEY`, session cookie secret). The masterkey encrypts the
+IdP's secrets at rest and never rotates — losing it bricks the store, so
+back it up with the other auth files.
+
+Direct env override still works for unmanaged stacks: `HUB_OIDC_ISSUER`
++ `HUB_OIDC_CLIENT_ID` compose passthrough — a published `iam:` block
+takes precedence, and a bundled mode without `client_id` renders empty
+env so the gateway boots in local mode until bootstrap finishes (it
+never starts half-configured). `HUB_PUBLIC_ORIGIN`/`form origin`
+supplies the `/iam/oidc/callback` redirect target — register exactly
+`<form origin>/iam/oidc/callback` in the provider client (OIDC code
+flow + PKCE, `openid` scope; no client secret is stored).
+
+**Bundled bootstrap (manual, once).** ZITADEL initializes itself via
+`start-from-init`; after the container is healthy:
+
+1. Open `http://idp.localhost:8091/ui/console` and sign in as
+   `zitadel-admin@zitadel.localhost` with the generated password ZITADEL
+   prints in its logs on first boot (`docker compose logs identity-hub`
+   — the line appears once; rotate the password immediately).
+2. Create a project and an application: type **web**, auth method
+   **PKCE**, redirect URI `<form origin>/iam/oidc/callback`. The
+   application **client id** goes to `iam.client_id` — re-apply the
+   passport to project it into the gateway.
+3. Create users; each user's **subject** (the stable `sub` claim —
+   ZITADEL's opaque user id, not the login name) goes into
+   `communication.users.yaml` → `oidc_subject:` for enrolment.
+4. Backup scope grows: `hub-postgres-data` volume (the IdP's store) in
+   addition to `<spool>/iam/`; `identity-hub.auth` alongside the other
+   auth files. Removal: `/unlink` every linked account, drop the `iam:`
+   block plus the two stack services, re-apply — the postgres volume
+   stays behind for manual deletion, it is never dropped silently.
+
+Two flows, both one-time and 10-minute TTL:
+
+- **Link** — a mapped user runs `/link` in Telegram or Slack; the bot
+  replies with `…/iam/link/<nonce>`. The page offers an SSO button,
+  the callback verifies issuer/audience/signature/RS256/`kid`/expiry/
+  nonce, then binds that channel account to the user's principal.
+- **Enrol** — an unmapped Telegram user messages the bot; instead of a
+  bare denial it gets the same link. After SSO the subject must match a
+  user's provisioned `oidc_subject` in `communication.users.yaml`;
+  zero or ambiguous matches deny. Slack accounts enrol through the same
+  link minted for their `slack-<team>-<user>` transport.
+
+`/unlink` drops the channel account's binding. Links persist under
+`<spool>/iam/` (`iam-links.json` + hashed-subject audit journal) — back
+them up with the spool. A linked channel account resolves to its
+principal at ingress and its envelopes carry `Issuer`/`Subject`
+provenance; unlinked transports deny. One subject cannot bind two
+principals — conflicts answer 409 and are audited.
+
+Limitations: provider verification is fixture-tested against the OIDC
+contract, not yet against a live ZITADEL tenant; enrol links are offered
+on the Telegram no-access path only (Slack enrol via an issued link);
+`oidc_subject` is provisioned manually per user — no group/SCIM sync;
+SAML stays outside Hermes (front it through the provider if needed).
 
 ## Outbound exposure (tunnels)
 
@@ -680,12 +993,35 @@ revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
 
+Scheduled backups (issue #200): the supervisor captures a contextlife
+archive per space every `HUB_BACKUP_EVERY` (default 24h; `0`/`off`
+disables) into `<space>/archive/backups/`, retaining the newest
+`HUB_BACKUP_KEEP` (default 7) archives — the same redaction contract as
+the manual command (secret envs and `.enc` stores never enter the zip).
+Every `HUB_BACKUP_DRILL_EVERY` (default 7d; `0`/`off` disables) the
+newest archive is restored into a scratch dir under the supervisor state
+dir and every manifest hash re-verified — the auditable result lands in
+`<state>/backups.json` and on `hubctl status` as
+`backup <user> last=<ts> retained=<n> drill=<ok|class> checked=<n>`.
+`hubctl context restore-drill --dir <space> [--in <archive>]` runs the
+same drill on demand; a cross-owner restore stays denied at Verify.
+
 A `config.supervision` change needs no respawn: `space apply` re-renders
 `runtime.<env>.policy.json` and the supervisor picks it up on its next
 decision sweep — `idle_stop` bounds warm retention, `restart: never` or
 `watchers.stack-health.protected` keep the container observed but never
 remediated, `watchers.stack-health.every` throttles the health-probe
-cadence. Port and channel changes (`config.ports`, `config.channels`) are
+cadence. The opt-in `watchers.metrics` adds sustained-anomaly incidents:
+the supervisor scrapes the runtime's bounded `GET /v1/status` (request
+totals, 5xx count, a 256-sample p95, `active_runs`, `mcp_inflight`) on the
+`every` cadence and opens an incident class only after three consecutive
+breaches — `cpu_sustained` >90% of the container CPU quota,
+`memory_sustained` >85% of the cgroup limit, `latency_sustained` p95 >5 s
+with ≥20 samples, `http_5xx_sustained` >5% with ≥20 new requests,
+`session_saturated` ≥5 runs, `mcp_saturated` ≥16 inflight. A reading below
+the low watermark resets the counter; `protected` observes without waking
+the personal supervisor. Scrape failures are skipped observations, not
+incidents. Port and channel changes (`config.ports`, `config.channels`) are
 recreate-class: only the owning container restarts — `hermes-runtime` is
 supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
 re-spawn it (env-baked config needs a new container, unlike a deferred
@@ -773,27 +1109,46 @@ a Honcho conclusions export (the list Page or the piped array) into
 adapter reports degradation honestly (capture/search/export and health are
 the only lanes — recall and governed write are `unsupported`).
 
-With `knowledge_ui` on (requires `memory_vault`) no `open-knowledge`
-container renders (M32/#520): ToolHub owns the vault, so the feature can
-mount nothing — the upstream editor cannot act as a governed-API client,
-and its editor stays explicitly unavailable. The separate `memory_open`
-agent tool opens a read-only ToolHub memory view in the owner's private
-channel. Its bearer link lasts one hour and is rechecked against the
-published memory switch, current selection and `memory.search` grant on
-every request; it has no edit endpoint. `hubctl doctor` reports the upstream
-editor limitation; a space whose
-published `stack.yaml` still declares `open-knowledge` fails the
-declared-but-unrendered check until republished without it (the vault
-itself, `.ok/` state and history are untouched — nothing is deleted).
-`ui_port`/`ui_bind` validation is unchanged (loopback-only, port range,
-no collisions, requires `knowledge_ui`) but publishes nothing while no
-service renders; `ui_expose` stays the reserved M18 hook and setting it
-still fails honestly. Knowledge reads and edits go through the governed
-ToolHub tools: `memory_search` reads memory content and `memory_card
-op=propose` plus the owner's verified confirmation is the only edit path —
-an editor write that bypassed ToolHub admission is impossible by
-construction. `knowledge_ui_write` stays deferred (#422) until a
-governed-API knowledge surface exists. Honcho is
+With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
+container serves the OpenKnowledge editor over the vault — the space-private
+network only by default, no host reachability at all. On a published
+passport the stack doc must also declare `open-knowledge: {mode:
+per-space}`; a declaration without the feature fails the
+declared-but-unrendered check (the vault itself, `.ok/` state and history
+are never deleted). Setting `ui_port` in `agent.yaml` opts into exactly one
+host publish, `127.0.0.1:<ui_port>` → the container's 8080 (the editor is
+unauthenticated, so loopback is the only safe edge). Reach it from another
+machine by tunneling in: `ssh -L <ui_port>:localhost:<ui_port> <host>`, then
+open `http://localhost:<ui_port>` in a browser. `ui_bind` pins the publish
+address and is loopback-only (`127.0.0.1` or `::1`); a wider bind is a hard
+validation error, never a warning — there is no public exposure path.
+`ui_port` joins the other host ports in validation (1024–65535, no collision
+with browser/oauth/slack events ports) and requires `knowledge_ui`;
+`hubctl doctor` reports the edge, the tunnel hint and whether something is
+already listening. `ui_expose` is the reserved M18 hook: setting it fails
+honestly until the M18 edge service lands, which is where a shareable
+one-time `?t=` UI link (auth + expiry decided there) would hang off — never
+a silent partial exposure.
+Coexistence contract with hub writes: when the governed writer or rollup
+lands a commit while a document is open in the editor, OpenKnowledge keeps
+both versions — a stale save is *rejected* and retained under
+`.ok/local/stale-external-writes.json`, and the conflict surfaces via
+`.ok/local/conflicts.json` (shadow versions live under `.git/ok/`). There is
+never a silent overwrite in either direction. Owner UI edits stay as
+working-tree changes until the next `vault.CommitExternalEdits` sweep (the
+nightly rollup path) commits them as `hermes-owner` and wins the next
+rollup (`truth_pending` flow). OpenKnowledge's own state (`.ok/`,
+`.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
+editor indexes knowledge only. If the container is down, vault capture,
+recall and search are unaffected — nothing else depends on it.
+The editor is a human surface only: no `mcp_servers.open_knowledge` entry
+renders on either render path, so the agent never dials it (M32/#520 route
+stays retired). Agent knowledge reads and edits go through the governed
+ToolHub tools — `memory_search` reads and `memory_card op=propose` plus the
+owner's verified confirmation is the only agent edit path;
+`knowledge_ui_write` stays deferred (#422). The separate `memory_open` agent
+tool still opens the read-only ToolHub memory view (one-hour bearer link,
+rights rechecked per request). Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only
@@ -897,6 +1252,23 @@ them. Local `just docker-check` uses prebuilt images: `docker-pull` requires an
 exact HEAD tag and matching revision label, failing before retag on mismatch. Local
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
+
+Base-image refresh policy: every external `FROM` in a runtime-facing stage is
+referenced by digest (`name:tag@sha256:`). Build-only toolchain stages
+(`go_build`, `broker_build`, `cliproxy_build`, `sqlite_build`, the media
+`go_build` stages) may stay tag-only — their output is re-verified by the
+build itself. ARG-supplied bases (`Dockerfile.dev-overlay` `BASE`, the broker
+deploy `GO_IMAGE`) follow the caller contract: production passes a
+digest-pinned ref; the tag defaults are dev conveniences. Cadence: Dependabot
+`docker` runs weekly over `/docker` and
+`/services/credential-broker/deploy` and owns routine bumps; fixes for
+publicly disclosed base-image vulnerabilities jump the queue out-of-band.
+Owner: the hub maintainer reviews and merges each batch — Dependabot only
+opens the PR. Verification: a bump merges only with green CI `image` and
+`containers` jobs, and is verified after merge by `just docker-check` against
+the exact published SHA (record SHA + run URL). Rejected alternative:
+in-layer `apt-get dist-upgrade` as a refresh mechanism — it mutates image
+contents without changing the reviewed digest and breaks reproducibility.
 
 ## Supervisor and scale-to-zero
 

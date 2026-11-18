@@ -1,0 +1,76 @@
+schema: 1
+change: CHG-0309
+title: Per-space OpenKnowledge editor restored as human UI over the vault
+status: done
+branch: chore/pre-release
+updated: "2026-11-15"
+phase: delivered
+requirements: [SPEC-0085 R8, SPEC-0085 R10]
+depends_on: [ADR-0095]
+design_status: accepted
+implementation_status: implemented
+
+scope: |
+  Owner asked for the per-user OpenKnowledge editor over that user's own
+  vault, opening in a browser. ADR-0095 D2 amendment carves the scoped
+  exception: OK is a human editing surface — owner edits land as
+  working-tree changes and the nightly CommitExternalEdits sweep commits
+  them as hermes-owner; the agent-side mcp_servers.open_knowledge route and
+  the managed attestation vocabulary stay retired (#422 unchanged).
+
+implemented:
+  - internal/stack/compose.go — open-knowledge service render behind
+    knowledge_ui: pinned role image via imageBuild, replicas 1,
+    ok init --no-mcp --no-skills first boot, vault bind -> /data rw,
+    OK_ALLOW_EXTERNAL/OK_BIND/PORT/HOME env, tmpfs /state/home, ui_port ->
+    exactly one loopback publish with OK_EXTERNAL_URL = loopback origin;
+    default net unmanaged, agent net managed, shared hub net never joined.
+  - internal/stack/compose.go — managed ui_port publish also joins a
+    dedicated non-internal `knowledge-publish` network: internal agent
+    nets silently drop published ports (browser-publish pattern; found
+    live on artem_two — published edge never bound until the fix).
+  - internal/stack/compose.go — `git config --global --add safe.directory
+    /data` in the service command: a bind-mounted vault keeps the host
+    uid and git refused every repo op (history/sync views blank).
+  - internal/stack/knowledge_doctor.go — doctor reports the loopback edge
+    again (network-only hint, non-loopback bind refusal, listening probe).
+  - internal/stack/config.go — feature description restored.
+  - internal/toolhub/api/governance_io.go — section comment updated.
+  - internal/stack/managed_read_test.go — authored stack doc declares
+    open-knowledge per-space again when the feature is on.
+  - internal/stack/knowledge_test.go — render/mount/env/tmpfs/ports/
+    networks/path-confinement/ui_port/doctor tests restored; managed
+    ui_port publish-network coverage; no-runtime-route and write-denial
+    tests kept; declared-but-unrendered check test.
+  - docs: operations.md runbook paragraph, tools.md, spaces.md, e2e
+    registry E2E-249, ADR-0086 D8 amendment, ADR-0095 amendment,
+    SPEC-0085 R8 amendment.
+
+slices:
+  S1-render: green
+  S2-status-docs: green
+
+validation:
+  documents: updated
+  scoped_tests: pass  # knowledge/render/doctor tests green; stack,
+                      # supervisor, passport, runtime -short suites green;
+                      # just check green
+  live_acceptance: pass # artem_two dev stack: passport published
+                      # r-4df7e1ab9705a5d4 (user rule native:knowledge_ui,
+                      # ports.knowledge-ui=18443, open-knowledge per-space);
+                      # container hermes-hub-artem_two-dev-open-knowledge-1
+                      # Healthy, mounts only spaces/artem_two/vault -> /data
+                      # rw, publishes 127.0.0.1:18443; GET / -> HTTP 200
+                      # (OK 0.88.2 editor serving); doctor reports
+                      # "listening on 127.0.0.1:18443"
+
+notes:
+  - Not restored by design: mcp_servers.open_knowledge (both renders),
+    HUB_MANAGED_KNOWLEDGE_UI, MaterializeOptions.KnowledgeUI — they only
+    served the retired runtime route.
+  - Known ceiling: owner UI edits carry hermes-owner provenance from the
+    nightly sweep, not per-save identity; a git index.lock race with a
+    rollup write fails cleanly and retries next night.
+  - space apply on this host needs HUB_RUNTIME_SUPERVISOR_URL=http://
+    127.0.0.1:8876 — the recorded supervisor_url is the in-network name,
+    unresolvable off-host.

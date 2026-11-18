@@ -277,6 +277,51 @@ func (b *Broker) RevokeGrant(a identity.Actor, id string) error {
 	}
 	return nil
 }
+
+// RevokePrincipalGrants retires every active grant owned by one
+// principal/context. A context manager may act for its managed context; a
+// principal-scoped actor must pin the exact owner and cannot widen to a
+// sibling through the request body.
+func (b *Broker) RevokePrincipalGrants(a identity.Actor, in v1.PrincipalRevocationRequest) (v1.PrincipalRevocation, error) {
+	if !a.Valid() || !identity.ValidID(in.PrincipalID) || !identity.ValidID(in.ContextID) {
+		return v1.PrincipalRevocation{}, ErrInvalid
+	}
+	if !(a.ContextManager && a.ContextID == in.ContextID || a.PrincipalID == in.PrincipalID && a.ContextID == in.ContextID) {
+		return v1.PrincipalRevocation{}, ErrDenied
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.live() {
+		return v1.PrincipalRevocation{}, ErrUnavailable
+	}
+	ids := make([]string, 0, 64)
+	for id, g := range b.grants {
+		if g.View.Active && g.View.PrincipalID == in.PrincipalID && g.View.ContextID == in.ContextID {
+			ids = append(ids, id)
+		}
+	}
+	out := v1.PrincipalRevocation{Grants: len(ids)}
+	for _, id := range ids {
+		g := b.grants[id]
+		g.View.Active = false
+		ev := b.audit("grant.revoked", a)
+		ev.PrincipalID, ev.ContextID = in.PrincipalID, in.ContextID
+		ev.CredentialID = g.View.CredentialID
+		ev.GrantID = id
+		ev.BindingID = g.View.BindingID
+		ev.WorkloadID = g.View.WorkloadID
+		if _, e := b.commit(mutation{Audit: ev, Grant: &g}); e != nil {
+			return v1.PrincipalRevocation{Grants: 0}, e
+		}
+		for lid, l := range b.leases {
+			if l.View.GrantID == id {
+				b.dropLease(lid)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (b *Broker) RevokeCredential(a identity.Actor, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

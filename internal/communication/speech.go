@@ -35,7 +35,7 @@ func (g *Gateway) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	d := Delivery{ID: in.DeliveryID, IdempotencyKey: in.DeliveryID, OwnerPrincipalID: principal,
+	d := Delivery{ID: in.DeliveryID, IdempotencyKey: in.DeliveryID, OwnerPrincipalID: principal, OwnerContextID: mapping.ContextID, Automation: true,
 		ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID,
 		Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID,
 		Voice: strings.TrimSpace(in.Text), CreatedAt: g.now().UTC()}

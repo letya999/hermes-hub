@@ -799,6 +799,18 @@ func TestCLIExecPoolStarvationBound(t *testing.T) {
 }
 
 func TestCLIExecRuntimeTiers(t *testing.T) {
+	baseline, baselineDocker := cellFixture(t, nil)
+	if _, err := baseline.execCLI(context.Background(), cliReq("rg", cellExecution())); err != nil {
+		t.Fatal(err)
+	}
+	if len(baselineDocker.createCalls()) != 1 {
+		t.Fatal("baseline did not create exactly one cell")
+	}
+	for _, call := range baselineDocker.createCalls() {
+		if !containsArgPair(call, "--runtime", "runc") {
+			t.Fatal("runc delegated to daemon default")
+		}
+	}
 	c, fake := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.Runtime = "runsc" })
 	response, err := c.execCLI(context.Background(), cliReq("rg", cellExecution()))
 	if err != nil {
@@ -819,6 +831,9 @@ func TestCLIExecRuntimeTiers(t *testing.T) {
 	fake.runtimes = []string{"runc"}
 	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("missing kata runtime admitted: %v", err)
+	}
+	if len(fake.createCalls()) != 0 {
+		t.Fatal("missing Kata attempted a fallback cell")
 	}
 	// An unknown tier is rejected by config validation, not just at create.
 	c, _ = cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.Runtime = "bogus" })

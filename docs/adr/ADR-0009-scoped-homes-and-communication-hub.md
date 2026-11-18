@@ -4,6 +4,8 @@ last_verified: 2026-09-10
 ---
 # ADR-0009: Scoped homes and communication-hub
 
+Status: accepted.
+
 Accepted 2026-09-10.
 
 ## Decision

@@ -63,8 +63,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "41" {
-		t.Fatalf("catalog release = %q, want 41", Release)
+	if Release != "42" {
+		t.Fatalf("catalog release = %q, want 42", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {

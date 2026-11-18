@@ -1,5 +1,5 @@
 change: CHG-0032-broker-direct-form
-status: verified
+status: done
 steps:
   - done: DirectForm flag broker.Config -> app.Config -> BROKER_DIRECT_FORM env
   - done: render.go sets BROKER_DIRECT_FORM=1 on credential-broker service

@@ -107,7 +107,7 @@ func TestOccurrenceCompactionRetainsLiveDeliveryAndHistory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, liveID+".json")); err != nil {
 		t.Fatalf("unadmitted delivery lost live occurrence: %v", err)
 	}
-	d := commodel.Delivery{ID: "reminder-" + liveID, OccurrenceID: liveID, Channel: "telegram_bot", ChatID: 11, Text: "hello"}
+	d := commodel.Delivery{ID: "reminder-" + liveID, OccurrenceID: liveID, OwnerPrincipalID: "alice", OwnerContextID: "alice", Channel: "telegram_bot", ChatID: 11, Text: "hello"}
 	rec, err := host.outbox.enqueue("alice", d, now)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +188,7 @@ func TestOccurrenceCompactionKeepsAgentResultContract(t *testing.T) {
 	if _, err := host.queue.recordResult("alice", o.Job.ID, "completed", "done", h.now); err != nil {
 		t.Fatal(err)
 	}
-	d := commodel.Delivery{ID: "result-" + o.Job.ID, JobID: o.Job.ID, Channel: "telegram_bot", ChatID: 11, Text: "done"}
+	d := commodel.Delivery{ID: "result-" + o.Job.ID, JobID: o.Job.ID, OwnerPrincipalID: "alice", OwnerContextID: "alice", Channel: "telegram_bot", ChatID: 11, Text: "done"}
 	if d.OccurrenceID != "" { // completed results keep their existing send contract
 		t.Fatal("result unexpectedly requires occurrence reauthorization")
 	}
@@ -248,7 +248,7 @@ func TestOccurrenceCompactionWaitsForEventChildResult(t *testing.T) {
 	if _, err := os.Stat(active); err != nil {
 		t.Fatalf("source archived before child result delivery: %v", err)
 	}
-	d := commodel.Delivery{ID: "result-" + child.ID, JobID: child.ID, Channel: "telegram_bot", ChatID: 11, Text: "done"}
+	d := commodel.Delivery{ID: "result-" + child.ID, JobID: child.ID, OwnerPrincipalID: "alice", OwnerContextID: "alice", Channel: "telegram_bot", ChatID: 11, Text: "done"}
 	rec, err := host.outbox.enqueue("alice", d, now)
 	if err != nil {
 		t.Fatal(err)

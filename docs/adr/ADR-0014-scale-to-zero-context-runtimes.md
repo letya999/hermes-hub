@@ -4,6 +4,8 @@ last_verified: 2026-09-12
 ---
 # ADR-0014: Scale-to-zero Hermes runtimes per context
 
+Status: accepted.
+
 Accepted 2026-09-12.
 
 ## Decision

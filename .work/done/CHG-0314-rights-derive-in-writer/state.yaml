@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0314
+title: Rights derivation inside the ToolHub writer — apply/recovery stops racing store.db
+status: deferred
+deferred: 2026-11-18
+branch: feat/m9-rights-derive-in-writer
+updated: 2026-11-18
+phase: implementation
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-compute-apply-split: pending
+  S2-toolhub-endpoints: pending
+  S3-hubctl-client-path: pending
+  S4-live-verification: pending
+  S5-docs-evidence: pending
+validation:
+  documents: pending
+  just_check: pending
+  docker_check: pending
+  live_acceptance: pending
+evidence:
+  - "Incident basis: CHG-0313 apply recovery — host-side DeriveSpaceRights/RestoreSpaceRights lost saveLocked digest CAS against the live fenced ToolHub's tick commits; needed manual docker stop to unblock; CHG-0301 closed the read side (foreign-commit visibility), this closes write ownership"
+remaining: []
+limitations:
+  - "derive/restore endpoints are admin control routes — reachable via enrolled bearer, not through the runtime fence"

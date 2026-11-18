@@ -49,6 +49,17 @@ func LocalTransport() http.RoundTripper {
 }
 
 func transport(allowLoopback, allowPrivate bool) http.RoundTripper {
+	if !allowPrivate {
+		// A configured corporate egress proxy is the boundary for public
+		// destinations: CONNECT goes to the proxy and its host-side allowlist
+		// replaces the local dial check. Private-endpoint transports never
+		// consult the proxy — internal hops must stay direct.
+		if proxy, err := EgressProxy(); err != nil {
+			return errTransport{err}
+		} else if proxy != nil {
+			return EgressTransport()
+		}
+	}
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return http.DefaultTransport

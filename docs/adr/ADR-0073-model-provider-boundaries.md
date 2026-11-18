@@ -4,7 +4,7 @@ last_verified: 2026-10-20
 ---
 # ADR-0073 — Model/provider boundaries
 
-Status: accepted for implementation; live acceptance pending.
+Status: accepted — model/provider layer delivered (M15), verified 2026-11-15.
 
 ## Context
 

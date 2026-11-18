@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-10-29
+last_verified: 2026-11-17
 ---
 # Threat model
 
@@ -60,6 +60,34 @@ leased only for current work and is not an authorization source.
   in `tools/list` is not permission to call.
 - Organization material is read-only unless a separately authorized action permits a
   bounded mutation.
+
+## Runtime isolation backends
+
+Execution substrate (Docker/Kubernetes) and isolation (runc/runsc/Kata) are
+separate choices. Kubernetes alone does not add a guest kernel. See
+[sandbox operations](runtime-sandbox.md) and [ADR-0103](adr/ADR-0103-optional-sandbox-runtime.md).
+
+| Isolation | Actual boundary | Trusted components and remaining exposure |
+|---|---|---|
+| runc | Host-kernel namespaces, cgroups, capabilities, readonly mounts and seccomp | Workload syscalls still reach the host kernel. Kernel escapes and side channels remain possible. |
+| runsc/systrap | gVisor userspace syscall implementation and isolated network stack reduce direct host-kernel API exposure; no KVM required | Sentry/gofer, their restricted host syscalls, host kernel, runtime configuration and approved mounts remain trusted. This is not a hardware VM or a defense against all side channels. |
+| Kata/QEMU or Cloud Hypervisor | Separate guest kernel in a hardware-backed VM; workload kernel exploits target the guest first | VMM/KVM, guest agent/kernel, virtiofs/device backends, shim and host operator remain trusted. Shared storage and hardware side channels remain exposed. QEMU and CLH require separate node qualification. |
+
+No backend hides mounted data from the host administrator, removes denial of
+service risk or replaces ToolHub/broker authorization. Docker/runtime daemon,
+Kubernetes API/node administrators, CNI enforcement and storage are deployment
+trust roots. The supervisor checks requested runtime/class and ownership;
+it does not attest that an administrator mapped a name to the advertised handler.
+Control plane, relay processes and optional browser workloads remain separate
+trusted components outside the selected agent sandbox.
+CLI cells inherit the Docker runtime choice unless the operator explicitly sets
+their separate tier; choosing runc for cells retains shared host-kernel exposure.
+In Kubernetes a Pod shares
+one sandbox/network boundary, hence runtime and credential-bearing relays use
+separate Pods. Pinning private Docker relay aliases avoids embedded DNS without
+adding host networking. Missing runtime/class/discovery fails closed; selection
+changes cannot adopt already-running weaker compute. The dated spike records
+local compatibility and unresolved Kata acceptance without a production guarantee.
 
 ## Threats, controls and test ownership
 
@@ -170,3 +198,22 @@ or live provider behavior; those acceptance gates remain separate.
 ## Hosted user code
 
 Hosted content is untrusted and has its own origin. Fragment shares exchange into host-only cookies; ambient Hub credentials never reach app relay. Dynamic code requires the inspected non-root secure-runtime envelope, no network/secret defaults and bounded lifetime/resources. Filesystem, revision, route, audit and fleet gates fail closed. Native kernel/browser/sish guarantees require real acceptance; see [hosting boundary](services/hosting.md).
+
+## Identity-provider boundary (ADR-0100)
+
+When `iam:` enables SSO, the OIDC issuer becomes the trust root for
+principal claims. The gateway verifies the contract — signature/RS256
+against provider JWKS, exact `iss` (trailing-slash tolerant), `aud`,
+expiry and the per-flow nonce — and the token never crosses the
+boundary: `sub` resolves to a durable link or a provisioned
+`oidc_subject`, else denial. Provenance (`Issuer`/`Subject`) is audit
+metadata, never an authorization key. A compromised or mispointed
+issuer can mint no principal outside the store it links into; a bundled
+deployment keeps that root inside the same trust domain (ZITADEL +
+shared postgres on the runtime network, loopback-published external
+edge, masterkey materialized into `identity-hub.auth` beside the other
+auth files). One subject binds one principal — conflicts deny and are
+audited; replayed or expired link nonces answer 410. The dev-only
+`*.localhost` issuer path exists so browser and container resolve one
+name; production issuers require real https — plain http off-loopback
+fails startup.

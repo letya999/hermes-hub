@@ -1,0 +1,64 @@
+chg: CHG-0316
+title: Programmatic user provisioning
+status: deferred
+deferred: 2026-11-18
+branch: feat/m9-iam-identity
+created: 2026-11-16
+updated: 2026-11-18
+slices:
+  - id: s1
+    title: standard-user provisioning profile assets
+    status: done
+  - id: s2
+    title: capability bundle writer (policy+profile+rights+agent-tools)
+    status: done
+  - id: s3
+    title: hubctl provision command + preflight aggregation
+    status: done
+  - id: s4
+    title: recovery phase-gate fix
+    status: done
+  - id: s5
+    title: enrollment warnings
+    status: done
+  - id: s6
+    title: tests + operations.md
+    status: done
+verification: >
+  just check clean; go test -short ./cmd/hubctl ./internal/stack green incl.
+  new TestApplyRecoveryKeepsNeverLiveCandidateProfile, TestProvisionPorts,
+  TestProvisionCeiling. Live dry-run on anpanmannn prints converged plan.
+notes: >
+  Full live `--confirm` provision of a brand-new user still pending as the
+  real acceptance run (docker up included); rerun on anpanmannn conflicts
+  honestly on policy revision — expected, records differ (18.7.0 digest).
+  - id: s7
+    title: store foreign-commit self-heal (live writer no longer wedges)
+    status: done
+  - id: s8
+    title: migrateOnce persist-failure rollback (exposed by resync)
+    status: done
+verification: >
+  just check clean; go test -short ./internal/toolhub green incl. new
+  TestMutatorResyncsAfterForeignCommit (json+db); danil_silantyev end-to-end
+  provision --confirm in ~43s on prebuilt images.
+notes: >
+  CAS-conflict now sets resyncNeeded; mutators resync via Reload at entry
+  and answer the triggering call with ErrConflict (stale retries stay
+  fenced — TestManagedProfilePersistenceAndRollback green). Deploy: toolhub
+  image rebuild required before the live stack self-heals; then re-apply
+  anpanmannn (profile reactivation left passport activation mismatch).
+  - id: s9
+    title: onboarding gaps found by live agent run (mock channel verified)
+    status: open
+notes: >
+  Live run exposed four steps provision does not yet perform: (1) shared
+  cliproxy broker grant — request+submit+Grant(model-relay binding) +
+  generated/model-grants.json + registry broker_grants — relay else fails
+  502 model route unavailable; (2) communication.users.yaml record needs
+  enabled+telegram_ids+policy_version or controlCaller rejects sibling
+  token (401); (3) automation-routing users list — missing principal
+  crash-loops ToolHub (enrolled routing owner unavailable); (4) broker
+  key volumes — now covered by provisionBrokerVolumes. Verified
+  mock-channel agent run for anpanmannn: admitted as her principal via
+  sibling token, runtime spawn, cliproxy 200, marker receipt.

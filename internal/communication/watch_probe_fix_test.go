@@ -113,7 +113,7 @@ func TestProbeResultReceiptReplaysAfterCrash(t *testing.T) {
 	// The receipt records exactly what settleProbe produced before dying: the
 	// changed value, the dispatched occurrence and the queued delivery.
 	o.State = "dispatched"
-	delivery, err := normalizeDelivery(Delivery{ID: "watch-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: "watch the page\nhttps://example.com/p\nwas: v1\nnow: v2", CreatedAt: now})
+	delivery, err := normalizeDelivery(Delivery{ID: "watch-" + o.Job.ID, OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: "watch the page\nhttps://example.com/p\nwas: v1\nnow: v2", CreatedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}

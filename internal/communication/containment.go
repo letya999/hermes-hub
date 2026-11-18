@@ -99,7 +99,7 @@ func (g *Gateway) syncMasterNotices(ctx context.Context) (bool, error) {
 			continue
 		}
 		text := locale.T(locale.LangOf(user.WorkspaceDir), "hold.notice", hold.Reason)
-		if err := g.queueDelivery(ctx, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
+		if err := g.queueDelivery(ctx, hold.PrincipalID, hold.ContextID, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
 			return pending, err
 		}
 		if err := ackHoldNotice(ctx, client, base, g.config.RuntimeAuth, hold.NoticeID); err != nil {

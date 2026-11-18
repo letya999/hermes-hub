@@ -4,6 +4,8 @@ last_verified: 2026-09-28
 ---
 # ADR-0030: Two CLIProxy image calls
 
+Status: accepted.
+
 Accepted 2026-09-28.
 
 ## Decision

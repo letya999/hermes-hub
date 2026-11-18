@@ -1,8 +1,12 @@
 ---
 description: Keep only general-purpose Hermes and select environments through Docker.
-last_verified: 2026-09-08
+last_verified: "2026-11-15"
 ---
 # ADR-0002: Separate the Hermes host from business applications
+
+Status: accepted.
+
+**Scope note (2026-11-15 audit):** the Jest CI-orchestrator clause lost to [ADR-0003](ADR-0003-go-first-tooling.md) — no `jest` exists in the repository; `just` + Go `devcheck` are the pipeline. The standalone/dev-prod and AGPL clauses remain current.
 
 Accepted 2026-09-08. Supersedes ADR-0001's bundled career service and host-state layout.
 

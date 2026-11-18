@@ -1,0 +1,14 @@
+# Synthetic local acceptance only. Uses the same source-built images as hubctl.
+environment: dev
+runtimeImage: hermes-hub:0.5.0-dev
+services:
+  communication-hub:
+    image: {tag: 0.5.0-dev-core, pullPolicy: Never}
+  supervisor:
+    image: {tag: 0.5.0-dev-control, pullPolicy: Never}
+  toolhub:
+    image: {tag: 0.5.0-dev-control, pullPolicy: Never}
+  credential-broker:
+    image: {tag: 0.5.0-dev-core, pullPolicy: Never}
+  cliproxy:
+    image: {tag: 0.5.0-dev-core, pullPolicy: Never}

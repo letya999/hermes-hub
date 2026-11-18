@@ -9,7 +9,7 @@ Status: accepted direction; implementation and SQLCipher recovery gate not start
 Дата решения: 2026-10-28.
 
 Связи: [SPEC-0087](../../specs/active/SPEC-0087-broker-bounded-storage.md),
-[порядок реализации](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md).
+[порядок реализации](../../.work/done/CHG-0215-broker-recovery-head/README.md).
 Дополняет ADR-0060/0063/0064/0066 и SPEC-0064/0065/0066/0067/0068.
 ADR-0063 остаётся описанием работающего journal до проверенной миграции.
 Старые принятые ADR и hash-pinned SPEC-0064 не редактируются.

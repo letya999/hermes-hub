@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0315
+title: SSO-gated bearer links — minted interactive links bound to verified principal under IAM
+status: deferred
+deferred: 2026-11-18
+branch: feat/m9-sso-gated-links
+updated: 2026-11-18
+phase: implementation
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-session-cookie-contract: pending
+  S2-link-record-gate-fields: pending
+  S3-toolhub-page-gate: pending
+  S4-gating-matrix-tests: pending
+  S5-docs-adr-locale: pending
+  S6-live-zitadel-verification: pending
+validation:
+  documents: pending
+  just_check: pending
+  docker_check: pending
+  live_acceptance: pending
+evidence:
+  - "Owner request: close minted links to the specific verified user when SSO is enabled; covers connector onboarding, device, memory_open, wizard links; enrol/link landing exempt by definition; IAM off keeps bearer behavior"
+remaining: []
+limitations:
+  - "session proof is a shared-HMAC cookie, not a second OIDC client — key rotation = redeploy; documented"
+  - "pre-existing minted links stay bearer until re-minted — migration note, not retroactive gate"

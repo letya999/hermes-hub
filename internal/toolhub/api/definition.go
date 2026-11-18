@@ -564,11 +564,19 @@ func (s DefinitionSource) Validate(transport Transport) error {
 			return fmt.Errorf("%w: agent-tools source is the in-process executor and must be empty", ErrInvalid)
 		}
 	case RemoteMCP, ProviderAPI:
-		if s.URL == "" || values != 1 || s.TLSMode != "required" || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
+		pinned := transport == RemoteMCP && s.TLSMode == TLSModeOperatorPinned
+		if s.URL == "" || values != 1 || (!pinned && s.TLSMode != "required") || s.Digest != "" || len(s.Args) != 0 || s.Repository != "" || s.CommitSHA != "" || s.ArchiveDigest != "" || s.ProvenanceDigest != "" || s.SBOMDigest != "" || s.RecipeDigest != "" || s.ReviewDigest != "" {
 			return fmt.Errorf("%w: %s needs an HTTPS URL and required TLS", ErrInvalid, transport)
 		}
 		u, err := url.Parse(s.URL)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		if pinned {
+			// The private twin of the public contract: a clean endpoint, no
+			// credentials in the URL, the private destination proven by the
+			// connection's backend validation rather than by scheme.
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return fmt.Errorf("%w: operator-pinned remote URL must be http(s) without credentials, query or fragment", ErrInvalid)
+			}
+		} else if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("%w: %s URL must be HTTPS without credentials, query or fragment", ErrInvalid, transport)
 		}
 	case ContainerMCP:

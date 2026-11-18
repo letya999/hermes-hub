@@ -4,6 +4,8 @@ last_verified: 2026-09-14
 ---
 # ADR-0017: Personal assistant channels, voice and context lifecycle
 
+Status: accepted.
+
 Accepted 2026-09-14.
 
 ## Decision

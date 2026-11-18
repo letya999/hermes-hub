@@ -1,0 +1,188 @@
+{{- $root := . -}}
+{{- $base := include "hub.name" . -}}
+{{- range $name, $service := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $base }}-{{ $name }}
+  labels:
+    {{- include "hub.selector" (dict "root" $root "name" $name) | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "hub.selector" (dict "root" $root "name" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hub.selector" (dict "root" $root "name" $name) | nindent 8 }}
+      {{- with $root.Values.podAnnotations }}
+      annotations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- if and (eq $name "supervisor") (eq $root.Values.execution.backend "kubernetes") }}
+      serviceAccountName: {{ $base }}-supervisor
+      {{- end }}
+      {{- with $root.Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and $root.Values.colocate (ne $name "supervisor") }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "hub.selector" (dict "root" $root "name" "supervisor") | nindent 18 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      terminationGracePeriodSeconds: 30
+      {{- if $service.configSecret }}
+      initContainers:
+        - name: private-config
+          image: {{ include "hub.image" $service.image | quote }}
+          imagePullPolicy: {{ $service.image.pullPolicy }}
+          command: [sh, -ec]
+          # Projected Secrets are symlinks with kubelet-owned modes. Secure broker
+          # readers require owned regular 0600 files under a private directory.
+          args:
+            - 'umask 077; mkdir -p /run/service-config/private; for file in /run/input/*; do [ -e "$file" ] || continue; cp -RL "$file" /run/service-config/private/; done; chmod -R u=rwX,go= /run/service-config/private'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{ toYaml $service.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config-input, mountPath: /run/input, readOnly: true}
+            - {name: private-config, mountPath: /run/service-config}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "hub.image" $service.image | quote }}
+          imagePullPolicy: {{ $service.image.pullPolicy }}
+          command: {{ toJson $service.command }}
+          {{- if eq $name "supervisor" }}
+          args: {{ concat (list "--spaces" "/data/spaces" "--supervisor-listen" "0.0.0.0:8876" "--supervisor-allow-wildcard-listen" "--env" $root.Values.environment "--runtime-image" $root.Values.runtimeImage) $service.args | toJson }}
+          {{- else }}
+          args: {{ toJson $service.args }}
+          {{- end }}
+          workingDir: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: HUB_ENVIRONMENT, value: {{ $root.Values.environment | quote }}}
+            {{- if or (eq $name "communication-hub") (eq $name "toolhub") }}
+            - {name: HUB_RUNTIME_SUPERVISOR_URL, value: "http://{{ $base }}-supervisor:8876"}
+            - {name: HUB_TOOLHUB_URL, value: "http://{{ $base }}-toolhub:8090"}
+            - {name: HUB_COMMUNICATION_CONTROL_URL, value: "http://{{ $base }}-communication-hub:8081"}
+            {{- end }}
+            {{- if eq $name "supervisor" }}
+            - {name: HUB_TOOLHUB_URL_PATTERN, value: "http://{{ $base }}-toolhub:8090"}
+            - {name: HUB_EXECUTION_BACKEND, value: {{ $root.Values.execution.backend | quote }}}
+            - {name: HUB_CONTAINER_RUNTIME, value: {{ $root.Values.execution.containerRuntime | quote }}}
+            {{- if eq $root.Values.execution.backend "kubernetes" }}
+            - {name: HUB_KUBERNETES_NAMESPACE, value: {{ include "hub.runtimeNamespace" $root | quote }}}
+            - {name: HUB_KUBERNETES_CONTROL_NAMESPACE, value: {{ $root.Release.Namespace | quote }}}
+            - {name: HUB_KUBERNETES_CONTROL_RELEASE, value: {{ $root.Release.Name | quote }}}
+            - {name: HUB_KUBERNETES_RELAY_IMAGE, value: {{ include "hub.image" $root.Values.services.supervisor.image | quote }}}
+            - {name: HUB_KUBERNETES_TOOLHUB_URL, value: "http://{{ $base }}-toolhub.{{ $root.Release.Namespace }}.svc:8090"}
+            - {name: HUB_KUBERNETES_CLIPROXY_URL, value: "http://{{ $base }}-cliproxy.{{ $root.Release.Namespace }}.svc:8317"}
+            - {name: HUB_RUNTIME_CLASS_NAME, value: {{ include "hub.spaceRuntimeClass" $root | quote }}}
+            - {name: HUB_KUBERNETES_STORAGE_CLASS, value: {{ $root.Values.execution.kubernetes.storageClass | quote }}}
+            - {name: HUB_KUBERNETES_STORAGE_SIZE, value: {{ $root.Values.execution.kubernetes.storageSize | quote }}}
+            - {name: HUB_KUBERNETES_PULL_SECRETS, value: {{ include "hub.pullSecretNames" $root | quote }}}
+            {{- end }}
+            {{- end }}
+            {{- range $key, $value := $service.env }}
+            - {name: {{ $key }}, value: {{ $value | toString | quote }}}
+            {{- end }}
+            {{- range $key, $ref := $service.secretEnv }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef: {{ toYaml $ref | nindent 18 }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: {{ $service.port }}}
+            {{- if eq $name "toolhub" }}
+            - {name: public, containerPort: 8091}
+            {{- end }}
+          # Bearer-protected status/metrics cannot be kubelet HTTP probes without
+          # embedding credentials in Pod specs. Authenticated acceptance is separate.
+          startupProbe:
+            tcpSocket: {port: http}
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 20
+          resources: {{ toYaml $service.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if and (eq $name "supervisor") (eq $root.Values.execution.backend "kubernetes") }}
+            - {name: api-identity, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+            {{- end }}
+            {{- if $service.configSecret }}
+            - {name: private-config, mountPath: /run/service-config, readOnly: true}
+            {{- end }}
+            {{- range $mount := $service.mounts }}
+            - name: {{ $mount.claim | lower }}
+              mountPath: {{ $mount.path }}
+              readOnly: {{ default false $mount.readOnly }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 256Mi}
+        {{- if and (eq $name "supervisor") (eq $root.Values.execution.backend "kubernetes") }}
+        - name: api-identity
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 3600}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+              - downwardAPI:
+                  items: [{path: namespace, fieldRef: {fieldPath: metadata.namespace}}]
+        {{- end }}
+        {{- if $service.configSecret }}
+        - name: config-input
+          secret:
+            secretName: {{ $service.configSecret | quote }}
+            defaultMode: 0440
+            {{- with $service.configItems }}
+            items: {{ toYaml . | nindent 14 }}
+            {{- end }}
+        - name: private-config
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
+        {{- end }}
+        {{- range $mount := $service.mounts }}
+        {{- $claim := index $root.Values.persistence $mount.claim }}
+        - name: {{ $mount.claim | lower }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-%s" $base ($mount.claim | lower)) $claim.existingClaim }}
+        {{- end }}
+{{- end }}

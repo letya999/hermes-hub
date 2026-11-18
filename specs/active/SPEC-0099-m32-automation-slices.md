@@ -1,6 +1,6 @@
 ---
 description: Frozen granular automation preparation, single-owner cutover and dreaming contracts.
-last_verified: 2026-11-07
+last_verified: "2026-11-15"
 ---
 # SPEC-0099: M32 automation slices
 

@@ -1,0 +1,52 @@
+schema: 1
+change: CHG-0313
+title: IAM-ready identity — principal boundary, ZITADEL OIDC linking, authz contract
+status: done
+branch: feat/m9-iam-identity
+updated: 2026-11-18
+phase: done
+github_milestone: M9 — Enterprise Readiness
+github_issue: "52,53,54"
+design_status: accepted
+implementation_status: complete
+slices:
+  S1-principal-boundary-52: done
+  S2-iam-package-53: done
+  S3-communication-linking-53: done
+  S4-authz-contract-54: done
+  S5-iam-passport-schema: done
+  S6-catalog-release-42: done
+  S7-compose-bundled-render: done
+  S8-bundled-live-acceptance: done
+  S9-docs-adr-appendix: done
+validation:
+  documents: done
+  just_check: green
+  docker_check: done
+  live_acceptance: authentik_and_zitadel_real_idp
+evidence:
+  - "S1: ADR-0100 accepted; Envelope.Issuer/Subject paired+bounded validation; tests green"
+  - "S2: internal/iam stdlib OIDC (discovery/JWKS/RS256/kid/nonce/expiry) + LinkStore (atomic json + hashed-subject audit, conflict denial, Close); 5 tests green incl. Windows lock fix"
+  - "S3: communication wiring — /iam/link|oidc/start|oidc/callback routes (opt-in), /link + /unlink commands on all channels, enrol hint on telegram no-access, iamResolveTransport fallback in telegramUserFor + slack path, SSO provenance stamped on envelopes via User.SSO*, User.OIDCSubject provisioning, compose passthrough HUB_OIDC_*, 10 tests green (link/enrol/replay/foreign-state/conflict/expiry/unlink/disabled-404)"
+  - "S4: verified existing contract — /v1/rights/decide binds principal from bearer envelope (body principal mismatch → deny), carries capability/operation/scope/environment, pins profile.PolicyRevision via policyAtRevisionLocked, re-checks activation post-decision (stale-revision safe), Store.Decide enforced at execution call sites (memory/research/automation). No OPA/Cedar; contract is the extensible JSON shape + envelope"
+  - "docs: operations.md 'IAM enrolment and channel linking (SSO)' section; ADR-0100 wording aligned to empty-is-local"
+  - "docker live (artem_main dev): dev-rebuild → :local healthy; HUB_OIDC_* passthrough renders; empty env → /iam/* 404 baseline intact; HUB_OIDC_ISSUER=http://… → startup refused 'oidc provider: OIDC issuer must be https'; restore → healthy"
+  - "LIVE Authentik 2025.10.2 (ghcr.io/goauthentik/server, .work/tmp/authentik compose, issuer http://idp.localhost:9000/application/o/hermes, public client hermes-hub, PKCE S256): mock /link → nonce URL → /iam/oidc/start → authorize → alice executor login → code+state → callback 200 'Account linked'; iam-links.json: mock-11→artem_main iss+sub=1498de78-…; audit subject_hash only; replay link+start → 410; second IdP user (bob) same-transport link → 409 conflict; /unlink → 'link removed' + store [] + unlink audit. Commits 0190f37e (trailing-slash iss + *.localhost), c19f0210 (path issuers)"
+  - "provider-compat fixes from live run: iss compared slash-insensitive (Authentik asserts …/hermes/), *.localhost allowed as loopback http issuer (RFC 6761; browser+container resolve alike), issuer path components accepted"
+  - "S5: config.iam{mode,issuer,client_id} — passportview.IAM on Config; classes registry (mode=choice, issuer/client_id=userData); checkIAM compile rule mirrors the render contract; Consumers classify all three leaves → recreate (no image depends on iam)"
+  - "S6: catalog Release 42 emitted — identity-hub{per-stack,depends_on hub-postgres}, hub-postgres{per-stack}; PortOwners[identity-hub]; pins zitadel:v4.19.1@sha256:f98935f5… + postgres:16-alpine@sha256:81e77a48…"
+  - "S7: applyIAM projects Settings.PassportIAM (render-only, classified '' in settingsFieldRights); bundled emits identity-hub (start-from-init --masterkeyFromEnv, tlsMode disabled|external by scheme, idp.localhost alias only when issuer derived) + hub-postgres on shared nets + hub-postgres-data volume; gateway env: iam block authoritative, bundled w/o client_id renders empty (bootstrap never half-configures); ensureIAMAuth materializes masterkey/pg/cookie secrets idempotently; iam_test.go 13 cases + passport checkIAM; SplitInfraCompose puts the pair in the shared project"
+  - "S8 render evidence: space apply r-00c2c43dec98c73f on artem_main dev — compose.shared.dev.yaml carries identity-hub (image pinned, alias, 127.0.0.1:8091:8091, depends_on healthy) + hub-postgres + volume; gateway env HUB_OIDC_ISSUER=http://idp.localhost:8091 CLIENT_ID=hermes-hub; identity-hub.auth 5 keys 0600"
+  - "S8 apply incident + fix: first --confirm apply planned rebuild-* (parent path config.iam unconsumed) and recreate hermes-runtime (iam leaves targeted the runtime, not the gateway); respawn died on unreachable in-network supervisor URL (no HUB_RUNTIME_SUPERVISOR_URL) and its replay failed the same way → diverged rollback, pending pointer, journal kept. Fixes: Plan skips the config.iam parent leaf (config.hosting precedent), runtimeTarget maps config.iam.* → communication-hub, config.iam.mode demoted rebuild→recreate; regression TestPlanIAMBlockLeavesTargetGateway"
+  - "S8 recovery evidence: --recover-rebuilt-image replayed the journal cleanly; the live ToolHub's foreign commits on store.db raced restoreApplyState (saveLocked digest arbitration, deterministic under fenced-tick writes) — quiesced the writer (docker stop toolhub) → recovery + fresh apply --confirm published r-f10c6f94c124f3c9: plan narrowed to rebuild{hub-postgres,identity-hub}(no-op image-only) + recreate{communication-hub,hub-postgres,identity-hub}, all applied"
+  - "S8 published-revision live check (r-f10c6f94c124f3c9): hub-postgres+identity-hub healthy in shared project; discovery iss=http://idp.localhost:8091 from host and via gateway extra_hosts host-gateway; mock /link → nonce → /iam/oidc/start 303 → ZITADEL /oauth/v2/authorize client_id=hermes-hub PKCE S256; unprovisioned client denies Errors.App.NotFound (fail-closed until bootstrap)"
+  - "S8 bundled LIVE ZITADEL v4.19.1 (r-64f624d13df7a4f8): console-provisioned project hermes-hub + web app hermes (PKCE public client, dev mode, redirect http://localhost:8081/iam/oidc/callback → generated client_id 399894697381724179); apply narrowed to recreate{communication-hub} only; real browser flow: /link nonce → Sign in with SSO → ZITADEL authorize (console session reused) → code → callback 200 'Account linked'; iam-links.json: mock-42→artem_main iss=http://idp.localhost:8091 sub=399890995758039052; audit link event subject_hash only; consumed nonce replay → 410; /unlink → store [] + unlink audit"
+remaining:
+  - "live enrol path (unmapped transport + oidc_subject match) — unit-tested; needs a second real channel account to prove end-to-end"
+  - "slack enrol hint on unmapped slack messages (currently link-issued only)"
+  - "linked-transport ingress resolution + provenance stamping live on telegram — unit-tested; mock channel resolves via mock-links by design"
+limitations:
+  - "live acceptance proven against two real IdPs — Authentik (external) and bundled ZITADEL — both real OIDC code+PKCE+RS256; provider contract is generic OIDC"
+  - "oidc_subject provisioned manually per user record; no group/SCIM sync"
+  - "channel-mapped (local) envelopes carry empty provenance — empty means local, not anonymous"
+  - "dev-issuer trick: http issuers only on loopback-equivalents (localhost, 127.0.0.1, ::1, host.docker.internal, *.localhost); production requires real https issuer"

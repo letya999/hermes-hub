@@ -144,6 +144,44 @@ func TestMasterRejectsQueuedEpoch(t *testing.T) {
 	}
 }
 
+func TestDeferredHoldSeparatesIngressFenceFromContainment(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin")
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("deferred hold reached container boundary")
+		return nil, nil
+	}, nil)
+	job := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), JobID: "defer-job", IdempotencyKey: "defer-key", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
+	if _, _, err := m.beginJob(job); err != nil {
+		t.Fatal(err)
+	}
+	call := func(deferContainment bool) *httptest.ResponseRecorder {
+		body := `{"principal_id":"alice","context_id":"alice","reason":"manual","defer_containment":` + fmt.Sprint(deferContainment) + `}`
+		r := httptest.NewRequest(http.MethodPost, "/v1/admin/holds", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer synthetic-admin")
+		w := httptest.NewRecorder()
+		m.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := call(true); w.Code != http.StatusOK {
+		t.Fatalf("deferred hold: %d %s", w.Code, w.Body)
+	}
+	if !m.holds[holdKey("alice", "alice")].Active {
+		t.Fatal("deferred hold was not persisted")
+	}
+	if got := m.jobs[job.JobID]; got.CancelRequested || got.Status == "uncertain" {
+		t.Fatalf("deferred hold contained job: %+v", got)
+	}
+	if _, err := m.Ensure(t.Context(), binding(root)); err == nil {
+		t.Fatal("deferred hold still admitted ingress")
+	}
+	if w := call(false); w.Code != http.StatusOK {
+		t.Fatalf("containment stage: %d %s", w.Code, w.Body)
+	}
+	if got := m.jobs[job.JobID]; !got.CancelRequested || got.Status != "uncertain" {
+		t.Fatalf("containment stage did not mark run uncertain: %+v", got)
+	}
+}
+
 func TestMasterHoldRejectsInvalidAuthorityAndInput(t *testing.T) {
 	valid := `{"principal_id":"alice","context_id":"alice","reason":"manual"}`
 	for _, tc := range []struct {

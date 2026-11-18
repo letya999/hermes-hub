@@ -1,6 +1,6 @@
 ---
 description: "Frozen MVP requirements for M29: six space passports, catalogs, provisioning, enforcement, migration and live acceptance."
-last_verified: "2026-11-01"
+last_verified: "2026-11-15"
 ---
 
 # SPEC-0091: Six-passport space contract MVP

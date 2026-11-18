@@ -4,7 +4,7 @@ last_verified: 2026-10-28
 ---
 # ADR-0083: Lean role images and capability packs — role images, browser sidecar, voice services only, pruned upstream tree, on-demand packs
 
-Status: Proposed 2026-10-27. Implements GitHub milestone 26 (#371, #373,
+Status: accepted — images delivered M26; capability packs leg open in M27, verified 2026-11-15. Proposed 2026-10-27. Implements GitHub milestone 26 (#371, #373,
 #375, #377, #378, #380); milestone 27 (#383, #385, #387, #389, #390) extends D6.
 Spec: [SPEC-0082](../../specs/active/SPEC-0082-image-role-budgets.md).
 Evidence: `.work/in-progress/CHG-0182-image-budget-gate/research.md`.

@@ -4,7 +4,7 @@ last_verified: 2026-11-04
 ---
 # ADR-0096: Six authored passports and independent grants
 
-Status: accepted direction, implementation in progress. Decision: 2026-11-04.
+Status: accepted — delivered M32, verified 2026-11-15.
 Requirements: [SPEC-0095](../../specs/active/SPEC-0095-authored-passports-rights.md).
 Amends ADR-0092 and ADR-0093. Those records remain immutable.
 

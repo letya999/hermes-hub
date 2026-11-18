@@ -165,6 +165,10 @@ func (c *Client) RegisterContract(ctx context.Context, in contract.Contract) (ou
 func (c *Client) Revoke(ctx context.Context, id string) error {
 	return c.Do(ctx, "POST", "/v1/credentials/"+id+"/revoke", nil, nil)
 }
+func (c *Client) RevokePrincipalGrants(ctx context.Context, in v1.PrincipalRevocationRequest) (out v1.PrincipalRevocation, e error) {
+	e = c.Do(ctx, "POST", "/v1/admin/revocations", in, &out)
+	return
+}
 
 // Materialize is runtime-only. Never pass its result to an LLM or job ledger.
 func (c *Client) Materialize(ctx context.Context, id string) (out v1.Materialized, e error) {

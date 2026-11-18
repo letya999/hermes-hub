@@ -13,7 +13,7 @@ Status: accepted; implementation in CHG-0234.
 правило 4, [ADR-0074](ADR-0074-session-runtime-discipline.md) D4,
 [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md),
 [SPEC-0089](../../specs/active/SPEC-0089-conversation-parallel-lanes.md),
-[план](../../.work/in-progress/CHG-0234-conversation-parallel-lanes/plan.md).
+[план](../../.work/done/CHG-0234-conversation-parallel-lanes/plan.md).
 
 ## Контекст
 

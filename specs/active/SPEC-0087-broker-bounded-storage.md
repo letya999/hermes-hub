@@ -1,13 +1,13 @@
 ---
 description: "Замороженные требования к ограниченному хранению Broker, recovery, provider versions и явной миграции."
-last_verified: "2026-10-28"
+last_verified: "2026-11-15"
 ---
 
 # SPEC-0087: Broker bounded storage MVP
 
 Frozen: 2026-10-28. Design accepted; implementation not started.
 Решение: [ADR-0087](../../docs/adr/ADR-0087-broker-bounded-sqlcipher-store.md).
-План: [CHG-0215..0202](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md).
+План: [CHG-0215..0202](../../.work/done/CHG-0215-broker-recovery-head/README.md).
 Дополняет SPEC-0064 R5/R7/R9/R10/R12/R13/R15 и SPEC-0068; не меняет
 hash-pinned baseline. Требования применяются к новому формату после миграции.
 

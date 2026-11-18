@@ -44,8 +44,8 @@ RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz 
 
 FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS node
 FROM docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS dockercli
-FROM ghcr.io/stacklok/toolhive:v0.48.0@sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d AS toolhive
-FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
+FROM ghcr.io/stacklok/toolhive:v0.66.0@sha256:310be12fdcdfc526bbf21202056791ab32fa6b5df75220e9a058a70d1b50b935 AS toolhive
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 # Pinned upstream checkout + byte-compiled venv, built once and copied into the
 # runtime image. UV_COMPILE_BYTECODE trades a slower build for an image that
@@ -80,7 +80,7 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # hub-core (SPEC-0082 D1): every non-agent daemon shares this lean base — the
 # static Go binaries plus TLS roots. No interpreters, browsers or uv: the
 # image-budget probe fails the image if any appear.
-FROM debian:13.6-slim AS core
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
 # ride https sources, and apt signature checks do not need TLS anyway. git is
 # the vault writer's commit backend (SPEC-0085 R1): the communication gateway
@@ -194,7 +194,7 @@ CMD ["ok", "start"]
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
-FROM debian:13.6-slim AS cli-tools
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cli-tools
 # libatomic1 lets mounted member images run their embedded node runtime
 # (eslint/tsc/prettier artifacts) inside a toolbox or tool-bearing shell cell.
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates libatomic1 && rm -rf /var/lib/apt/lists/*
@@ -210,7 +210,7 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Egress companion for cells that declare reviewed outbound hosts: a plain
 # Squid forward proxy the controller scopes to the cell's internal network.
-FROM debian:13.6-slim AS cell-proxy
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cell-proxy
 RUN apt-get update && apt-get install -y --no-install-recommends squid ca-certificates && rm -rf /var/lib/apt/lists/*
 EXPOSE 3128
 USER 10001:10001
@@ -234,6 +234,18 @@ RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+# Retain a shell for the chart's private Secret materializer; the broker binary
+# remains the same statically linked SQLCipher build used by core.
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS credential-broker
+COPY --from=broker_build /credential-broker /usr/local/bin/credential-broker
+COPY --from=broker_build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
+USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" org.opencontainers.image.licenses="MIT"
+ENTRYPOINT ["credential-broker"]
+CMD ["serve", "--config", "/run/service-config/private/config.json"]
 
 FROM core AS prod-core
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"

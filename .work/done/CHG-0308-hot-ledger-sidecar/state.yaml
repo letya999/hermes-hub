@@ -1,0 +1,83 @@
+schema: 1
+change: CHG-0308
+title: Hot ledger moves off the registry commit channel — cursor sidecar + persist-on-transition
+status: done
+branch: regress/pre-release
+updated: "2026-11-18"
+phase: done
+requirements: []
+depends_on: [CHG-0305, CHG-0306]
+design_status: accepted
+implementation_status: implemented
+
+scope: |
+  /v1/rights/decide starved 8-20s behind Store.mu writers (broker cursor
+  commits ~1/s via 1s lifecycle tick + heartbeat persists per 30s scan),
+  each save paying double full-file hash + FULL-sync tx on the 9p bind
+  mount; model-relay rights calls context-canceled -> fail-closed 403
+  right denied -> agent runs aborted. Same starvation class as CHG-0305.
+
+implemented:
+  - internal/toolhub/cursor_store.go — new CursorStore: own mutex, CAS
+    CompareAndAdvance, JSON temp-write+rename, 60s flush interval bound
+    to the at-least-once replay window.
+  - internal/toolhub/onboarding_events.go — ReconcileBrokerEvents
+    reads/advances the sidecar; lazy cursorStore() binds cursors.json
+    beside store.db and seeds from persisted brokerCursors (one-time
+    migration); flush deferred on error, dirty flag retained.
+  - internal/toolhub/store_io.go — BrokerCursors leaves the snapshot;
+    persisted rows still read for the seed and self-delete on next save.
+  - internal/toolhub/control.go — ControlPlane.Cursors field.
+  - internal/toolhub/store.go observeCredentialCheckIfCurrent — durable
+    commit only on CredentialVisibility/HealthCause transitions;
+    CheckedAt/retry counters are memory-truth.
+  - internal/toolhub/onboarding_worker.go recordOnboardingObservation —
+    commitOnboardingLocked only on ObservationCode transition; ObservedAt
+    heartbeat stored in memory.
+  - cmd/toolhub/main.go — lifecycle tick 1s -> 15s (predicates are
+    >=30s-grained).
+  - internal/toolhub/cursor_store_test.go — five tests: persist/reload,
+    CAS, file-wins-over-seed, flush interval, migration seed.
+  - internal/toolhub/connector_reconcile_test.go — gap test asserts the
+    cursor through the sidecar.
+  - internal/toolhub/onboarding_events.go cursorStore — double-checked
+    bind: write lock only at first init; a per-call Lock made every
+    reconcile a waiting writer parking all decide readers.
+  - internal/toolhub/store.go + rights.go — ledgerMemo: ProjectionRevisions
+    memoizes one governance read for its digest pass instead of N×M file
+    reads (9p, ~tens of seconds under RLock → writer queue → reader
+    starvation). Decide path unchanged.
+
+slices:
+  S1.1-cursor-sidecar: green
+  S1.2-heartbeat-transition: green
+  S1.3-tick-cadence: green
+  S1.4-read-path-convoy: green
+
+validation:
+  documents: updated  # plan.md S1.4 + rejected fingerprint-cache recorded
+  just_check: pass   # format + docs + vet green 2026-11-15
+  docker_check: pass # dev-rebuild toolhub healthy, cursors.json live
+  red_team: not_started
+  live_acceptance: pass
+
+evidence:
+  - go test -short ./internal/toolhub/ ok 106s + ok 113.5s post-S1.4
+  - just check: devcheck format + docs + go vet all green
+  - live: store.db content hash unchanged across windows (zero registry
+    writes); cursors.json present, advancing on the 60s flush
+  - live: /v1/rights decide durations 38-196ms sustained (was 2-46s)
+  - live e2e: mock message -> agent turn -> mock-sent response delivered
+    ("Both checks working — I received and can answer. Short reply: ok.")
+  - goroutine dumps: convoy mechanism confirmed (RLock-held digest pass +
+    writer queue + reader starvation) before and after fix
+
+remaining: []
+
+limitations:
+  - Crash within the 60s flush window replays <=60s of broker events
+    (contract-permitted at-least-once).
+  - Credential retry counters reset on restart; reconciler re-derives.
+  - Digest pass still runs O(profiles x tools) under RLock every 5s —
+    now pure memory (one ledger read); the shared-mutex ceiling stands:
+    if another heavy read pass appears, escalate to snapshot-publish.

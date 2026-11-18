@@ -1,6 +1,6 @@
 ---
 description: Frozen M32 requirements for six authored passport inputs and independent tool/grant authority.
-last_verified: 2026-11-04
+last_verified: "2026-11-15"
 ---
 # SPEC-0095: Authored passports and independent rights
 

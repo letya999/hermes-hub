@@ -67,12 +67,16 @@ var settingsFieldRights = map[string]string{
 	"OrganizationRole":      "OrganizationRole",
 	"OrganizationProfile":   "OrganizationProfile",
 	"OrgActions":            "OrgActions",
-	"GoogleEmail":           "GoogleEmail",
-	"GitLabHost":            "GitLabHost",
-	"DesktopURL":            "DesktopURL",
-	"DraftsURL":             "DraftsURL",
-	"ImageGen":              "ImageGen",
-	"Web":                   "Web",
+	// OrgRuntimeIntrospection is consulted live by the hubctl introspection
+	// gate on every call; it grants nothing to sessions and must not re-key
+	// existing bindings.
+	"OrgRuntimeIntrospection": "",
+	"GoogleEmail":             "GoogleEmail",
+	"GitLabHost":              "GitLabHost",
+	"DesktopURL":              "DesktopURL",
+	"DraftsURL":               "DraftsURL",
+	"ImageGen":                "ImageGen",
+	"Web":                     "Web",
 	// Compression values, aux model identities and judge choice are knobs and
 	// model identity — no grants, no hash move. The engine declarations are
 	// grants: narrowing context.compact.engines or goals.engine must move the
@@ -93,6 +97,7 @@ var settingsFieldRights = map[string]string{
 	"PassportServices":  "",
 	"PassportConfig":    "",
 	"PassportWorkspace": "",
+	"PassportIAM":       "",
 	// ScopeKind is the immutable identity stamp projected from the published
 	// revision — grants cannot move it, and PassportConnectors is provenance
 	// metadata (which s.MCP entries the passport declared), not a grant.

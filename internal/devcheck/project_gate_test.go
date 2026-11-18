@@ -97,6 +97,22 @@ func TestProjectGateNumberingAndIndex(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolved state.yaml ADR ref rejected", func(t *testing.T) {
+		root := gateRoot(t)
+		gateWrite(t, root, ".work/done/CHG-0001-x/state.yaml", "status: done\nadr: ADR-0099\n")
+		if err := Project(root); err == nil || !strings.Contains(err.Error(), "unresolved ADR-0099") {
+			t.Fatalf("dangling ADR ref accepted: %v", err)
+		}
+	})
+
+	t.Run("unresolved index SPEC ref rejected", func(t *testing.T) {
+		root := gateRoot(t)
+		gateWrite(t, root, "specs/index.md", "SPEC-0001-x.md superseded by SPEC-0042\n")
+		if err := Project(root); err == nil || !strings.Contains(err.Error(), "unresolved SPEC-0042") {
+			t.Fatalf("dangling SPEC ref accepted: %v", err)
+		}
+	})
+
 	t.Run("allowlisted historical collision passes", func(t *testing.T) {
 		root := gateRoot(t)
 		for _, d := range []string{"CHG-0015-migration-map", "CHG-0015-durable-job-runtime-mappings"} {

@@ -135,7 +135,7 @@ func (e *Engine) RunDueScripts(ctx context.Context, now time.Time, authorize fun
 			return
 		}
 		for i, text := range texts {
-			d, err := e.normalizeDelivery(commodel.Delivery{ID: "script-" + o.Job.ID + "-" + strconv.Itoa(i), OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
+			d, err := e.normalizeDelivery(commodel.Delivery{ID: "script-" + o.Job.ID + "-" + strconv.Itoa(i), OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
 			if err != nil || e.deps.Delivery.EnqueueDelivery(d) != nil {
 				return
 			}

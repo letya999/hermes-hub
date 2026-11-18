@@ -1,0 +1,54 @@
+schema: 1
+change: CHG-0312
+title: legible status + hubctl status + metrics/alerts + backup drill
+status: done
+branch: feat/m9-observability
+updated: 2026-11-18
+phase: done
+github_milestone: M9 — Enterprise Readiness
+github_issue: "209,201,199,200(354 tail)"
+design_status: accepted
+implementation_status: complete
+slices:
+  S1-status-model-209: done
+  S2-hubctl-status-201: done
+  S3-metrics-alerts-199: done
+  S4-backup-drill-200: done
+  S5-anomaly-watchers-354: delivered_in_CHG-0326
+validation:
+  documents: done
+  just_check: passed
+  docker_check: dev_rebuild_verified
+  red_team: not_started
+  live_acceptance: done
+commits:
+  - 4c183237 S1 #209 bounded phase+conditions status model
+  - b3dcd647 S2 #201 unified hubctl status
+  - bb3c4393 S3 #199 bounded metrics + rate-limited owner alerts
+  - 1447f9d9 S4 #200 scheduled backups + verified restore drill
+  - a8f308ed fixup: alert skips DM-origin failures, sweep waits one interval
+  - a2c286bf fixup: gateway control token resolution for hubctl status
+  - 648c88d3 fixup: legible backup error classes + rendered last_error
+  - af383071 fixup: never-backed-up gauge renders 0, not year-1 zero time
+evidence:
+  - "LIVE docker matrix: /v1/status + /v1/metrics on supervisor(8876) and gateway(8081) all 401 without bearer; with token return bounded Prometheus (closed phase labels, backup gauges, queue/outbox/routines)"
+  - "LIVE metrics: backup_last_success_seconds=0 for never-backed-up users (af383071 fix verified live), drill_ok=1 for artem_main/me"
+  - "LIVE hubctl context restore-drill --user artem_main: {\"checked\":752} — every manifest hash re-verified against the on-disk archive"
+  - "LIVE transitions journal: spaces/.control/transitions.jsonl 4222 entries, job+runtime transitions with allowlisted fields"
+  - "compose render: HUB_BACKUP_EVERY/KEEP/DRILL_EVERY passthrough present in generated compose.dev.yaml + compose.shared.dev.yaml"
+  - "go test -short green: supervisor, contextlife, communication (full pkg), hubctl, stack, locale"
+  - "just check green: format, docs, vet"
+  - "containment tests kept honest: control loop hits only /v1/holds* in notice window; first crash sweep deferred one interval"
+  - "goal-failure UX preserved: DM-origin failures keep the resume-hint delivery; alert only for non-home failures"
+  - "live docker: dev-rebuild supervisor+communication-hub on artem_main, both :local and Healthy"
+  - "live hubctl status: supervisor table + gateway queue/outbox/routines rendered; backup rows live"
+  - "live S4: scheduled sweep wrote spaces/artem_main/archive/backups/backup-20261116T115425Z.zip (20MB, 753 entries, zero secret/env files), drill=ok checked=752; 'me' archive 643B drill=ok"
+  - "live S4 edge: artem_two/local archive dirs are root-owned 755 -> err=unwritable_target recorded and rendered (was missing_source before fix)"
+remaining:
+  - "#354 anomaly watchers delivered as CHG-0326 on feat/m9-anomaly-watchers (9427ad63)"
+  - "note: hubctl context restore-drill requires --user <profile> matching the archive manifest owner (existing context CLI contract, default 'me')"
+  - "artem_two/local archive dirs need an ownership fix on the host for their backups to succeed (pre-existing fs state, not a code bug)"
+limitations:
+  - "24h cadence and 7d drill interval verified by unit tests with injected clock; live evidence covers the first-sweep immediate capture"
+  - "alert delivery verified to outbox enqueue; end-to-end telegram send is the standard deliveryLoop path"
+  - "queue failed=16 / outbox failed=33 in gateway section is pre-existing spool state, unrelated to this CHG"

@@ -12,6 +12,7 @@ import (
 // returns the hermesHome directory populated like a launched managed runtime.
 func managedIsolationFixture(t *testing.T) string {
 	t.Helper()
+	t.Setenv("HUB_EXECUTION_SUBSTRATE", "docker")
 	home := t.TempDir()
 	for _, name := range managedExtensionRoots {
 		if err := os.Mkdir(filepath.Join(home, name), 0555); err != nil {

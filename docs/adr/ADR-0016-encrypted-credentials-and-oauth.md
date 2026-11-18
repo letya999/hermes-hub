@@ -4,6 +4,8 @@ last_verified: 2026-09-13
 ---
 # ADR-0016: Encrypted credentials stay behind ToolHub locators
 
+Status: accepted.
+
 Accepted 2026-09-13.
 
 ## Decision

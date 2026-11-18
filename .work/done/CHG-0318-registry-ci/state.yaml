@@ -1,0 +1,45 @@
+schema: 1
+change: CHG-0318
+title: Registry-agnostic GitLab CI
+status: done
+branch: feat/m9-registry-ci
+updated: 2026-11-18
+phase: done
+github_issue: 351
+implementation_status: complete
+validation:
+  local_contracts: passed
+  just_check: passed
+  affected_packages: passed
+  scoped_vet: passed
+  helm_check: passed
+  configuration_contract: passed_with_windows_retry
+  secret_scan: passed
+  image_budgets_control_runtime: passed
+  local_registry_kind: passed
+  remote_pipeline: not_run
+evidence:
+  - "Image source SHA: 038132dd6cb9628ab7010081774d84310540c1c3. Subsequent changes are documentation and this acceptance record."
+  - "Built and pushed all five matrix images with the Go docker-publish-to entrypoint and forced BuildKit, to an isolated loopback registry:2 (registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373). No account login or external publication."
+  - "Registry HEAD requests proved SHA and edge-dev manifest digests equal for every image; local OCI labels matched the source SHA."
+  - "hermes-hub-control: sha256:6689839744414f673dcfe7ae19566cdce37fc913fda08cf42a7eafc6cf83d6f4"
+  - "hermes-hub-runtime: sha256:fa8b8d0862650d8ace59f5b8a81df10c51fee49586193ee0d6c6553311c435a5"
+  - "cli-tools: sha256:9c99f3cab29c1c9ddd87bf0cc8f163d6eac94b4b857414ed7af05f497e22b1b6"
+  - "cell-proxy: sha256:8bb20f3146525f1c92a5eb05c41ab7d92c7abec4731c068f8c55ef8df56882be"
+  - "credential-broker: sha256:800c8de1a20bfe5d3753924db55410139d895754faf4ce71f17f86db1bbbf4f0"
+  - "kind hermes-registry, Kubernetes 1.34, separate kubeconfig and restricted namespace. Initial node cache contained zero application images. No kind load was used; all five images were pulled from the registry."
+  - "The selected node image needed the documented containerd registry config_path patch. An initial pull/wait failed against node loopback; after the patch, the registry pull and seed Job passed. No application code changed."
+  - "Executed the actual deploy script extracted from .gitlab-ci.yml with real Helm against kind: install and upgrade --reset-values --atomic --wait passed, release revisions 1 and 2. Five Deployments 1/1 Ready, five PVCs Bound, Pod imageIDs match registry manifest digests. Spaces persistence canary survived upgrade."
+  - "Gateway and supervisor /v1/status and /v1/metrics returned 200 with synthetic Bearer credentials and 401 without. Broker native TLS CA/DNS verification and health=ok passed. TLS egress to api.telegram.org and slack.com verified without login or message sends."
+  - "TestGitLabPublishContract, TestDockerPublishToRegistry and TestGitLabDeployPinsRenderedImages passed, including stale digest override removal. Existing publication regressions passed; affected-package just test covered internal/devcheck and cmd/devcheck."
+  - "Control and runtime image-budget checks passed. Scoped staged-diff gitleaks found no leaks. Probity/hooks retained; original checkout's work untouched."
+  - "Final just check, affected-package just test and just helm-check passed. just config-check first hit Windows Access is denied launching the test executable; the named TestDeploymentConfigurationContract passed with the existing devcheck-testexec Windows wrapper (no test/code change)."
+  - "Detailed local logs, fixtures, kubeconfig, synthetic credentials and image receipts stay under ignored .work/tmp/. No remote run URL exists."
+  - "Removed the isolated kind cluster, registry container and its anonymous volume, and task-specific image tags. just docker-clean passed; no personal stack was stopped."
+remaining:
+  - Target GitLab CI Lint and pipeline execution require an operator-configured mirror and runner.
+limitations:
+  - Registry-side immutable SHA policy and production CA/auth must be configured by the operator; the local fixture is anonymous loopback HTTP.
+  - Moving tags represent the last successful publisher; cancel superseded pipelines before retrying older ones. Deploy always selects a SHA.
+  - Minimal synthetic gateway state reports routines unavailable; no real channel delivery, runtime Pods or enforcing-CNI proof is claimed.
+  - Local gates do not establish remote CI acceptance; full race/coverage/security and container workflow execution remain CI responsibilities.

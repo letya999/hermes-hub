@@ -1,6 +1,6 @@
 ---
 description: Frozen issue-sized contracts for per-user ToolHub memory.
-last_verified: 2026-11-08
+last_verified: "2026-11-15"
 ---
 # SPEC-0098: M32 memory slices
 

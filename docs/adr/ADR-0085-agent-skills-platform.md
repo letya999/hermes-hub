@@ -4,7 +4,7 @@ last_verified: 2026-10-28
 ---
 # ADR-0085: Agent skills platform — hub-owned stores, effective view, drafts, grants, curated evolution
 
-Status: Proposed 2026-10-27. Implements GitHub milestone 25 "M24 — Agent
+Status: accepted — delivered M24, verified 2026-11-15. Proposed 2026-10-27. Implements GitHub milestone 25 "M24 — Agent
 Skills Platform" (#356–#368). Spec:
 [SPEC-0084](../../specs/active/SPEC-0084-agent-skills-platform.md). Evidence:
 `.work/in-progress/CHG-0200-skills-platform-design/research.md` (pin spike §3).

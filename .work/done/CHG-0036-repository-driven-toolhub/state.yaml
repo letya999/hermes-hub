@@ -1,7 +1,7 @@
 schema: 1
 id: CHG-0036-repository-driven-toolhub
 title: "Repository-driven ToolHub and four exact-source connectors"
-status: verified
+status: done
 phase: local-acceptance-complete
 started_at: "2026-09-22"
 updated_at: "2026-09-22"

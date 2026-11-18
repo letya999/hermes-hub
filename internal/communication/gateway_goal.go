@@ -247,7 +247,7 @@ func (g *Gateway) goalAfterJob(ctx context.Context, job Job, response string) {
 		goal.Status = "done"
 		_ = g.spool.SaveGoal(goal)
 		suffix := "-done-" + strconv.Itoa(goal.TurnsUsed) + "-e" + strconv.FormatInt(goal.Epoch, 10) + "-" + strconv.FormatInt(g.now().UnixNano(), 36)
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "goal-" + job.TaskID + suffix, IdempotencyKey: "goal-" + job.TaskID + suffix, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "goal.achieved", goal.Text, result.Reason, result.Evidence), CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "goal-" + job.TaskID + suffix, IdempotencyKey: "goal-" + job.TaskID + suffix, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "goal.achieved", goal.Text, result.Reason, result.Evidence), CreatedAt: g.now().UTC()})
 		return
 	}
 	if goal.TurnsUsed >= goal.MaxTurns {

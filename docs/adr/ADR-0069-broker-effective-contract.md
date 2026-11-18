@@ -1,6 +1,6 @@
 ---
 description: "Request-scoped extras и понижение обязательности поля на сабмите формы."
-last_verified: "2026-10-17"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0069 (imported from services/credential-broker ADR-0010): effective contract на запрос — extras и demote

@@ -3229,9 +3229,9 @@
     "name": "knowledge_ui",
     "title": "Hermes capability: knowledge_ui",
     "action": "Включи memory_vault + knowledge_ui в тестовом space; выдай грант native:knowledge_ui; проверь рендер и статус feature.",
-    "expected": "open-knowledge контейнер и mcp_servers.open_knowledge не рендерятся ни в unmanaged, ни в managed render — прямого mount и bypass-роута нет; doctor честно сообщает unavailable; данные vault не удаляются; governed-правки идут только через memory_card propose + подтверждение владельца.",
+    "expected": "open-knowledge контейнер рендерится per-space поверх vault (rw → /data, одна реплика, space-private сеть, loopback ui_port edge); mcp_servers.open_knowledge не рендерится ни в unmanaged, ни в managed render — bypass-роута для агента нет; doctor сообщает loopback edge; данные vault не удаляются; agent-правки идут только через memory_card propose + подтверждение владельца, UI-правки sweep'ит CommitExternalEdits как hermes-owner.",
     "package": "stack",
-    "test": "TestKnowledgeUIRendersNoDataPlane",
+    "test": "TestOKRenderSingleReplica",
     "prerequisites": "Тестовый managed-профиль с memory_vault + knowledge_ui; Docker-стек; без рабочих данных.",
     "level": "agent-e2e",
     "cleanup": "Снять грант; вернуть исходную настройку."

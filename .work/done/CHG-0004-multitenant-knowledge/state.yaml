@@ -1,5 +1,5 @@
 change: CHG-0004
-status: complete
+status: done
 updated: 2026-09-10
 steps:
   - name: scope-model

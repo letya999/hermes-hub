@@ -25,7 +25,7 @@ import (
 )
 
 // Package supervisor owns the host-side scale-to-zero runtime lifecycle.
-// It is deliberately small: Docker is the only compute backend and the
+// Docker is the default compute backend; Kubernetes is opt-in. The
 // pinned runtime remains the source of truth for Hermes state.
 
 type State string
@@ -89,12 +89,22 @@ type LeaseConsumer struct {
 const DefaultWarmTTL = 30 * time.Minute
 
 type Config struct {
-	Docker         string
-	Image          string
-	ScriptImage    string
-	Network        string
-	SpacesRoot     string
-	HostSpacesRoot string
+	ExecutionBackend string
+	ContainerRuntime string
+	Kubernetes       KubernetesConfig
+	UnoURL           string
+	UnoToken         string
+	UnoImage         string
+	UnoBoxRAMMB      int
+	UnoBoxVCPU       int
+	UnoProxyHost     string
+	Backend          ComputeBackend
+	Docker           string
+	Image            string
+	ScriptImage      string
+	Network          string
+	SpacesRoot       string
+	HostSpacesRoot   string
 	// SettingsEdit publishes one config passport change after the HTTP control
 	// request is authenticated. Nil denies settings edits.
 	SettingsEdit func(context.Context, string, string, string, *string, string) (map[string]any, error)
@@ -136,6 +146,13 @@ type Config struct {
 	// AllowWildcardListen permits Serve to bind a non-loopback control-plane
 	// address; without it wildcard or empty hosts are refused.
 	AllowWildcardListen bool
+	// BackupEvery is the scheduled contextlife capture cadence per space;
+	// zero disables the backup sweep. BackupKeep bounds retained archives.
+	// BackupDrillEvery is the restore-drill cadence; zero keeps backups
+	// running with drills off.
+	BackupEvery      time.Duration
+	BackupKeep       int
+	BackupDrillEvery time.Duration
 }
 
 type Binding struct {
@@ -154,15 +171,17 @@ type Binding struct {
 }
 
 type Runtime struct {
-	ConnectorHealth   string    `json:"connector_health,omitempty"`
-	FailureGeneration string    `json:"failure_generation,omitempty"`
-	Ownership         string    `json:"ownership,omitempty"`
-	CrashCount        int       `json:"crash_count,omitempty"`
-	CrashWindowStart  time.Time `json:"crash_window_start,omitempty"`
-	NextRetryAt       time.Time `json:"next_retry_at,omitempty"`
-	RuntimeHealth     string    `json:"runtime_health,omitempty"`
-	HermesReadiness   string    `json:"hermes_readiness,omitempty"`
-	HealthCheckedAt   time.Time `json:"health_checked_at,omitempty"`
+	ComputeID         string      `json:"compute_id,omitempty"`
+	ComputeConditions []Condition `json:"compute_conditions,omitempty"`
+	ConnectorHealth   string      `json:"connector_health,omitempty"`
+	FailureGeneration string      `json:"failure_generation,omitempty"`
+	Ownership         string      `json:"ownership,omitempty"`
+	CrashCount        int         `json:"crash_count,omitempty"`
+	CrashWindowStart  time.Time   `json:"crash_window_start,omitempty"`
+	NextRetryAt       time.Time   `json:"next_retry_at,omitempty"`
+	RuntimeHealth     string      `json:"runtime_health,omitempty"`
+	HermesReadiness   string      `json:"hermes_readiness,omitempty"`
+	HealthCheckedAt   time.Time   `json:"health_checked_at,omitempty"`
 	// R1.4-R1.6 observations persisted from the runtime's own surface probe.
 	// Reporting only: they never feed remediation decisions or grants.
 	ToolSurface  string            `json:"tool_surface,omitempty"`
@@ -223,9 +242,18 @@ type runtimeEntry struct {
 	readinessBadSince    time.Time
 	lastRemediatedAt     time.Time
 	personalRestart      bool
+	// metrics watcher state — in-memory only: a restart re-baselines
+	// consecutive-breach counters while the persisted incident record keeps
+	// a fired anomaly from re-alerting as new.
+	metricsCheckedAt time.Time
+	metricBreaches   map[string]int
+	metricPrev       hubruntime.RuntimeStatus
+	lastMetrics      hubruntime.RuntimeStatus
+	lastStat         ContainerStat
 }
 
 type Manager struct {
+	backend ComputeBackend
 	holds   map[string]AdministrativeHold
 	pins    map[string]hubruntime.ExecuteRequest
 	orphans []OrphanRuntime
@@ -235,7 +263,10 @@ type Manager struct {
 	locks   map[string]*sync.Mutex
 	sem     chan struct{}
 	// Warm runtimes hold sem for their lifetime; disposable scripts need their own bound.
-	scriptSem       chan struct{}
+	scriptSem chan struct{}
+	// recoverySem bounds detached observation and missing-work workers so one
+	// stuck runtime cannot delay another owner's recovery sweep.
+	recoverySem     chan struct{}
 	slots           map[string]struct{}
 	gen             uint64
 	leaseSeq        uint64
@@ -249,16 +280,28 @@ type Manager struct {
 	// whose space has no live runtime; in-memory only — a restart grants one
 	// grace period, never a premature stop.
 	sidecarIdle map[string]time.Time
+	// statusSig dedups the transitions journal: last-emitted
+	// phase|condition signature per runtime/job key. In-memory only — on
+	// restart the first persist re-journals current state, a correct
+	// (if slightly chatty) re-baseline.
+	statusSig map[string]string
+	// backups is the per-space scheduled-backup ledger (#200): last
+	// success, last bounded error class, drill result. Persisted in
+	// backups.json next to supervisor.json.
+	backups map[string]BackupRecord
 }
 
 type persistedManager struct {
-	Holds      map[string]AdministrativeHold        `json:"holds,omitempty"`
-	Pins       map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
-	Orphans    []OrphanRuntime                      `json:"orphans,omitempty"`
-	Generation uint64                               `json:"generation"`
-	LeaseSeq   uint64                               `json:"lease_seq"`
-	Items      []persistedRuntime                   `json:"items"`
-	Jobs       map[string]jobRecord                 `json:"jobs,omitempty"`
+	Backend          string                               `json:"execution_backend,omitempty"`
+	ContainerRuntime string                               `json:"container_runtime,omitempty"`
+	RuntimeClassName string                               `json:"runtime_class_name,omitempty"`
+	Holds            map[string]AdministrativeHold        `json:"holds,omitempty"`
+	Pins             map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
+	Orphans          []OrphanRuntime                      `json:"orphans,omitempty"`
+	Generation       uint64                               `json:"generation"`
+	LeaseSeq         uint64                               `json:"lease_seq"`
+	Items            []persistedRuntime                   `json:"items"`
+	Jobs             map[string]jobRecord                 `json:"jobs,omitempty"`
 }
 
 type persistedRuntime struct {
@@ -360,6 +403,37 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 }
 
 func New(cfg Config) (*Manager, error) {
+	if cfg.ContainerRuntime == "" {
+		cfg.ContainerRuntime = envOr("HUB_CONTAINER_RUNTIME", "runc")
+	}
+	switch cfg.ContainerRuntime {
+	case "runc", "runsc", "kata":
+	default:
+		return nil, errors.New("unsupported container runtime; expected runc, runsc or kata")
+	}
+	if cfg.ExecutionBackend == "" {
+		cfg.ExecutionBackend = os.Getenv("HUB_EXECUTION_BACKEND")
+	}
+	if cfg.ExecutionBackend == "" {
+		cfg.ExecutionBackend = "docker"
+	}
+	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" && cfg.ExecutionBackend != "firecracker" {
+		return nil, errors.New("unsupported execution backend")
+	}
+	if cfg.ExecutionBackend == "firecracker" {
+		cfg.UnoURL = firstEnv(cfg.UnoURL, "HUB_UNO_URL")
+		cfg.UnoToken = firstEnv(cfg.UnoToken, "HUB_UNO_TOKEN")
+		cfg.UnoImage = firstEnv(cfg.UnoImage, "HUB_UNO_IMAGE")
+		if cfg.UnoBoxRAMMB <= 0 {
+			cfg.UnoBoxRAMMB = intEnv("HUB_UNO_BOX_RAM_MB", 1024)
+		}
+		if cfg.UnoBoxVCPU <= 0 {
+			cfg.UnoBoxVCPU = intEnv("HUB_UNO_BOX_VCPU", 2)
+		}
+		if cfg.UnoProxyHost == "" {
+			cfg.UnoProxyHost = envOr("HUB_UNO_PROXY_HOST", "127.0.0.1")
+		}
+	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {
 		return nil, errors.New("spaces root, runtime auth and image are required")
 	}
@@ -368,13 +442,15 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("spaces root: %w", err)
 	}
 	cfg.SpacesRoot = root
-	if cfg.HostSpacesRoot == "" {
+	if cfg.ExecutionBackend == "kubernetes" {
+		cfg.HostSpacesRoot = ""
+	} else if cfg.HostSpacesRoot == "" {
 		cfg.HostSpacesRoot = os.Getenv("HUB_SUPERVISOR_HOST_SPACES")
 	}
 	if strings.ContainsAny(cfg.HostSpacesRoot, ",\r\n") {
 		return nil, errors.New("invalid host spaces root")
 	}
-	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); err != nil {
+	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); cfg.ExecutionBackend == "docker" && err != nil {
 		return nil, err
 	}
 	if cfg.StateDir == "" {
@@ -410,7 +486,7 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.PIDs <= 0 {
 		cfg.PIDs = 1024
 	}
-	if cfg.RuntimePort <= 0 {
+	if cfg.RuntimePort <= 0 || cfg.RuntimePort > 65535 {
 		cfg.RuntimePort = 8080
 	}
 	if cfg.PortBase <= 0 {
@@ -435,21 +511,47 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
+			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput() // #nosec G702 -- docker binary is operator-configured; argv is built internally
 		}
 	}
-	if cfg.Stats == nil {
+	if cfg.Stats == nil && cfg.ExecutionBackend == "docker" {
 		cfg.Stats = dockerStatsCommand(cfg.Command)
 	}
 	if cfg.AdminAuth == "" {
 		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
+	}
+	if cfg.BackupEvery == 0 {
+		cfg.BackupEvery = backupDurationEnv("HUB_BACKUP_EVERY", 24*time.Hour)
+	}
+	if cfg.BackupKeep == 0 {
+		cfg.BackupKeep = backupIntEnv("HUB_BACKUP_KEEP", 7)
+	}
+	if cfg.BackupDrillEvery == 0 {
+		cfg.BackupDrillEvery = backupDurationEnv("HUB_BACKUP_DRILL_EVERY", 7*24*time.Hour)
 	}
 	// The personal supervisor is opt-in: a configured model name activates
 	// the relay decider; without it the machinery never calls a model.
 	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
 		cfg.Decide = relayDecide
 	}
-	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), recoverySem: make(chan struct{}, recoveryWorkers), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	m.backend = cfg.Backend
+	if m.backend == nil {
+		if m.usingKubernetes() {
+			m.backend, err = newKubernetesBackend(m)
+			if err != nil {
+				return nil, err
+			}
+		} else if cfg.ExecutionBackend == "firecracker" {
+			m.backend, err = newFirecrackerBackend(m)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			m.backend = dockerBackend{m}
+		}
+	}
+	m.loadBackups()
 	if err := m.load(); err != nil {
 		return nil, err
 	}
@@ -467,6 +569,35 @@ func (m *Manager) load() error {
 	var state persistedManager
 	if err := json.Unmarshal(b, &state); err != nil {
 		return fmt.Errorf("invalid supervisor state: %w", err)
+	}
+	backend := state.Backend
+	if backend == "" {
+		backend = "docker"
+	}
+	if backend != "docker" && backend != "kubernetes" && backend != "firecracker" {
+		return errors.New("invalid persisted execution backend")
+	}
+	runtime := state.ContainerRuntime
+	if runtime == "" {
+		runtime = "runc"
+	}
+	if runtime != "runc" && runtime != "runsc" && runtime != "kata" {
+		return errors.New("invalid persisted container runtime")
+	}
+	if backend != m.cfg.ExecutionBackend || runtime != m.cfg.ContainerRuntime || state.RuntimeClassName != m.cfg.Kubernetes.RuntimeClassName {
+		if len(state.Orphans) != 0 {
+			return errors.New("execution backend or isolation change requires cleared orphans")
+		}
+		for _, item := range state.Items {
+			if item.Runtime.State != Stopped {
+				return errors.New("execution backend or isolation change requires stopped runtimes")
+			}
+		}
+		for _, record := range state.Jobs {
+			if !terminalRunStatus(record.Status) {
+				return errors.New("execution backend or isolation change requires settled jobs")
+			}
+		}
 	}
 	m.gen, m.leaseSeq, m.orphans = state.Generation, state.LeaseSeq, state.Orphans
 	if state.Holds != nil {
@@ -528,7 +659,7 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
+	state := persistedManager{Backend: m.cfg.ExecutionBackend, ContainerRuntime: m.cfg.ContainerRuntime, RuntimeClassName: m.cfg.Kubernetes.RuntimeClassName, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
 		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents})
 	}
@@ -554,7 +685,19 @@ func (m *Manager) persistLocked() error {
 	if err == nil {
 		err = os.Rename(name, m.statePath)
 	}
+	if err == nil {
+		m.emitStatusTransitionsLocked(m.now())
+	}
 	return err
+}
+
+// now tolerates hand-built Manager values in tests where cfg.Now was never
+// normalized by New.
+func (m *Manager) now() time.Time {
+	if m.cfg.Now == nil {
+		return time.Now()
+	}
+	return m.cfg.Now()
 }
 
 func (m *Manager) sweep(ctx context.Context, now time.Time) {
@@ -572,6 +715,9 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	if sweepCtx.Err() == nil {
 		_ = m.Reap(sweepCtx, now)
 		m.ReapIdleBrowserSidecars(sweepCtx, now)
+	}
+	if sweepCtx.Err() == nil {
+		m.backupSweep(sweepCtx, now)
 	}
 }
 

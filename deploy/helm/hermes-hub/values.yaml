@@ -1,0 +1,157 @@
+# Images must be built from the source revision being deployed. No registry is assumed.
+runtimeClassName: "" # Omitted means the cluster default runtime (normally runc).
+runtimeImage: hermes-hub:0.5.0-prod
+environment: prod
+execution:
+  containerRuntime: runc # runsc/kata select a same-named RuntimeClass unless overridden below.
+  backend: docker
+  kubernetes:
+    namespace: "" # Default: <release namespace>-runtimes; provision it separately.
+    runtimeClassName: ""
+    storageClass: ""
+    storageSize: 10Gi
+    # Exact API service/endpoint CIDRs; required with Kubernetes + NetworkPolicy.
+    apiServerCIDRs: []
+    apiServerPorts: [443, 6443]
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+# Co-locate the single writers with supervisor so shared RWO claims work on multiple nodes.
+colocate: true
+podAnnotations: {}
+
+persistence:
+  spaces: {size: 10Gi, accessModes: [ReadWriteOnce], storageClass: null, existingClaim: ""}
+  spool: {size: 5Gi, accessModes: [ReadWriteOnce], storageClass: null, existingClaim: ""}
+  broker: {size: 1Gi, accessModes: [ReadWriteOnce], storageClass: null, existingClaim: ""}
+  brokerRecovery: {size: 1Gi, accessModes: [ReadWriteOnce], storageClass: null, existingClaim: ""}
+  cliproxy: {size: 1Gi, accessModes: [ReadWriteOnce], storageClass: null, existingClaim: ""}
+
+services:
+  communication-hub:
+    image: {repository: hermes-hub, tag: 0.5.0-prod-core, digest: "", pullPolicy: IfNotPresent}
+    command: [communication-hub]
+    args: []
+    port: 8081
+    configSecret: hermes-hub-communication
+    env:
+      HUB_USER_ID: operator
+      HUB_COMMUNICATION_CONFIG: /run/service-config/private/communication.yaml
+      HUB_COMMUNICATION_SPOOL: /spool
+      HUB_COMMUNICATION_LISTEN: 0.0.0.0:8081
+      SLACK_TRANSPORT: events # Set socket with both bot/app Secret refs for outbound-only Slack.
+    secretEnv:
+      TELEGRAM_BOT_TOKEN: {name: hermes-hub-channels, key: telegram-bot-token}
+      HUB_RUNTIME_AUTH: {name: hermes-hub-control, key: runtime-token}
+      HUB_SUPERVISOR_AUTH: {name: hermes-hub-control, key: supervisor-token}
+      HUB_COMMUNICATION_AUTH: {name: hermes-hub-control, key: communication-token}
+      HUB_AUTOMATION_AUTH: {name: hermes-hub-control, key: supervisor-token}
+    mounts:
+      - {claim: spaces, path: /data}
+      - {claim: spool, path: /spool}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
+  supervisor:
+    image: {repository: hermes-hub, tag: 0.5.0-prod-control, digest: "", pullPolicy: IfNotPresent}
+    command: [hubctl, supervisor]
+    args: [] # Required listen/spaces/image flags are added by the chart.
+    port: 8876
+    configSecret: ""
+    env: {}
+    secretEnv:
+      HUB_SUPERVISOR_AUTH: {name: hermes-hub-control, key: supervisor-token}
+    mounts:
+      - {claim: spaces, path: /data}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
+  toolhub:
+    image: {repository: hermes-hub, tag: 0.5.0-prod-control, digest: "", pullPolicy: IfNotPresent}
+    command: [toolhub]
+    args: []
+    port: 8090
+    configSecret: ""
+    env:
+      HUB_TOOLHUB_LISTEN: 0.0.0.0:8090
+      HUB_PUBLIC_LISTEN: 0.0.0.0:8091
+      HUB_USER_ID: operator
+      HUB_STATE: /data/control
+      HUB_TOOLHUB_STORE: /data/control/toolhub/store.db
+    secretEnv:
+      HUB_RUNTIME_AUTH: {name: hermes-hub-control, key: runtime-token}
+      HUB_COMMUNICATION_AUTH: {name: hermes-hub-control, key: supervisor-token}
+    mounts:
+      - {claim: spaces, path: /data}
+      - {claim: spool, path: /spool, readOnly: true}
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 2Gi}}
+  credential-broker:
+    image: {repository: hermes-hub, tag: 0.5.0-prod-core, digest: "", pullPolicy: IfNotPresent}
+    command: [credential-broker]
+    args: [serve, --config, /run/service-config/private/config.json, --state-witness-dir, /var/lib/credential-broker-recovery/state]
+    port: 8787
+    configSecret: hermes-hub-broker
+    # Add trusted public keys and contracts from this same Secret as needed.
+    configItems:
+      - {key: config.json, path: config.json}
+      - {key: master.key, path: master.key}
+      - {key: tls.crt, path: tls.crt}
+      - {key: tls.key, path: tls.key}
+    env: {}
+    secretEnv: {}
+    mounts:
+      - {claim: broker, path: /var/lib/credential-broker}
+      - {claim: brokerRecovery, path: /var/lib/credential-broker-recovery}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
+  cliproxy:
+    image: {repository: hermes-hub, tag: 0.5.0-prod-core, digest: "", pullPolicy: IfNotPresent}
+    command: [cli-proxy-api]
+    args: [-config, /run/service-config/private/config.yaml]
+    port: 8317
+    configSecret: hermes-hub-cliproxy
+    env: {}
+    secretEnv: {}
+    mounts:
+      - {claim: cliproxy, path: /cliproxy}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
+
+# Secret contents never enter Helm values/release metadata. Each target name must
+# match a configSecret or secretEnv reference above. The operator installs the CRD/store.
+externalSecrets: []
+# - name: hermes-hub-control
+#   secretStoreRef: {name: control-plane, kind: SecretStore}
+#   data:
+#     - secretKey: runtime-token
+#       remoteRef: {key: control-plane/runtime-token}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {} # Configure the installed controller's authentication here.
+  host: hub.example.invalid
+  tls: []
+  # Only human surfaces; never route the internal /v1 control API.
+  gatewayPaths: [/credentials/, /skill-drafts/, /iam/]
+  toolhubPaths: [/connect/, /confirm/, /remove/, /oauth/callback, /knowledge/]
+
+networkPolicy:
+  enabled: true
+  dnsNamespaceSelector: {kubernetes.io/metadata.name: kube-system}
+  dnsPodSelector: {k8s-app: kube-dns}
+  # Set both selectors for the actual ingress controller before enabling ingress.
+  ingressNamespaceSelector: {kubernetes.io/metadata.name: ingress-system}
+  ingressPodSelector: {app.kubernetes.io/component: controller}
+  monitoringNamespaceSelector: {kubernetes.io/metadata.name: monitoring}
+  monitoringPodSelector: {app.kubernetes.io/name: prometheus}
+  # Public HTTPS only; application proxy/allowlist policy governs channel hosts.
+  publicHTTPS: true
+  # Native policies cannot match DNS names. For a mandatory proxy set publicHTTPS
+  # false and add its exact destination/port here for communication-hub and cliproxy.
+  extraEgress: {} # service name -> list of native NetworkPolicy egress rules
+  extraIngress: {} # service name -> list of native NetworkPolicy ingress rules
+
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  # These are the two implemented /v1/metrics endpoints; both require Bearer auth.
+  credentials:
+    communication-hub: {name: hermes-hub-control, key: communication-token}
+    supervisor: {name: hermes-hub-control, key: supervisor-token}

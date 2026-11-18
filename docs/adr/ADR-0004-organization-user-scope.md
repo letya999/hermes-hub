@@ -4,6 +4,8 @@ last_verified: 2026-09-10
 ---
 # ADR-0004: Organization/user scope overlay
 
+Status: accepted.
+
 Accepted 2026-09-10.
 
 ## Decision

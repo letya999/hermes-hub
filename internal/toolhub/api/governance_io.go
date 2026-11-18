@@ -60,9 +60,8 @@ func SeedInventory() []ToolSection {
 		// memory_vault is a hub-side subsystem flag, not an agent toolset;
 		// it still opts in through the same wish + grant posture.
 		native("memory_vault", EffectRead),
-		// knowledge_ui is the same hub-side flag: wish + grant admit it —
-		// inert under M32/#520 while the OK data plane stays retired, but
-		// kept inventoried so stored grants resolve explicitly.
+		// knowledge_ui is the same hub-side flag: wish + grant admit the
+		// human OpenKnowledge editing surface over the vault (SPEC-0085 R8).
 		native("knowledge_ui", EffectRead),
 		// memory_provider likewise: the section governs the rendered
 		// external-provider config + egress (SPEC-0085 R11).

@@ -86,7 +86,32 @@ func (s *Store) lockDBCapabilityAdmission() (func(), error) {
 	return release, nil
 }
 
+// CapabilityPolicy returns the admitted policy record for id, if present.
+func (s *Store) CapabilityPolicy(id string) (api.CapabilityPolicy, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	policy, ok := s.capabilityPolicies[id]
+	return policy, ok
+}
+
+// CapabilityProfile returns the admitted profile record for id, if present.
+func (s *Store) CapabilityProfile(id string) (api.CapabilityProfile, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.capabilityProfiles[id]
+	return profile, ok
+}
+
 func (s *Store) PutCapabilityPolicy(policy api.CapabilityPolicy) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
+	return s.putCapabilityPolicyRecord(policy)
+}
+
+// putCapabilityPolicyRecord is the replay-safe admission path: the snapshot
+// loader and the resynced public entry share it.
+func (s *Store) putCapabilityPolicyRecord(policy api.CapabilityPolicy) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
@@ -176,8 +201,9 @@ func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile, re
 		carried[string(body)] = true
 	}
 	for _, selection := range profile.Selections {
-		definition, exists := s.definitions[definitionKey(selection.DefinitionID, selection.DefinitionVersion)]
-		if !exists || api.DefinitionDigest(definition) != selection.ImplementationDigest {
+		key := definitionKey(selection.DefinitionID, selection.DefinitionVersion)
+		definition, exists := s.definitions[key]
+		if !exists || s.definitionDigestLocked(key, definition) != selection.ImplementationDigest {
 			return api.CapabilityPolicy{}, fmt.Errorf("%w: unreviewed capability implementation", api.ErrUnauthorized)
 		}
 		tool, ok := selectionToolSpec(definition, selection)
@@ -198,6 +224,21 @@ func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile, re
 	return policy, nil
 }
 
+// definitionDigestLocked returns the catalog definition's confirmation
+// digest, memoized: replay and admission re-evaluate it per selection while
+// the underlying definition is immutable until re-registered.
+func (s *Store) definitionDigestLocked(key string, definition api.ToolDefinition) string {
+	if s.definitionDigests == nil {
+		s.definitionDigests = map[string]string{}
+	}
+	if digest, ok := s.definitionDigests[key]; ok {
+		return digest
+	}
+	digest := api.DefinitionDigest(definition)
+	s.definitionDigests[key] = digest
+	return digest
+}
+
 // selectionToolSpec resolves the catalog tool a selection pins — the same
 // name/capability match admission and projection use.
 func selectionToolSpec(definition api.ToolDefinition, selection api.CapabilitySelection) (api.ToolSpec, bool) {
@@ -210,6 +251,9 @@ func selectionToolSpec(definition api.ToolDefinition, selection api.CapabilitySe
 }
 
 func (s *Store) PutCapabilityProfile(profile api.CapabilityProfile) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
 	return s.putCapabilityProfile(profile, false)
 }
 

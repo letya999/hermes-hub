@@ -3,6 +3,9 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"log"
+	"maps"
+	"path/filepath"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -29,9 +32,8 @@ func (c *ControlPlane) ReconcileBrokerEvents(ctx context.Context, auth identity.
 		return err
 	}
 	key := brokerCursorKey(auth, shared)
-	c.Store.mu.RLock()
-	cursor := c.Store.brokerCursors[key]
-	c.Store.mu.RUnlock()
+	cursors := c.cursorStore()
+	cursor := cursors.Get(key)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	page, err := client.Events(ctx, cursor)
@@ -76,22 +78,49 @@ func (c *ControlPlane) ReconcileBrokerEvents(ctx context.Context, auth identity.
 	if page.NextCursor == cursor {
 		return nil
 	}
-	c.Store.mu.Lock()
-	defer c.Store.mu.Unlock()
-	if c.Store.brokerCursors[key] != cursor {
+	if !cursors.CompareAndAdvance(key, cursor, page.NextCursor) {
 		return api.ErrStale
 	}
-	c.Store.brokerCursors[key] = page.NextCursor
-	if c.Store.path != "" {
-		before := c.Store.diskDigest
-		if err := c.Store.saveLocked(c.Store.path); err != nil {
-			if before == c.Store.diskDigest {
-				c.Store.brokerCursors[key] = cursor
-			}
-			return err
-		}
+	// Durability is batched: the sidecar flushes at most once per
+	// cursorFlushInterval, so a crash replays at most a minute of broker
+	// events — already covered by the at-least-once contract above.
+	if err := cursors.Flush(c.now()); err != nil {
+		log.Printf("toolhub: cursor flush deferred: %v", err)
 	}
 	return nil
+}
+
+// cursorStore lazily binds the sidecar to the store's directory and seeds it
+// with the registry's persisted brokerCursors — the one-time migration off
+// kvmap rows written before CHG-0308. Constructed ControlPlanes that never
+// reconcile broker events never touch the file.
+//
+// The write lock is paid once — at bind. Taking s.mu.Lock() on every pass
+// made each reconcile a waiting writer, and a queued writer parks every
+// /v1/rights/decide reader behind it (RWMutex writer preference) — the same
+// starvation the sidecar exists to remove.
+func (c *ControlPlane) cursorStore() *CursorStore {
+	c.Store.mu.RLock()
+	cs := c.Cursors
+	c.Store.mu.RUnlock()
+	if cs != nil {
+		return cs
+	}
+	c.Store.mu.Lock()
+	defer c.Store.mu.Unlock()
+	if c.Cursors == nil {
+		path := ""
+		if c.Store.path != "" {
+			path = filepath.Join(filepath.Dir(c.Store.path), "cursors.json")
+		}
+		loaded, err := LoadCursorStore(path, maps.Clone(c.Store.brokerCursors))
+		if err != nil {
+			log.Printf("toolhub: cursor sidecar unreadable, seeding from registry: %v", err)
+			loaded = &CursorStore{path: path, cursors: maps.Clone(c.Store.brokerCursors)}
+		}
+		c.Cursors = loaded
+	}
+	return c.Cursors
 }
 
 func (c *ControlPlane) reconcileBrokerReady(ctx context.Context, auth identity.Envelope, o *api.Onboarding) error {

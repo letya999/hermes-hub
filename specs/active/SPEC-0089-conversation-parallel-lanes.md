@@ -9,7 +9,7 @@ Frozen: 2026-10-30, после принятия ADR-0090 владельцем.
 
 Supplements SPEC-0012 (правило 4), SPEC-0013, SPEC-0053 — без переписывания
 их истории. Design: [ADR-0090](../../docs/adr/ADR-0090-conversation-parallel-lanes.md).
-Implementation plan: [CHG-0234](../../.work/in-progress/CHG-0234-conversation-parallel-lanes/plan.md).
+Implementation plan: [CHG-0234](../../.work/done/CHG-0234-conversation-parallel-lanes/plan.md).
 
 Доказательство гейта SPEC-0012 правило 4 («later concurrency must prove
 Hermes session and filesystem safety»): по пину `869228cab` каждый

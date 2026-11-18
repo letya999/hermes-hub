@@ -1,0 +1,5 @@
+key: CHG-0322-external-firecracker
+title: External Firecracker runtime backend (Uno-style)
+status: done
+branch: feat/issue-550-no-subpath
+updated: 2026-11-18

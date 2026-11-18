@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0097
 title: One Docker stack without a Windows supervisor service
-status: verified-live
+status: done
 phase: accepted
 updated: 2026-10-14
 spec: SPEC-0053

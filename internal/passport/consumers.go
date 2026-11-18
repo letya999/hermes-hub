@@ -43,15 +43,17 @@ var Consumers = map[string]Consumer{
 	"stack.services.*.mode":       {"compose", EffectRebuild},
 
 	// config -> effective hermes config, supervisor policy, compose (CHG-0258)
-	"config.runtime.timezone":                 {"hermes-config", EffectRespawn},
-	"config.runtime.locale":                   {"hermes-config", EffectRespawn},
-	"config.runtime.context.compaction":       {"hermes-config", EffectRespawn},
-	"config.runtime.context.engines":          {"hermes-config", EffectRespawn},
-	"config.runtime.context.parallel_lanes":   {"hermes-config", EffectRespawn},
-	"config.runtime.goals.engine":             {"hermes-config", EffectRespawn},
-	"config.runtime.goals.judge":              {"hermes-config", EffectRespawn},
-	"config.runtime.goals.max_turns":          {"hermes-config", EffectRespawn},
-	"config.runtime.compression":              {"hermes-config", EffectRespawn},
+	"config.runtime.timezone":               {"hermes-config", EffectRespawn},
+	"config.runtime.locale":                 {"hermes-config", EffectRespawn},
+	"config.runtime.context.compaction":     {"hermes-config", EffectRespawn},
+	"config.runtime.context.engines":        {"hermes-config", EffectRespawn},
+	"config.runtime.context.parallel_lanes": {"hermes-config", EffectRespawn},
+	"config.runtime.goals.engine":           {"hermes-config", EffectRespawn},
+	"config.runtime.goals.judge":            {"hermes-config", EffectRespawn},
+	"config.runtime.goals.max_turns":        {"hermes-config", EffectRespawn},
+	"config.runtime.compression":            {"hermes-config", EffectRespawn},
+	// Read live by the hubctl introspection gate on every exec/chat/meet-auth.
+	"config.runtime.introspection":            {"introspection-gate", EffectLive},
 	"config.runtime.auxiliary.summary_model":  {"hermes-config", EffectRespawn},
 	"config.runtime.auxiliary.judge_model":    {"hermes-config", EffectRespawn},
 	"config.image_gen.provider":               {"hermes-config", EffectRespawn},
@@ -98,6 +100,13 @@ var Consumers = map[string]Consumer{
 	"config.hosting.slots":   {"compose", EffectRecreate},
 	"config.hosting.image":   {"compose", EffectRecreate},
 	"config.hosting.runtime": {"compose", EffectRecreate},
+	// iam rewrites the gateway env (recreate the communication-hub);
+	// the topology delta a mode flip implies is carried by the paired
+	// stack.services.identity-hub/hub-postgres leaf changes, not by a
+	// rebuild — no image content depends on iam.
+	"config.iam.mode":      {"compose", EffectRecreate},
+	"config.iam.issuer":    {"compose", EffectRecreate},
+	"config.iam.client_id": {"compose", EffectRecreate},
 
 	// models -> relay registry (hot-reloaded live) / service set (recreate)
 	"models.default":                           {"model-relay", EffectLive},

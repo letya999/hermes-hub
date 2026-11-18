@@ -4,7 +4,8 @@ last_verified: 2026-10-14
 ---
 # ADR-0039: Hermes pin raise decision (D12c)
 
-Status: proposed, 2026-10-14. This is the only D12 proposal that may proceed
+Status: proposed, 2026-10-14. Review trigger: upstream hermes-agent merges the
+MCP breaker fix (D12c), or the next pin bump — re-evaluate then. This is the only D12 proposal that may proceed
 under SPEC-0053 once the Hermes contract gate passes; it still requires the
 owner's sign-off recorded in CHG-0096 state.
 

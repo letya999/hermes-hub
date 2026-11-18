@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 type remoteProbeResult struct {
@@ -51,10 +52,21 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 		return remoteProbeResult{AuthNeeded: lastStatus == http.StatusUnauthorized || lastStatus == http.StatusForbidden, Scopes: challengeScopes(challenge)}, fmt.Errorf("%w: remote MCP handshake: %v", ErrUnauthorized, sanitizeRemoteError(err))
 	}
 	defer session.Close()
+	tools, err := collectRemoteTools(ctx, session)
+	if err != nil {
+		return remoteProbeResult{AuthNeeded: lastStatus == http.StatusUnauthorized || lastStatus == http.StatusForbidden}, err
+	}
+	return remoteProbeResult{Tools: tools}, nil
+}
+
+// collectRemoteTools reads one bounded tools/list into validated specs —
+// shared by the public probe and the operator-pinned private probe. Provider
+// names and descriptions are untrusted content, never instructions.
+func collectRemoteTools(ctx context.Context, session *mcp.ClientSession) ([]ToolSpec, error) {
 	var tools []ToolSpec
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
-			return remoteProbeResult{AuthNeeded: lastStatus == http.StatusUnauthorized || lastStatus == http.StatusForbidden}, fmt.Errorf("%w: remote MCP tools/list: %v", ErrUnauthorized, sanitizeRemoteError(err))
+			return nil, fmt.Errorf("%w: remote MCP tools/list: %v", ErrUnauthorized, sanitizeRemoteError(err))
 		}
 		if tool == nil || !McpToolNamePattern.MatchString(tool.Name) {
 			continue
@@ -69,20 +81,55 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 		if tool.InputSchema != nil {
 			schema, mErr := json.Marshal(tool.InputSchema)
 			if mErr != nil || len(schema) > 65536 || !json.Valid(schema) {
-				return remoteProbeResult{}, fmt.Errorf("%w: remote tool %q schema", ErrInvalid, tool.Name)
+				return nil, fmt.Errorf("%w: remote tool %q schema", ErrInvalid, tool.Name)
 			}
 			spec.InputSchema = schema
 		}
 		tools = append(tools, spec)
 		if len(tools) > 256 {
-			return remoteProbeResult{}, fmt.Errorf("%w: remote MCP tool list is unbounded", ErrInvalid)
+			return nil, fmt.Errorf("%w: remote MCP tool list is unbounded", ErrInvalid)
 		}
 	}
 	if len(tools) == 0 {
-		return remoteProbeResult{}, fmt.Errorf("%w: remote MCP listed no tools", ErrInvalid)
+		return nil, fmt.Errorf("%w: remote MCP listed no tools", ErrInvalid)
 	}
 	slices.SortFunc(tools, func(a, b ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	return tools, nil
+}
+
+// ProbeBackendMCP proves an operator-pinned private endpoint speaks MCP over
+// the exact hop CallEnv uses: backend-validated URL, dial-time private
+// recheck, pinned legacy protocol, per-connection credential headers with
+// the shared bearer only as fallback, no SSE fallback.
+func ProbeBackendMCP(ctx context.Context, endpoint string, headers map[string]string, sharedToken string) (remoteProbeResult, error) {
+	if err := ValidateBackendEndpoint(endpoint); err != nil {
+		return remoteProbeResult{}, err
+	}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: backendRoundTripper(nil, endpoint, headers, sharedToken),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	session, err := connectBackendMCP(ctx, endpoint, client)
+	if err != nil {
+		return remoteProbeResult{}, fmt.Errorf("%w: backend MCP handshake: %v", ErrUnauthorized, sanitizeRemoteError(err))
+	}
+	defer session.Close()
+	tools, err := collectRemoteTools(ctx, session)
+	if err != nil {
+		return remoteProbeResult{}, err
+	}
 	return remoteProbeResult{Tools: tools}, nil
+}
+
+// connectBackendMCP opens a session over the streamable transport pinned to
+// the legacy protocol — identical to the CallEnv hop (DisableStandaloneSSE,
+// no fallback): the probe must prove what calls will use.
+func connectBackendMCP(ctx context.Context, endpoint string, client *http.Client) (*mcp.ClientSession, error) {
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "hermes-toolhub-backend", Version: "0.2.0"}, nil)
+	return mcpClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: client, DisableStandaloneSSE: true}, nil)
 }
 
 // challengeParam reads one Bearer WWW-Authenticate parameter (RFC6750 §3);
@@ -230,6 +277,49 @@ func RemoteMCPDefinition(endpoint, name string, credentials []CredentialInput, t
 	definition, err := RemoteDefinitionBase(endpoint, name, credentials)
 	if err != nil {
 		return ToolDefinition{}, err
+	}
+	selected, err := SelectRemoteTools(tools, allowlist)
+	if err != nil {
+		return ToolDefinition{}, err
+	}
+	if len(selected) == 0 {
+		return ToolDefinition{}, fmt.Errorf("%w: remote MCP tool allowlist is empty", ErrInvalid)
+	}
+	definition.Tools = selected
+	return definition, definition.Validate()
+}
+
+// BackendMCPDefinition builds the immutable manifest for an operator-pinned
+// private MCP endpoint: the probed tool set frozen in, the canonical endpoint
+// recorded on Source with TLSMode operator-pinned, the call path reached via
+// the connection's mcp_endpoint — which must canonical-match this URL.
+func BackendMCPDefinition(endpoint, name string, credentials []CredentialInput, tools []ToolSpec, allowlist []string) (ToolDefinition, error) {
+	canonical, err := CanonicalBackendURL(endpoint)
+	if err != nil {
+		return ToolDefinition{}, err
+	}
+	if err := ValidateBackendEndpoint(endpoint); err != nil {
+		return ToolDefinition{}, err
+	}
+	u, _ := url.Parse(canonical)
+	id := strings.TrimSpace(name)
+	if !strings.HasPrefix(id, "remote-") {
+		id = "remote-" + id
+	}
+	if id == "remote-" || len(id) > 40 || !identity.ValidID(id) {
+		return ToolDefinition{}, fmt.Errorf("%w: remote definition id must be a remote-* id", ErrInvalid)
+	}
+	egress := []string{strings.ToLower(u.Hostname())}
+	if port := u.Port(); port != "" {
+		egress = []string{strings.ToLower(u.Hostname()) + ":" + port}
+	}
+	definition := ToolDefinition{
+		Schema: SchemaVersion, DefinitionID: id, Version: "1.0.0", Transport: RemoteMCP,
+		Source:      DefinitionSource{URL: canonical, TLSMode: TLSModeOperatorPinned},
+		Credentials: credentials,
+		Workload:    WorkloadPolicy{Class: PerUser, Rationale: "operator-pinned private remote MCP endpoint; session and credentials belong to one principal"},
+		Execution:   ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 1 << 20, CPUMillis: 250, MemoryMiB: 64, MaxPIDs: 8, Egress: egress},
+		Health:      HealthProbe{Kind: "http", Value: "/", TimeoutSeconds: 5},
 	}
 	selected, err := SelectRemoteTools(tools, allowlist)
 	if err != nil {

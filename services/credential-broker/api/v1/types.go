@@ -70,6 +70,13 @@ type Grant struct {
 	PolicyVersion    string `json:"policy_version"`
 	Active           bool   `json:"active"`
 }
+type PrincipalRevocationRequest struct {
+	PrincipalID string `json:"principal_id"`
+	ContextID   string `json:"context_id"`
+}
+type PrincipalRevocation struct {
+	Grants int `json:"grants"`
+}
 type AcquireLease struct {
 	GrantID    string `json:"grant_id"`
 	TTLSeconds int    `json:"ttl_seconds"`

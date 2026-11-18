@@ -5,7 +5,7 @@ Implementation progress and acceptance evidence are tracked in CHG-0065.
 
 Decision: [ADR-0032](../../docs/adr/ADR-0032-capability-execution-isolation.md).
 Policy contract: [SPEC-0041](SPEC-0041-default-deny-capabilities.md).
-Plan: [CHG-0065](../../.work/in-progress/CHG-0065-capability-enforcement/plan.md).
+Plan: [CHG-0065](../../.work/done/CHG-0065-capability-enforcement/plan.md).
 
 ## IS-01: Threat model and guarantee
 

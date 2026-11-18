@@ -1,6 +1,6 @@
 ---
 description: M17 automatic context compaction — declarative policy, relay routing, hub sweep and honest status.
-last_verified: 2026-10-24
+last_verified: "2026-11-15"
 ---
 # SPEC-0072: Automatic compaction policy and status
 

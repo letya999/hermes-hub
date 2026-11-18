@@ -111,6 +111,9 @@ func RunAuthorityFromEnv() *SupervisorRunAuthority {
 }
 
 func (a *SupervisorRunAuthority) Lookup(ctx context.Context, jobID string) (RunContext, error) {
+	if a == nil || a.URL == "" {
+		return RunContext{}, fmt.Errorf("run authority unconfigured")
+	}
 	client := a.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}

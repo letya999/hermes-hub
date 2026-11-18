@@ -1,5 +1,5 @@
 id: CHG-0083
-status: complete
+status: done
 branch: feat/m10-phase-a
 base: c119c12
 owner_authorization: implementation and reversible verification; no publication

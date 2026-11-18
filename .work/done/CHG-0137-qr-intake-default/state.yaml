@@ -1,4 +1,4 @@
-status: done (2026-10-20 — QR intake live-verified; zombie onboardings cleanup remains cosmetic)
+status: done
 branch: refactor/comm-plane-separation
 steps:
   - name: untag-qr-single-image

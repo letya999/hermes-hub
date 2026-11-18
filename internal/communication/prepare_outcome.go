@@ -456,7 +456,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	} else if chatID == 0 {
 		chatID, topicID = origin.ChatID, origin.TopicID
 	}
-	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
+	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", OwnerPrincipalID: user.ID, OwnerContextID: caller.ContextID, Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
 	delivery.PrepareKey, delivery.PrepareVersion = prepareDeliveryIdentity(caller, request.OnboardingID), request.NoticeVersion
 	if request.Confirmation != nil {
 		button, err := g.spool.humanConfirmationButton(*request.Confirmation, channelName, chatID)

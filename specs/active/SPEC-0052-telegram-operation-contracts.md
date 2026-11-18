@@ -3,7 +3,7 @@
 Frozen: 2026-10-13, after the owner's explicit implementation instruction. Supplements SPEC-0015,
 SPEC-0037, SPEC-0047/0048, SPEC-0050 and SPEC-0051 without rewriting their history.
 Design: [ADR-0035](../../docs/adr/ADR-0035-telegram-operation-contracts.md).
-Traceability: [CHG-0091 verification](../../.work/in-progress/CHG-0091-telegram-operation-contracts/verification-plan.md).
+Traceability: [CHG-0091 verification](../../.work/done/CHG-0091-telegram-operation-contracts/verification-plan.md).
 
 ## R1: Image input
 

@@ -4,6 +4,8 @@ last_verified: 2026-09-28
 ---
 # ADR-0027: Workspace document and image profile
 
+Status: accepted.
+
 Accepted 2026-09-28.
 
 ## Decision

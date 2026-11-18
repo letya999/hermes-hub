@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,11 +35,51 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, false)["services"].(M)["hermes-runtime"].(M)
 }
 
+// RuntimeEgressEnvironment exposes only the approved relay configuration to
+// compute backends, without rendering or inspecting unrelated control services.
+func RuntimeEgressEnvironment(s Settings, dir string) map[string]string {
+	hosts, target := managedEgressHosts(s, dir), managedExposureRelay(s, dir)
+	if len(hosts) == 0 && target == "" {
+		return nil
+	}
+	return map[string]string{"HUB_EGRESS_RELAY_HOSTS": strings.Join(hosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": target}
+}
+
 // sharedNetworkName is the single external-facing network shared infra and all
 // spawned runtimes join. It is created once by the infra-owning compose project
 // (name is pinned, never project-prefixed) and declared external by secondary
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
+
+// identityHubImage pins the bundled ZITADEL by digest — v4.19.1 is the
+// patched line for GHSA-4hgj-wm6c-q7p2; v3.x is end-of-life. The shared
+// postgres pin follows the same digest-pinned policy.
+const (
+	identityHubImage    = "ghcr.io/zitadel/zitadel:v4.19.1@sha256:f98935f56505ec6fa3e6523261cd1b8ace0c622e16da4a45acd493cb472f003f"
+	identityHubPGImage  = "postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e"
+	identityHubPortBase = 8091
+)
+
+// iamEffectiveIssuer resolves the iam issuer for render: an explicit
+// issuer wins, a bundled deployment without one derives the dev shape
+// http://idp.localhost:<port> — *.localhost is loopback for browsers and
+// a compose alias for containers, so one string serves both.
+func iamEffectiveIssuer(s Settings) string {
+	if s.PassportIAM == nil {
+		return ""
+	}
+	if s.PassportIAM.Issuer != "" {
+		return s.PassportIAM.Issuer
+	}
+	if s.PassportIAM.Mode != "bundled" {
+		return ""
+	}
+	port := identityHubPortBase
+	if s.PassportConfig != nil && s.PassportConfig.Ports["identity-hub"] != 0 {
+		port = s.PassportConfig.Ports["identity-hub"]
+	}
+	return fmt.Sprintf("http://idp.localhost:%d", port)
+}
 
 func voiceServicesEnabled(s Settings) bool {
 	if s.Has("transcription") {
@@ -338,6 +379,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	coreBuild := imageBuild(s.Environment + "-core")
 	runtimeService := cloneMap(runtimeCommon)
+	runtimeService["runtime"] = "${HUB_CONTAINER_RUNTIME:-runc}"
 	// The service builds its own agent tag: renders that drop hermes-runtime
 	// (supervisor/managed) get the image through the explicit hubctl build.
 	runtimeService["build"] = imageBuild(s.Environment)
@@ -464,10 +506,69 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
-	// M32/#520: the open-knowledge data plane is retired — ToolHub owns the
-	// vault, so no service may mount it and upstream OK cannot act as a
-	// governed client. knowledge_ui stays a valid feature but renders
-	// nothing until an adapted governed-API surface exists (ADR-0095 D2).
+	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
+	// space over the vault — the human editing surface (ADR-0095 D2
+	// amendment): owner edits land as working-tree changes the next
+	// vault.CommitExternalEdits sweep commits as hermes-owner. The runtime
+	// MCP route stays retired (#422): nothing dials the service by name, so
+	// it joins only the space-private net and publishes at most one loopback
+	// port. First boot inits the project; later boots find .ok/ and start.
+	if s.Has("knowledge_ui") {
+		okService := cloneMap(common)
+		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
+		okService["build"] = imageBuild(s.Environment + "-knowledge")
+		okService["deploy"] = M{"replicas": 1}
+		// The bind-mounted vault keeps the host uid — git refuses repo ops on
+		// a foreign-owned tree ("dubious ownership"), which blanks OK's
+		// history/sync views. The container's git config lives on the /tmp
+		// tmpfs under HOME, so marking /data safe per boot is free.
+		okService["command"] = "sh -c 'git config --global --add safe.directory /data; [ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
+		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
+		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
+		okService["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
+		}
+		// OK binds its container interface only so the loopback publish can
+		// reach it: a non-loopback bind needs the allowExternal consent
+		// interlock (upstream boot refuses it otherwise), and PORT pins the
+		// listener the published edge points at. HOME lands on tmpfs: the
+		// image's /state/home sits on the read-only rootfs, while every
+		// durable OK path is project-local .ok/ under /data.
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://open-knowledge:8080"}
+		// ok resolves its server-authority registry through the passwd home
+		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
+		// the disposable home gets its own tmpfs alongside /tmp.
+		okService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)), "/state/home:uid=10001,gid=10001,mode=0700")
+		// R10.1: ui_port opts into one loopback publish — the only host
+		// reachability the unauthenticated editor ever gets; the owner
+		// tunnels in over ssh -L and opens http://localhost:<ui_port>. The
+		// browser origin becomes the canonical external URL now that no
+		// in-network peer dials the service.
+		if s.UIPort > 0 {
+			bind := s.UIBind
+			if bind == "" {
+				bind = "127.0.0.1"
+			}
+			if strings.Contains(bind, ":") {
+				bind = "[" + bind + "]"
+			}
+			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
+			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
+		}
+		if s.CapabilityMode == "managed" {
+			nets := M{managedAgentNetwork(s): M{}}
+			// Internal networks silently drop published ports — like the
+			// browser sidecar, the loopback edge needs a dedicated
+			// publishable network that nothing else attaches to.
+			if s.UIPort > 0 {
+				nets["knowledge-publish"] = M{}
+			}
+			okService["networks"] = nets
+		} else {
+			okService["networks"] = M{"default": M{}}
+		}
+		services["open-knowledge"] = okService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
@@ -512,6 +613,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		svc["build"] = imageBuild(s.Environment + "-control")
 		svc["entrypoint"] = []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
+			"HUB_CONTAINER_RUNTIME": "${HUB_CONTAINER_RUNTIME:-runc}",
 			// Opt-in authorities stay disabled unless the operator provisions
 			// them: admin holds need a separate authority token; the personal
 			// supervisor needs a managed model endpoint + model name.
@@ -523,6 +625,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// tests; empty resolves to the code defaults (30m / 60s).
 			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",
 			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}",
+			// Scheduled backups (#200): empty resolves to the code
+			// defaults (24h capture, keep 7, 7d drill); "0"/"off" disables.
+			"HUB_BACKUP_EVERY":       "${HUB_BACKUP_EVERY:-}",
+			"HUB_BACKUP_KEEP":        "${HUB_BACKUP_KEEP:-}",
+			"HUB_BACKUP_DRILL_EVERY": "${HUB_BACKUP_DRILL_EVERY:-}",
 			// Rights PDP: runtime-facing routes decide against this
 			// deployment's ToolHub — one control plane serves every space,
 			// and the store's profile set is the cross-space boundary, so
@@ -615,7 +722,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment, "HUB_EGRESS_PROXY": "${HUB_EGRESS_PROXY:-}"}
 		if s.CapabilityMode == "managed" {
 			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -803,6 +910,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		spacesHostDir := filepath.ToSlash(filepath.Dir(dir))
 		spacesBind := M{"type": "bind", "source": spacesHostDir, "target": "/spaces", "read_only": true}
 		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
+		controller["environment"].(M)["HUB_CONTAINER_RUNTIME"] = "${HUB_CONTAINER_RUNTIME:-runc}"
+		controller["environment"].(M)["HUB_CLI_RUNTIME"] = "${HUB_CLI_RUNTIME:-}"
 		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind}
 		if s.usesDockerSocket() {
 			controllerVolumes = append(controllerVolumes, dockerSock)
@@ -824,6 +933,86 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// confirmation code required by the stricter spec flow.
 		broker["environment"] = M{"BROKER_DIRECT_FORM": "1"}
 		services["credential-broker"] = broker
+	}
+
+	// iam.mode: bundled (ADR-0100) renders the optional identity hub beside
+	// communication-hub on the shared stack: ZITADEL on the one shared
+	// postgres — nothing else consumes it yet.
+	if infra && s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" {
+		issuer := iamEffectiveIssuer(s)
+		u, _ := url.Parse(issuer)
+		externalPort := u.Port()
+		if externalPort == "" {
+			if u.Scheme == "https" {
+				externalPort = "443"
+			} else {
+				externalPort = "80"
+			}
+		}
+		logging := M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}
+		// https issuers terminate TLS at an edge proxy; the derived dev
+		// issuer is plain http on loopback.
+		tlsMode := "disabled"
+		if u.Scheme == "https" {
+			tlsMode = "external"
+		}
+		postgres := M{
+			"image":       identityHubPGImage,
+			"restart":     "unless-stopped",
+			"environment": M{"POSTGRES_USER": "zitadel", "POSTGRES_DB": "zitadel", "PGUSER": "zitadel"},
+			"env_file":    []any{M{"path": filepath.ToSlash(filepath.Join(dir, "identity-hub.auth")), "format": "raw"}},
+			"volumes":     []any{M{"type": "volume", "source": "hub-postgres-data", "target": "/var/lib/postgresql/data"}},
+			"networks":    sharedNetworks,
+			"healthcheck": M{"test": []string{"CMD-SHELL", "pg_isready -d zitadel -U zitadel"}, "interval": "10s", "timeout": "5s", "retries": 12, "start_period": "10s"},
+			"logging":     logging,
+		}
+		services["hub-postgres"] = postgres
+		zitadel := M{
+			"image":   identityHubImage,
+			"restart": "unless-stopped",
+			"user":    "0",
+			// The masterkey binds from ZITADEL_MASTERKEY in the auth env
+			// file; it encrypts secrets at rest and must never rotate.
+			"command": []string{"start-from-init", "--masterkeyFromEnv", "--tlsMode", tlsMode},
+			"environment": M{
+				"ZITADEL_PORT":                                           fmt.Sprint(identityHubPortBase),
+				"ZITADEL_EXTERNALDOMAIN":                                 u.Hostname(),
+				"ZITADEL_EXTERNALPORT":                                   externalPort,
+				"ZITADEL_EXTERNALSECURE":                                 fmt.Sprint(u.Scheme == "https"),
+				"ZITADEL_TLS_ENABLED":                                    "false",
+				"ZITADEL_PUBLIC_SCHEME":                                  u.Scheme,
+				"ZITADEL_DATABASE_POSTGRES_HOST":                         "hub-postgres",
+				"ZITADEL_DATABASE_POSTGRES_PORT":                         "5432",
+				"ZITADEL_DATABASE_POSTGRES_DATABASE":                     "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_USER_USERNAME":                "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE":                "disable",
+				"ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME":               "zitadel",
+				"ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE":               "disable",
+				"ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED": "false",
+				// Login V1 stays hosted on the api container; the v4
+				// login sidecar lands only if a deployment needs it.
+				"ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED": "false",
+			},
+			"env_file": []any{M{"path": filepath.ToSlash(filepath.Join(dir, "identity-hub.auth")), "format": "raw"}},
+			"networks": sharedNetworks,
+			"depends_on": M{
+				"hub-postgres": M{"condition": "service_healthy"},
+			},
+			"healthcheck": M{"test": []string{"CMD", "/app/zitadel", "ready"}, "interval": "10s", "timeout": "30s", "retries": 12, "start_period": "20s"},
+			"logging":     logging,
+		}
+		// The derived dev issuer publishes on every interface: the gateway
+		// container reaches it through host-gateway (see communication-hub
+		// extra_hosts), the browser through 127.0.0.1 — Docker Desktop maps
+		// *.localhost to loopback inside containers, so a network alias
+		// cannot work. An explicit issuer stays loopback-published for the
+		// edge proxy on the same host.
+		if s.PassportIAM.Issuer == "" {
+			zitadel["ports"] = []string{externalPort + ":" + fmt.Sprint(identityHubPortBase)}
+		} else {
+			zitadel["ports"] = []string{"127.0.0.1:" + externalPort + ":" + fmt.Sprint(identityHubPortBase)}
+		}
+		services["identity-hub"] = zitadel
 	}
 
 	// cliproxy: dedicated gives a secondary space its own proxy instance,
@@ -916,7 +1105,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			gatewayRuntimeURL = supervisorURL
 		}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled()), "HUB_EGRESS_PROXY": "${HUB_EGRESS_PROXY:-}", "SLACK_TRANSPORT": "${SLACK_TRANSPORT:-events}"}
 		if cfg := s.PassportConfig; cfg != nil {
 			if cfg.Runtime.Locale != "" {
 				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
@@ -932,6 +1121,21 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment[key] = value
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
+		// SSO enrolment/linking (ADR-0100) stays opt-in: empty values keep
+		// the deployment in channel-mapped local mode. A published iam: block
+		// is authoritative over env passthrough; a bundled hub without a
+		// client_id yet renders empty — bootstrap never half-configures.
+		gatewayEnvironment["HUB_OIDC_ISSUER"] = "${HUB_OIDC_ISSUER:-}"
+		gatewayEnvironment["HUB_OIDC_CLIENT_ID"] = "${HUB_OIDC_CLIENT_ID:-}"
+		if s.PassportIAM != nil {
+			issuer := iamEffectiveIssuer(s)
+			clientID := s.PassportIAM.ClientID
+			if clientID == "" {
+				issuer = ""
+			}
+			gatewayEnvironment["HUB_OIDC_ISSUER"] = issuer
+			gatewayEnvironment["HUB_OIDC_CLIENT_ID"] = clientID
+		}
 		communicationHostPort := 8081
 		if s.Has("slack_app") {
 			gatewayEnvironment["HUB_COMMUNICATION_LISTEN"] = "0.0.0.0:8081"
@@ -1034,6 +1238,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
+		}
+		// A derived dev issuer names idp.localhost — a network alias cannot
+		// carry it (Docker Desktop maps *.localhost to loopback inside
+		// containers), so the gateway resolves it to the host gateway and
+		// reaches the published port like the browser does.
+		if s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" && s.PassportIAM.Issuer == "" {
+			hosts := M{}
+			maps.Copy(hosts, gateway["extra_hosts"].(M))
+			hosts["idp.localhost"] = "host-gateway"
+			gateway["extra_hosts"] = hosts
 		}
 		gateway["restart"] = "unless-stopped"
 		services["communication-hub"] = gateway
@@ -1226,6 +1440,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
+		if s.PassportIAM != nil && s.PassportIAM.Mode == "bundled" {
+			// The one shared postgres — only the identity hub consumes it.
+			volumes["hub-postgres-data"] = M{}
+		}
 		if voiceServicesEnabled(s) {
 			volumes["hub-stt-data"] = M{}
 			volumes["hub-tts-data"] = M{}
@@ -1251,6 +1469,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
 		if s.Has("browser") || s.Has("meet") {
 			result["networks"].(M)["browser-publish"] = M{}
+		}
+		if s.Has("knowledge_ui") && s.UIPort > 0 {
+			result["networks"].(M)["knowledge-publish"] = M{}
 		}
 	}
 	return result

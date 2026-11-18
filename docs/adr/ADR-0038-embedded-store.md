@@ -4,9 +4,9 @@ last_verified: 2026-10-14
 ---
 # ADR-0038: Embedded single-writer store for spool and supervisor state (D12b)
 
-Status: proposed, 2026-10-14. Decision gate is measured evidence, not novelty.
-No implementation before owner acceptance; adding a dependency requires
-`just security` and its own review.
+Status: answered, verified 2026-11-15. Measured evidence chose option A
+(keep files) for supervisor/spool; the embedded-store direction was adopted
+separately for ToolHub/Communication via ADR-0091 root-services SQLite.
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md) R4.
 Origin: [ADR-0036](ADR-0036-execution-chain-reliability.md) D12b,

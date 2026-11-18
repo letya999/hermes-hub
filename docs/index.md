@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-09
+last_verified: 2026-11-17
 ---
 # Documentation
 
@@ -17,7 +17,9 @@ last_verified: 2026-11-09
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |
+| [ci-mirror.md](ci-mirror.md) | One-way repository mirror, registry-agnostic GitLab gates/publication and optional Helm deploy |
 | [runtime-operations.md](runtime-operations.md) | Runtime images, supervisor lifecycle, rollout and preparation |
+| [runtime-sandbox.md](runtime-sandbox.md) | Optional runc/runsc/Kata selection, node prerequisites, fail-closed rollout and qualification |
 | [glossary.md](glossary.md) | Canonical terms — feature, tool, toolset, capability, connector, backend/`via` |
 
 ## Access and surface
@@ -40,7 +42,7 @@ last_verified: 2026-11-09
 | [prepared-connectors.md](prepared-connectors.md) | Connector pipeline, recipe ledger, tiers, per-connector runbooks |
 | [channels.md](channels.md) | Channel adapter contract, conformance, how to add one |
 | [channels/telegram.md](channels/telegram.md) | Telegram bot channel — files, commands, QR page |
-| [channels/slack.md](channels/slack.md) | Slack App channel — Events API, HMAC, limits |
+| [channels/slack.md](channels/slack.md) | Slack App channel — Events API + Socket Mode, egress, limits |
 | [routines.md](routines.md) | Routine business tools, schedules, probes, delivery |
 | [cli-policy.md](cli-policy.md) | Isolated terminal, private installs, operator catalog |
 | [local-accounts-manager.md](local-accounts-manager.md) | Manager-friendly local Telegram/Google account setup |
@@ -65,7 +67,7 @@ last_verified: 2026-11-09
 | Document | Purpose |
 |---|---|
 | [adr/index.md](adr/index.md) | Append-only decisions and explicitly marked proposals |
-| [M32 execution](../.work/in-progress/CHG-0281-m32-per-space-memory-plane/parallel-work.md) | Small foundation and issue-sized current read sets; planned work, not completed system behavior |
+| [M32 execution archive](../.work/done/CHG-0281-m32-per-space-memory-plane/parallel-work.md) | Historical delivery slices and issue-sized read sets; current behavior lives in docs/ |
 
 Evidence and dated acceptance results live with their change records under
 `.work/done/CHG-*/` — docs/ describes the current system, not its history.

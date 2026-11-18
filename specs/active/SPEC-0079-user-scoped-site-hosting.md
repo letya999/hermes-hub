@@ -1,6 +1,6 @@
 ---
 description: Frozen acceptance contract for user-scoped static and dynamic sites, isolated workloads, bounded storage, lifecycle and artifact share links.
-last_verified: 2026-10-26
+last_verified: "2026-11-15"
 ---
 # SPEC-0079: User-scoped site hosting
 

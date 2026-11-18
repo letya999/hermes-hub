@@ -793,6 +793,17 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 	}
 	toolStore, auth, binding := seededStore(t)
 	root := t.TempDir()
+	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/jobs/job-alice" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(privateRunRecord(auth, "job-alice", "run-alice")); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer supervisor.Close()
 	var capturedBody []byte
 	var envFile string
 	backendServer := mcp.NewServer(&mcp.Implementation{Name: "inject-fixture", Version: "1"}, nil)
@@ -832,6 +843,8 @@ func TestEndpointHandlerInjectsFromCredstore(t *testing.T) {
 	t.Setenv("HUB_CREDENTIAL_KEY", "")
 	t.Setenv("HUB_AUDIT_LEDGER", ledger)
 	t.Setenv("HUB_STATE", root)
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "supervisor-control-token")
 	token := strings.Repeat("t", 32)
 	config := EndpointConfig{
 		Token: token,

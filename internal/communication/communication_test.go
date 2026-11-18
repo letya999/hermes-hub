@@ -1781,10 +1781,10 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := g.queueDelivery(context.Background(), "telegram-5-secret", 11, 0, "private-form-link"); err != nil {
+	if err := g.queueDelivery(context.Background(), "", "", "telegram-5-secret", 11, 0, "private-form-link"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.queueDelivery(context.Background(), "telegram-6-reply", 11, 0, "normal answer"); err != nil {
+	if err := g.queueDelivery(context.Background(), "", "", "telegram-6-reply", 11, 0, "normal answer"); err != nil {
 		t.Fatal(err)
 	}
 	for range 8 {

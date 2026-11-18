@@ -211,6 +211,44 @@ func (l *Ledger) completionReserve(stats ledgerStats, bodyBytes int64, segment i
 	return nil
 }
 
+// Resolve settles an unsettled operation on operator evidence. The outcome is
+// declared explicitly — not_started, succeeded or failed — with a bounded
+// receipt reference the operator actually verified. Without evidence the
+// record stays unsettled: no TTL and no inferred outcome.
+func (l *Ledger) Resolve(scope Scope, operationID, execution, evidence string) error {
+	if l == nil || !operationCode(operationID) || scope.PrincipalID == "" {
+		return fmt.Errorf("%w: resolution scope", ErrInvalid)
+	}
+	switch execution {
+	case "not_started", "succeeded", "failed":
+	default:
+		return fmt.Errorf("%w: resolution outcome", ErrInvalid)
+	}
+	if evidence == "" || !ValidReceipt(evidence) {
+		return fmt.Errorf("%w: resolution evidence", ErrInvalid)
+	}
+	var admitted Event
+	err := l.locked(func(root *os.Root) error {
+		stats, err := l.scan(root, nil)
+		if err != nil {
+			return err
+		}
+		pending, ok := stats.operations[operationID]
+		if !ok || !unsettled(pending) || pending.PrincipalID != scope.PrincipalID ||
+			(scope.ContextID != "" && pending.ContextID != scope.ContextID) ||
+			(scope.Environment != "" && pending.Environment != scope.Environment) {
+			return fmt.Errorf("%w: operation not unsettled", ErrUncertain)
+		}
+		admitted = pending
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	op := &Operation{ledger: l, event: admitted}
+	return op.Complete(execution, "not_applicable", "operator_resolved", evidence)
+}
+
 // Pending reports unresolved durable intents without guessing whether a live
 // process is still executing them. Retention never removes their evidence.
 func (l *Ledger) Pending(scope Scope, limit int) ([]Event, error) {

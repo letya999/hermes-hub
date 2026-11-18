@@ -4,6 +4,8 @@ last_verified: 2026-09-11
 ---
 # ADR-0013: Keep ToolHub authorization in Go
 
+Status: accepted.
+
 Accepted 2026-09-11.
 
 ## Decision

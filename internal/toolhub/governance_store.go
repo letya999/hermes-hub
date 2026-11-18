@@ -6,6 +6,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -15,9 +16,16 @@ import (
 // GovernanceStore is the control-plane's path-bound accessor for the
 // governance document. Reads are lock-free because savegovernance writes
 // atomically; mutations take the flock so concurrent control ops and host
-// edits serialize.
+// edits serialize. Reads are cached on the file stamp: the PDP calls Load
+// for every rights decision, and re-reading+parsing the whole document per
+// decide turned rights evaluation into a disk-bound quadratic at scale.
 type GovernanceStore struct {
-	path string
+	path        string
+	mu          sync.Mutex
+	cached      *api.Governance
+	cachedStamp storeStamp
+	cachedStat  bool
+	cachedOk    bool
 }
 
 // NewGovernanceStore binds a path; empty disables governance (nil receiver
@@ -47,11 +55,21 @@ func (g *GovernanceStore) Load() (*api.Governance, error) {
 	if g == nil || g.path == "" {
 		return nil, fmt.Errorf("%w: governance store", api.ErrInvalid)
 	}
+	stamp, statOK := statStoreStamp(g.path)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cachedOk && g.cachedStat == statOK && (!statOK || stamp == g.cachedStamp) {
+		return g.cached, nil
+	}
 	doc, err := api.LoadGovernance(g.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return api.NewGovernance(), nil
+		doc, err = api.NewGovernance(), nil
 	}
-	return doc, err
+	if err != nil {
+		return nil, err
+	}
+	g.cached, g.cachedStamp, g.cachedStat, g.cachedOk = doc, stamp, statOK, true
+	return doc, nil
 }
 
 // Update serializes one mutation: load under flock (seeding on absence), run
@@ -77,7 +95,15 @@ func (g *GovernanceStore) Update(now time.Time, fn func(*api.Governance) error) 
 	if err := fn(doc); err != nil {
 		return err
 	}
-	return api.SaveGovernanceLocked(g.path, doc)
+	if err := api.SaveGovernanceLocked(g.path, doc); err != nil {
+		return err
+	}
+	// The mutation landed under the flock; drop the read cache so the next
+	// decide sees it even when the filesystem cannot distinguish the stamp.
+	g.mu.Lock()
+	g.cachedOk = false
+	g.mu.Unlock()
+	return nil
 }
 
 // projectedToolAttrs derives the deterministic axes a dynamic ToolHub

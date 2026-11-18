@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-12
+last_verified: 2026-11-18
 ---
 
 # communication-hub
@@ -44,14 +44,18 @@ everything entering or leaving the human conversation. Listens
 - **Automation delivery intake**: `POST /v1/automation/deliveries` and
   `GET /v1/automation/owner-home` accept the automation service bearer
   (`HUB_AUTOMATION_AUTH`, falling back to `HUB_COMMUNICATION_AUTH` only when
-  unset) plus `X-Hub-Principal`. Supervised stacks use the supervisor bearer;
+  unset) plus `X-Hub-Principal`; deliveries additionally require
+  `X-Hub-Context`. Supervised stacks use the supervisor bearer;
   owner and sibling runtime bearers cannot read arbitrary owner homes or
   submit service deliveries.
   The handler pins the owner to a current enabled user and verifies the
   Telegram/mock chat or Slack identity against the channel target,
-  then writes the stable delivery ID to the existing outbox. The send worker
-  rechecks owner and the live `channels.send` right. ToolHub owns the clock
-  and durable automation state; communication owns the channel handoff.
+  then writes the stable delivery ID to the existing outbox. The owner scope
+  is stamped server-side from the verified headers — the body can never
+  claim it — and `automation` marks the record so the send worker rechecks
+  owner, the live `channels.send` right and the service wiring before send.
+  ToolHub owns the clock and durable automation state; communication owns
+  the channel handoff.
 - **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
   boot and every second while a notice is pending; a clean hold set backs off
   to a ~10 s poll. A routable notice is durably enqueued (Telegram) then

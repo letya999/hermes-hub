@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0092
 title: Stop losses in the execution chain (M19 stage 0)
-status: verified-live
+status: done
 branch: feat/m19-execution-chain-reliability
 base: dev 3460cd8
 updated: 2026-10-14
