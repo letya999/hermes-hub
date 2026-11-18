@@ -1243,6 +1243,23 @@ exact HEAD tag and matching revision label, failing before retag on mismatch. Lo
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
 
+Base-image refresh policy: every external `FROM` in a runtime-facing stage is
+referenced by digest (`name:tag@sha256:`). Build-only toolchain stages
+(`go_build`, `broker_build`, `cliproxy_build`, `sqlite_build`, the media
+`go_build` stages) may stay tag-only — their output is re-verified by the
+build itself. ARG-supplied bases (`Dockerfile.dev-overlay` `BASE`, the broker
+deploy `GO_IMAGE`) follow the caller contract: production passes a
+digest-pinned ref; the tag defaults are dev conveniences. Cadence: Dependabot
+`docker` runs weekly over `/docker` and
+`/services/credential-broker/deploy` and owns routine bumps; fixes for
+publicly disclosed base-image vulnerabilities jump the queue out-of-band.
+Owner: the hub maintainer reviews and merges each batch — Dependabot only
+opens the PR. Verification: a bump merges only with green CI `image` and
+`containers` jobs, and is verified after merge by `just docker-check` against
+the exact published SHA (record SHA + run URL). Rejected alternative:
+in-layer `apt-get dist-upgrade` as a refresh mechanism — it mutates image
+contents without changing the reviewed digest and breaks reproducibility.
+
 ## Supervisor and scale-to-zero
 
 ADR-0014/SPEC-0012. The supervisor starts the selected context runtime per

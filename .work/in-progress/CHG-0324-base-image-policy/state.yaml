@@ -1,0 +1,4 @@
+key: CHG-0324-base-image-policy
+title: Base-image refresh policy
+status: in_progress
+branch: feat/m9-base-image-policy

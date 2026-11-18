@@ -80,7 +80,7 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # hub-core (SPEC-0082 D1): every non-agent daemon shares this lean base — the
 # static Go binaries plus TLS roots. No interpreters, browsers or uv: the
 # image-budget probe fails the image if any appear.
-FROM debian:13.6-slim AS core
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
 # ride https sources, and apt signature checks do not need TLS anyway. git is
 # the vault writer's commit backend (SPEC-0085 R1): the communication gateway
@@ -194,7 +194,7 @@ CMD ["ok", "start"]
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
-FROM debian:13.6-slim AS cli-tools
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cli-tools
 # libatomic1 lets mounted member images run their embedded node runtime
 # (eslint/tsc/prettier artifacts) inside a toolbox or tool-bearing shell cell.
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates libatomic1 && rm -rf /var/lib/apt/lists/*
@@ -210,7 +210,7 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Egress companion for cells that declare reviewed outbound hosts: a plain
 # Squid forward proxy the controller scopes to the cell's internal network.
-FROM debian:13.6-slim AS cell-proxy
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cell-proxy
 RUN apt-get update && apt-get install -y --no-install-recommends squid ca-certificates && rm -rf /var/lib/apt/lists/*
 EXPOSE 3128
 USER 10001:10001
@@ -237,7 +237,7 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Retain a shell for the chart's private Secret materializer; the broker binary
 # remains the same statically linked SQLCipher build used by core.
-FROM debian:13.6-slim AS credential-broker
+FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS credential-broker
 COPY --from=broker_build /credential-broker /usr/local/bin/credential-broker
 COPY --from=broker_build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +

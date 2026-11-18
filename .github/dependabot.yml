@@ -13,6 +13,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: docker
+    directory: /services/credential-broker/deploy
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
     directory: /docker
     schedule:
       interval: weekly
