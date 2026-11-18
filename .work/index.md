@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0327](in-progress/CHG-0327-coverage-floor-restore/plan.md) | restore 85% coverage gate (fell to 84.09% post CHG-0322/0323) via focused regression tests; local merged profile 85.19%, uno floor cleared |
 | [CHG-0323](in-progress/CHG-0323-security-operations/plan.md) | M9 security operations: introspection policy/audit, bounded SIEM export and audited principal-disable propagation; implementation green, final gates/live acceptance pending |
 | [CHG-0322](in-progress/CHG-0322-external-firecracker/plan.md) | external Firecracker microVM backend via Uno-style control plane; local mini-Uno live acceptance passed on WSL2 |
 | [CHG-0321](in-progress/CHG-0321-kata-pod-contract/plan.md) | #550 runtime Pod contract without subPath so identical spec runs under runc/runsc/Kata |
