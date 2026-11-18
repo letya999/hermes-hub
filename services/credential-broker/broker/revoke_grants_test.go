@@ -111,7 +111,7 @@ func TestRevokePrincipalGrantsIsScopedAndDropsLeases(t *testing.T) {
 	aliceCredential := f.enroll(alice, "pat", "alice-service")
 	bobCredential := f.enroll(bob, "pat", "bob-service")
 	aliceGrant, aliceActor := f.grant(alice, aliceCredential, "pat", "binding1", "workload1")
-	bobGrant, _ := f.grant(bob, bobCredential, "pat", "binding1", "workload1")
+	bobGrant, _ := f.grant(bob, bobCredential, "pat", "binding1", "workload2")
 	f.lease(aliceActor, aliceGrant)
 	manager := identity.Actor{PrincipalID: "toolhub", ContextID: alice.ContextID, RuntimeID: "toolhub", PolicyVersion: "policy_v1", ContextManager: true}
 	if _, err := f.b.RevokePrincipalGrants(bob, v1.PrincipalRevocationRequest{PrincipalID: alice.PrincipalID, ContextID: alice.ContextID}); !errors.Is(err, ErrDenied) {
