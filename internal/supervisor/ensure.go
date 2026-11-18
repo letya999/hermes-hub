@@ -841,7 +841,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 }
 
 func fileExists(path string) bool {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- callers pass paths under the validated binding context root
 	return err == nil && info.Mode().IsRegular()
 }
 
