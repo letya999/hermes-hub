@@ -96,6 +96,41 @@ registry, config block or runtime flag.
   on refresh and fail `tools/call` even for a stale projected name — the same
   mid-session cut every binding already gets.
 
+## Operator-pinned private endpoints
+
+`hubctl connector remote <name> --endpoint <url>` is the private twin of the
+owner-scoped path above, for backends that live inside the operator's own
+network boundary (loopback, RFC-1918/ULA, Compose service names) and therefore
+can never pass the public-endpoint admission rules.
+
+- The definition records `transport: remote-mcp` with
+  `source.tls_mode: operator-pinned` — the only mode that accepts `http`.
+  The URL stays clean: no userinfo, query or fragment. Every other transport
+  keeps requiring `required` TLS, and public endpoints keep registering only
+  through `prepare_source remote_url`.
+- The endpoint is private-proofed three times: at registration
+  (`ValidateBackendEndpoint` syntax plus address-class rules), at every call,
+  and inside the dialer at connect time — resolved addresses are filtered to
+  loopback/private only, ambient proxying is disabled and redirects are never
+  followed, so a rebound name cannot steer a credential-bearing call.
+- The connection carries `mcp_endpoint` equal to the definition's canonical
+  source URL (scheme and host case-folded); a connection pinned anywhere else
+  is refused at write and at snapshot load. A credential-less operator-pinned
+  definition still needs its connection to bind — the connection is what
+  carries the endpoint.
+- Registration probes initialize plus `tools/list` over the same transport
+  the call path uses and freezes the advertised set (≤256 tools); `--tools`
+  may only narrow it. Re-running the identical registration is a no-op;
+  changing endpoint, tool set or credential shape requires a new name.
+- `--bearer` reads a token only from `--from-file` or stdin — never argv —
+  and stores it in the credential backend under a per-connection
+  `CredentialReference`. At call time declared `http_header` credentials are
+  pinned to the endpoint origin; the shared `TOOLHIVE_VMCP_TOKEN` applies
+  only when the connection declares no `Authorization` credential, so one
+  connection's token can never impersonate another's.
+- The definition publishes `PublicationUser` scoped to the registering
+  principal: invisible to every other principal at enable and resolve.
+
 ## Provider trust
 
 - Remote integrations are opt-in and owner-scoped (`PublicationUser`) unless an

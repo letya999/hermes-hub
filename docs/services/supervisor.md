@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-13
+last_verified: 2026-11-18
 ---
 
 # supervisor
@@ -129,7 +129,13 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   deployment defaults — no respawn is needed for a policy change to apply.
 - One bounded `docker stats --no-stream` call per watchdog sweep samples
   owned containers' CPU/memory; sweep cost is reported through
-  `WatchdogMetrics` (in-memory counters).
+  `WatchdogMetrics` (in-memory counters). The opt-in `watchers.metrics`
+  scrapes each runtime's `GET /v1/status` on its `every` cadence and opens
+  an incident class (`cpu_sustained`, `memory_sustained`,
+  `latency_sustained`, `http_5xx_sustained`, `session_saturated`,
+  `mcp_saturated`) only after three consecutive breaches with hysteresis —
+  `protected` keeps it observing without waking the personal supervisor,
+  and a scrape failure is a skipped observation, never an incident.
 - The watchdog runs two loops on the same tick interval: a detection sweep
   (orphans, health probes, lease/uncertain expiry, compaction, reap) and a
   reconcile loop (spawn/recovery Ensure). A slow Ensure can never delay

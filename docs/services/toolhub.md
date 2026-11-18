@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: "2026-11-15"
+last_verified: "2026-11-18"
 ---
 
 # toolhub
@@ -484,6 +484,10 @@ environment.
 `/v1/jobs`, and flushes pending deliveries through communication's service-only
 `/v1/automation/deliveries`. A lost response reuses the job identity; an outage
 leaves delivery pending. Only `HUB_AUTOMATION_AUTH` can post that delivery.
+The durable outbox record binds the exact `(principal, context)` owner scope —
+a delivery whose producer cannot name it fails closed — and the handoff carries
+it on `X-Hub-Principal`/`X-Hub-Context` so communication can re-stamp it
+server-side for revocation matching.
 Per-principal workers keep other owners moving during a slow run or probe.
 
 The event port saves each source batch before sink handoff, filters events in

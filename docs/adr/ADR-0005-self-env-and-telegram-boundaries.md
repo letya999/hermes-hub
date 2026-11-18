@@ -1,8 +1,12 @@
 ---
 description: Separate Telegram transports and persist constrained user self-env updates.
-last_verified: 2026-09-10
+last_verified: "2026-11-15"
 ---
 # ADR-0005: Separate Telegram paths and user self-env
+
+Status: accepted.
+
+**Scope note (2026-11-15 audit):** `env_update` still exists but secret intake is fenced — credentials go only through the Broker/loopback form per [ADR-0021](ADR-0021-toolhub-control-plane.md) and [ADR-0049](ADR-0049-broker-only-credential-intake.md).
 
 Accepted 2026-09-10.
 

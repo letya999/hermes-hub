@@ -1,13 +1,13 @@
 ---
 description: "Замороженные требования к курсорам, receipts, аудиту, диагностике и бюджетам существующего control plane."
-last_verified: "2026-10-28"
+last_verified: "2026-11-15"
 ---
 
 # SPEC-0088: Bounded control journals MVP
 
 Frozen: 2026-10-28. Design accepted; implementation not started.
 Решение: [ADR-0088](../../docs/adr/ADR-0088-bounded-control-journals.md).
-План: [CHG-0215..0202](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md).
+План: [CHG-0215..0202](../../.work/done/CHG-0215-broker-recovery-head/README.md).
 Дополняет SPEC-0030/0034/0053/0055/0076/0081/0083.
 Никакого перехода ToolHub/Communication/Hermes на новую БД.
 

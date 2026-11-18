@@ -1,0 +1,10 @@
+read_only:
+    - /config
+    - /skills
+    - /vault/memory
+    - /workspace/artifacts/services
+    - /workspace/inbox
+writable:
+    - /workspace
+    - /vault/library
+    - /vault/attachments

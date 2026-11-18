@@ -1,11 +1,13 @@
 ---
 description: "consumer_id разделяет несколько кредов на одном connection по потребителю."
-last_verified: "2026-09-28"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0066 (imported from services/credential-broker ADR-0007): consumer_id — дискриминатор нескольких кредов на connection
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0066](../../specs/active/SPEC-0066-credential-broker-effective-contract.md), broker module `services/credential-broker`.
 
 ## Контекст
 

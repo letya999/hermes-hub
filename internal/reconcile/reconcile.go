@@ -89,6 +89,10 @@ func Plan(changes []passport.Change, services map[string]passportview.ServiceSpe
 			// The typed hosting leaves below own all deployment effects.
 			continue
 		}
+		if c.Path == "config.iam" {
+			// The typed iam leaves below own all deployment effects.
+			continue
+		}
 		if strings.HasPrefix(c.Path, "config.hosting.") {
 			if c.Before == c.After {
 				continue
@@ -214,7 +218,7 @@ func runtimeTarget(path string) string {
 		}
 		return "hermes-runtime"
 	}
-	if strings.HasPrefix(path, "config.channels") {
+	if strings.HasPrefix(path, "config.channels") || strings.HasPrefix(path, "config.iam.") {
 		return "communication-hub"
 	}
 	return "hermes-runtime"

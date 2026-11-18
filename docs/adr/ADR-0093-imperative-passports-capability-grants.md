@@ -5,7 +5,9 @@ last_verified: "2026-11-02"
 
 # ADR-0093: Императивные паспорта и capability-гранты агента
 
-Status: accepted direction; implementation not started. Дата решения: 2026-11-02.
+Status: accepted — delivered M30, verified 2026-11-15.
+
+Amended by [ADR-0096](ADR-0096-authored-passport-authority.md) (six authored passports, independent grants).
 Уточняет и частично замещает [ADR-0092](ADR-0092-six-passport-space-contract.md)
 (D1 «read-only материализация», D2 формы тел, D3 словарь грантов, D6 язык тулсетов).
 Требования: [SPEC-0092](../../specs/active/SPEC-0092-imperative-passports-capability-grants.md).

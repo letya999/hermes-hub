@@ -1,6 +1,6 @@
 ---
 description: Channel adapter contract, capability flags, registration and conformance — how the communication plane stays provider-agnostic.
-last_verified: 2026-10-18
+last_verified: 2026-11-16
 ---
 # Channels
 
@@ -43,7 +43,8 @@ Adapters never import `internal/communication`. Each gets an injected
 
 - `channel.NewTelegram(TelegramDeps)` — sender API, edit/retry/update spool
   callbacks, approval tracking, blob reads, voice planning and voice send.
-- `channel.NewSlack(SlackDeps)` — events API auth and delivery.
+- `channel.NewSlack(SlackDeps)` — Events API or Socket Mode auth and
+  delivery (`SLACK_TRANSPORT`, docs/channels/slack.md).
 - `channel.NewMock(MockDeps)` — file-backed stand for tests, e2e and canary.
 
 The registry lives in `internal/communication/channel.go` as

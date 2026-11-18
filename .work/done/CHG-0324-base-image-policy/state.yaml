@@ -1,0 +1,30 @@
+schema: 1
+change: CHG-0324
+title: Base-image refresh policy
+status: done
+branch: feat/m9-base-image-policy
+updated: 2026-11-18
+phase: done
+github_milestone: M9 — Enterprise Readiness
+github_issue: "393"
+design_status: accepted
+implementation_status: complete
+slices:
+  policy-documented: done
+  runtime-stage-digest-pins: done
+  dependabot-broker-deploy: done
+validation:
+  documents: done
+  just_check: passed
+  docker_check: live_pinned_pull_verified
+  red_team: not_applicable_docs
+  live_acceptance: done
+commits:
+  - d7827b3d docs(ops): base-image refresh policy (#393)
+evidence:
+  - "digest-pinned runtime stages in docker/Dockerfile: debian:13.6-slim@sha256:d7e12182..., python:3.13-slim-trixie@sha256:8d9d0b..., node/docker-cli/toolhive/uv already pinned"
+  - "weekly dependabot entry added for services/credential-broker/deploy (previously untracked)"
+  - "docs/operations.md policy section: weekly cadence, maintainer owner, CI images/containers + just docker-check verification, apt-get dist-upgrade rejected"
+  - "LIVE: acc-mcp-fixture container ran on debian:13.6-slim@sha256:d7e12182 (pinned digest pulled and executed — the pinned reference resolves to a real image)"
+  - "build-only golang/sqlite stages remain tag-based per documented policy"
+  - "just check green: format, docs, vet"

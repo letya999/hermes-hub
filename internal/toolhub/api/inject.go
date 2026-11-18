@@ -18,6 +18,11 @@ import (
 const (
 	HeaderJobID = "X-Hub-Job-ID"
 	HeaderRunID = "X-Hub-Run-ID"
+	// HeaderRunEndpoint is an internal marker the gateway stamps itself on the
+	// run-scoped endpoint (/mcp-run) and strips on every other surface: the
+	// detached MCP tool context reads it through RequestExtra.Header, so a
+	// client can never assert run scope — only the endpoint can.
+	HeaderRunEndpoint = "X-Hub-Run-Endpoint"
 )
 
 type correlationKey struct{}
@@ -26,6 +31,9 @@ type CallCorrelation struct {
 	JobID       string
 	HermesRunID string
 	ToolCallID  string
+	// Scoped marks a call that arrived on the run-scoped endpoint: it must
+	// carry verifiable job/run correlation, and an empty claim denies.
+	Scoped bool
 }
 
 func WithCallCorrelation(ctx context.Context, corr CallCorrelation) context.Context {

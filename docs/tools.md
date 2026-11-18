@@ -302,20 +302,19 @@ housekeeping is never silent. `hubctl memory prune` dry-runs the same
 report; `--apply` executes. Expired bytes remain in vault git history;
 true erasure is a separate history-rewrite decision.
 
-With `knowledge_ui` on, no `open-knowledge` container or
-`mcp__open_knowledge__*` surface renders (M32/#520): ToolHub owns the
-vault, so no service may mount it and upstream OpenKnowledge cannot act as
-a governed-API client — the flag stays valid but does not launch the
-upstream editor, and `hubctl doctor` reports that limitation. The agent can
-call `memory_open` in a private run to return a one-hour ToolHub link for
-search/read. The link is a bearer capability: anyone holding it can view that
-owner's private memory until expiry or revocation, so send it only in the
-owner's private channel. Knowledge reads and edits otherwise go
-through the governed ToolHub tools instead: `memory_search`/`memory_read` for memory
-content and `memory_card op=propose` plus owner confirmation for edits.
-`knowledge_ui_write` stays deferred and refused at validation until a
-governed knowledge surface exists — `memory_card` remains the only agent
-write path.
+With `knowledge_ui` on, one `open-knowledge` container serves the upstream
+OpenKnowledge editor over the space vault — a human surface reached through
+the `ui_port` loopback publish, never by the agent: no
+`mcp__open_knowledge__*` surface renders (M32/#520 route stays retired).
+Owner edits land as working-tree changes the `vault.CommitExternalEdits`
+sweep commits as `hermes-owner`; agent reads and edits still go through
+`memory_search`/`memory_read` and `memory_card op=propose` plus owner
+confirmation. The agent can also call `memory_open` in a private run to
+return a one-hour ToolHub link for search/read. The link is a bearer
+capability: anyone holding it can view that owner's private memory until
+expiry or revocation, so send it only in the owner's private channel.
+`knowledge_ui_write` stays deferred and refused at validation —
+`memory_card` remains the only agent write path.
 
 ## connectors — the control surface
 

@@ -131,6 +131,9 @@ type Settings struct {
 	OrganizationRole      string   `yaml:"-"`
 	OrganizationProfile   string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
+	// OrgRuntimeIntrospection is the organization ceiling for operator
+	// introspection: absent or false narrows the scope flag to deny.
+	OrgRuntimeIntrospection *bool `yaml:"-"`
 	// gov is the per-load tool-governance view (issue 139): the evaluated
 	// decisions and cap:read overrides the render consumers enforce. Nil when
 	// the Settings were built without Read — the load path is the boundary.
@@ -172,6 +175,19 @@ type Settings struct {
 	// applies only to legacy-file sources, not the governed authored
 	// declaration. Render state only.
 	PassportConnectors bool `yaml:"-"`
+	// PassportIAM carries the validated iam: block — mode and the resolved
+	// issuer/client pair the shared gateway renders as HUB_OIDC_*. Render
+	// state only, never serialized.
+	PassportIAM *IAMSettings `yaml:"-"`
+}
+
+// IAMSettings is the runtime projection of the passport iam: block.
+// Issuer stays empty when a bundled deployment derives the dev issuer
+// (http://idp.localhost:<port>) at render time.
+type IAMSettings struct {
+	Mode     string // "external" | "bundled"
+	Issuer   string
+	ClientID string
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
@@ -215,7 +231,7 @@ var Features = []Feature{
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
-	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault — suspended under ToolHub vault ownership (M32/#520); ToolHub's read-only memory_open view is separate and requires current memory rights; requires memory_vault"},
+	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault — one pinned replica on the space-private net, loopback ui_port edge; requires memory_vault"},
 	{"memory_provider", nil, "External memory backend behind the hub-owned provider seam (first adapter: Hindsight); requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)

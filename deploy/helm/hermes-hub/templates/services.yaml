@@ -1,0 +1,18 @@
+{{- range $name, $service := .Values.services }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hub.name" $ }}-{{ $name }}
+  labels:
+    {{- include "hub.selector" (dict "root" $ "name" $name) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "hub.selector" (dict "root" $ "name" $name) | nindent 4 }}
+  ports:
+    - {name: http, port: {{ $service.port }}, targetPort: http}
+    {{- if eq $name "toolhub" }}
+    - {name: public, port: 8091, targetPort: public}
+    {{- end }}
+{{- end }}

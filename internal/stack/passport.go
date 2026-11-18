@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/iam"
 	"github.com/letya999/hermes-hub/internal/media"
 	passportview "github.com/letya999/hermes-hub/internal/passportview"
 )
@@ -101,6 +103,11 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if g := eff.Config.ImageGen; g != (media.ImageGen{}) {
 		s.ImageGen = g
 	}
+	if i := eff.Config.IAM; i != nil {
+		if err := s.applyIAM(i, eff); err != nil {
+			return err
+		}
+	}
 	w := eff.Config.Web
 	s.Web = WebSettings{
 		Backend: w.Backend, SearchBackend: w.SearchBackend, ExtractBackend: w.ExtractBackend,
@@ -177,6 +184,51 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 		s.CapabilityProfileID = eff.Tools.Binding.ProfileID
 		s.CapabilityGeneration = eff.Tools.Binding.Generation
 	}
+	return nil
+}
+
+// applyIAM validates the passport iam: block against its declared topology
+// and carries the resolved pair. external needs a reachable issuer+client
+// up front; bundled renders the identity-hub sidecars and tolerates an
+// empty client_id until the operator finishes bootstrap — the gateway env
+// stays empty (SSO off) rather than starting half-configured.
+func (s *Settings) applyIAM(i *passportview.IAM, eff passportview.Effective) error {
+	if !s.RendersInfra() {
+		return fmt.Errorf("iam: the shared gateway lives on the infra-owning space; a sibling space's iam block would never render")
+	}
+	mode := strings.TrimSpace(i.Mode)
+	issuer := strings.TrimSpace(i.Issuer)
+	idh, hasIDH := eff.Stack.Services["identity-hub"]
+	pg, hasPG := eff.Stack.Services["hub-postgres"]
+	switch mode {
+	case "external":
+		if hasIDH || hasPG {
+			return fmt.Errorf("iam.mode: external cannot run the bundled identity-hub/hub-postgres services")
+		}
+		if _, err := iam.ValidateIssuer(issuer); err != nil {
+			return fmt.Errorf("iam.issuer: %w", err)
+		}
+		if strings.TrimSpace(i.ClientID) == "" {
+			return fmt.Errorf("iam.client_id is required with iam.mode external")
+		}
+	case "bundled":
+		if !hasIDH || idh.Mode != "shared" || !hasPG || pg.Mode != "shared" {
+			return fmt.Errorf("iam.mode: bundled requires services identity-hub and hub-postgres with mode: shared")
+		}
+		if issuer != "" {
+			if _, err := iam.ValidateIssuer(issuer); err != nil {
+				return fmt.Errorf("iam.issuer: %w", err)
+			}
+			// ZITADEL serves a host-level issuer; a path issuer belongs
+			// to an external provider (Authentik/Keycloak), not bundled.
+			if u, err := url.Parse(issuer); err != nil || u.Path != "" {
+				return fmt.Errorf("iam.issuer: bundled identity hub serves a host-level issuer, no path")
+			}
+		}
+	default:
+		return fmt.Errorf("iam.mode must be external or bundled")
+	}
+	s.PassportIAM = &IAMSettings{Mode: mode, Issuer: issuer, ClientID: strings.TrimSpace(i.ClientID)}
 	return nil
 }
 

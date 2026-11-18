@@ -1,0 +1,17 @@
+identity:
+    user: __USER__
+    infra: false
+services:
+    hermes-runtime: {mode: supervised}
+    hub-media: {mode: shared}
+    hub-stt: {mode: shared}
+    hub-tts: {mode: shared}
+    browser: {mode: per-space}
+    cliproxy: {mode: shared}
+    communication-hub: {mode: shared}
+    credential-broker: {mode: shared}
+    egress-relay: {mode: per-space}
+    model-relay: {mode: per-space}
+    supervisor: {mode: shared}
+    toolhub: {mode: shared}
+    toolhub-relay: {mode: per-space}

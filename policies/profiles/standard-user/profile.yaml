@@ -1,0 +1,6 @@
+version: 1
+description: >
+  Standard managed sibling space: shared infra services, per-space
+  browser/egress-relay/model-relay/toolhub-relay, supervised runtime and the
+  reviewed standard tool/right surface. `hubctl provision` consumes this
+  profile together with policy.yaml for the capability bundle.

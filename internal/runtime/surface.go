@@ -279,6 +279,10 @@ func spawnHubChild(name string, args []string) string {
 func probeConnectors(ctx context.Context, config surfaceConfig) ([]connectorView, error) {
 	server, configured := config.MCPServers["toolhub"]
 	endpoint := server.URL
+	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
+		// The loopback MCP proxy has no inventory route; use its reviewed relay upstream.
+		endpoint = toolHubEndpoint()
+	}
 	if endpoint == "" {
 		endpoint = toolHubEndpoint()
 	}

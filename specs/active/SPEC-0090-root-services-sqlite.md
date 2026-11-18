@@ -1,13 +1,13 @@
 ---
 description: "Замороженные требования к SQLite-хранению ToolHub и Communication: схемы, транзакции, лимиты, миграция и приёмка."
-last_verified: "2026-10-31"
+last_verified: "2026-11-15"
 ---
 
 # SPEC-0090: Root services SQLite storage MVP
 
 Frozen: 2026-10-31. Design accepted; implementation not started.
 Решение: [ADR-0091](../../docs/adr/ADR-0091-root-services-sqlite-storage.md).
-План: [CHG-0215..0226](../../.work/in-progress/CHG-0215-broker-recovery-head/README.md).
+План: [CHG-0215..0226](../../.work/done/CHG-0215-broker-recovery-head/README.md).
 Дополняет SPEC-0087/0088: пункт «Никакого перехода ToolHub/Communication/
 Hermes на новую БД» в SPEC-0088 отменяется для ToolHub и Communication;
 Hermes memory/artifacts/usage сохраняют прежних владельцев.

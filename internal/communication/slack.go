@@ -18,7 +18,9 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
@@ -47,7 +49,7 @@ type slackAPI struct {
 }
 
 func newSlackAPI(token string) SlackAPI {
-	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second}, baseURL: "https://slack.com/api"}
+	return &slackAPI{token: token, client: &http.Client{Timeout: 15 * time.Second, Transport: netguard.EgressTransport()}, baseURL: "https://slack.com/api"}
 }
 
 func (s *slackAPI) PostMessage(ctx context.Context, channel, thread, text string) error {
@@ -128,27 +130,7 @@ func (g *Gateway) HandleSlackEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	var envelope struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-		TeamID    string `json:"team_id"`
-		EventID   string `json:"event_id"`
-		Event     struct {
-			Type        string `json:"type"`
-			Subtype     string `json:"subtype"`
-			User        string `json:"user"`
-			Text        string `json:"text"`
-			Channel     string `json:"channel"`
-			ChannelType string `json:"channel_type"`
-			TS          string `json:"ts"`
-			ThreadTS    string `json:"thread_ts"`
-			BotID       string `json:"bot_id"`
-			UserProfile struct {
-				Email       string `json:"email"`
-				DisplayName string `json:"display_name"`
-			} `json:"user_profile"`
-		} `json:"event"`
-	}
+	var envelope slackEventEnvelope
 	if json.Unmarshal(body, &envelope) != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -195,9 +177,13 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	}
 	user, ok := g.slackUsers[strings.ToLower(teamID)+"/"+strings.ToLower(slackUser)]
 	if !ok {
-		return errors.New("unmapped slack sender")
+		user, ok = g.iamResolveTransport(identity.SlackIdentity(teamID, slackUser))
+		if !ok {
+			return errors.New("unmapped slack sender")
+		}
+	} else {
+		user = g.user(user.ID)
 	}
-	user = g.user(user.ID)
 	if !user.Enabled {
 		return errors.New("unavailable slack route")
 	}
@@ -207,7 +193,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	}
 	envelope := user.SlackEnvelope(teamID, slackUser)
 	if envstore.LooksLikeEnv(text) {
-		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
+		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", OwnerPrincipalID: envelope.PrincipalID, OwnerContextID: envelope.ContextID, Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
 	}
 	if strings.HasPrefix(text, "/") {
 		// Commands answer on the verified sender's thread: the Slack ids ride
@@ -216,7 +202,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 		if taskErr != nil {
 			return taskErr
 		}
-		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS}
+		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS, transportID: envelope.ExternalIdentityID, principal: user.ID, context: envelope.ContextID}
 		return g.dispatchChannelCommand(ctx, user, task, route, "slack-"+eventID, text)
 	}
 	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}

@@ -1,0 +1,67 @@
+change: CHG-0306-overload-admission
+title: Overload as explicit state — admission shed, adaptive throttle, tick deferral
+status: done
+updated: "2026-11-15"
+started: "2026-11-14"
+
+scope: |
+  Restart-induced memory-capture backlog starved /v1/rights/decide
+  (60-187s observed). Root cause per FSM audit: overload was never a
+  state — background carried full priority, server could not refuse
+  cheaply, producer could not slow itself.
+
+implemented:
+  - internal/toolhub/overload.go — loadGate: interactive in-flight +
+    EMA latency (alpha 1/8, threshold 40ms), background in-flight cap 4,
+    rising-edge shed log line; wrappers interactive()/background();
+    Gateway.Overloaded() for the in-process automation host.
+  - internal/toolhub/gateway.go — mux class wiring: MCP/run/tool-call/
+    memory-context/rights-decide = interactive; memory-capture and
+    admin/diagnose = background (429 + Retry-After before any work).
+  - internal/toolhub/memory_capture.go — dedup inside vault lock: kept
+    the enrollment re-read adjacent to the write (check-at-effect);
+    removed the redundant pre-Decide enrollment. Regression test
+    TestCaptureRechecksAuthorizationAtCommit proves the window stays closed.
+  - internal/communication/capture_outbox.go — SRE adaptive throttle:
+    decayed 2-min window, P=max(0,(r-2a)/(r+1)) capped 0.9, min-sample 8;
+    fail-stop after 3 consecutive refusals; backlog depth/age log line.
+  - internal/communication/gateway.go — captureThrottle window field
+    (owned by the single pump goroutine).
+  - internal/toolhub/automation/host.go + cmd/toolhub — Config.Overloaded;
+    Tick defers the whole pass while the gate is hot; catch-up windows
+    absorb the skip.
+
+tests:
+  - internal/toolhub/overload_test.go — shed-on-hot-EMA, in-flight cap,
+    EMA feed, in-flight accounting.
+  - internal/communication/capture_throttle_test.go — pump stops on 429
+    (1-3 posts, events survive), throttle closes under sustained refusal,
+    probe cap <1 keeps recovery observable, accepts reopen the window.
+
+audit_notes: |
+  Explicit-but-correct machines verified: capture outbox (durable intent
+  + ack-on-commit + sweep + idempotent EventID), uncertain-job recovery
+  (RequeueObservations + ApprovalDeadline + PrepareVersion fence),
+  routines outstanding-occurrence re-entry guard, automation host bounded
+  8-worker fan-out with per-stage error isolation, spool Compact
+  retention wired through storage_maintenance.
+  Skipped as YAGNI: scheduler lease (single toolhub process owns ticks;
+  open-duet advisory lock answers multi-replica, which does not exist
+  here), generic workqueue package (the durable spool already is one).
+
+  live_fix: |
+    First live run surfaced a head-of-line wedge I introduced: three stale
+    events (per-event refusals) at the front of the outbox stopped every
+    pass. Fixed: fail-stop now counts only systemic signals (transport
+    error or 429); per-event statuses retry next sweep as before, and
+    events older than captureMaxAge=24h settle as expired (ack record =
+    audit trail). Rebuilt communication-hub, verified quiet drain.
+
+gates:
+  vet: done (toolhub, communication, cmd/toolhub)
+  unit: done (overload, throttle, capture suite, automation)
+  full-packages: done (communication 167s, cmd/toolhub)
+  just-check: done (format/docs/vet)
+  dev-rebuild: done (shared toolhub + shared communication-hub healthy)
+  live: done — captures flowing 18-189ms, decide quiet, no shed/storm lines;
+    stale-event wedge found and fixed live (see live_fix).

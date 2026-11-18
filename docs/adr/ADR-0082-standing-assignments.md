@@ -5,6 +5,8 @@ last_verified: 2026-10-27
 # ADR-0082: Standing assignments — intent record, reconcile-to-routines, shared acquisition, filtered wakes
 
 Status: Accepted 2026-10-27. Implements GitHub milestone 23 issues #324 and
+
+Amended by [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md): assignment/automation ownership moved to ToolHub.
 #332 (#333–#336 were closed as consolidation-only; their scope lives here).
 Specs: [SPEC-0080](../../specs/active/SPEC-0080-standing-assignments.md),
 [SPEC-0081](../../specs/active/SPEC-0081-shared-acquisition.md).

@@ -5,7 +5,9 @@ last_verified: "2026-11-01"
 
 # ADR-0092: Шесть паспортов пользовательского space
 
-Status: accepted direction; implementation not started. Дата решения: 2026-11-01.
+Status: accepted — delivered M29/M30, verified 2026-11-15.
+
+Amended by [ADR-0093](ADR-0093-imperative-passports-capability-grants.md) D1–D3/D6, [ADR-0094](ADR-0094-consolidated-model-tool-surface.md) D6 and [ADR-0096](ADR-0096-authored-passport-authority.md) (authored passports sole authority).
 
 Связи: [SPEC-0091](../../specs/active/SPEC-0091-six-passport-space-contract.md),
 [spaces](../spaces.md), [RBAC](../rbac.md), [model relay](../services/model-relay.md),

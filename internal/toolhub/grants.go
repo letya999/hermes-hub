@@ -28,6 +28,15 @@ func cloneOnboarding(o api.Onboarding) api.Onboarding {
 }
 
 func (s *Store) PutGrant(grant api.Grant) error {
+	if s.resyncForeignCommit() {
+		return api.ErrConflict
+	}
+	return s.putGrantRecord(grant)
+}
+
+// putGrantRecord is the replay-safe admission path: the snapshot loader and
+// the resynced public entry share it.
+func (s *Store) putGrantRecord(grant api.Grant) error {
 	if err := grant.Validate(); err != nil {
 		return err
 	}

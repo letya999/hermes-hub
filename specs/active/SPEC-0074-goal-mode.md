@@ -1,6 +1,6 @@
 ---
 description: M17 persistent /goal mode — dual engine behind grants, judge modes, spool-driven continuation.
-last_verified: 2026-10-24
+last_verified: "2026-11-15"
 ---
 # SPEC-0074: Persistent goal mode
 

@@ -135,23 +135,23 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	lang := locale.LangOf(user.WorkspaceDir)
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.voice-rejected"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.voice-rejected"))
 	}
 	if g.transcriber == nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-missing"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-missing"))
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {
 		defer g.spool.removeOwned(path)
 	}
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.download-failed"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.download-failed"))
 	}
 	envelope.TempPath = path
 	transcript, sttErr := g.transcribe(ctx, path, envelope.MIME)
 	if sttErr != nil || strings.TrimSpace(transcript) == "" {
 		envelope.TranscriptStatus = "error"
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-failed"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-failed"))
 	}
 	envelope.TranscriptStatus = "ok"
 	text := voiceInputText(transcript, message.Caption, envelope.MIME, envelope.Duration)
@@ -173,7 +173,7 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	saveErr := locale.T(lang, "media.save-failed")
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if envelope.Size > mediaSizeLimit {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), locale.T(lang, "media.file-too-big"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), locale.T(lang, "media.file-too-big"))
 	}
 	name := media.FileName
 	if name == "" {
@@ -189,7 +189,7 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 		inbox = staged
 	}
 	if inbox == "" {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
 	}
 	text := strings.TrimSpace(message.Caption)
 	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10)
@@ -220,7 +220,7 @@ func (g *Gateway) stageTelegramFile(ctx context.Context, update Update, message 
 		n, readErr := staged.Read(header[:])
 		_, seekErr := staged.Seek(0, io.SeekStart)
 		if readErr != nil && readErr != io.EOF || seekErr != nil {
-			return "", true, g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
+			return "", true, g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
 		}
 		switch http.DetectContentType(header[:n]) {
 		case "image/jpeg":
@@ -244,7 +244,7 @@ func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User,
 	topic := messageTopicID(message)
 	task, err := g.spool.ResolveTask(user, message.Chat.ID, topic, true)
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "media.task-failed"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "media.task-failed"))
 	}
 	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID, message.ForwardOrigin != nil)
 }

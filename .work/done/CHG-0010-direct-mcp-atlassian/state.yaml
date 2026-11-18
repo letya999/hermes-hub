@@ -1,5 +1,5 @@
 change: CHG-0010
-status: complete
+status: done
 completed:
   - upstream server and credential names verified
   - Docker installation and local stdio configuration implemented

@@ -57,6 +57,19 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.pinHTTP(w, r)
 	case "/v1/runtimes":
 		m.list(w, r)
+	case "/v1/status":
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, m.StatusView())
+	case "/v1/metrics":
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		m.StatusView().Metrics(w)
 	case "/v1/leases":
 		m.lease(w, r)
 	case "/v1/wake":
@@ -221,6 +234,9 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	}
 	if busy {
 		return false, nil
+	}
+	if m.usingKubernetes() {
+		return m.restartKubernetesLocked(ctx, runtime)
 	}
 	container, err := m.ownedContainerID(ctx, runtime)
 	if err != nil {

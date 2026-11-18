@@ -261,7 +261,7 @@ func Project(root string) error {
 		"done/CHG-0149-space-manifest":                 true,
 		"done/CHG-0150-job-watch":                      true,
 		"done/CHG-0150-m15-completion":                 true,
-		"in-progress/CHG-0151-archive-bounds":          true,
+		"done/CHG-0151-archive-bounds":                 true,
 		"done/CHG-0151-image-rollout":                  true,
 		"done/CHG-0152-admin-diagnostics":              true,
 		"done/CHG-0152-todo-contract":                  true,
@@ -360,6 +360,51 @@ func Project(root string) error {
 		}
 		return nil
 	})
+	// Traceability: ADR/SPEC references in CHG state.yaml fields and index
+	// supersession pointers must resolve to real records, so agents can
+	// follow requirement chains without dead ends.
+	refRe := regexp.MustCompile(`\b(ADR|SPEC)-(\d{4})\b`)
+	resolveRef := func(kind, num, rel string) {
+		var dirs []string
+		if kind == "ADR" {
+			dirs = []string{"docs/adr"}
+		} else {
+			dirs = []string{"specs/active", "specs/archive"}
+		}
+		found := false
+		for _, dir := range dirs {
+			matches, _ := filepath.Glob(filepath.Join(root, filepath.FromSlash(dir), kind+"-"+num+"-*.md"))
+			if len(matches) > 0 {
+				found = true
+			}
+		}
+		if !found {
+			problems = append(problems, "unresolved "+kind+"-"+num+" referenced in "+rel)
+		}
+	}
+	for _, dir := range []string{".work/in-progress", ".work/done"} {
+		entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(dir)))
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(root, dir, e.Name(), "state.yaml"))
+			if err != nil {
+				continue
+			}
+			for _, m := range refRe.FindAllSubmatch(body, -1) {
+				resolveRef(string(m[1]), string(m[2]), dir+"/"+e.Name())
+			}
+		}
+	}
+	for idx, body := range indexBodies {
+		if idx == ".work/index.md" {
+			continue
+		}
+		for _, m := range refRe.FindAllStringSubmatch(body, -1) {
+			resolveRef(m[1], m[2], idx)
+		}
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%s", strings.Join(problems, "\n"))
 	}

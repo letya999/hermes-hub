@@ -4,6 +4,8 @@ last_verified: 2026-09-27
 ---
 # ADR-0026: Shared control plane, scoped compute
 
+Status: accepted.
+
 Accepted 2026-09-25.
 
 ## Decision

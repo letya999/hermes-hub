@@ -253,7 +253,7 @@ func TestControlRelayUsesRolloutPin(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.spawnControlRelay(context.Background(), binding(ctxRoot), "runtime", 8091, "generation", "agent-net"); err != nil {
+	if err := m.spawnControlRelay(context.Background(), binding(ctxRoot), "runtime", 8091, "generation", "agent-net", "http://runtime:8080", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if len(run) < 2 || run[len(run)-2] != "img/stable:1" {

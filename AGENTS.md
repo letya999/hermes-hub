@@ -46,6 +46,11 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
 - `devcheck docs` (part of `just check`) enforces unique ADR/SPEC/CHG numbering, index↔file
   sync and `last_verified` ≥ last commit. Editing a doc obliges re-verifying it against code;
   keep statuses honest — a done CHG moves to .work/done/ with an index row the same day.
+- Documentation status hygiene is governed by docs/status-hygiene.md: on every merge PR,
+  all in-progress CHGs are resolved (done or honestly parked as deferred), ADR/SPEC index
+  statuses are re-checked against delivered state, and `last_verified` is set to the merge
+  date only on documents whose content was actually re-verified in that PR — never bump a
+  date without reading the document against the code.
 - Every user-visible string is localized through internal/locale — no hardcoded
   language literals in handlers, pages or command replies, including units and
   placeholder words like "unknown". Render via locale.T(lang, key) with keys in

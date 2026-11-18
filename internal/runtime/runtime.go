@@ -86,6 +86,8 @@ func Run(args []string) error {
 		return errors.New("expected idle, gateway, prepare, serve, health, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
 	switch args[0] {
+	case "fc-agent":
+		return runFCAgent(context.Background())
 	case "model-relay":
 		return runModelRelay(context.Background())
 	case "toolhub-relay":

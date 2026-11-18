@@ -707,7 +707,10 @@ func TestCLIRunnerCancellationReachesController(t *testing.T) {
 	}
 }
 
-func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
+// Execution runs outside the registry fence: a revocation lands while an
+// admitted call is still in flight — the in-flight effect completes on its
+// already-verified authority and every later call is denied.
+func TestGatewayCallReleasesFenceBeforeBackend(t *testing.T) {
 	store, auth, binding := seededStore(t)
 	name := api.ProjectedToolName("google-work", "1.0.0", "search")
 	entered := make(chan struct{})
@@ -728,14 +731,14 @@ func TestGatewayCallHoldsAdmissionFence(t *testing.T) {
 	go func() { revoked <- store.SetBindingStatus(binding.ToolBindingID, api.RevokedStatus) }()
 	select {
 	case err := <-revoked:
-		t.Fatalf("revocation overtook admitted gateway call: %v", err)
-	case <-time.After(20 * time.Millisecond):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("revocation starved behind an in-flight backend")
 	}
 	close(release)
 	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-revoked; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "hello"}); !errors.Is(err, api.ErrNotFound) {

@@ -1,6 +1,6 @@
 ---
 description: Frozen acceptance contract for the M18 per-user DNS/TLS addressing layer (provider-neutral record contract, delegated zones, per-user wildcard certs).
-last_verified: 2026-10-25
+last_verified: "2026-11-15"
 ---
 # SPEC-0078: Per-user subdomains — DNS/TLS addressing
 

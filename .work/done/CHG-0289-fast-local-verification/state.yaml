@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0289
+title: Fast local verification and CI handoff
+status: done
+updated: "2026-11-15"
+branch: ci/fast-local-checks
+implementation_status: locally_verified_pending_ci_and_host_diagnosis
+validation:
+  just_check: passed_2026-11-06_57.75_seconds
+  affected_tests: passed_2026-11-06_31_seconds
+  integration_branch_just_check: passed_2026-11-07
+  integration_branch_hubctl_tests: passed_2026-11-07_85.568_seconds
+  integration_branch_communication_tests: timed_out_2026-11-07_120_seconds
+  ci_workflow: actionlint_passed_remote_not_run
+  docker: not_run
+  windows_root_cause: not_proven
+remaining:
+  - Publish and run exact-source CI only with owner authorization.
+  - Host-specific Windows execution denials remain under investigation.
+evidence:
+  - "2026-11-07 channel-confirmed memory acceptance reproduced a second Windows replacement denial in governance.json under concurrent readers. SaveGovernanceLocked now retries only Windows access/sharing errors for at most 475 ms. Real non-delete-sharing handle tests prove eventual atomic replacement and preservation of the complete prior revision on exhaustion. This does not establish the cause of compiler executable-launch denials; protections remain enabled."
+  - "2026-11-07 live passport apply reproduced a Windows file replacement denial while a rendered file was open. Added bounded retries for Windows sharing/access-denied errors without deleting the prior file; a real Windows handle regression failed before the fix and passed afterward. This explains the rendered-file failure, not earlier compiler execution denials. Scoped proxy, ToolHub, communication and supervisor updates preserved the shared build cache."
+  - "2026-11-07 recovery verification: just check and just config-check passed; affected hubctl, credentialbroker, reconcile, runtime, passport, passportview, stack, toolhub/automation and communication suites passed. Communication completed in 97.999s in this run; the earlier timeout remains historical evidence. Selected live daemon images and both runtime overlays were rebuilt through hubctl; no exhaustive Docker gate or remote CI acceptance is claimed."
+  - "2026-11-07 recovery follow-up: space apply no longer invokes a no-op Compose build on managed services; it reuses the scoped hubctl image builder and plans service recreation after rebuild. Broker SQLCipher dependency build is independent of hub Go sources. Selected development daemon overlays were deployed without rebuilding the upstream runtime base. Current verification is recorded separately from historical gates."
+  - "Final worktree refresh: clean checkpoints 33fb159d (#508 incomplete), 50e6bb0c (#517 incomplete, #516 committed fcc6fd89), 813a37d6 (#523 incomplete). Handoff updated to preserve them."
+  - "Fast just check exit 0 in 57.75s; affected internal/devcheck and cmd/devcheck tests exit 0 in 31s; actionlint exit 0."
+  - "Diagnostic short full suite exceeded ten minutes; 46 packages completed before explicit stop. Slow packages: memory/eval 130s, agenttools 128s, hubctl 105s. Baseline docs failure repaired by re-verifying the changed RBAC/hubctl sections."
+  - "Updated stale M32 plan and all three entry prompts: existing worktrees, Devin stages, actual dependencies and separate local/CI evidence."
+  - "Windows Access is denied also occurred once when starting the tool shell, outside Go tests; a retry launched normally. Host cause remains unproven."
+  - "On feat/m32-integration, the #526 session used two unscoped hubctl builds (329s and 367s); space apply itself took 1-2s. Scoped build and dev-rebuild now keep the shared cache; selected-image fake-Docker regressions passed locally. No current-tree Docker image or remote CI acceptance is claimed."
+  - "2026-11-07 integration continuation: unscoped hubctl up --no-build no longer forces recreation of every healthy service; scoped up still forces only the named services and skips orphan removal. Fake-Docker lifecycle regression, just check (about 32s), and just test ./cmd/hubctl passed. Docker was not touched during owner disk cleanup."
+  - "Last visible CI run was 2026-10-31; current M32 work is unpublished."
+  - "75752068 adds Windows -p=1 to full race/shuffle/count=1/coverpkg suite; all package binaries serialize."
+  - "Found CI role cache read/write scope mismatch and shared overwrite between core/browser/knowledge; corrected."
+  - "Reason Cybersecurity and Windows Defender are registered; RAV OnAccess log has Go test-binary scan errors, but no proven causal block. No protection configuration changed."
+limitations:
+  - "No remote run or container acceptance for this dirty tree."
+  - "Probity remains enabled. Codex vs Devin transcripts are not a controlled quality benchmark."

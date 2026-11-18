@@ -7,7 +7,7 @@ target, not the behavior currently shipped by SPEC-0040.
 
 Decision: [ADR-0031](../../docs/adr/ADR-0031-default-deny-capability-policy.md).
 Isolation/proof: [SPEC-0042](SPEC-0042-capability-isolation-and-proof.md).
-Execution plan: [CHG-0065](../../.work/in-progress/CHG-0065-capability-enforcement/plan.md).
+Execution plan: [CHG-0065](../../.work/done/CHG-0065-capability-enforcement/plan.md).
 
 ## Requirement precedence
 

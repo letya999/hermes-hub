@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
-	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
@@ -138,6 +136,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "exposure" {
 		return runExposure(ctx, args[1:])
 	}
+	if op == "audit" {
+		return runAudit(ctx, args[1:])
+	}
 	if op == "dns" {
 		return runDNS(ctx, args[1:])
 	}
@@ -183,6 +184,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "routine" {
 		return runRoutine(ctx, args[1:])
 	}
+	if op == "user" {
+		return runUser(ctx, args[1:])
+	}
 	if op == "usage" {
 		f := flag.NewFlagSet("usage", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")
@@ -196,6 +200,44 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("usage requires --spool <dir> and no positional arguments")
 		}
 		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
+	}
+	if op == "status" {
+		f := flag.NewFlagSet("status", flag.ContinueOnError)
+		dir := f.String("dir", ".", "space dir (resolves supervisor.auth via the infra space)")
+		supervisorURL := f.String("supervisor-url", "http://127.0.0.1:8876", "supervisor HTTP base URL; empty skips the supervisor section")
+		gatewayURL := f.String("gateway-url", "http://127.0.0.1:8081", "communication gateway base URL; empty skips the gateway section")
+		token := f.String("auth", "", "control-plane bearer token (default: env or supervisor.auth)")
+		env := f.String("env", "dev", "deployment env for communication.<env>.env token resolution")
+		jsonOut := f.Bool("json", false, "emit the raw status document as JSON")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("usage: hubctl status [--dir <space>] [--env <dev|prod>] [--supervisor-url <url>] [--gateway-url <url>] [--auth <tok>] [--json]")
+		}
+		auth := strings.TrimSpace(*token)
+		if auth == "" {
+			auth = resolveStatusToken(*dir)
+		}
+		gatewayAuth := auth
+		if *token == "" {
+			gatewayAuth = resolveGatewayToken(*dir, *env, auth)
+		}
+		status := collectStatus(ctx, statusOptions{
+			SupervisorURL:  *supervisorURL,
+			GatewayURL:     *gatewayURL,
+			Token:          auth,
+			GatewayToken:   gatewayAuth,
+			SkipSupervisor: *supervisorURL == "",
+			SkipGateway:    *gatewayURL == "",
+		})
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(status)
+		}
+		renderStatus(os.Stdout, status)
+		return nil
 	}
 	if op == "watch" {
 		f := flag.NewFlagSet("watch", flag.ContinueOnError)
@@ -360,49 +402,14 @@ func run(ctx context.Context, args []string) error {
 		}
 		return runStorageStatus(os.Stdout, *spoolDir, *toolhubStore)
 	}
-	if op == "audit" {
-		lang, ok := locale.Parse(os.Getenv("LANG"))
-		if !ok {
-			lang = locale.Default
-		}
-		usage := locale.T(lang, "hubctl.audit-rollover-usage")
-		if len(args) < 2 || args[1] != "rollover" {
-			return errors.New(usage)
-		}
-		f := flag.NewFlagSet("audit rollover", flag.ContinueOnError)
-		ledger := f.String("ledger", "", locale.T(lang, "hubctl.audit-rollover-ledger"))
-		apply := f.Bool("apply", false, locale.T(lang, "hubctl.audit-rollover-apply"))
-		digest := f.String("digest", "", locale.T(lang, "hubctl.audit-rollover-digest"))
-		if err := f.Parse(args[2:]); err != nil {
-			return err
-		}
-		if f.NArg() != 0 || *ledger == "" || *apply && *digest == "" {
-			return errors.New(usage)
-		}
-		var plan audit.LegacyPlan
-		var err error
-		if *apply {
-			plan, err = audit.RolloverLegacy(*ledger, *digest)
-		} else {
-			plan, err = audit.PlanLegacyRollover(*ledger)
-		}
-		if err != nil {
-			switch {
-			case errors.Is(err, audit.ErrStaleLegacyPlan):
-				return errors.New(locale.T(lang, "hubctl.audit-rollover-stale"))
-			case errors.Is(err, audit.ErrInvalid):
-				return errors.New(locale.T(lang, "hubctl.audit-rollover-invalid"))
-			default:
-				return errors.New(locale.T(lang, "hubctl.audit-rollover-failed"))
-			}
-		}
-		return json.NewEncoder(os.Stdout).Encode(plan)
-	}
 	if op == "space" {
 		if len(args) < 2 || args[1] != "apply" {
 			return fmt.Errorf("usage: hubctl space apply --dir spaces/<user> --env <dev|prod> [--confirm] [--json]")
 		}
 		return runSpaceApply(ctx, args[2:])
+	}
+	if op == "provision" {
+		return runProvision(ctx, args[1:])
 	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
@@ -950,9 +957,12 @@ func run(ctx context.Context, args []string) error {
 		if f.NArg() == 0 {
 			return fmt.Errorf("exec requires -- command arguments")
 		}
+		if _, err := runtimeIntrospectionGate(abs, *environment, "exec"); err != nil {
+			return err
+		}
 		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
-		s, err := stack.ReadEffective(abs, *environment)
+		s, err := runtimeIntrospectionGate(abs, *environment, "chat")
 		if err != nil {
 			return err
 		}
@@ -971,6 +981,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return dockerCmd("run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "/opt/telegram/session_string_generator.py", "--phone").Run()
 	case "meet-auth":
+		if _, err := runtimeIntrospectionGate(abs, *environment, "meet_auth"); err != nil {
+			return err
+		}
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
 	return nil

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strconv"
 )
@@ -47,7 +48,9 @@ func LedgerAuditWriter(ledger *audit.Ledger) func(string, map[string]string) err
 		case "admit", "allow", "not-started", "uncertain":
 			record.Action = "tool.call"
 			record.OperationID = toolOperationID(record.PrincipalID, record.ContextID, record.Environment, record.JobID, record.ToolCallID)
-			record.CorrelationID = record.OperationID
+			if record.CorrelationID == "" {
+				record.CorrelationID = record.OperationID
+			}
 			record.Authorization = "allow"
 			switch event {
 			case "admit":
@@ -79,4 +82,19 @@ func LedgerAuditWriter(ledger *audit.Ledger) func(string, map[string]string) err
 func toolOperationID(principal, contextID, environment, jobID, callID string) string {
 	sum := sha256.Sum256([]byte(principal + "\x00" + contextID + "\x00" + environment + "\x00" + jobID + "\x00" + callID))
 	return "tool-" + hex.EncodeToString(sum[:])
+}
+
+// writeCorrelationID is the stable logical identity of a write call: the same
+// admitted operation replayed after a lost response digests identically, so
+// the audit ledger's unsettled-correlation fence refuses the duplicate effect.
+// Only the digest of the canonical admitted arguments participates — argument
+// values themselves never reach the ledger.
+func writeCorrelationID(auth identity.Envelope, corr api.CallCorrelation, effective api.EffectiveBinding, projected api.ProjectedTool, canonical []byte) string {
+	sum := sha256.New()
+	for _, part := range []string{auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.HermesRunID, effective.Binding.ToolBindingID, projected.Name} {
+		sum.Write([]byte(part))
+		sum.Write([]byte{0})
+	}
+	sum.Write(canonical)
+	return "call-" + hex.EncodeToString(sum.Sum(nil))
 }

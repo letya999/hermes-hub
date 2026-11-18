@@ -1,8 +1,12 @@
 ---
 description: Use upstream provider boundaries for Atlassian, GitLab and Google.
-last_verified: 2026-09-10
+last_verified: "2026-11-15"
 ---
 # ADR-0006: Work-service boundaries
+
+Status: accepted.
+
+**Scope note (2026-11-15 audit):** the Atlassian clause is superseded by [ADR-0010](ADR-0010-direct-mcp-atlassian.md) — the code ships the pinned `sooperset/mcp-atlassian` stdio package, not the remote Rovo endpoint (no `rovo` references exist in the codebase). GitLab (`glab`) and Google read-only clauses remain current.
 
 Accepted 2026-09-10.
 

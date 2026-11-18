@@ -239,6 +239,22 @@ type Config struct {
 	// ImageGen is the image-generation provider grant the retired
 	// settings.yaml image_gen section carried (provider/model/delivery).
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
+	// IAM is the optional SSO identity contract (ADR-0100): an external
+	// OIDC provider, or the bundled identity-hub sidecar pair
+	// (stack.yaml services identity-hub + hub-postgres, mode shared).
+	// Absent keeps the deployment in channel-mapped local mode.
+	IAM *IAM `yaml:"iam,omitempty"`
+}
+
+// IAM carries the SSO provider selection. external points the shared
+// gateway at any reachable OIDC issuer; bundled renders the stack-managed
+// identity-hub (ZITADEL) on the shared postgres — issuer is then optional:
+// absent means the dev shape http://idp.localhost:<port>, present is the
+// public https issuer behind its own DNS/TLS.
+type IAM struct {
+	Mode     string `yaml:"mode"`
+	Issuer   string `yaml:"issuer,omitempty"`
+	ClientID string `yaml:"client_id,omitempty"`
 }
 
 // Web carries the managed web policy without importing the stack renderer.
@@ -281,6 +297,9 @@ type Runtime struct {
 	Goals       RuntimeGoals     `yaml:"goals,omitempty"`
 	Compression map[string]any   `yaml:"compression,omitempty"`
 	Auxiliary   RuntimeAuxiliary `yaml:"auxiliary,omitempty"`
+	// Introspection gates operator hubctl exec/chat/meet-auth. Nil keeps the
+	// personal-space default; group and organization scopes stay opt-in.
+	Introspection *bool `yaml:"introspection,omitempty"`
 }
 
 type RuntimeContext struct {

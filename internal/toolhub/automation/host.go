@@ -50,7 +50,7 @@ type SupervisorClient interface {
 
 // CommunicationClient posts a durable delivery intent to communication.
 type CommunicationClient interface {
-	PostDelivery(ctx context.Context, principal string, d commodel.Delivery) error
+	PostDelivery(ctx context.Context, principal, contextID string, d commodel.Delivery) error
 }
 
 type DecisionStore interface {
@@ -642,7 +642,7 @@ func (h *Host) post(ctx context.Context, rec outboxRecord) error {
 	if h.cfg.Communication == nil {
 		return nil
 	}
-	if err := h.cfg.Communication.PostDelivery(ctx, rec.Principal, rec.Delivery); err != nil {
+	if err := h.cfg.Communication.PostDelivery(ctx, rec.Principal, rec.Delivery.OwnerContextID, rec.Delivery); err != nil {
 		return err
 	}
 	return h.outbox.markSent(rec)
@@ -1105,6 +1105,42 @@ func (h *Host) PauseSchedule(ctx context.Context, auth identity.Envelope, id str
 	return e.PauseSchedule(id, auth, expected...)
 }
 
+// PauseAllForPrincipal pauses every routine owned by the caller's exact
+// principal/context. The control plane already authenticated the bulk stage;
+// the engine still re-checks ownership on every durable write. A principal
+// whose owner subtree was never materialized owns no schedules — revocation
+// must stay idempotent for users that never ran automation.
+func (h *Host) PauseAllForPrincipal(ctx context.Context, auth identity.Envelope) (int, error) {
+	if _, err := os.Lstat(h.ownerRoot(auth.PrincipalID)); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	e, err := h.engineFor(auth.PrincipalID)
+	if err != nil {
+		return 0, err
+	}
+	items, err := e.ListSchedules(auth)
+	if err != nil {
+		return 0, err
+	}
+	paused := 0
+	for _, item := range items {
+		if item.Paused {
+			continue
+		}
+		if err := e.PauseSchedule(item.ScheduleID, auth); err != nil {
+			if errors.Is(err, routines.ErrRoutineNotOwned) {
+				continue
+			}
+			return paused, err
+		}
+		paused++
+	}
+	return paused, nil
+}
+
 func (h *Host) UpdateSchedule(ctx context.Context, auth identity.Envelope, id, expression, input string, enabled *bool) (commodel.Schedule, error) {
 	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
@@ -1295,6 +1331,8 @@ func (h *Host) enqueueResult(in dispatchIntent) error {
 		ID:               "result-" + in.Job.ID,
 		JobID:            in.Job.ID,
 		IdempotencyKey:   "result-" + in.Job.ID,
+		OwnerPrincipalID: in.Job.PrincipalID,
+		OwnerContextID:   in.Job.ContextID,
 		ConversationID:   task.ConversationID,
 		DeliveryTargetID: task.Peer,
 		Channel:          task.Channel,

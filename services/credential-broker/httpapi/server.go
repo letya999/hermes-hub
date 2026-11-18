@@ -224,6 +224,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/v1/contracts":
 		out = s.b.Catalog()
+	case r.Method == "POST" && r.URL.Path == "/v1/admin/revocations":
+		var in v1.PrincipalRevocationRequest
+		if e = decode(data, &in); e == nil {
+			out, e = s.b.RevokePrincipalGrants(a, in)
+		}
 	case r.Method == "POST" && r.URL.Path == "/v1/contracts":
 		var in contract.Contract
 		if e = decode(data, &in); e == nil {

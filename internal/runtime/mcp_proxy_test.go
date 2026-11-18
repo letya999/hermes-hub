@@ -13,11 +13,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type proxyBearerTransport struct{ http.RoundTripper }
+type proxyBearerTransport struct {
+	http.RoundTripper
+	token string
+}
 
 func (t proxyBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer synthetic")
+	token := t.token
+	if token == "" {
+		token = "synthetic"
+	}
+	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set(api.HeaderJobID, "forged-job")
 	r.Header.Set(api.HeaderRunID, "forged-run")
 	return t.RoundTripper.RoundTrip(r)
@@ -114,7 +121,7 @@ func TestManagedMCPProxyRoutesEachCallToItsAdmittedRun(t *testing.T) {
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "1"}, nil)
-	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: proxy.URL + "/mcp", HTTPClient: &http.Client{Transport: proxyBearerTransport{http.DefaultTransport}}, DisableStandaloneSSE: true}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: proxy.URL + "/mcp", HTTPClient: &http.Client{Transport: proxyBearerTransport{RoundTripper: http.DefaultTransport}}, DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

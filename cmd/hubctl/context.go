@@ -32,7 +32,7 @@ import (
 
 func runContext(_ context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("context requires backup, restore, export, purge, stop-runtime or delete-runtime")
+		return fmt.Errorf("context requires backup, restore, export, purge, restore-drill, stop-runtime or delete-runtime")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("context", flag.ContinueOnError)
@@ -63,6 +63,35 @@ func runContext(_ context.Context, args []string) error {
 			return fmt.Errorf("restore requires --in")
 		}
 		return contextlife.Restore(abs, *profile, *in, *spool)
+	case "restore-drill":
+		// Rehearse a restore into scratch space: the newest scheduled
+		// archive under <dir>/archive/backups/, or --in for an explicit
+		// file. The drill never touches the live home.
+		archive := *in
+		if archive == "" {
+			dirEntries, err := os.ReadDir(filepath.Join(abs, "archive", "backups"))
+			if err != nil {
+				return fmt.Errorf("no scheduled backups under %s", filepath.Join(abs, "archive", "backups"))
+			}
+			for _, e := range dirEntries {
+				if strings.HasPrefix(e.Name(), "backup-") && strings.HasSuffix(e.Name(), ".zip") && e.Name() > filepath.Base(archive) {
+					archive = filepath.Join(abs, "archive", "backups", e.Name())
+				}
+			}
+			if archive == "" {
+				return fmt.Errorf("no scheduled backups under %s", filepath.Join(abs, "archive", "backups"))
+			}
+		}
+		scratch, err := os.MkdirTemp("", "hub-restore-drill-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(scratch)
+		report, err := contextlife.Drill(*profile, archive, scratch)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
 	case "purge":
 		report, err := contextlife.Purge(abs, *profile, *confirm)
 		if err != nil {

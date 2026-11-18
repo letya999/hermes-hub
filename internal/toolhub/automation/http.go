@@ -187,7 +187,13 @@ func (h *Host) ControlHandler(token string) http.Handler {
 			}
 			switch body.Operation {
 			case "schedule.pause":
-				err = h.PauseSchedule(r.Context(), body.Caller, args.ID, expected...)
+				if args.ID == "*" {
+					var paused int
+					paused, err = h.PauseAllForPrincipal(r.Context(), body.Caller)
+					result = map[string]int{"schedules": paused}
+				} else {
+					err = h.PauseSchedule(r.Context(), body.Caller, args.ID, expected...)
+				}
 			case "schedule.delete":
 				err = h.DeleteSchedule(r.Context(), body.Caller, args.ID, expected...)
 			case "schedule.snooze":

@@ -1,0 +1,41 @@
+{{- if eq .Values.execution.backend "kubernetes" }}
+{{- $base := include "hub.name" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $base }}-supervisor
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $base }}-runtimes
+  namespace: {{ include "hub.runtimeNamespace" . | quote }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete, update]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $base }}-runtimes
+  namespace: {{ include "hub.runtimeNamespace" . | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $base }}-supervisor
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $base }}-runtimes
+{{- end }}

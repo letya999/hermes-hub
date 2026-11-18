@@ -4,6 +4,8 @@ last_verified: 2026-09-28
 ---
 # ADR-0028: Configurable image capability
 
+Status: accepted.
+
 Accepted 2026-09-28.
 
 ## Decision

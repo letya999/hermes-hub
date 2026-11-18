@@ -119,9 +119,39 @@ func dockerPublish(ctx context.Context, target, repo, sha string, run dockerExec
 	if run == nil || !validRef(target, repo, sha) {
 		return fmt.Errorf("target, repo and sha required")
 	}
+	return dockerPublishRefs(ctx, target, sha, registryRef(repo, sha+"-"+target), registryRef(repo, "edge-"+target), run)
+}
+
+var publishImagePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*$`)
+var publishEnvPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+var publishSHAPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
+
+// DockerPublishTo publishes the portable image set without assuming a registry.
+// Authentication belongs to the runner's isolated Docker config, never argv.
+func DockerPublishTo(ctx context.Context, image, target, environment string) error {
+	sha, err := gitSHA(ctx, cliGit)
+	if err != nil {
+		return err
+	}
+	return dockerPublishTo(ctx, image, target, environment, sha, streamDocker)
+}
+
+func dockerPublishTo(ctx context.Context, image, target, environment, sha string, run dockerExec) error {
+	if run == nil || !publishImagePattern.MatchString(image) || !publishEnvPattern.MatchString(environment) || !publishSHAPattern.MatchString(sha) {
+		return fmt.Errorf("qualified registry image, environment slug and full source SHA required")
+	}
+	switch target {
+	case "prod-control", "prod", "cli-tools", "cell-proxy", "credential-broker":
+	default:
+		return fmt.Errorf("unsupported portable image target")
+	}
+	return dockerPublishRefs(ctx, target, sha, image+":"+sha, image+":edge-"+environment, run)
+}
+
+func dockerPublishRefs(ctx context.Context, target, sha, immutable, edge string, run dockerExec) error {
 	args := []string{"build", "--target", target,
-		"-t", registryRef(repo, sha+"-"+target),
-		"-t", registryRef(repo, "edge-"+target),
+		"-t", immutable,
+		"-t", edge,
 		"--push", "--build-arg", "GIT_SHA=" + sha}
 	args = append(args, cacheArgs()...)
 	return run(ctx, append(args, "-f", targetDockerfile(target), ".")...)

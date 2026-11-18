@@ -151,6 +151,8 @@ func run(args []string) error {
 		err = devcheck.DockerPull(context.Background(), args[1], args[2])
 	case len(args) == 2 && args[0] == "docker-publish":
 		err = devcheck.DockerPublish(context.Background(), args[1])
+	case len(args) == 4 && args[0] == "docker-publish-to":
+		err = devcheck.DockerPublishTo(context.Background(), args[1], args[2], args[3])
 	case len(args) == 1 && args[0] == "docker-clean":
 		err = devcheck.DockerClean(context.Background(), ".", false)
 	case len(args) == 2 && args[0] == "docker-clean" && args[1] == "--deep":
@@ -205,7 +207,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|catalog-emit|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|m32-lifecycle IMAGE ENV|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
+		err = fmt.Errorf("usage: devcheck docs|catalog-emit|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-publish-to IMAGE TARGET ENV|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|m32-lifecycle IMAGE ENV|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
 	}
 	return err
 }

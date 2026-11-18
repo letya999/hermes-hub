@@ -252,7 +252,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 			o.State = "dispatched"
 		} else if o.JobKind == "reminder" {
-			d, err := e.normalizeDelivery(commodel.Delivery{ID: "reminder-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
+			d, err := e.normalizeDelivery(commodel.Delivery{ID: "reminder-" + o.Job.ID, OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text, CreatedAt: now.UTC()})
 			if err != nil {
 				return err
 			}

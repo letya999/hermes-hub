@@ -4,6 +4,8 @@ last_verified: 2026-09-11
 ---
 # ADR-0011: Stable identity and ownership identifiers
 
+Status: accepted.
+
 Accepted 2026-09-11.
 
 ## Decision

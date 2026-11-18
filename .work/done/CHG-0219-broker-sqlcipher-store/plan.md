@@ -16,8 +16,8 @@ Hard dependencies: CHG-0215, CHG-0218.
 ## Read before coding
 
 1. AGENTS.md, README.md, docs/index.md, principles.md, boundaries.md.
-2. [Вход и порядок](../../in-progress/CHG-0215-broker-recovery-head/README.md), [общая приёмка](../../in-progress/CHG-0215-broker-recovery-head/acceptance.md),
-   [исходные факты](../../in-progress/CHG-0215-broker-recovery-head/research.md); ADR/SPEC по chain.
+2. [Вход и порядок](../../done/CHG-0215-broker-recovery-head/README.md), [общая приёмка](../../done/CHG-0215-broker-recovery-head/acceptance.md),
+   [исходные факты](../../done/CHG-0215-broker-recovery-head/research.md); ADR/SPEC по chain.
 3. Dependency state.yaml и затронутые current docs. CHG-0214 остаётся отдельной
    незавершённой работой: не reset/stash/commit чужих изменений.
 4. Найти callers всех anchors через rg/Serena и прочитать существующие tests.

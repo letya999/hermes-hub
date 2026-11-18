@@ -4,6 +4,8 @@ last_verified: 2026-09-28
 ---
 # ADR-0029: Bounded pdf, spreadsheet, slides, and webp
 
+Status: accepted.
+
 Accepted 2026-09-28.
 
 ## Decision

@@ -17,6 +17,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/netguard"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,8 @@ type Config struct {
 	APIBaseURL         string `yaml:"api_base_url,omitempty"`
 	SlackSigningSecret string `yaml:"-"`
 	SlackBotToken      string `yaml:"-"`
+	SlackAppToken      string `yaml:"-"`
+	SlackTransport     string `yaml:"-"`
 	ControlAuth        string `yaml:"-"`
 	ControlPrincipal   string `yaml:"-"`
 	AutomationAuth     string `yaml:"-"`
@@ -50,25 +53,29 @@ type Config struct {
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// admitted only as their enrolled principal. ControlPrincipal similarly
 	// binds the supervised infra owner's primary runtime bearer.
-	ControlTokensFile string                 `yaml:"-"`
-	controlAuthExtra  []string               `yaml:"-"`
-	ListenAddr        string                 `yaml:"-"`
-	FormOrigin        string                 `yaml:"-"`
-	NativeCron        string                 `yaml:"-"`
-	STTURL            string                 `yaml:"-"`
-	STTAuth           string                 `yaml:"-"`
-	TTSURL            string                 `yaml:"-"`
-	TTSAuth           string                 `yaml:"-"`
-	TTSVoice          string                 `yaml:"-"`
-	TTSVoices         map[locale.Lang]string `yaml:"-"`
-	TTSUploadURL      string                 `yaml:"-"`
-	STTTimeout        time.Duration          `yaml:"-"`
-	MediaMaxDuration  int                    `yaml:"-"`
-	SpoolDir          string                 `yaml:"spool_dir"`
-	RuntimeURL        string                 `yaml:"-"`
-	RuntimeAuth       string                 `yaml:"-"`
-	PollTimeout       time.Duration          `yaml:"-"`
-	HermesCommand     string                 `yaml:"-"`
+	ControlTokensFile string   `yaml:"-"`
+	controlAuthExtra  []string `yaml:"-"`
+	ListenAddr        string   `yaml:"-"`
+	FormOrigin        string   `yaml:"-"`
+	// OIDCIssuer/OIDCClientID enable the optional SSO enrolment and
+	// channel-link flow (ADR-0100); empty keeps channel-mapped local mode.
+	OIDCIssuer       string                 `yaml:"oidc_issuer,omitempty"`
+	OIDCClientID     string                 `yaml:"oidc_client_id,omitempty"`
+	NativeCron       string                 `yaml:"-"`
+	STTURL           string                 `yaml:"-"`
+	STTAuth          string                 `yaml:"-"`
+	TTSURL           string                 `yaml:"-"`
+	TTSAuth          string                 `yaml:"-"`
+	TTSVoice         string                 `yaml:"-"`
+	TTSVoices        map[locale.Lang]string `yaml:"-"`
+	TTSUploadURL     string                 `yaml:"-"`
+	STTTimeout       time.Duration          `yaml:"-"`
+	MediaMaxDuration int                    `yaml:"-"`
+	SpoolDir         string                 `yaml:"spool_dir"`
+	RuntimeURL       string                 `yaml:"-"`
+	RuntimeAuth      string                 `yaml:"-"`
+	PollTimeout      time.Duration          `yaml:"-"`
+	HermesCommand    string                 `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -134,6 +141,20 @@ type ServiceEndpoint struct {
 func (c Config) Validate() error {
 	if _, err := spoolStorageLimits(limitsFromEnv()); err != nil {
 		return err
+	}
+	// A malformed egress proxy fails startup closed — the gateway must never
+	// boot into silent direct egress outside the reviewed perimeter.
+	if _, err := netguard.EgressProxy(); err != nil {
+		return err
+	}
+	switch c.SlackTransport {
+	case "", "events":
+	case "socket":
+		if c.SlackBotToken == "" || c.SlackAppToken == "" {
+			return errors.New("SLACK_TRANSPORT=socket requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN")
+		}
+	default:
+		return fmt.Errorf("unsupported SLACK_TRANSPORT %q", c.SlackTransport)
 	}
 
 	if c.Supervised && c.RuntimeURL == "" {
@@ -293,6 +314,12 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+		if iss := os.Getenv("HUB_OIDC_ISSUER"); iss != "" {
+			config.OIDCIssuer = iss
+		}
+		if cid := os.Getenv("HUB_OIDC_CLIENT_ID"); cid != "" {
+			config.OIDCClientID = cid
+		}
 		config.CLIExec, err = api.CLIExecFromEnv()
 		if err != nil {
 			return Config{}, err
@@ -353,6 +380,8 @@ func ConfigFromEnv() (Config, error) {
 	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+	config.OIDCIssuer = envOr("HUB_OIDC_ISSUER", config.OIDCIssuer)
+	config.OIDCClientID = envOr("HUB_OIDC_CLIENT_ID", config.OIDCClientID)
 	config.CLIExec, err = api.CLIExecFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -459,6 +488,12 @@ func fillChannelSecrets(config *Config) {
 	}
 	if config.SlackBotToken == "" {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
+	}
+	if config.SlackAppToken == "" {
+		config.SlackAppToken = os.Getenv("SLACK_APP_TOKEN")
+	}
+	if config.SlackTransport == "" {
+		config.SlackTransport = envOr("SLACK_TRANSPORT", "events")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
 	config.ControlPrincipal = strings.TrimSpace(os.Getenv("HUB_USER_ID"))

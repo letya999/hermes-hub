@@ -1,0 +1,77 @@
+binding:
+    generation: 1
+    profile_id: __USER__-default
+core:
+    assignments:
+        via: toolhub
+    memory:
+        via: toolhub
+extended:
+    browser:
+        via: toolhub
+        tools: {include: [browser_open, browser_read, browser_act, browser_capture]}
+    context:
+        via: toolhub
+    documents:
+        via: toolhub
+    connectors:
+        via: toolhub
+    files:
+        rules:
+            file_archive:
+                scope:
+                    paths:
+                        - /workspace
+            file_edit:
+                scope:
+                    paths:
+                        - /workspace
+            file_list:
+                scope:
+                    paths:
+                        - /workspace
+            file_mkdir:
+                scope:
+                    paths:
+                        - /workspace
+            file_read:
+                scope:
+                    paths:
+                        - /workspace
+            file_remove:
+                scope:
+                    paths:
+                        - /workspace
+            file_search:
+                scope:
+                    paths:
+                        - /workspace
+            file_write:
+                scope:
+                    paths:
+                        - /workspace
+        via: toolhub
+    media:
+        via: toolhub
+    goals:
+        via: toolhub
+    models:
+        via: toolhub
+    research:
+        via: toolhub
+    routines:
+        via: toolhub
+    sessions:
+        via: toolhub
+    settings:
+        via: toolhub
+    sites:
+        via: toolhub
+    skills:
+        via: toolhub
+    terminal:
+        via: toolhub
+    watches:
+        via: toolhub
+    web_search:
+        via: toolhub

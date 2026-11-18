@@ -136,9 +136,16 @@ func (s *Store) recordOnboardingObservation(auth identity.Envelope, id string, a
 	if !ok || auth.Validate(o.PrincipalID, o.ContextID, o.RuntimeID, o.PolicyVersion) != nil || o.DeadEnd() || o.CleanupIncomplete() || !at.After(o.ObservedAt) {
 		return
 	}
+	previous := o.ObservationCode
 	o.ObservedAt, o.ObservationCode = at, ""
 	if failed {
 		o.ObservationCode = "broker_unavailable"
 	}
-	_ = s.commitOnboardingLocked(o)
+	s.onboardings[id] = o
+	// ObservedAt is a heartbeat — memory-truth only; the reconciler re-derives
+	// it after restart. The durable record commits only when the observation
+	// verdict itself changes, so every 30s scan no longer writes the registry.
+	if o.ObservationCode != previous {
+		_ = s.commitOnboardingLocked(o)
+	}
 }

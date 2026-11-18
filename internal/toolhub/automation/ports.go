@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 )
@@ -401,13 +402,22 @@ func (o *deliveryOutbox) recordPath(principal, key string) string {
 
 // enqueue durably records the delivery intent keyed by idempotency; the
 // record partitions under the owning principal (the engine closure binds
-// it — the delivery body never asserts it).
+// it — the delivery body never asserts it). The owner context rides the
+// durable record so the service contract can re-stamp it server-side; a
+// delivery whose producer cannot name its context fails closed here.
 func (o *deliveryOutbox) enqueue(principal string, d commodel.Delivery, now time.Time) (outboxRecord, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if principal == "" || d.ID == "" {
 		return outboxRecord{}, errors.New("automation: delivery identity missing")
 	}
+	if d.OwnerPrincipalID != "" && d.OwnerPrincipalID != principal {
+		return outboxRecord{}, errors.New("automation: delivery owner mismatch")
+	}
+	if !identity.ValidID(d.OwnerContextID) {
+		return outboxRecord{}, errors.New("automation: delivery owner context missing")
+	}
+	d.OwnerPrincipalID = principal
 	key := d.IdempotencyKey
 	if key == "" {
 		key = d.ID
@@ -422,8 +432,17 @@ func (o *deliveryOutbox) enqueue(principal string, d commodel.Delivery, now time
 		// A repeated poll may rediscover the same source event at a later
 		// time; the first durable timestamp remains authoritative.
 		d.CreatedAt = existing.Delivery.CreatedAt
-		if existing.Key != key || existing.Principal != principal || !reflect.DeepEqual(existing.Delivery, d) {
+		if existing.Key != key || existing.Principal != principal || !sameDeliveryIntent(existing.Delivery, d) {
 			return outboxRecord{}, errors.New("automation: delivery idempotency conflict")
+		}
+		// Records persisted before owner-context stamping predate the field;
+		// the producer's current assertion upgrades them in place.
+		if existing.Delivery.OwnerPrincipalID != d.OwnerPrincipalID || existing.Delivery.OwnerContextID != d.OwnerContextID {
+			existing.Delivery.OwnerPrincipalID = d.OwnerPrincipalID
+			existing.Delivery.OwnerContextID = d.OwnerContextID
+			if err := writeJSONAtomic(rec.path, &existing); err != nil {
+				return outboxRecord{}, err
+			}
 		}
 		existing.path = rec.path
 		return existing, nil // idempotent re-enqueue
@@ -431,6 +450,15 @@ func (o *deliveryOutbox) enqueue(principal string, d commodel.Delivery, now time
 		return outboxRecord{}, err
 	}
 	return rec, writeJSONAtomic(rec.path, &rec)
+}
+
+// sameDeliveryIntent compares a re-derived intent with the durable record,
+// ignoring the hub-stamped owner pair: producers re-assert it on every
+// replay while records persisted before stamping predate the field.
+func sameDeliveryIntent(stored, derived commodel.Delivery) bool {
+	stored.OwnerPrincipalID = derived.OwnerPrincipalID
+	stored.OwnerContextID = derived.OwnerContextID
+	return reflect.DeepEqual(stored, derived)
 }
 
 func (o *deliveryOutbox) markSent(rec outboxRecord) error {
@@ -467,6 +495,19 @@ func (o *deliveryOutbox) pending() ([]outboxRecord, error) {
 		}
 		if rec.Key == "" || rec.Principal == "" || o.recordPath(rec.Principal, rec.Key) != path {
 			return errors.New("automation: invalid delivery intent")
+		}
+		// Records persisted before owner-context stamping were personal-scope
+		// (context == principal); the durable record's own principal, never
+		// payload fields, restores that pair so the post can assert it.
+		if rec.Delivery.OwnerContextID == "" {
+			if rec.Delivery.OwnerPrincipalID != "" && rec.Delivery.OwnerPrincipalID != rec.Principal {
+				return errors.New("automation: invalid delivery intent")
+			}
+			rec.Delivery.OwnerPrincipalID = rec.Principal
+			rec.Delivery.OwnerContextID = rec.Principal
+			if err := writeJSONAtomic(path, &rec); err != nil {
+				return err
+			}
 		}
 		if !rec.Sent {
 			rec.path = path
@@ -717,6 +758,7 @@ func (s *eventStore) resume(e *routines.Engine, o commodel.RoutineOccurrence, sc
 			}
 			if err := s.deliver(o.Job.PrincipalID, commodel.Delivery{
 				ID: id, IdempotencyKey: id,
+				OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID,
 				ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID,
 				Channel: schedule.Channel, ChatID: schedule.ChatID,
 				TaskID: o.Job.TaskID, TopicID: o.Job.TopicID,

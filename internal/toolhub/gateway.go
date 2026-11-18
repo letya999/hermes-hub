@@ -153,6 +153,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/memory-capture", g.gate().background(http.HandlerFunc(g.serveMemoryCapture)))
 	mux.Handle("/v1/memory-context", g.gate().interactive(http.HandlerFunc(g.serveMemoryContext)))
 	mux.Handle("/v1/rights/decide", g.gate().interactive(http.HandlerFunc(g.serveRightsDecide)))
+	mux.Handle("/v1/admin/revocations", http.HandlerFunc(g.servePrincipalRevocation))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", g.gate().background(http.HandlerFunc(g.serveAdminDiagnose)))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))
@@ -547,8 +548,12 @@ func (g *Gateway) protect(path string) http.Handler {
 		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
 		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
 		if path == RunEndpointPath {
+			// The endpoint — never the client — asserts run scope; the marker
+			// reaches the detached tool context through RequestExtra.Header.
+			r.Header.Set(api.HeaderRunEndpoint, "1")
 			projection.runHandler.ServeHTTP(w, r)
 		} else {
+			r.Header.Del(api.HeaderRunEndpoint)
 			projection.handler.ServeHTTP(w, r)
 		}
 	})

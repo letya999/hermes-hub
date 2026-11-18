@@ -25,6 +25,10 @@ type BackendResult struct {
 	// identity or a Slack channel plus message timestamp). It is metadata only
 	// and never carries a credential value.
 	Receipt string
+	// CleanupError is a bounded teardown class (for example a remote session
+	// close failure) that must not mask an already-delivered provider result:
+	// the business outcome is known, only cleanup failed.
+	CleanupError string
 }
 
 // ToolBackend is deliberately narrower than an MCP server: the gateway owns
@@ -248,6 +252,41 @@ func ValidateBackendEndpoint(raw string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: backend URL must be private", ErrInvalid)
+}
+
+// CanonicalBackendURL normalizes an operator-pinned private endpoint so the
+// immutable Source URL and the connection's mcp_endpoint compare byte-equal:
+// lowercased scheme and host plus the escaped path, nothing else rewritten.
+func CanonicalBackendURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("%w: backend endpoint URL", ErrInvalid)
+	}
+	return u.Scheme + "://" + strings.ToLower(u.Host) + u.EscapedPath(), nil
+}
+
+// backendRoundTripper assembles the private MCP hop: an SSRF-guarded dial
+// when no transport was injected, the pinned legacy protocol version, then
+// either the per-connection credential headers pinned to the endpoint origin
+// or — only when the connection declares none — the shared backend bearer.
+func backendRoundTripper(base http.RoundTripper, endpoint string, headers map[string]string, sharedToken string) http.RoundTripper {
+	if base == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		transport.DialContext = BackendDial
+		base = transport
+	}
+	rt := http.RoundTripper(LegacyMCPRoundTripper{Base: base})
+	if u, err := url.Parse(endpoint); err == nil {
+		// Always wrap: with an empty header set nothing is injected, but the
+		// 8 MiB response cap then covers every private call, not only the
+		// credentialed ones.
+		rt = RemoteHeaderRoundTripper{Base: rt, Origin: RequestOrigin(u), Headers: headers}
+	}
+	if len(headers) == 0 && sharedToken != "" {
+		rt = bearerRoundTripper{Base: rt, token: sharedToken}
+	}
+	return rt
 }
 
 // MCPBackend speaks only MCP over the private endpoint; ToolHive remains the
@@ -474,22 +513,24 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	if err := ValidateBackendEndpoint(endpoint); err != nil {
 		return BackendResult{}, err
 	}
+	// Declared http_header credentials ride the origin-pinned round tripper;
+	// the shared backend bearer is only the credential-less fallback, so one
+	// connection's token can never impersonate another's.
+	headers, err := CredentialHeaders(effective.Definition, environment)
+	if err != nil {
+		return BackendResult{}, err
+	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "hermes-toolhub-backend", Version: "0.2.0"}, nil)
 	httpClient := b.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	clientCopy := *httpClient
-	baseTransport := http.RoundTripper(http.DefaultTransport)
-	if httpClient.Transport != nil {
-		baseTransport = httpClient.Transport
-	}
 	// Serena 1.5.x and other established MCP servers speak the latest legacy
 	// protocol. ToolHub only needs request/response calls, so pin this backend
 	// hop to that version instead of letting the SDK's newer handshake break
 	// otherwise compatible servers.
-	baseTransport = LegacyMCPRoundTripper{Base: baseTransport}
-	clientCopy.Transport = bearerRoundTripper{Base: baseTransport, token: b.Token}
+	clientCopy.Transport = backendRoundTripper(httpClient.Transport, endpoint, headers, b.Token)
 	transport := &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: &clientCopy, DisableStandaloneSSE: true}
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {

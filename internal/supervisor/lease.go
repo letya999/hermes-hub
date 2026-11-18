@@ -288,6 +288,12 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		m.mu.Unlock()
 		containerID, ownershipErr := m.ownedContainerID(ctx, snapshot)
 		if errors.Is(ownershipErr, ErrRuntimeMissing) {
+			if m.usingKubernetes() {
+				if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+					lock.Unlock()
+					return err
+				}
+			}
 			m.mu.Lock()
 			if !m.runtimeDesiredLocked(runtime) && runtime.Generation == snapshot.Generation {
 				runtime.State, runtime.IdleDeadline, runtime.Ownership = Stopped, time.Time{}, "absent"
@@ -320,23 +326,29 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		runtime.State = Stopping
 		container := containerID
 		m.mu.Unlock()
-		_, err := m.command(ctx, "stop", "--time", "30", container)
-		if err != nil {
-			// A runtime may exit after the ownership check and before Docker stop.
-			// Only an exact-ID stopped-state observation can resolve that race.
-			if out, stateErr := m.command(ctx, "inspect", "--format", "{{.State.Running}}", container); stateErr == nil && strings.TrimSpace(string(out)) == "false" {
-				err = nil
+		var err error
+		if m.usingKubernetes() {
+			err = m.removeOwnedRuntime(ctx, snapshot)
+		} else {
+			_, err = m.command(ctx, "stop", "--time", "30", container)
+			if err != nil {
+				// A runtime may exit after the ownership check and before Docker stop.
+				// Only an exact-ID stopped-state observation can resolve that race.
+				if out, stateErr := m.command(ctx, "inspect", "--format", "{{.State.Running}}", container); stateErr == nil && strings.TrimSpace(string(out)) == "false" {
+					err = nil
+				}
+			}
+			if err == nil {
+				_, err = m.command(ctx, "rm", "-f", container)
+			}
+			// A managed runtime's control-relay sidecar shares its generation; it is
+			// removed only after the runtime container is gone and always by the
+			// verified <name>-ctl ownership labels.
+			if err == nil {
+				err = m.removeOwnedSidecar(ctx, snapshot)
 			}
 		}
-		if err == nil {
-			_, err = m.command(ctx, "rm", "-f", container)
-		}
-		// A managed runtime's control-relay sidecar shares its generation; it is
-		// removed only after the runtime container is gone and always by the
-		// verified <name>-ctl ownership labels.
-		if err == nil {
-			err = m.removeOwnedSidecar(ctx, snapshot)
-		}
+
 		m.mu.Lock()
 		previous := snapshot
 		if err != nil {

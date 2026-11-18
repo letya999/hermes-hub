@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0095
 title: Recovery and visibility (M19 stage 3)
-status: verified-live
+status: done
 branch: feat/m19-execution-chain-reliability
 updated: 2026-10-14
 phase: accepted

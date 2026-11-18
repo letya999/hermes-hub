@@ -1,8 +1,12 @@
 ---
 description: Put channel-neutral routing before isolated, on-demand Hermes jobs.
-last_verified: 2026-09-10
+last_verified: "2026-11-15"
 ---
 # ADR-0007: Communication gateway and scoped Hermes jobs
+
+Status: accepted.
+
+**Amended by:** [ADR-0025](ADR-0025-context-parallel-gateway-workers.md) (bounded worker pool replaces global concurrency one), [ADR-0090](ADR-0090-conversation-parallel-lanes.md) (conversation lanes inside a context), [ADR-0091](ADR-0091-root-services-sqlite-storage.md) (SQLite sidecar store joins the file spool). The gateway/job-context/identity-mapping core remains current.
 
 Accepted 2026-09-10.
 

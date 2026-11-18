@@ -1,11 +1,13 @@
 ---
 description: "Ограниченный OAuth и отсутствие runtime платформ."
-last_verified: "2026-09-18"
+last_verified: "2026-11-15"
 ---
 
 # ADR-0064 (imported from services/credential-broker ADR-0005): Ограниченный OAuth и отсутствие runtime платформ
 
 Status: accepted (imported from services/credential-broker).
+
+**Traceability:** [SPEC-0065](../../specs/active/SPEC-0065-credential-broker-dynamic-contracts.md), broker module `services/credential-broker`.
 
 ## Контекст
 

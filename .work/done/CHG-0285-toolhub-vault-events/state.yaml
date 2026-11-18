@@ -1,0 +1,53 @@
+schema: 1
+change: CHG-0285
+title: "ToolHub vault and trusted events"
+status: done
+branch: feat/m32-track-2
+updated: "2026-11-15"
+phase: done
+adr: [ADR-0095, ADR-0097]
+spec: SPEC-0098
+requirements: [M1, M2, M4, M5]
+depends_on: [CHG-0281]
+issue_dependencies: "../CHG-0281-m32-per-space-memory-plane/github-issues.json"
+github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
+github_milestone_number: 43
+github_issues: [513, 514, 516, 517]
+design_status: accepted
+implementation_status: in_progress
+slices:
+  M1: committed_205062ce
+  M2: committed_028f0b2a
+  M4: committed_fcc6fd89
+  M5: implemented_pending_container_and_ci_acceptance
+historical_slices:
+  S4.1-vault: in_progress
+  S4.2-events: not_started
+  S4.3-run: in_progress
+validation:
+  documents: passed_2026-11-05
+  just_check: failed_2026-11-05
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "2026-11-06 integration #517: /v1/memory-context now requires current memory.read on memory/CORE.md and memory.search on the full memory tree through Store.Decide, independently of model tool visibility. It fails closed for missing/revoked/scoped grants or unavailable PDP before vault resolution, checks again under the per-user vault lock and before response. TestAuditMemoryContextRequiresReadAuthority and TestMemoryContextRechecksRightsAtVaultRead pass, as do the full internal/toolhub package, targeted memory-context race and just check. Synthetic temporary-vault tests only; container/CI acceptance remains pending."
+  - "2026-11-06 #516 implementation in feat/m32-track-2: communication persists accepted-turn and completed-run capture records in its spool, replays after restart and sends over a service-authenticated HTTP boundary to ToolHub; ToolHub verifies supervisor's historical job/run metadata and SHA-256 content hashes, user/environment/audience/provenance/sensitivity, current memory.enabled and memory.remember before per-user vault commit. Supervisor retains minimal hash/identity capture context after terminal compaction without prompt/reply bodies. Lost-ack replay, cross-user/forged fields, revoke/disable and crash-gap recovery have synthetic temporary-vault HTTP tests. No live container/provider acceptance is claimed; Docker gate deferred by track instruction to #526."
+  - "2026-11-06 #516 verification: go test -p 1 ./internal/commodel ./internal/communication ./internal/runtime ./internal/supervisor ./internal/toolhub ./internal/toolhub/api — exit 0. After final recovery/sensitivity edits, scoped go test -p 1 ./internal/communication ./internal/supervisor ./internal/toolhub -run 'TestCapture|TestCompletedCapture|TestJobStatusServesRunContext|TestTerminalJobsCompacted|TestJobRecordHasNoPromptText' -count=1 — exit 0; same scope with -race — exit 0. Coverage/just check remains pending for full chain. Synthetic httptest plus temporary vault is not container/provider integration evidence."
+  - "2026-11-06 #516 hardening: a rights-ledger read error now propagates from the common Decide path, so capture returns transient unavailable and the spool retries rather than permanently settling an authorization denial. Terminal outbox recovery repeats after spool receipt replay; sensitive turns do not enter the memory outbox. Added regression tests for ledger outage retry, the pre-apply crash window and sensitive exclusion."
+  - "2026-11-05 #513 ToolHub vault resolver (worktree m32-track-2, branch feat/m32-track-2, base 6eae50d4): production NewEndpointHandler consumes HUB_VAULTS_BY_PRINCIPAL, builds a VaultResolver over the server-rendered bindings root and attaches it to Gateway.Vaults; startup fails before serving on a missing/non-dir/symlinked root. Resolve(principal, environment) requires an identity-valid principal present in the scanned binding table plus a live published passport matching space+environment with memory.enabled; only then is the vault opened under that user's own lock. Model/caller paths are never consulted. Regression coverage in vault_resolver_test.go: two synthetic users isolated with distinct markers, wrong environment, unknown principal, traversal-shaped id, symlinked binding, non-dir binding, forged space claim, read-before-open ordering and per-user lock independence; startup wiring asserted via EndpointConfigFromEnv+NewEndpointHandler against synthetic roots."
+  - "2026-11-05 #513 commands: go test ./internal/toolhub ./internal/vault — ok. Scoped own coverage: internal/toolhub 85.9% statements; vault_resolver.go 90-100% per function. just lint — exit 0. just config-check — exit 0 (TestDeploymentConfigurationContract). just docs-check — exit 1: PRE-EXISTING at base 6eae50d4, docs/rbac.md and docs/services/hubctl.md last_verified 2026-11-04 < last commit 2026-11-05; files untouched by this change; devcheck requires a real review to bump, left for the main session. just check — exit 1 at go-check: cmd/devcheck fails on the same pre-existing drift; internal/{commodel,communication,memory/replay,memory/search,memory/vacuum} hit Windows fork/exec Access-denied flakes and internal/{mediasvc,runtime} hit timing flakes — all six pass on isolated reruns; internal/toolhub and internal/vault passed inside the coverage run. just security not run (no dependency changes; go mod tidy -diff clean inside lint). Docker image gates deferred to CI per AGENTS; no image-side contract changed."
+  - "2026-11-05 #513 remaining limits: no public/model memory tool is connected (needs #514 exact-run admission, then #515/#517/#518); communication-owned capture/night worker and runtime-local memory paths unchanged; same-source double-binding across two principals is not detectable at scan time (each resolve still requires the principal's own enrolled passport); integrated two-user/fault acceptance remains #526; this is not a memory-availability cutover claim."
+  - "2026-11-05 #514 exact-run memory admission (worktree m32-track-2, branch feat/m32-track-2): a memory.* call now requires the published passport gate AND a verified live private run. New api.RunContext is the typed lifecycle record; supervisor GET /v1/jobs/<id> was extended (additive) to serve run_id, session_id, scope_id, trigger, channel, environment (manager config), runtime_generation (job's dispatch stamp) and current_generation (binding's live generation under the manager lock). api.SupervisorRunAuthority reads it over the existing HUB_RUNTIME_SUPERVISOR_URL + HUB_COMMUNICATION_AUTH channel, wired as Gateway.Runs in NewEndpointHandler. requireMemoryAdmission sits inside AuthorizeProjectedCall — direct, CLI and nested calls share it; RunKind classifies private/group/background and only private admits. Correlation headers select the record, never fill it. Regression TestMemoryRunCannotBorrowOwnerAuthority covers concurrent group run, background/system triggers, foreign principal, stale/current generation mismatch, wrong environment/context/runtime, alias record, completed/uncertain/approval-blocked, forged run id, unknown job, missing claim halves, arg-smuggled ids, runless job and absent authority — all denied before backend."
+  - "2026-11-05 #514 commands: go test ./internal/toolhub ./internal/toolhub/api ./internal/supervisor — ok (Windows fork/exec flake on first toolhub binary run; rerun green). Coverage: toolhub 86.0% statements, supervisor 85.3%, api 82.0% (per-package floor 75, aggregate floor 85); memory_run.go and jobStatus 100%. gofmt/vet/staticcheck/gosec on changed packages — clean; go mod tidy -diff clean. just lint — exit 1 on Windows compile.exe fork/exec flake in untouched internal/routines; every leg re-run individually passed (format, vet on changed pkgs, tidy, staticcheck, gosec). just config-check — exit 0. just docs-check — exit 1 on the same PRE-EXISTING rbac.md/hubctl.md drift as #513 (untouched; requires real review, left for main session). just check — killed at go-check after cmd/devcheck failed on the pre-existing drift; supervisor and toolhub passed inside the coverage run before interruption. Mock/fake authority used in tests — no live supervisor integration claimed. Docker gates deferred to CI; no image-side contract changed."
+  - "2026-11-05 #514 remaining limits: no public memory tool or vault read wired yet (#515); capture/exact-run capture correlation and removal of the shared run-scope/current file remain open; background/system runs have an explicit RunKind but no admit path by design; authority lookup adds one bounded supervisor call per memory call admission (5s timeout, no cache); integrated fault acceptance remains #526."
+  - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
+  - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
+  - "2026-11-05 GitHub planning: milestone 43 and issues 513, 514, 516, 517 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
+  - "2026-11-05: Audit reconfirms no production ToolHub reader for HUB_VAULTS_BY_PRINCIPAL; local agenttools memory backend, shared run-scope and communication-owned capture/night worker remain. Mount-only work is not accepted as a functional cutover."
+  - "2026-11-04: ToolHub compose now binds only enrolled memory-enabled users' vaults under per-principal paths; two-user mount regression passes. Runtime compose, MountPlan and both supervisor spawn paths no longer mount /vault, with focused stack and full supervisor tests passing. Communication and OpenKnowledge still have legacy vault access; ToolHub memory operations and event transport are not yet wired."
+remaining: [implementation, quality_gates, live_acceptance]
+limitations:
+  - "ToolHub now serves memory_search (#515), but CORE/recall and memory_card still have old paths pending #517/#518."
+  - "The shared run-scope/current file and communication-owned CORE/recall remain until #517; ToolHub capture has synthetic HTTP/temp-vault evidence only until #526."
+

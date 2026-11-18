@@ -45,7 +45,8 @@ var (
 		_, err := net.LookupHost(host)
 		return err
 	}
-	managedDialTCP = func(address string) error {
+	managedLookupIPs = net.LookupHost
+	managedDialTCP   = func(address string) error {
 		conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 		if err != nil {
 			return err
@@ -98,6 +99,15 @@ func verifyManagedIsolation(hermesHome string) error {
 		_ = file.Close()
 		return fmt.Errorf("managed effective config is writable")
 	}
+	// The published SOUL rides a read-only projection whenever one exists; on
+	// Kubernetes it reaches the home through a symlink, so a writable entry
+	// means the projection was replaced by something the agent could edit.
+	if soul := filepath.Join(hermesHome, "SOUL.md"); fileExists(soul) {
+		if file, err := os.OpenFile(soul, os.O_WRONLY|os.O_APPEND, 0); err == nil { // #nosec G703 -- fixed managed layout names
+			_ = file.Close()
+			return fmt.Errorf("managed effective SOUL is writable")
+		}
+	}
 	// Hermes loads $HERMES_HOME/.env (and .op.env) with override=True at gateway
 	// start and reloads it per turn: either file would re-point pinned discovery
 	// or proxy env after this preflight. Both must be absent, not merely empty —
@@ -121,12 +131,21 @@ func verifyManagedIsolation(hermesHome string) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("managed scope check: %w", err)
 	}
-	ipv4, ipv6, err := managedReadRoutes()
-	if err != nil {
-		return fmt.Errorf("managed route tables unavailable: %w", err)
-	}
-	if hasDefaultRouteIPv4(ipv4) || hasDefaultRouteIPv6(ipv6) {
-		return fmt.Errorf("managed agent network has a default route")
+	switch os.Getenv("HUB_EXECUTION_SUBSTRATE") {
+	case "", "docker":
+		ipv4, ipv6, err := managedReadRoutes()
+		if err != nil {
+			return fmt.Errorf("managed route tables unavailable: %w", err)
+		}
+		if hasDefaultRouteIPv4(ipv4) || hasDefaultRouteIPv6(ipv6) {
+			return fmt.Errorf("managed agent network has a default route")
+		}
+	case "kubernetes":
+		if err := verifyKubernetesIsolationReceipt(); err != nil {
+			return err
+		}
+	default:
+		return errors.New("unrecognized managed execution substrate")
 	}
 	for _, host := range managedDeniedHosts {
 		if err := managedLookupHost(host); err == nil {

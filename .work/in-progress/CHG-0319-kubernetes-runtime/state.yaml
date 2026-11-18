@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0319
+title: Optional Kubernetes runtime substrate
+status: in_progress
+branch: feat/m9-k8s-runtime
+updated: 2026-11-17
+github_issue: 58
+phase: review
+source_sha: 6b7ad876e10d0563016f43d4c1af665a3c193167
+operator_spike: rejected_for_runtime_spawning
+validation:
+  operator_chart_render: passed
+  backend_regression: passed
+  helm_contract: passed
+  dependency_security: passed
+  check: passed
+  affected_packages: passed
+  live_kind: passed
+  native_message_and_resume: passed
+  runtime_class: passed
+  network_policy_enforcement: passed
+  staged_secret_scan: passed
+  local_sast: limited_toolchain_support
+  remote_ci: not_run
+cleanup:
+  kind_cluster: removed
+  fixture_image: removed
+  docker_clean: passed
+remaining:
+  - Owner-authorized publication and remote CI acceptance.
+  - Merge after review; move this record to done on the merge date.

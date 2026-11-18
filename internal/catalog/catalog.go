@@ -26,7 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "41"
+const Release = "42"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"
@@ -156,9 +156,13 @@ var infraServices = map[string]Service{
 	"hub-media":           {Kind: "infra", Instances: "per-stack", DependsOn: []string{"credential-broker"}},
 	"hub-stt":             {Kind: "infra", Instances: "per-stack"},
 	"hub-tts":             {Kind: "infra", Instances: "per-stack"},
-	"browser":             {Kind: "infra", Instances: "per-space"},
-	"hosting":             {Kind: "infra", Instances: "per-space-env", DependsOn: []string{"workload-controller"}},
-	"open-knowledge":      {Kind: "infra", Instances: "per-space"},
+	// The bundled identity hub pair (ADR-0100): ZITADEL on the one shared
+	// postgres. Both are infra-owned; iam.mode=bundled is what emits them.
+	"hub-postgres":   {Kind: "infra", Instances: "per-stack"},
+	"identity-hub":   {Kind: "infra", Instances: "per-stack", DependsOn: []string{"hub-postgres"}},
+	"browser":        {Kind: "infra", Instances: "per-space"},
+	"hosting":        {Kind: "infra", Instances: "per-space-env", DependsOn: []string{"workload-controller"}},
+	"open-knowledge": {Kind: "infra", Instances: "per-space"},
 }
 
 func sorted(values []string) []string {

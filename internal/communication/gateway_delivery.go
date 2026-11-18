@@ -24,8 +24,11 @@ type editThrottle struct {
 	last map[int64]time.Time
 }
 
-func (g *Gateway) queueDelivery(ctx context.Context, key string, chatID, topicID int64, text string) error {
-	return g.queueDeliveryChannel(ctx, key, "telegram_bot", chatID, topicID, text)
+// queueDelivery enqueues a standalone channel reply. principal/contextID are
+// the verified owner scope the revocation stage matches on — callers pass the
+// resolved pair (or empties for an unverified sender, which stays ownerless).
+func (g *Gateway) queueDelivery(ctx context.Context, principal, contextID, key string, chatID, topicID int64, text string) error {
+	return g.queueDeliveryChannel(ctx, principal, contextID, key, "telegram_bot", chatID, topicID, text)
 }
 
 // deliveryLang resolves the owning user's language for an outbound record.
@@ -52,12 +55,12 @@ func (g *Gateway) deliveryLang(d *Delivery) locale.Lang {
 
 // queueDeliveryChannel is queueDelivery for non-Telegram surfaces: command
 // replies on the mock channel must capture into mock-sent, not call Telegram.
-func (g *Gateway) queueDeliveryChannel(_ context.Context, key, channel string, chatID, topicID int64, text string) error {
+func (g *Gateway) queueDeliveryChannel(_ context.Context, principal, contextID, key, channel string, chatID, topicID int64, text string) error {
 	id := key
 	if id == "" {
 		id = newID()
 	}
-	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, Channel: channel, ChatID: chatID, TopicID: topicID, Text: text, CreatedAt: g.now().UTC()})
+	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, OwnerPrincipalID: principal, OwnerContextID: contextID, Channel: channel, ChatID: chatID, TopicID: topicID, Text: text, CreatedAt: g.now().UTC()})
 }
 
 func (g *Gateway) worker(ctx context.Context) {
@@ -178,17 +181,20 @@ func (g *Gateway) worker(ctx context.Context) {
 				}
 				var delivery *Delivery
 				if deliver {
-					delivery = &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()}
+					delivery = &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()}
 				}
 				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
 					continue
 				}
+				if outcome.Status == "failed" {
+					g.alertJobFailed(*job)
+				}
 
 			} else {
 				var delivery *Delivery
 				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
-					delivery = &Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()}
+					delivery = &Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()}
 				}
 				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
@@ -322,8 +328,11 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 	}
-	if delivery.OwnerPrincipalID != "" {
-		if !g.automationDeliveryTarget(delivery.OwnerPrincipalID, *delivery) || g.config.ToolHubURL == "" || os.Getenv("HUB_SUPERVISOR_AUTH") == "" || !g.sendRight(*delivery, delivery.OwnerPrincipalID) {
+	if delivery.Automation {
+		// Service-boundary records re-verify at send time: the intake checks
+		// already ran, but a disabled user, a removed channel binding or a
+		// revoked send-right since then must still fence the outbound send.
+		if delivery.OwnerPrincipalID == "" || !g.automationDeliveryTarget(delivery.OwnerPrincipalID, *delivery) || g.config.ToolHubURL == "" || os.Getenv("HUB_SUPERVISOR_AUTH") == "" || !g.sendRight(*delivery, delivery.OwnerPrincipalID) {
 			g.uncertainDelivery(ctx, *delivery)
 			return
 		}
@@ -354,7 +363,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			}
 		}
 	}
-	if delivery.JobID != "" && delivery.OwnerPrincipalID == "" {
+	if delivery.JobID != "" && !delivery.Automation {
 		mapping, found, err := g.spool.Mapping(delivery.JobID)
 		if err != nil {
 			g.uncertainDelivery(ctx, *delivery)

@@ -23,6 +23,11 @@ check:
 test +packages:
     go run ./cmd/devcheck test {{packages}}
 
+# Portable chart contracts use the real Helm renderer; no cluster or accounts.
+helm-check:
+    helm lint deploy/helm/hermes-hub --strict
+    go test -short -run '^TestHelmChartContract$' ./internal/devcheck
+
 # Explicit exhaustive local fallback when CI is unavailable.
 [unix]
 check-full: go-check lint docs-check config-check

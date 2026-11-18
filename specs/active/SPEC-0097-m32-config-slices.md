@@ -1,6 +1,6 @@
 ---
 description: Frozen issue-sized contracts for remaining M32 passport configuration work.
-last_verified: 2026-11-07
+last_verified: "2026-11-15"
 ---
 # SPEC-0097: M32 configuration slices
 

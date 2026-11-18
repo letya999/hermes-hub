@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -37,16 +38,27 @@ func limitWindow(per string) time.Duration {
 	}
 }
 
-func (m *relayMeter) load() {
+// load primes the in-memory counters from the durable file. A missing file is
+// a fresh window; an unreadable or corrupt one returns an error so admit can
+// fail closed instead of granting spend the durable record may already show.
+func (m *relayMeter) load() error {
 	if m.data != nil {
-		return
+		return nil
 	}
-	m.data = map[string]relayUsageRecord{}
 	b, err := os.ReadFile(m.path) // #nosec G304 -- operator-mounted state path
-	if err != nil {
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		m.data = map[string]relayUsageRecord{}
+		return nil
 	}
-	_ = json.Unmarshal(b, &m.data)
+	if err != nil {
+		return err
+	}
+	data := map[string]relayUsageRecord{}
+	if err := json.Unmarshal(b, &data); err != nil {
+		return fmt.Errorf("meter state corrupt: %w", err)
+	}
+	m.data = data
+	return nil
 }
 
 func (m *relayMeter) clock() time.Time {
@@ -66,14 +78,17 @@ func (m *relayMeter) key(name string, limit stack.ModelLimit, owner string, now 
 }
 
 // exhausted reports whether any declared window is already full for the
-// principal (shared scope) or this owner (personal scope).
+// principal (shared scope) or this owner (personal scope). It is the cheap
+// pre-skip before credential work; admit remains the atomic gate at dispatch.
 func (m *relayMeter) exhausted(name string, limits []stack.ModelLimit, owner string) bool {
 	if len(limits) == 0 {
 		return false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.load()
+	if m.load() != nil {
+		return true // durable state unreadable: stay closed, never spend blind
+	}
 	now := m.clock().Unix()
 	for _, limit := range limits {
 		if rec, ok := m.data[m.key(name, limit, owner, now)]; ok && rec.Count >= limit.Amount && rec.Until > now {
@@ -83,18 +98,27 @@ func (m *relayMeter) exhausted(name string, limits []stack.ModelLimit, owner str
 	return false
 }
 
-// charge reserves the attempt against every declared window: one request each,
-// plus the conservative token estimate when a tokens limit exists. A shared
-// key budget race stays safe because the counter moves before the next caller
-// is admitted.
-func (m *relayMeter) charge(name string, limits []stack.ModelLimit, owner string, body []byte) {
+// admit is the single atomic gate before a provider attempt: load, check
+// every declared window, reserve the attempt (one request per window plus the
+// conservative token estimate), persist, and only then let dispatch proceed.
+// A read, capacity or write failure refuses the attempt — nothing reaches the
+// provider unreserved. On a save failure the in-memory charge stays so a
+// repeated attempt keeps spending the same reservation conservatively.
+func (m *relayMeter) admit(name string, limits []stack.ModelLimit, owner string, body []byte) error {
 	if len(limits) == 0 {
-		return
+		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.load()
+	if err := m.load(); err != nil {
+		return fmt.Errorf("%w: meter state unavailable", errQuota)
+	}
 	now := m.clock().Unix()
+	for _, limit := range limits {
+		if rec, ok := m.data[m.key(name, limit, owner, now)]; ok && rec.Count >= limit.Amount && rec.Until > now {
+			return errQuota
+		}
+	}
 	for k, rec := range m.data {
 		if rec.Until <= now {
 			delete(m.data, k)
@@ -113,19 +137,24 @@ func (m *relayMeter) charge(name string, limits []stack.ModelLimit, owner string
 		rec.Count += n
 		m.data[key] = rec
 	}
-	m.save()
+	if err := m.save(); err != nil {
+		return fmt.Errorf("%w: meter state write failed", errQuota)
+	}
+	return nil
 }
 
-func (m *relayMeter) save() {
+var errQuota = errors.New("local model limit spent")
+
+func (m *relayMeter) save() error {
 	b, err := json.Marshal(m.data)
 	if err != nil {
-		return
+		return err
 	}
 	tmp := m.path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0600); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmp, m.path) // counters stay conservative on rename failure
+	return os.Rename(tmp, m.path) // counters stay conservative on rename failure
 }
 
 // estimatedTokens reserves the conservative request cost: body bytes at six

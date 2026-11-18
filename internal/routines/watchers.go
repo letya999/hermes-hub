@@ -431,7 +431,7 @@ func (e *Engine) applyProbeResultAtLocked(result ProbeResult, now time.Time) err
 			}
 		}
 	}
-	if d := result.Delivery; d != nil && (d.OccurrenceID != o.Job.ID || d.JobID != "" || d.Channel != o.Job.Channel || d.ConversationID != o.Job.ConversationID || d.DeliveryTargetID != o.Job.DeliveryTargetID || d.ChatID != o.Job.ChatID || d.TaskID != o.Job.TaskID || d.TopicID != o.Job.TopicID || d.SlackChannel != o.Job.SlackChannel || d.SlackThread != o.Job.SlackThread) {
+	if d := result.Delivery; d != nil && (d.OccurrenceID != o.Job.ID || d.JobID != "" || d.OwnerPrincipalID != o.Job.PrincipalID || d.OwnerContextID != o.Job.ContextID || d.Channel != o.Job.Channel || d.ConversationID != o.Job.ConversationID || d.DeliveryTargetID != o.Job.DeliveryTargetID || d.ChatID != o.Job.ChatID || d.TaskID != o.Job.TaskID || d.TopicID != o.Job.TopicID || d.SlackChannel != o.Job.SlackChannel || d.SlackThread != o.Job.SlackThread) {
 		return errors.New("probe delivery audience mismatch")
 	}
 	if result.Delivery != nil {
@@ -603,7 +603,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 			if live.JobKind == "check" {
 				prefix = "check-"
 			}
-			d := commodel.Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, NotBefore: QuietDefer(schedule, now), CreatedAt: now.UTC()}
+			d := commodel.Delivery{ID: prefix + live.Job.ID, OccurrenceID: live.Job.ID, OwnerPrincipalID: live.Job.PrincipalID, OwnerContextID: live.Job.ContextID, Channel: live.Job.Channel, ConversationID: live.Job.ConversationID, DeliveryTargetID: live.Job.DeliveryTargetID, ChatID: live.Job.ChatID, TaskID: live.Job.TaskID, TopicID: live.Job.TopicID, SlackChannel: live.Job.SlackChannel, SlackThread: live.Job.SlackThread, Text: text, NotBefore: QuietDefer(schedule, now), CreatedAt: now.UTC()}
 			if schedule.DeliverMode == "artifact" {
 				// The emitted value is the file body; staging rides the
 				// artifact blob path channels already drain (SPEC-0037).
@@ -655,7 +655,7 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 	// never silences the next identical failure.
 	item.PendingFailureSHA256 = digest
 	item.UpdatedAt = now.UTC()
-	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, Kind: "routine-failure", OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
+	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, Kind: "routine-failure", OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
 	if nd, err := e.normalizeDelivery(d); err == nil {
 		_ = e.deps.Delivery.EnqueueDelivery(nd)
 	}

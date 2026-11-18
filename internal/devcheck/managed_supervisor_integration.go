@@ -3,6 +3,7 @@
 package devcheck
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +21,10 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -44,6 +48,10 @@ func ManagedSupervisorCanary(ctx context.Context, image string) (result error) {
 	suffix := hex.EncodeToString(id)
 	userID := "mg" + suffix
 	env := "prod"
+	containerRuntime := strings.TrimSpace(os.Getenv("HUB_CONTAINER_RUNTIME"))
+	if containerRuntime == "" {
+		containerRuntime = "runc"
+	}
 	agentNet := "hermes-hub-agent-" + userID + "-" + env
 	sharedNet, controlNet := "hermes-mgsup-runtime-"+suffix, "hermes-mgsup-control-"+suffix
 	containers, ownedNetworks := []string{}, []string{}
@@ -106,7 +114,14 @@ HTTPServer(('0.0.0.0',8090),Handler).serve_forever()`
 	const cliproxyFixture = `import json
 from http.server import BaseHTTPRequestHandler,HTTPServer
 class Handler(BaseHTTPRequestHandler):
+ def do_GET(self):
+  body=json.dumps({"object":"list","data":[{"id":"synthetic","object":"model"}]}).encode()
+  self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
  def do_POST(self):
+  request=self.rfile.read(int(self.headers.get('Content-Length') or 0))
+  if b'"stream":true' in request or b'"stream": true' in request:
+   body=b'data: {"id":"chatcmpl-canary","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"canary"},"finish_reason":null}]}\n\ndata: {"id":"chatcmpl-canary","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+   self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers(); self.wfile.write(body); return
   body=json.dumps({"id":"chatcmpl-canary","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"canary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}).encode()
   self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
  def log_message(self,*args): pass
@@ -166,7 +181,7 @@ sys.exit(1)`
 	if err != nil {
 		return err
 	}
-	cfg := supervisor.Config{SpacesRoot: root, Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600}
+	cfg := supervisor.Config{SpacesRoot: root, Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600, ContainerRuntime: containerRuntime}
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
 		// Namespace the fixed control bridge inside this fixture, preserving real Docker operations.
 		if len(args) != 0 && args[0] == "network" {
@@ -184,6 +199,13 @@ sys.exit(1)`
 		return err
 	}
 	binding := supervisor.Binding{PrincipalID: userID, ContextID: userID, RuntimeID: userID, RuntimeMode: "gateway", UserID: userID, OrganizationID: "personal", PolicyVersion: "canary", ContextRoot: contextRoot}
+	// The real channel path owns the cold spawn: a mock message traverses the
+	// gateway's durable spool and dispatch loops, and the supervisor's /v1/jobs
+	// admission spawns the runtime under the selected sandbox inside that
+	// request — no direct Ensure shortcut.
+	if err := managedMockChannelGate(ctx, m, cfg.RuntimeAuth, root, userID); err != nil {
+		return fmt.Errorf("mock channel admission: %w", err)
+	}
 	runtime, err := m.Ensure(ctx, binding)
 	if err != nil {
 		return fmt.Errorf("managed supervised spawn: %w", err)
@@ -250,6 +272,29 @@ sys.exit(1)`
 	if err != nil {
 		return err
 	}
+	hostConfig, ok := runtimeInspect["HostConfig"].(map[string]any)
+	if !ok || hostConfig["Runtime"] != containerRuntime {
+		return fmt.Errorf("managed runtime isolation mismatch: %v", hostConfig["Runtime"])
+	}
+	if containerRuntime != "runc" {
+		hosts := map[string]bool{}
+		extraHosts, _ := hostConfig["ExtraHosts"].([]any)
+		for _, raw := range extraHosts {
+			entry := fmt.Sprint(raw)
+			if strings.HasSuffix(entry, ":host-gateway") || strings.Contains(entry, "host.docker.internal:") {
+				return fmt.Errorf("sandbox runtime gained a host gateway: %s", entry)
+			}
+			name, _, found := strings.Cut(entry, ":")
+			if found {
+				hosts[name] = true
+			}
+		}
+		for _, required := range []string{"toolhub", "model-relay", "egress-relay"} {
+			if !hosts[required] {
+				return fmt.Errorf("sandbox runtime is missing private relay alias %s", required)
+			}
+		}
+	}
 	networks := map[string]any{}
 	if data, ok := runtimeInspect["NetworkSettings"].(map[string]any); ok {
 		if n, ok := data["Networks"].(map[string]any); ok {
@@ -270,6 +315,10 @@ sys.exit(1)`
 	relayInspect, err := inspect(runtime.Container + "-ctl")
 	if err != nil {
 		return err
+	}
+	relayHost, ok := relayInspect["HostConfig"].(map[string]any)
+	if !ok || relayHost["Runtime"] != "runc" {
+		return fmt.Errorf("control relay isolation drifted: %v", relayHost["Runtime"])
 	}
 	relayNets := relayInspect["NetworkSettings"].(map[string]any)["Networks"].(map[string]any)
 	if relayNets[agentNet] == nil || relayNets[controlNet] == nil {
@@ -303,6 +352,29 @@ sys.exit(1)`
 		if unauthResponse.StatusCode == http.StatusOK {
 			return fmt.Errorf("control relay exposed an unauthenticated runtime route")
 		}
+	}
+	execution := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope(userID, 11, userID, "canary"), JobID: "sandbox-managed-" + suffix, OrganizationID: "personal", UserID: userID, ActorID: userID, ScopeID: "user:" + userID, Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "sandbox-managed-" + suffix, Text: "sandbox contract probe"}
+	executionBody, err := json.Marshal(execution)
+	if err != nil {
+		return err
+	}
+	roundCtx, releaseRound := context.WithTimeout(ctx, 5*time.Minute)
+	defer releaseRound()
+	admitRequest, err := http.NewRequestWithContext(roundCtx, http.MethodPost, runtime.Address+"/v1/execute", strings.NewReader(string(executionBody)))
+	if err != nil {
+		return err
+	}
+	admitRequest.Header.Set("Authorization", "Bearer managed-canary-auth-0123456789abcdef")
+	admitRequest.Header.Set("Content-Type", "application/json")
+	admitResponse, err := http.DefaultClient.Do(admitRequest)
+	if err != nil {
+		return fmt.Errorf("sandbox Hermes execution unreachable: %w", err)
+	}
+	var outcome hubruntime.ExecuteResponse
+	err = json.NewDecoder(admitResponse.Body).Decode(&outcome)
+	_ = admitResponse.Body.Close()
+	if err != nil || admitResponse.StatusCode != http.StatusOK || outcome.Status != "completed" || !strings.Contains(outcome.Text, "canary") {
+		return fmt.Errorf("sandbox Hermes execution failed: HTTP %d status=%s event=%s run=%s text=%q error=%v", admitResponse.StatusCode, outcome.Status, outcome.LastEvent, outcome.RunID, outcome.Text, err)
 	}
 	// The upstream API server would arm attacker-chosen toolsets for a
 	// self-signed room dispatch/policy body; the relay must deny those keys
@@ -351,6 +423,9 @@ sys.exit(1)`
 		return err
 	}
 	if err := execCheck("failure", "context scope mount", "test", "-d", "/scope"); err != nil {
+		return err
+	}
+	if err := execCheck("success", "workspace write", "sh", "-c", "printf sandbox-runtime > /workspace/managed-sandbox-marker"); err != nil {
 		return err
 	}
 	envOut, envErr := exec.CommandContext(ctx, "docker", "exec", runtime.Container, "env").CombinedOutput()
@@ -455,6 +530,7 @@ sys.exit(1)`
 	for _, relay := range []struct{ name, alias string }{
 		{"hermes-mgsup-toolrelay-" + suffix, "toolhub"},
 		{"hermes-mgsup-modelrelay-" + suffix, "model-relay"},
+		{"hermes-mgsup-egressrelay-" + suffix, "egress-relay"},
 	} {
 		if _, err := docker("network", "connect", "--alias", relay.alias, agentNet2, relay.name); err != nil {
 			return fmt.Errorf("attach relay to second agent network: %w", err)
@@ -477,9 +553,25 @@ sys.exit(1)`
 	if err != nil {
 		return err
 	}
+	hostConfig2, ok := runtime2Inspect["HostConfig"].(map[string]any)
+	if !ok || hostConfig2["Runtime"] != containerRuntime {
+		return fmt.Errorf("secondary managed runtime isolation mismatch: %v", hostConfig2["Runtime"])
+	}
 	networks2 := runtime2Inspect["NetworkSettings"].(map[string]any)["Networks"].(map[string]any)
 	if len(networks2) != 1 || networks2[agentNet2] == nil {
 		return fmt.Errorf("secondary runtime joined unexpected networks: %v", networks2)
+	}
+	relay2Inspect, err := inspect(runtime2.Container + "-ctl")
+	if err != nil {
+		return err
+	}
+	relay2Host, ok := relay2Inspect["HostConfig"].(map[string]any)
+	if !ok || relay2Host["Runtime"] != "runc" {
+		return fmt.Errorf("secondary control relay isolation drifted: %v", relay2Host["Runtime"])
+	}
+	relay2Nets := relay2Inspect["NetworkSettings"].(map[string]any)["Networks"].(map[string]any)
+	if relay2Nets[agentNet2] == nil || relay2Nets[controlNet] == nil {
+		return fmt.Errorf("secondary control relay is not dual-homed: %v", relay2Nets)
 	}
 	if err := execCheck("failure", "sibling runtime resolution", "python", "-c", "import socket;socket.getaddrinfo('"+runtime2.Container+"',8080)"); err != nil {
 		return err
@@ -506,6 +598,26 @@ sys.exit(1)`
 	if runtime3.Generation == runtime.Generation {
 		return errors.New("managed respawn did not advance generation")
 	}
+	runtime3Inspect, err := inspect(runtime3.Container)
+	if err != nil {
+		return err
+	}
+	hostConfig3, ok := runtime3Inspect["HostConfig"].(map[string]any)
+	if !ok || hostConfig3["Runtime"] != containerRuntime {
+		return fmt.Errorf("respawned managed runtime isolation drifted: %v", hostConfig3["Runtime"])
+	}
+	relay3Inspect, err := inspect(runtime3.Container + "-ctl")
+	if err != nil {
+		return err
+	}
+	relay3Host, ok := relay3Inspect["HostConfig"].(map[string]any)
+	if !ok || relay3Host["Runtime"] != "runc" {
+		return fmt.Errorf("respawned control relay isolation drifted: %v", relay3Host["Runtime"])
+	}
+	marker, err := os.ReadFile(filepath.Join(contextRoot, "managed", env, "workspace", "managed-sandbox-marker"))
+	if err != nil || string(marker) != "sandbox-runtime" {
+		return fmt.Errorf("sandbox workspace state did not survive respawn: %q %v", marker, err)
+	}
 	if err := m.ReleaseBinding(binding); err != nil {
 		return err
 	}
@@ -524,7 +636,7 @@ sys.exit(1)`
 			return fmt.Errorf("managed container %s survived teardown", name)
 		}
 	}
-	fmt.Println("managed supervisor canary passed: ToolHub exposure admission/read, internal agent network, relay-only control route, isolation, restart/rollover/secondary parity and teardown")
+	fmt.Printf("managed supervisor canary passed on %s: mock-channel Hermes run, ToolHub admission, private relay pins, mounts, restart/rollover/secondary parity and teardown\n", containerRuntime)
 	return nil
 }
 
@@ -613,4 +725,166 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 		return "", err
 	}
 	return contextRoot, nil
+}
+
+// managedMockChannelGate drives the production channel pipeline end to end:
+// a real communication gateway (durable spool, dispatch workers and the
+// delivery loop) admits a /v1/mock/message, and the supervisor's /v1/jobs
+// admission cold-spawns the managed runtime under the selected sandbox inside
+// that request. The captured mock-sent delivery and the completed job mapping
+// are the durable proof the reply crossed the whole path; a repeated
+// client_id must never enqueue a second run.
+func managedMockChannelGate(ctx context.Context, m *supervisor.Manager, runtimeAuth, root, userID string) error {
+	supervisorSrv := httptest.NewServer(m.Handler())
+	defer supervisorSrv.Close()
+	spoolDir := filepath.Join(root, "gateway-spool")
+	gateway, err := communication.New(communication.Config{
+		Supervised:     true,
+		OrganizationID: "personal",
+		Users: []communication.User{{
+			ID: userID, Enabled: true, TelegramIDs: []int64{11},
+			RuntimeID: userID, PolicyVersion: "canary",
+		}},
+		TelegramToken: "synthetic-mock-channel-token",
+		// Dead loopback port: the real Telegram poll leg must never reach an
+		// external API inside the sandbox bench; only the mock channel is
+		// exercised.
+		APIBaseURL:  "http://127.0.0.1:9",
+		SpoolDir:    spoolDir,
+		RuntimeURL:  supervisorSrv.URL,
+		RuntimeAuth: runtimeAuth,
+		ControlAuth: "mock-channel-control-0123456789abcdef",
+		Workers:     2,
+		PollTimeout: time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("mock channel gateway: %w", err)
+	}
+	gatewayCtx, gatewayCancel := context.WithCancel(ctx)
+	gatewayDone := make(chan error, 1)
+	go func() { gatewayDone <- gateway.Run(gatewayCtx) }()
+	defer func() {
+		gatewayCancel()
+		select {
+		case <-gatewayDone:
+		case <-time.After(15 * time.Second):
+		}
+	}()
+	gatewaySrv := httptest.NewServer(gateway.Handler())
+	defer gatewaySrv.Close()
+	const chatID = int64(70001)
+	admit := func() (map[string]string, error) {
+		body, err := json.Marshal(map[string]any{
+			"chat_id":   chatID,
+			"text":      "sandbox channel probe",
+			"client_id": "mock-sandbox-" + userID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewaySrv.URL+"/v1/mock/message", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer mock-channel-control-0123456789abcdef")
+		req.Header.Set("X-Hub-Principal", userID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		var out map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("mock admission decode failed (HTTP %d): %w", resp.StatusCode, err)
+		}
+		if resp.StatusCode != http.StatusOK || out["job_id"] == "" || out["task_id"] == "" {
+			return nil, fmt.Errorf("mock admission rejected: HTTP %d %v", resp.StatusCode, out)
+		}
+		return out, nil
+	}
+	admitted, err := admit()
+	if err != nil {
+		return err
+	}
+	jobID := admitted["job_id"]
+	if !strings.HasPrefix(jobID, "mock-") {
+		return fmt.Errorf("unexpected mock job id %q", jobID)
+	}
+	receiptPath := filepath.Join(spoolDir, "mock-sent", "job-"+jobID+"-response.json")
+	mappingPath := filepath.Join(spoolDir, "mappings", jobID+".json")
+	deadline := time.Now().Add(8 * time.Minute)
+	for {
+		data, readErr := os.ReadFile(receiptPath)
+		if readErr == nil {
+			var receipt struct {
+				Principal string `json:"principal"`
+				Delivery  struct {
+					JobID   string `json:"job_id"`
+					TaskID  string `json:"task_id"`
+					Channel string `json:"channel"`
+					ChatID  int64  `json:"chat_id"`
+					Text    string `json:"text"`
+				} `json:"delivery"`
+			}
+			if err := json.Unmarshal(data, &receipt); err != nil {
+				return fmt.Errorf("mock receipt unreadable: %w", err)
+			}
+			d := receipt.Delivery
+			if receipt.Principal != userID || d.JobID != jobID || d.TaskID != admitted["task_id"] || d.Channel != "mock" || d.ChatID != chatID || !strings.Contains(d.Text, "canary") {
+				return errors.New("mock receipt owner/audience mismatch")
+			}
+			break
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("mock receipt unreadable: %w", readErr)
+		}
+		if mapping, mapErr := os.ReadFile(mappingPath); mapErr == nil {
+			var record struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(mapping, &record) == nil && (record.Status == "failed" || record.Status == "cancelled" || record.Status == "interrupted") {
+				return fmt.Errorf("mock channel job terminated without delivery: %s", record.Status)
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("mock channel delivery never reached mock-sent")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	mapping, err := os.ReadFile(mappingPath)
+	if err != nil {
+		return fmt.Errorf("mock channel job mapping missing: %w", err)
+	}
+	var record struct {
+		Status    string `json:"status"`
+		RunID     string `json:"run_id"`
+		SessionID string `json:"session_id"`
+		Channel   string `json:"channel"`
+	}
+	if err := json.Unmarshal(mapping, &record); err != nil || record.Status != "completed" || record.RunID == "" || record.SessionID == "" || record.Channel != "mock" {
+		return errors.New("mock channel did not complete a real run")
+	}
+	// Idempotent admission: the same client_id returns the same job without a
+	// second enqueue, so no second delivery may appear.
+	again, err := admit()
+	if err != nil {
+		return err
+	}
+	if again["job_id"] != jobID || again["task_id"] != admitted["task_id"] {
+		return errors.New("idempotent mock admission drifted")
+	}
+	time.Sleep(5 * time.Second)
+	entries, err := os.ReadDir(filepath.Join(spoolDir, "mock-sent"))
+	if err != nil {
+		return fmt.Errorf("mock outbox unreadable: %w", err)
+	}
+	if len(entries) != 1 {
+		return fmt.Errorf("idempotent client_id produced %d mock deliveries", len(entries))
+	}
+	return nil
 }

@@ -112,6 +112,16 @@ func writeModelRegistry(dir string, s Settings) error {
 	return writeModelRegistryRevision(dir, s, "")
 }
 
+// MaterializeModelRegistry projects the published registry for compute backends
+// that do not run the Compose renderer before spawning a runtime.
+func MaterializeModelRegistry(dir string, s Settings) error { return writeModelRegistry(dir, s) }
+
+// EnsureModelRelayAuth provisions the existing per-space relay bearers for a
+// compute backend without requiring a Compose render.
+func EnsureModelRelayAuth(dir string) error {
+	return ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth"))
+}
+
 func writeModelRegistryRevision(dir string, s Settings, revisionID string) error {
 	var reg *ModelRegistry
 	var err error

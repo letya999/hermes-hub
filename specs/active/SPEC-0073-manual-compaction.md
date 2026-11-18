@@ -1,6 +1,6 @@
 ---
 description: M17 owner-invoked context compaction — dual engine behind grants, upstream command semantics, turn-boundary safety.
-last_verified: 2026-10-24
+last_verified: "2026-11-15"
 ---
 # SPEC-0073: Manual compaction
 

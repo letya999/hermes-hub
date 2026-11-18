@@ -164,6 +164,7 @@ func (h *Host) runDreamingOccurrence(ctx context.Context, occurrence commodel.Ro
 		target := "telegram-" + strconv.FormatInt(chatID, 10)
 		_, err = h.outbox.enqueue(principal, commodel.Delivery{
 			ID: key, IdempotencyKey: key, Channel: "telegram_bot", ChatID: chatID,
+			OwnerPrincipalID: auth.PrincipalID, OwnerContextID: auth.ContextID,
 			ConversationID: target, DeliveryTargetID: target,
 			Text:      locale.T(h.langOf(principal), "memory.night-digest", day.Digest),
 			CreatedAt: h.now().UTC(),

@@ -4,7 +4,7 @@ last_verified: 2026-10-24
 ---
 # ADR-0075: Dual-engine context compaction and goal control
 
-Status: Proposed — pending owner acceptance; implementation not started.
+Status: accepted — implemented in M17 (CHG-0162), verified 2026-11-15.
 
 ## Context
 Issues #309 (manual compact), #310 (explicit automatic compaction policy), #311

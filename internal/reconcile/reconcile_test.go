@@ -185,6 +185,44 @@ func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
 	}
 }
 
+// The iam block parent flattens to a leaf of its own when the block
+// appears or vanishes (typed pointer, like config.hosting) — unconsumed,
+// it would classify rebuild-* and churn every service. Only the typed
+// leaves carry effects, and they recreate the gateway that owns the
+// HUB_OIDC_* env — never the runtime, never a global rebuild.
+func TestPlanIAMBlockLeavesTargetGateway(t *testing.T) {
+	services := map[string]passportview.ServiceSpec{
+		"hermes-runtime":    {Mode: "supervised"},
+		"communication-hub": {Mode: "shared"},
+		"identity-hub":      {Mode: "shared"},
+		"hub-postgres":      {Mode: "shared"},
+	}
+	actions := Plan([]passport.Change{
+		{Path: "config.iam", Before: "<none>", After: "", Effect: passport.EffectRebuild},
+		ch("config.iam.mode", "compose", passport.EffectRecreate),
+		ch("config.iam.issuer", "compose", passport.EffectRecreate),
+		ch("config.iam.client_id", "compose", passport.EffectRecreate),
+		ch("stack.services.identity-hub.mode", "stack", passport.EffectRebuild),
+		ch("stack.services.hub-postgres.mode", "stack", passport.EffectRebuild),
+	}, services)
+	got := map[string]bool{}
+	for _, action := range actions {
+		if action.Target == "*" || action.Target == "hermes-runtime" {
+			t.Fatalf("iam block effects must not rebuild all images or touch the runtime: %+v", actions)
+		}
+		got[string(action.Kind)+":"+action.Target] = true
+	}
+	for _, want := range []string{
+		"rebuild:identity-hub", "recreate:identity-hub",
+		"rebuild:hub-postgres", "recreate:hub-postgres",
+		"recreate:communication-hub",
+	} {
+		if !got[want] {
+			t.Fatalf("iam plan missing %s: %+v", want, actions)
+		}
+	}
+}
+
 func TestPlanStaticHostingAdditionSkipsEmptyImage(t *testing.T) {
 	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
 	actions := Plan([]passport.Change{

@@ -73,6 +73,8 @@ func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 	}
+	s.metrics().mcpDelta(1)
+	defer s.metrics().mcpDelta(-1)
 	s.proxy.ServeHTTP(w, r)
 }
 
