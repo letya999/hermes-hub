@@ -566,6 +566,34 @@
           "active"
         ]
       },
+      "PrincipalRevocationRequest": {
+        "type": "object",
+        "properties": {
+          "principal_id": {
+            "type": "string"
+          },
+          "context_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "principal_id",
+          "context_id"
+        ]
+      },
+      "PrincipalRevocation": {
+        "type": "object",
+        "properties": {
+          "grants": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "grants"
+        ]
+      },
       "AcquireLease": {
         "type": "object",
         "properties": {
