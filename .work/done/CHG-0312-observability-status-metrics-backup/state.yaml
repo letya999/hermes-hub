@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0312
 title: legible status + hubctl status + metrics/alerts + backup drill
-status: in_progress
+status: done
 branch: feat/m9-observability
-updated: 2026-11-16
-phase: validation
+updated: 2026-11-18
+phase: done
 github_milestone: M9 — Enterprise Readiness
 github_issue: "209,201,199,200(354 tail)"
 design_status: accepted
@@ -14,7 +14,7 @@ slices:
   S2-hubctl-status-201: done
   S3-metrics-alerts-199: done
   S4-backup-drill-200: done
-  S5-anomaly-watchers-354: deferred_no_budget
+  S5-anomaly-watchers-354: delivered_in_CHG-0326
 validation:
   documents: done
   just_check: passed
@@ -45,7 +45,7 @@ evidence:
   - "live S4: scheduled sweep wrote spaces/artem_main/archive/backups/backup-20261116T115425Z.zip (20MB, 753 entries, zero secret/env files), drill=ok checked=752; 'me' archive 643B drill=ok"
   - "live S4 edge: artem_two/local archive dirs are root-owned 755 -> err=unwritable_target recorded and rendered (was missing_source before fix)"
 remaining:
-  - "#354 anomaly watchers: out of budget, parked"
+  - "#354 anomaly watchers delivered as CHG-0326 on feat/m9-anomaly-watchers (9427ad63)"
   - "note: hubctl context restore-drill requires --user <profile> matching the archive manifest owner (existing context CLI contract, default 'me')"
   - "artem_two/local archive dirs need an ownership fix on the host for their backups to succeed (pre-existing fs state, not a code bug)"
 limitations:
