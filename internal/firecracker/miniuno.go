@@ -49,9 +49,7 @@ type box struct {
 	proc       *exec.Cmd
 	dir        string
 	cid        uint32
-	uds        string
 	exited     chan struct{}
-	errMsg     string
 	fwds       []net.Listener
 	mux        net.Conn
 	muxMu      sync.Mutex
@@ -126,11 +124,6 @@ func (m *Manager) newBox(req uno.LaunchRequest) (*box, error) {
 		b.proxies[p.GuestPort] = p.Target
 	}
 	return b, nil
-}
-
-type fsDev struct {
-	sock string
-	tag  string
 }
 
 func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, error) {
