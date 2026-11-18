@@ -12,9 +12,12 @@ import (
 
 // ContainerStat is one owned container's sampled resource counters for a
 // watchdog sweep: allowlisted CPU and memory only, no processes or env.
+// MemLimitBytes is the cgroup ceiling docker reports on the right side of
+// "used / limit" — zero when the sampler provides none.
 type ContainerStat struct {
-	CPUPercent float64 `json:"cpu_percent,omitempty"`
-	MemBytes   int64   `json:"mem_bytes,omitempty"`
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	MemBytes      int64   `json:"mem_bytes,omitempty"`
+	MemLimitBytes int64   `json:"mem_limit_bytes,omitempty"`
 }
 
 // WatchdogMetrics reports the supervision loop's own cost so its overhead on
@@ -55,15 +58,19 @@ func dockerStatsCommand(command func(context.Context, ...string) ([]byte, error)
 				continue
 			}
 			cpu, _ := strconv.ParseFloat(strings.TrimSuffix(row.CPUPerc, "%"), 64)
-			stats[row.Name] = ContainerStat{CPUPercent: cpu, MemBytes: parseMemBytes(row.MemUsage)}
+			stats[row.Name] = ContainerStat{CPUPercent: cpu, MemBytes: parseMemBytes(row.MemUsage, false), MemLimitBytes: parseMemBytes(row.MemUsage, true)}
 		}
 		return stats, nil
 	}
 }
 
-// parseMemBytes reads the used side of docker's "256MiB / 2GiB" counter.
-func parseMemBytes(usage string) int64 {
-	head, _, _ := strings.Cut(usage, "/")
+// parseMemBytes reads one side of docker's "256MiB / 2GiB" counter: used by
+// default, the cgroup limit when limit is true.
+func parseMemBytes(usage string, limit bool) int64 {
+	head, tail, _ := strings.Cut(usage, "/")
+	if limit {
+		head = tail
+	}
 	fields := strings.Fields(head)
 	if len(fields) == 0 {
 		return 0

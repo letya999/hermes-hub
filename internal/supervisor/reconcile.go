@@ -205,6 +205,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		lock.Unlock()
 	}
 	m.sampleStats(ctx)
+	m.sampleRuntimeMetrics(ctx, now)
 	m.mu.Lock()
 	m.watchdog.Sweeps++
 	m.watchdog.Entries = len(keys)
@@ -241,7 +242,7 @@ func (m *Manager) sampleStats(ctx context.Context) {
 	defer m.mu.Unlock()
 	for _, entry := range m.items {
 		if stat, ok := stats[entry.Container]; ok {
-			entry.CPUPercent, entry.MemBytes = stat.CPUPercent, stat.MemBytes
+			entry.CPUPercent, entry.MemBytes, entry.lastStat = stat.CPUPercent, stat.MemBytes, stat
 		}
 	}
 }

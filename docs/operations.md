@@ -1011,7 +1011,17 @@ A `config.supervision` change needs no respawn: `space apply` re-renders
 decision sweep — `idle_stop` bounds warm retention, `restart: never` or
 `watchers.stack-health.protected` keep the container observed but never
 remediated, `watchers.stack-health.every` throttles the health-probe
-cadence. Port and channel changes (`config.ports`, `config.channels`) are
+cadence. The opt-in `watchers.metrics` adds sustained-anomaly incidents:
+the supervisor scrapes the runtime's bounded `GET /v1/status` (request
+totals, 5xx count, a 256-sample p95, `active_runs`, `mcp_inflight`) on the
+`every` cadence and opens an incident class only after three consecutive
+breaches — `cpu_sustained` >90% of the container CPU quota,
+`memory_sustained` >85% of the cgroup limit, `latency_sustained` p95 >5 s
+with ≥20 samples, `http_5xx_sustained` >5% with ≥20 new requests,
+`session_saturated` ≥5 runs, `mcp_saturated` ≥16 inflight. A reading below
+the low watermark resets the counter; `protected` observes without waking
+the personal supervisor. Scrape failures are skipped observations, not
+incidents. Port and channel changes (`config.ports`, `config.channels`) are
 recreate-class: only the owning container restarts — `hermes-runtime` is
 supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
 re-spawn it (env-baked config needs a new container, unlike a deferred

@@ -120,6 +120,7 @@ type runtimeHTTP struct {
 	runJobs   map[string]string
 	jobRuns   map[string]string
 	pending   int
+	counters  *runtimeMetrics
 	runChange chan struct{}
 	proxyOnce sync.Once
 	proxy     http.Handler
@@ -138,6 +139,23 @@ func runtimeHandler() http.Handler {
 }
 
 func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Scrape endpoints stay unmeasured so watchdog probes never skew the
+	// latency/error picture the metrics watcher evaluates.
+	start := time.Now()
+	tracked := r.URL.Path != "/healthz" && r.URL.Path != "/readyz" && r.URL.Path != "/v1/status"
+	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	if tracked {
+		w = recorder
+	}
+	defer func() {
+		if tracked {
+			s.metrics().recordRequest(time.Since(start), recorder.status)
+		}
+	}()
+	s.route(w, r)
+}
+
+func (s *runtimeHTTP) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/healthz":
 		if r.Method != http.MethodGet {
@@ -179,6 +197,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.skillCreds(w, r)
 	case "/v1/skill-ref-lease":
 		s.skillRefLease(w, r)
+	case "/v1/status":
+		s.status(w, r)
 	case "/mcp":
 		s.proxyMCP(w, r)
 	default:

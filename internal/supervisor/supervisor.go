@@ -242,6 +242,14 @@ type runtimeEntry struct {
 	readinessBadSince    time.Time
 	lastRemediatedAt     time.Time
 	personalRestart      bool
+	// metrics watcher state — in-memory only: a restart re-baselines
+	// consecutive-breach counters while the persisted incident record keeps
+	// a fired anomaly from re-alerting as new.
+	metricsCheckedAt time.Time
+	metricBreaches   map[string]int
+	metricPrev       hubruntime.RuntimeStatus
+	lastMetrics      hubruntime.RuntimeStatus
+	lastStat         ContainerStat
 }
 
 type Manager struct {
