@@ -46,7 +46,7 @@ var fcRelayPorts = map[string]int{"model-relay": 8318, "toolhub": 8090, "toolhub
 func fcGuestEnv(m *Manager, binding Binding, rt Runtime, port int, settings stack.Settings, envName string) (map[string]string, error) {
 	values := map[string]string{}
 	load := func(path string) error {
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) // #nosec G703 -- paths are the validated binding context root / env file, not request input
 		if err != nil {
 			return err
 		}
@@ -340,16 +340,16 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	// No host publish: the supervisor's inbound seam is the mini-Uno forward
 	// bound on request.Port; publishing the same port would collide.
 	if err := m.spawnControlRelay(ctx, binding, rt.Container, request.Port, rt.Generation, agentNet, target, filepath.Dir(box.VsockUDS), false); err != nil {
-		f.client.DeleteBox(context.Background(), box.ID)
+		_ = f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("control relay: %w", err)
 	}
 	if _, err := f.client.Run(ctx, box.ID, uno.RunRequest{Cmd: fcGuestBootScript(mounts), TimeoutSeconds: 30, IdempotencyKey: "boot-" + rt.Generation, WaitSeconds: 30}); err != nil {
-		f.client.DeleteBox(context.Background(), box.ID)
+		_ = f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("guest boot: %w", err)
 	}
 	env, err := fcGuestEnv(m, binding, rt, m.cfg.RuntimePort, settings, envName)
 	if err != nil {
-		f.client.DeleteBox(context.Background(), box.ID)
+		_ = f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("guest env: %w", err)
 	}
 	for _, mt := range mounts {
@@ -369,11 +369,11 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 		WaitSeconds:    90,
 	})
 	if err != nil {
-		f.client.DeleteBox(context.Background(), box.ID)
+		_ = f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("start runtime: %w", err)
 	}
 	if serve.Status != "succeeded" {
-		f.client.DeleteBox(context.Background(), box.ID)
+		_ = f.client.DeleteBox(context.Background(), box.ID)
 		return ComputeObservation{}, fmt.Errorf("start runtime: %s", serve.Stderr)
 	}
 	// Address stays the control-relay published loopback port — identical to

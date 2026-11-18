@@ -68,22 +68,22 @@ func vsockDialContext(udsPath, guestPort string) func(ctx context.Context, netwo
 			return nil, err
 		}
 		if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, err
 		}
 		if _, err := fmt.Fprintf(c, "CONNECT %s\n", guestPort); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, err
 		}
 		line, err := bufio.NewReader(c).ReadString('\n')
 		if err != nil || !strings.HasPrefix(line, "OK") {
-			c.Close()
+			_ = c.Close()
 			return nil, fmt.Errorf("vsock connect refused: %s", strings.TrimSpace(line))
 		}
 		// The buffered reader may already hold proxied bytes; wrap it so the
 		// transport sees a clean stream.
 		if err := c.SetDeadline(time.Time{}); err != nil {
-			c.Close()
+			_ = c.Close()
 			return nil, err
 		}
 		return &vsockPrefixConn{Conn: c, r: bufio.NewReader(c)}, nil

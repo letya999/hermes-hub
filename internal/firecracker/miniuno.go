@@ -135,7 +135,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	// a real virtio-blk device (PVC-equivalent). On delete, rw shares are
 	// synced back to their source directory.
 	var shareDisks []shareDisk
-	os.Remove(b.udsPath())
+	_ = os.Remove(b.udsPath())
 	for i, sh := range req.Shares {
 		img := filepath.Join(b.dir, fmt.Sprintf("share-%d.img", i))
 		sizeMB := shareSizeMB(sh.HostPath)
@@ -146,7 +146,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		shareDisks = append(shareDisks, shareDisk{img: img, dev: fmt.Sprintf("/dev/vd%c", 'b'+i), src: sh.HostPath, ro: sh.ReadOnly})
 	}
 	cleanup := func() {
-		os.RemoveAll(b.dir)
+		_ = os.RemoveAll(b.dir)
 	}
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/fc-init"
 	if proxies := req.Env["HUB_FC_PROXIES"]; proxies != "" {
@@ -177,7 +177,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	b.proc.Stdout, b.proc.Stderr = logFile, logFile
 	b.proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := b.proc.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		cleanup()
 		return nil, fmt.Errorf("firecracker start: %w", err)
 	}
@@ -195,7 +195,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		}
 	}()
 	go func() {
-		b.proc.Wait()
+		_ = b.proc.Wait()
 		b.mu.Lock()
 		if b.status() == "running" || b.status() == "provisioning" {
 			b.setStatus("failed", "vm exited")
@@ -218,16 +218,16 @@ func (b *box) vsockDial(port uint32) (net.Conn, error) {
 	for {
 		c, err := net.DialTimeout("unix", b.udsPath(), 3*time.Second)
 		if err == nil {
-			c.SetDeadline(time.Now().Add(10 * time.Second))
+			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(c, "CONNECT %d\n", port); err == nil {
 				rd := bufio.NewReader(c)
 				line, err := rd.ReadString('\n')
 				if err == nil && strings.HasPrefix(line, "OK") {
-					c.SetDeadline(time.Time{})
+					_ = c.SetDeadline(time.Time{})
 					return &prefixConn{Conn: c, r: rd}, nil
 				}
 			}
-			c.Close()
+			_ = c.Close()
 			err = fmt.Errorf("vsock connect %d refused", port)
 		}
 		if time.Now().After(deadline) {
@@ -323,15 +323,15 @@ func (b *box) muxReader(c net.Conn) {
 		switch op {
 		case 1:
 			var gp int
-			fmt.Sscanf(string(payload), "%d", &gp)
+			_, _ = fmt.Sscanf(string(payload), "%d", &gp)
 			target, ok := b.proxies[gp]
 			if !ok {
-				b.sendFrame(3, id, nil)
+				_ = b.sendFrame(3, id, nil)
 				continue
 			}
 			tc, err := net.DialTimeout("tcp", target, 5*time.Second)
 			if err != nil {
-				b.sendFrame(3, id, nil)
+				_ = b.sendFrame(3, id, nil)
 				continue
 			}
 			b.mu.Lock()
@@ -350,7 +350,7 @@ func (b *box) muxReader(c net.Conn) {
 						break
 					}
 				}
-				b.sendFrame(3, id, nil)
+				_ = b.sendFrame(3, id, nil)
 				b.dropConn(id)
 			}(id, tc)
 		case 2:
@@ -374,10 +374,13 @@ func (b *box) sendFrame(op byte, id uint32, payload []byte) error {
 	if b.mux == nil {
 		return errors.New("no mux")
 	}
+	if uint64(len(payload)) > 0xFFFF_FFFF {
+		return errors.New("frame payload exceeds 4 GiB")
+	}
 	hdr := make([]byte, 9)
 	binary.BigEndian.PutUint32(hdr[:4], id)
 	hdr[4] = op
-	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload)))
+	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- length bounded by the 4 GiB guard above
 	if _, err := b.mux.Write(hdr); err != nil {
 		return err
 	}
@@ -394,7 +397,7 @@ func (b *box) dropConn(id uint32) {
 	delete(b.conns, id)
 	b.mu.Unlock()
 	if tc != nil {
-		tc.Close()
+		_ = tc.Close()
 	}
 }
 
@@ -420,7 +423,7 @@ func (b *box) startForwards(req uno.LaunchRequest) error {
 				go func() {
 					up, err := b.vsockDial(5001)
 					if err != nil {
-						c.Close()
+						_ = c.Close()
 						return
 					}
 					fmt.Fprintf(up, "127.0.0.1:%d\n", gp)
@@ -435,11 +438,11 @@ func (b *box) startForwards(req uno.LaunchRequest) error {
 
 func bridge(a, b net.Conn) {
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(a, b); done <- struct{}{} }()
-	go func() { io.Copy(b, a); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
 	<-done
-	a.Close()
-	b.Close()
+	_ = a.Close()
+	_ = b.Close()
 }
 
 // Launch creates, boots, and readies a box synchronously.
@@ -511,22 +514,22 @@ func (m *Manager) Delete(id string) bool {
 	// Best-effort flush: guest page cache must reach the share image before
 	// the VMM is killed, or recent writes are lost.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	b.exec(ctx, uno.RunRequest{Cmd: "sync", TimeoutSeconds: 8})
+	_, _ = b.exec(ctx, uno.RunRequest{Cmd: "sync", TimeoutSeconds: 8})
 	cancel()
 	if b.proc != nil && b.proc.Process != nil {
-		b.proc.Process.Kill()
+		_ = b.proc.Process.Kill()
 	}
 	for _, ln := range b.fwds {
-		ln.Close()
+		_ = ln.Close()
 	}
 	if b.mux != nil {
-		b.mux.Close()
+		_ = b.mux.Close()
 	}
 	<-b.exited
 	for _, sd := range b.shareDisks {
 		syncShareBack(sd)
 	}
-	os.RemoveAll(b.dir)
+	_ = os.RemoveAll(b.dir)
 	return true
 }
 
@@ -640,7 +643,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	write := func(code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(v)
+		_ = json.NewEncoder(w).Encode(v)
 	}
 	switch {
 	case r.Method == http.MethodGet && path == "/boxes":
@@ -671,7 +674,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case len(parts) == 3 && parts[0] == "boxes" && parts[2] == "runs" && r.Method == http.MethodPost:
 		var req uno.RunRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		run, err := m.SubmitRun(r.Context(), parts[1], req)
 		if err != nil {
 			write(404, map[string]string{"error": "not found"})
@@ -695,7 +698,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(200, map[string]any{"runs": runs})
 	case len(parts) == 4 && parts[0] == "boxes" && parts[2] == "runs" && r.Method == http.MethodGet:
 		wait := 0
-		fmt.Sscanf(r.URL.Query().Get("wait_s"), "%d", &wait)
+		_, _ = fmt.Sscanf(r.URL.Query().Get("wait_s"), "%d", &wait)
 		if run, ok := m.GetRun(parts[1], parts[3], wait); ok {
 			write(200, map[string]any{"run": run})
 		} else {

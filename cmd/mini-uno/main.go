@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/firecracker"
 )
@@ -27,7 +28,13 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("mini-uno: listening on %s workdir=%s", cfg.Listen, cfg.WorkDir)
-	if err := http.ListenAndServe(cfg.Listen, m); err != nil {
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           m,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "mini-uno:", err)
 		os.Exit(1)
 	}

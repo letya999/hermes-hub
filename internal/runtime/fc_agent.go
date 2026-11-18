@@ -49,11 +49,11 @@ func fcVsockListen(port uint32) (*vsockLn, error) {
 		return nil, fmt.Errorf("vsock socket: %w", err)
 	}
 	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("vsock bind :%d: %w", port, err)
 	}
 	if err := unix.Listen(fd, 64); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("vsock listen: %w", err)
 	}
 	return &vsockLn{fd: fd}, nil
@@ -69,19 +69,19 @@ func (l *vsockLn) Accept() (*os.File, error) {
 
 func fcBridge(a, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(a, b); done <- struct{}{} }()
-	go func() { io.Copy(b, a); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
 	<-done
-	a.Close()
-	b.Close()
+	_ = a.Close()
+	_ = b.Close()
 }
 
 func fcHandleExec(conn *os.File) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
 	var req fcExecRequest
 	if err := json.NewDecoder(io.LimitReader(conn, 1<<20)).Decode(&req); err != nil || strings.TrimSpace(req.Cmd) == "" {
-		json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: 2, Stderr: "bad exec request"})
+		_ = json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: 2, Stderr: "bad exec request"})
 		return
 	}
 	timeout := time.Duration(req.TimeoutS) * time.Second
@@ -107,12 +107,12 @@ func fcHandleExec(conn *os.File) {
 			code = ee.ExitCode()
 		}
 	}
-	json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: code, Stdout: stdout.String(), Stderr: stderr.String()})
+	_ = json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: code, Stdout: stdout.String(), Stderr: stderr.String()})
 }
 
 func fcHandleDial(conn *os.File) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	line, err := fcReadLine(conn, 256)
 	if err != nil || strings.TrimSpace(line) == "" {
 		return
@@ -121,8 +121,8 @@ func fcHandleDial(conn *os.File) {
 	if err != nil {
 		return
 	}
-	conn.SetDeadline(time.Time{})
-	target.SetDeadline(time.Time{})
+	_ = conn.SetDeadline(time.Time{})
+	_ = target.SetDeadline(time.Time{})
 	fcBridge(conn, target)
 }
 
@@ -168,10 +168,13 @@ func (m *fcMux) send(op byte, id uint32, payload []byte) error {
 	if m.conn == nil {
 		return errors.New("no mux conn")
 	}
+	if uint64(len(payload)) > 0xFFFF_FFFF {
+		return errors.New("frame payload exceeds 4 GiB")
+	}
 	hdr := make([]byte, 9)
 	binary.BigEndian.PutUint32(hdr[:4], id)
 	hdr[4] = op
-	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload)))
+	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- length bounded by the 4 GiB guard above
 	if _, err := m.conn.Write(hdr); err != nil {
 		return err
 	}
@@ -192,7 +195,7 @@ func (m *fcMux) readLoop(c *os.File) {
 			}
 			for id, tc := range m.targets {
 				delete(m.targets, id)
-				tc.Close()
+				_ = tc.Close()
 			}
 			m.mu.Unlock()
 			return
@@ -216,9 +219,9 @@ func (m *fcMux) readLoop(c *os.File) {
 		}
 		switch op {
 		case 2:
-			tc.Write(payload)
+			_, _ = tc.Write(payload)
 		case 3:
-			tc.Close()
+			_ = tc.Close()
 		}
 	}
 }
@@ -229,7 +232,7 @@ func (m *fcMux) proxy(local net.Conn, guestPort int) {
 	id := m.nextID
 	m.mu.Unlock()
 	if err := m.send(1, id, []byte(fmt.Sprintf("%d", guestPort))); err != nil {
-		local.Close()
+		_ = local.Close()
 		return
 	}
 	m.mu.Lock()
@@ -248,13 +251,13 @@ func (m *fcMux) proxy(local net.Conn, guestPort int) {
 				break
 			}
 		}
-		m.send(3, id, nil)
+		_ = m.send(3, id, nil)
 		m.mu.Lock()
 		if m.targets[id] == local {
 			delete(m.targets, id)
 		}
 		m.mu.Unlock()
-		local.Close()
+		_ = local.Close()
 	}()
 }
 
@@ -327,7 +330,7 @@ func runFCAgent(_ context.Context) error {
 				go func() {
 					target, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
 					if err != nil {
-						c.Close()
+						_ = c.Close()
 						return
 					}
 					fcBridge(c, target)
@@ -381,7 +384,7 @@ func runFCAgent(_ context.Context) error {
 			return fmt.Errorf("fc proxy listen :%s: %w", p, err)
 		}
 		var port int
-		fmt.Sscanf(p, "%d", &port)
+		_, _ = fmt.Sscanf(p, "%d", &port)
 		go func(ln net.Listener, port int) {
 			for {
 				c, err := ln.Accept()

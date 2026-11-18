@@ -511,7 +511,7 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.Command == nil {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
+			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput() // #nosec G702 -- docker binary is operator-configured; argv is built internally
 		}
 	}
 	if cfg.Stats == nil && cfg.ExecutionBackend == "docker" {
