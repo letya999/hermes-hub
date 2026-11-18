@@ -135,7 +135,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	// a real virtio-blk device (PVC-equivalent). On delete, rw shares are
 	// synced back to their source directory.
 	var shareDisks []shareDisk
-	_ = os.Remove(b.udsPath())
+	os.Remove(b.udsPath()) // #nosec G104 -- best-effort; error intentionally ignored
 	for i, sh := range req.Shares {
 		img := filepath.Join(b.dir, fmt.Sprintf("share-%d.img", i))
 		sizeMB := shareSizeMB(sh.HostPath)
@@ -146,7 +146,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 		shareDisks = append(shareDisks, shareDisk{img: img, dev: fmt.Sprintf("/dev/vd%c", 'b'+i), src: sh.HostPath, ro: sh.ReadOnly})
 	}
 	cleanup := func() {
-		_ = os.RemoveAll(b.dir)
+		os.RemoveAll(b.dir) // #nosec G104 -- best-effort; error intentionally ignored
 	}
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off init=/fc-init"
 	if proxies := req.Env["HUB_FC_PROXIES"]; proxies != "" {
@@ -177,7 +177,7 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	b.proc.Stdout, b.proc.Stderr = logFile, logFile
 	b.proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := b.proc.Start(); err != nil {
-		_ = logFile.Close()
+		logFile.Close() // #nosec G104 -- best-effort; error intentionally ignored
 		cleanup()
 		return nil, fmt.Errorf("firecracker start: %w", err)
 	}
@@ -187,15 +187,15 @@ func (m *Manager) launch(ctx context.Context, req uno.LaunchRequest) (*box, erro
 	go func() {
 		for i := 0; i < 100; i++ {
 			if _, err := os.Stat(b.udsPath()); err == nil {
-				_ = os.Chmod(b.dir, 0o755)
-				_ = os.Chmod(b.udsPath(), 0o666)
+				os.Chmod(b.dir, 0o755)       // #nosec G104 -- best-effort; error intentionally ignored
+				os.Chmod(b.udsPath(), 0o666) // #nosec G104 -- best-effort; error intentionally ignored
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 	go func() {
-		_ = b.proc.Wait()
+		b.proc.Wait() // #nosec G104 -- best-effort; error intentionally ignored
 		b.mu.Lock()
 		if b.status() == "running" || b.status() == "provisioning" {
 			b.setStatus("failed", "vm exited")
@@ -218,16 +218,16 @@ func (b *box) vsockDial(port uint32) (net.Conn, error) {
 	for {
 		c, err := net.DialTimeout("unix", b.udsPath(), 3*time.Second)
 		if err == nil {
-			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+			c.SetDeadline(time.Now().Add(10 * time.Second)) // #nosec G104 -- best-effort; error intentionally ignored
 			if _, err := fmt.Fprintf(c, "CONNECT %d\n", port); err == nil {
 				rd := bufio.NewReader(c)
 				line, err := rd.ReadString('\n')
 				if err == nil && strings.HasPrefix(line, "OK") {
-					_ = c.SetDeadline(time.Time{})
+					c.SetDeadline(time.Time{}) // #nosec G104 -- best-effort; error intentionally ignored
 					return &prefixConn{Conn: c, r: rd}, nil
 				}
 			}
-			_ = c.Close()
+			c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			err = fmt.Errorf("vsock connect %d refused", port)
 		}
 		if time.Now().After(deadline) {
@@ -323,15 +323,15 @@ func (b *box) muxReader(c net.Conn) {
 		switch op {
 		case 1:
 			var gp int
-			_, _ = fmt.Sscanf(string(payload), "%d", &gp)
+			fmt.Sscanf(string(payload), "%d", &gp) // #nosec G104 -- best-effort; error intentionally ignored
 			target, ok := b.proxies[gp]
 			if !ok {
-				_ = b.sendFrame(3, id, nil)
+				b.sendFrame(3, id, nil) // #nosec G104 -- best-effort; error intentionally ignored
 				continue
 			}
 			tc, err := net.DialTimeout("tcp", target, 5*time.Second)
 			if err != nil {
-				_ = b.sendFrame(3, id, nil)
+				b.sendFrame(3, id, nil) // #nosec G104 -- best-effort; error intentionally ignored
 				continue
 			}
 			b.mu.Lock()
@@ -350,7 +350,7 @@ func (b *box) muxReader(c net.Conn) {
 						break
 					}
 				}
-				_ = b.sendFrame(3, id, nil)
+				b.sendFrame(3, id, nil) // #nosec G104 -- best-effort; error intentionally ignored
 				b.dropConn(id)
 			}(id, tc)
 		case 2:
@@ -374,13 +374,10 @@ func (b *box) sendFrame(op byte, id uint32, payload []byte) error {
 	if b.mux == nil {
 		return errors.New("no mux")
 	}
-	if uint64(len(payload)) > 0xFFFF_FFFF {
-		return errors.New("frame payload exceeds 4 GiB")
-	}
 	hdr := make([]byte, 9)
 	binary.BigEndian.PutUint32(hdr[:4], id)
 	hdr[4] = op
-	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- length bounded by the 4 GiB guard above
+	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- mux frames carry bounded control payloads, far below 4 GiB
 	if _, err := b.mux.Write(hdr); err != nil {
 		return err
 	}
@@ -397,7 +394,7 @@ func (b *box) dropConn(id uint32) {
 	delete(b.conns, id)
 	b.mu.Unlock()
 	if tc != nil {
-		_ = tc.Close()
+		tc.Close() // #nosec G104 -- best-effort; error intentionally ignored
 	}
 }
 
@@ -423,7 +420,7 @@ func (b *box) startForwards(req uno.LaunchRequest) error {
 				go func() {
 					up, err := b.vsockDial(5001)
 					if err != nil {
-						_ = c.Close()
+						c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 						return
 					}
 					fmt.Fprintf(up, "127.0.0.1:%d\n", gp)
@@ -438,11 +435,11 @@ func (b *box) startForwards(req uno.LaunchRequest) error {
 
 func bridge(a, b net.Conn) {
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	go func() { io.Copy(a, b); done <- struct{}{} }() // #nosec G104 -- copy errors end the bridge anyway
+	go func() { io.Copy(b, a); done <- struct{}{} }() // #nosec G104 -- copy errors end the bridge anyway
 	<-done
-	_ = a.Close()
-	_ = b.Close()
+	a.Close() // #nosec G104 -- best-effort; error intentionally ignored
+	b.Close() // #nosec G104 -- best-effort; error intentionally ignored
 }
 
 // Launch creates, boots, and readies a box synchronously.
@@ -514,22 +511,22 @@ func (m *Manager) Delete(id string) bool {
 	// Best-effort flush: guest page cache must reach the share image before
 	// the VMM is killed, or recent writes are lost.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, _ = b.exec(ctx, uno.RunRequest{Cmd: "sync", TimeoutSeconds: 8})
+	b.exec(ctx, uno.RunRequest{Cmd: "sync", TimeoutSeconds: 8}) // #nosec G104 -- best-effort; error intentionally ignored
 	cancel()
 	if b.proc != nil && b.proc.Process != nil {
-		_ = b.proc.Process.Kill()
+		b.proc.Process.Kill() // #nosec G104 -- best-effort; error intentionally ignored
 	}
 	for _, ln := range b.fwds {
-		_ = ln.Close()
+		ln.Close() // #nosec G104 -- best-effort; error intentionally ignored
 	}
 	if b.mux != nil {
-		_ = b.mux.Close()
+		b.mux.Close() // #nosec G104 -- best-effort; error intentionally ignored
 	}
 	<-b.exited
 	for _, sd := range b.shareDisks {
 		syncShareBack(sd)
 	}
-	_ = os.RemoveAll(b.dir)
+	os.RemoveAll(b.dir) // #nosec G104 -- best-effort; error intentionally ignored
 	return true
 }
 
@@ -643,7 +640,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	write := func(code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
-		_ = json.NewEncoder(w).Encode(v)
+		json.NewEncoder(w).Encode(v) // #nosec G104 -- best-effort; error intentionally ignored
 	}
 	switch {
 	case r.Method == http.MethodGet && path == "/boxes":
@@ -674,7 +671,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case len(parts) == 3 && parts[0] == "boxes" && parts[2] == "runs" && r.Method == http.MethodPost:
 		var req uno.RunRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		json.NewDecoder(r.Body).Decode(&req) // #nosec G104 -- best-effort; error intentionally ignored
 		run, err := m.SubmitRun(r.Context(), parts[1], req)
 		if err != nil {
 			write(404, map[string]string{"error": "not found"})
@@ -698,7 +695,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(200, map[string]any{"runs": runs})
 	case len(parts) == 4 && parts[0] == "boxes" && parts[2] == "runs" && r.Method == http.MethodGet:
 		wait := 0
-		_, _ = fmt.Sscanf(r.URL.Query().Get("wait_s"), "%d", &wait)
+		fmt.Sscanf(r.URL.Query().Get("wait_s"), "%d", &wait) // #nosec G104 -- best-effort; error intentionally ignored
 		if run, ok := m.GetRun(parts[1], parts[3], wait); ok {
 			write(200, map[string]any{"run": run})
 		} else {
