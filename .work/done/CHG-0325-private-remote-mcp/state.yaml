@@ -1,0 +1,39 @@
+schema: 1
+change: CHG-0325
+title: Generic private-remote MCP registration
+status: done
+branch: feat/m9-private-remote-mcp
+updated: 2026-11-18
+phase: done
+github_milestone: M9 — Enterprise Readiness
+github_issue: "340"
+design_status: accepted
+implementation_status: complete
+slices:
+  cli-connector-remote: done
+  operator-pinned-endpoint-contract: done
+  probe-freeze-toolset: done
+  per-connection-bearer: done
+  dial-time-refence: done
+  owner-scoped-publish-enable: done
+  spec-docs-tests: done
+validation:
+  documents: done
+  just_check: passed
+  docker_check: live_end_to_end_verified
+  red_team: live_negatives_verified
+  live_acceptance: done
+commits:
+  - ddc17408 feat(toolhub): operator-pinned private remote MCP registration (#340)
+  - ec8ef79b fix(hubctl): enable private remote MCP binding at registration (#340)
+evidence:
+  - "LIVE register: remote-acc-mcp-open + remote-acc-mcp-secure against a real streamable-HTTP MCP server on RFC-1918 172.18.0.28 — probe did actual initialize+tools/list, froze {whoami, record_note}"
+  - "LIVE idempotent re-registration: unchanged:true on both definitions"
+  - "LIVE bindings materialized: bind-ec23d0d1f1e436875933fadc / bind-af79a1fc28106067669c75e2; projected names hub-remote-acc-mcp-* in artem_main catalog"
+  - "LIVE call path through ToolHub: admit→allow→execution=succeeded; fixture reports auth=absent for credential-less conn-1065..., auth=per-connection-bearer with credential_revision=1 for conn-9128... — the declared bearer reached only the pinned origin"
+  - "LIVE negatives: public https://example.com/mcp rejected (points at prepare_source remote_url), userinfo rejected, query component rejected"
+  - "bearer accepted only via stdin/--from-file, never argv; stored in per-connection credential ref outside the registry"
+  - "defect found and fixed during live acceptance: registration never called registry.Enable — tools stayed unprojected (ec8ef79b); re-verified live after fix"
+  - "three-layer private-endpoint enforcement: registration validation, per-call validation, BackendDial re-resolution blocks DNS/name rebinding of credential-bearing traffic"
+  - "unit tests green: registration happy path, allowlist/bearer, public refusal, dial fence, canonical URL, credential-less enable, second-principal isolation"
+  - "just check green: format, docs, vet"

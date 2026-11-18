@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0326
+title: Anomaly watchers over runtime metrics
+status: done
+branch: feat/m9-anomaly-watchers
+updated: 2026-11-18
+phase: done
+github_milestone: M9 — Enterprise Readiness
+github_issue: "354"
+design_status: accepted
+implementation_status: complete
+slices:
+  runtime-bounded-status: done
+  supervisor-metrics-watcher: done
+  hysteresis-transition-incidents: done
+  protected-observation: done
+  spec-docs-tests: done
+validation:
+  documents: done
+  just_check: passed
+  docker_check: live_incident_lifecycle_verified
+  red_team: live_protected_ab_verified
+  live_acceptance: done
+commits:
+  - 9427ad63 feat(supervisor): metrics anomaly watcher over runtime /v1/status (#354)
+  - c9dd38d0 chore(work): close out CHG-0312, repair index duplicate, normalize statuses
+evidence:
+  - "LIVE real-model run: POST /v1/execute artem_main → {\"text\":\"OK\"} run.completed gen-660 through model-relay (OpenAI); second principal artem_two → {\"text\":\"OK\"} gen-661 — multi-tenant isolation on per-user agent networks"
+  - "LIVE /v1/status on the spawned runtime: {\"requests_total\":8,\"http_5xx_total\":0,\"latency_p95_ms\":1359,\"samples\":8,\"active_runs\":0,\"mcp_inflight\":0} — real counters from the actual model request"
+  - "LIVE cpu_sustained: 3x yes-hogs at 205% over quota-2 threshold(180%) → incident fired once at 2026-11-18T14:04:40+03:00; sustained 60s+ breach produced count=1 — no per-sweep alert storm"
+  - "LIVE dead-band rearm: CPU killed to 0% then re-stressed → cpu_sustained re-fired, count=2 last_at=14:11:50 — hysteresis rearms below 150%, journal logs first-fires only"
+  - "LIVE latency_sustained fired organically at 14:09:21 — real p95>5s degradation under CPU contention, not a scripted trigger"
+  - "LIVE protected A/B: artem_two (watchers.metrics.protected) sustained 200% for 60s+ → incidents:{} and zero signals.jsonl lines while artem_main fired under identical load"
+  - "signals.jsonl evidence: {\"class\":\"cpu_sustained\"} + {\"class\":\"latency_sustained\"} rows carry only class/context/principal/runtime/generation — allowlisted fields"
+  - "health/status endpoints excluded from workload metrics; streaming preserved via Unwrap() (no Hijack wrapper)"
+  - "unit tests green: opt-in, cadence, sustained breach/rearm, protected, scrape-skip, all six rule boundaries"
+  - "just check green: format, docs, vet"
