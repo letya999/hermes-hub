@@ -223,9 +223,9 @@ func TestFCMux(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		m.mu.Lock()
-		nilConn := m.conn == nil
+		drained := m.conn == nil && len(m.targets) == 0
 		m.mu.Unlock()
-		if nilConn {
+		if drained {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
