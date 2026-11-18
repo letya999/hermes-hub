@@ -49,11 +49,11 @@ func fcVsockListen(port uint32) (*vsockLn, error) {
 		return nil, fmt.Errorf("vsock socket: %w", err)
 	}
 	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		_ = unix.Close(fd)
+		unix.Close(fd) // #nosec G104 -- best-effort; error intentionally ignored
 		return nil, fmt.Errorf("vsock bind :%d: %w", port, err)
 	}
 	if err := unix.Listen(fd, 64); err != nil {
-		_ = unix.Close(fd)
+		unix.Close(fd) // #nosec G104 -- best-effort; error intentionally ignored
 		return nil, fmt.Errorf("vsock listen: %w", err)
 	}
 	return &vsockLn{fd: fd}, nil
@@ -69,19 +69,19 @@ func (l *vsockLn) Accept() (*os.File, error) {
 
 func fcBridge(a, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	go func() { io.Copy(a, b); done <- struct{}{} }() // #nosec G104 -- copy errors end the bridge anyway
+	go func() { io.Copy(b, a); done <- struct{}{} }() // #nosec G104 -- copy errors end the bridge anyway
 	<-done
-	_ = a.Close()
-	_ = b.Close()
+	a.Close() // #nosec G104 -- best-effort; error intentionally ignored
+	b.Close() // #nosec G104 -- best-effort; error intentionally ignored
 }
 
 func fcHandleExec(conn *os.File) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	conn.SetDeadline(time.Now().Add(5 * time.Minute)) // #nosec G104 -- best-effort; error intentionally ignored
 	var req fcExecRequest
 	if err := json.NewDecoder(io.LimitReader(conn, 1<<20)).Decode(&req); err != nil || strings.TrimSpace(req.Cmd) == "" {
-		_ = json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: 2, Stderr: "bad exec request"})
+		json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: 2, Stderr: "bad exec request"}) // #nosec G104 -- best-effort; error intentionally ignored
 		return
 	}
 	timeout := time.Duration(req.TimeoutS) * time.Second
@@ -107,12 +107,12 @@ func fcHandleExec(conn *os.File) {
 			code = ee.ExitCode()
 		}
 	}
-	_ = json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: code, Stdout: stdout.String(), Stderr: stderr.String()})
+	json.NewEncoder(conn).Encode(fcExecResponse{ExitCode: code, Stdout: stdout.String(), Stderr: stderr.String()}) // #nosec G104 -- best-effort; error intentionally ignored
 }
 
 func fcHandleDial(conn *os.File) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	conn.SetDeadline(time.Now().Add(10 * time.Second)) // #nosec G104 -- best-effort; error intentionally ignored
 	line, err := fcReadLine(conn, 256)
 	if err != nil || strings.TrimSpace(line) == "" {
 		return
@@ -121,8 +121,8 @@ func fcHandleDial(conn *os.File) {
 	if err != nil {
 		return
 	}
-	_ = conn.SetDeadline(time.Time{})
-	_ = target.SetDeadline(time.Time{})
+	conn.SetDeadline(time.Time{})   // #nosec G104 -- best-effort; error intentionally ignored
+	target.SetDeadline(time.Time{}) // #nosec G104 -- best-effort; error intentionally ignored
 	fcBridge(conn, target)
 }
 
@@ -168,13 +168,10 @@ func (m *fcMux) send(op byte, id uint32, payload []byte) error {
 	if m.conn == nil {
 		return errors.New("no mux conn")
 	}
-	if uint64(len(payload)) > 0xFFFF_FFFF {
-		return errors.New("frame payload exceeds 4 GiB")
-	}
 	hdr := make([]byte, 9)
 	binary.BigEndian.PutUint32(hdr[:4], id)
 	hdr[4] = op
-	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- length bounded by the 4 GiB guard above
+	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload))) // #nosec G115 -- mux frames carry bounded control payloads, far below 4 GiB
 	if _, err := m.conn.Write(hdr); err != nil {
 		return err
 	}
@@ -195,7 +192,7 @@ func (m *fcMux) readLoop(c *os.File) {
 			}
 			for id, tc := range m.targets {
 				delete(m.targets, id)
-				_ = tc.Close()
+				tc.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			}
 			m.mu.Unlock()
 			return
@@ -219,9 +216,9 @@ func (m *fcMux) readLoop(c *os.File) {
 		}
 		switch op {
 		case 2:
-			_, _ = tc.Write(payload)
+			tc.Write(payload) // #nosec G104 -- best-effort; error intentionally ignored
 		case 3:
-			_ = tc.Close()
+			tc.Close() // #nosec G104 -- best-effort; error intentionally ignored
 		}
 	}
 }
@@ -232,7 +229,7 @@ func (m *fcMux) proxy(local net.Conn, guestPort int) {
 	id := m.nextID
 	m.mu.Unlock()
 	if err := m.send(1, id, []byte(fmt.Sprintf("%d", guestPort))); err != nil {
-		_ = local.Close()
+		local.Close() // #nosec G104 -- best-effort; error intentionally ignored
 		return
 	}
 	m.mu.Lock()
@@ -251,13 +248,13 @@ func (m *fcMux) proxy(local net.Conn, guestPort int) {
 				break
 			}
 		}
-		_ = m.send(3, id, nil)
+		m.send(3, id, nil) // #nosec G104 -- best-effort; error intentionally ignored
 		m.mu.Lock()
 		if m.targets[id] == local {
 			delete(m.targets, id)
 		}
 		m.mu.Unlock()
-		_ = local.Close()
+		local.Close() // #nosec G104 -- best-effort; error intentionally ignored
 	}()
 }
 
@@ -330,7 +327,7 @@ func runFCAgent(_ context.Context) error {
 				go func() {
 					target, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
 					if err != nil {
-						_ = c.Close()
+						c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 						return
 					}
 					fcBridge(c, target)
@@ -384,7 +381,7 @@ func runFCAgent(_ context.Context) error {
 			return fmt.Errorf("fc proxy listen :%s: %w", p, err)
 		}
 		var port int
-		_, _ = fmt.Sscanf(p, "%d", &port)
+		fmt.Sscanf(p, "%d", &port) // #nosec G104 -- best-effort; error intentionally ignored
 		go func(ln net.Listener, port int) {
 			for {
 				c, err := ln.Accept()

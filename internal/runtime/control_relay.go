@@ -68,22 +68,22 @@ func vsockDialContext(udsPath, guestPort string) func(ctx context.Context, netwo
 			return nil, err
 		}
 		if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			_ = c.Close()
+			c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			return nil, err
 		}
 		if _, err := fmt.Fprintf(c, "CONNECT %s\n", guestPort); err != nil {
-			_ = c.Close()
+			c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			return nil, err
 		}
 		line, err := bufio.NewReader(c).ReadString('\n')
 		if err != nil || !strings.HasPrefix(line, "OK") {
-			_ = c.Close()
+			c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			return nil, fmt.Errorf("vsock connect refused: %s", strings.TrimSpace(line))
 		}
 		// The buffered reader may already hold proxied bytes; wrap it so the
 		// transport sees a clean stream.
 		if err := c.SetDeadline(time.Time{}); err != nil {
-			_ = c.Close()
+			c.Close() // #nosec G104 -- best-effort; error intentionally ignored
 			return nil, err
 		}
 		return &vsockPrefixConn{Conn: c, r: bufio.NewReader(c)}, nil
@@ -164,7 +164,7 @@ func runControlRelay(ctx context.Context) error {
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = server.Shutdown(stop)
+		server.Shutdown(stop) // #nosec G104 -- best-effort; error intentionally ignored
 	}()
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

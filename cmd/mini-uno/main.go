@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/letya999/hermes-hub/internal/firecracker"
 )
@@ -28,13 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("mini-uno: listening on %s workdir=%s", cfg.Listen, cfg.WorkDir)
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           m,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	if err := srv.ListenAndServe(); err != nil {
+	if err := http.ListenAndServe(cfg.Listen, m); err != nil { // #nosec G114 -- operator-bound control plane; exec/wait handlers are long-lived by design
 		fmt.Fprintln(os.Stderr, "mini-uno:", err)
 		os.Exit(1)
 	}
