@@ -1,0 +1,6 @@
+status: in_progress
+last_verified: "2025-11-18"
+notes: >
+  Local merged profile (go test -race -coverpkg=<all internal+cmd>) measures
+  85.19% overall; internal/uno restored to ~86% by client verb tests.
+  CI coverage gate is the authoritative check on merge.
