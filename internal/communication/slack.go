@@ -193,7 +193,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	}
 	envelope := user.SlackEnvelope(teamID, slackUser)
 	if envstore.LooksLikeEnv(text) {
-		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
+		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", OwnerPrincipalID: envelope.PrincipalID, OwnerContextID: envelope.ContextID, Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
 	}
 	if strings.HasPrefix(text, "/") {
 		// Commands answer on the verified sender's thread: the Slack ids ride
@@ -202,7 +202,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 		if taskErr != nil {
 			return taskErr
 		}
-		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS, transportID: envelope.ExternalIdentityID, principal: user.ID}
+		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS, transportID: envelope.ExternalIdentityID, principal: user.ID, context: envelope.ContextID}
 		return g.dispatchChannelCommand(ctx, user, task, route, "slack-"+eventID, text)
 	}
 	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}

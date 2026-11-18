@@ -131,6 +131,9 @@ type Settings struct {
 	OrganizationRole      string   `yaml:"-"`
 	OrganizationProfile   string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
+	// OrgRuntimeIntrospection is the organization ceiling for operator
+	// introspection: absent or false narrows the scope flag to deny.
+	OrgRuntimeIntrospection *bool `yaml:"-"`
 	// gov is the per-load tool-governance view (issue 139): the evaluated
 	// decisions and cap:read overrides the render consumers enforce. Nil when
 	// the Settings were built without Read — the load path is the boundary.

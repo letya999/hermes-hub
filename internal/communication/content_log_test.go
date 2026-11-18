@@ -40,7 +40,7 @@ func TestMessageLogsCarryNoContentByDefault(t *testing.T) {
 	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "проверь "+secret+" и "+sensitive, 11, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.queueDelivery(ctx, "d1", 11, 0, "ответ с "+sensitive); err != nil {
+	if err := g.queueDelivery(ctx, "", "", "d1", 11, 0, "ответ с "+sensitive); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(ctx)

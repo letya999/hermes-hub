@@ -43,6 +43,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/skill-git", g.handleSkillGit)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/v1/prepare-delivery-status", g.handlePrepareDeliveryStatus)
+	mux.HandleFunc("/v1/admin/revocations", g.servePrincipalRevocation)
 	mux.HandleFunc("/v1/automation/deliveries", g.handleAutomationDelivery)
 	mux.HandleFunc("/v1/automation/owner-home", g.handleAutomationOwnerHome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)

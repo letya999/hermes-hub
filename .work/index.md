@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0323](in-progress/CHG-0323-security-operations/plan.md) | M9 security operations: introspection policy/audit, bounded SIEM export and audited principal-disable propagation; implementation green, final gates/live acceptance pending |
 | [CHG-0322](in-progress/CHG-0322-external-firecracker/plan.md) | external Firecracker microVM backend via Uno-style control plane; local mini-Uno live acceptance passed on WSL2 |
 | [CHG-0321](in-progress/CHG-0321-kata-pod-contract/plan.md) | #550 runtime Pod contract without subPath so identical spec runs under runc/runsc/Kata |
 | [CHG-0320](in-progress/CHG-0320-sandbox-runtime/plan.md) | M9 #394 → #202 sandbox runtime spike, optional runc/runsc/Kata selection and fail-closed verification |

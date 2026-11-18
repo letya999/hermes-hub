@@ -845,7 +845,7 @@ func (e *Engine) blockScheduleLocked(item *commodel.Schedule, reason string, now
 	if item.LastFailureSHA256 != digest {
 		item.LastFailureSHA256 = digest
 		text := locale.T(e.langOf(item.Envelope.PrincipalID), "routines.blocked", item.ScheduleID, reason)
-		d := commodel.Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
+		d := commodel.Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], OwnerPrincipalID: item.Envelope.PrincipalID, OwnerContextID: item.Envelope.ContextID, Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
 		if ch := e.channelFor(item.Channel); ch != nil {
 			// The notice goes to the owner's verified home, never to the
 			// schedule's own destination — a stale binding is exactly what

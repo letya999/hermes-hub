@@ -24,6 +24,7 @@ func (g *Gateway) handleAutomationDelivery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	principal := r.Header.Get("X-Hub-Principal")
+	contextID := r.Header.Get("X-Hub-Context")
 	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
@@ -32,7 +33,7 @@ func (g *Gateway) handleAutomationDelivery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var d Delivery
-	if json.Unmarshal(body, &d) != nil || d.OwnerPrincipalID != "" || d.ID == "" || d.Channel == "" || len(d.ID) > 256 || len(d.Buttons) != 0 || len(d.Artifacts) != 0 || d.Voice != "" || d.ApprovalJobID != "" {
+	if json.Unmarshal(body, &d) != nil || d.OwnerPrincipalID != "" || d.OwnerContextID != "" || d.Automation || d.ID == "" || d.Channel == "" || len(d.ID) > 256 || len(d.Buttons) != 0 || len(d.Artifacts) != 0 || d.Voice != "" || d.ApprovalJobID != "" || !identity.ValidID(principal) || !identity.ValidID(contextID) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -42,6 +43,8 @@ func (g *Gateway) handleAutomationDelivery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	d.OwnerPrincipalID = principal
+	d.OwnerContextID = contextID
+	d.Automation = true
 	d.IdempotencyKey = d.ID
 	if err := g.spool.EnqueueDelivery(d); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)

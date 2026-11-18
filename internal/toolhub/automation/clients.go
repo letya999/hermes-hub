@@ -241,11 +241,14 @@ func (c *HTTPCommunicationClient) OwnerHome(ctx context.Context, principal strin
 	return home.ChatID, home.Lang, nil
 }
 
-func (c *HTTPCommunicationClient) PostDelivery(ctx context.Context, principal string, d commodel.Delivery) error {
-	if principal == "" || d.ID == "" || c.Token == "" {
+func (c *HTTPCommunicationClient) PostDelivery(ctx context.Context, principal, contextID string, d commodel.Delivery) error {
+	if principal == "" || !identity.ValidID(contextID) || d.ID == "" || c.Token == "" {
 		return errors.New("automation: invalid delivery request")
 	}
 	d.IdempotencyKey = d.ID
+	// The service contract carries the owner scope in headers; the body must
+	// not assert it — communication stamps the pair after revalidation.
+	d.OwnerPrincipalID, d.OwnerContextID = "", ""
 	body, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -257,6 +260,7 @@ func (c *HTTPCommunicationClient) PostDelivery(ctx context.Context, principal st
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("X-Hub-Principal", principal)
+	req.Header.Set("X-Hub-Context", contextID)
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req) // #nosec G704 -- request uses the operator-rendered communication service URL
 	if err != nil {
 		return err

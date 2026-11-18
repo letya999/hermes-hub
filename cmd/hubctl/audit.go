@@ -18,7 +18,7 @@ import (
 // never be printed), and resolve settles one operation on evidence the
 // operator actually verified. Unsettled records have no TTL — they close only
 // on an explicit outcome.
-func runAudit(_ context.Context, args []string) error {
+func runAudit(ctx context.Context, args []string) error {
 	lang, ok := locale.Parse(os.Getenv("LANG"))
 	if !ok {
 		lang = locale.Default
@@ -29,6 +29,8 @@ func runAudit(_ context.Context, args []string) error {
 	switch args[0] {
 	case "rollover":
 		return runAuditRollover(lang, args[1:])
+	case "export":
+		return runAuditExport(ctx, lang, args[1:])
 	case "pending", "resolve":
 	default:
 		return errors.New(locale.T(lang, "hubctl.audit-usage"))

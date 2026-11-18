@@ -168,7 +168,7 @@ func newCommServer(t *testing.T) *commServer {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
-		if r.URL.Path != "/v1/automation/deliveries" || r.Header.Get("Authorization") != "Bearer control" || r.Header.Get("X-Hub-Principal") == "" {
+		if r.URL.Path != "/v1/automation/deliveries" || r.Header.Get("Authorization") != "Bearer control" || r.Header.Get("X-Hub-Principal") == "" || r.Header.Get("X-Hub-Context") == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -178,6 +178,7 @@ func newCommServer(t *testing.T) *commServer {
 			return
 		}
 		d.OwnerPrincipalID = r.Header.Get("X-Hub-Principal")
+		d.OwnerContextID = r.Header.Get("X-Hub-Context")
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		for _, seen := range c.deliveries {
@@ -1989,18 +1990,54 @@ func TestResultUsesAdmittedTaskBinding(t *testing.T) {
 
 func TestDeliveryOutboxRejectsConflictingReplay(t *testing.T) {
 	o := &deliveryOutbox{dir: t.TempDir()}
-	if _, err := o.enqueue("alice", commodel.Delivery{ID: "one", IdempotencyKey: "same", Text: "first"}, time.Now()); err != nil {
+	if _, err := o.enqueue("alice", commodel.Delivery{ID: "one", IdempotencyKey: "same", OwnerPrincipalID: "alice", OwnerContextID: "alice", Text: "first"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.enqueue("alice", commodel.Delivery{ID: "two", IdempotencyKey: "same", Text: "second"}, time.Now()); err == nil {
+	if _, err := o.enqueue("alice", commodel.Delivery{ID: "two", IdempotencyKey: "same", OwnerPrincipalID: "alice", OwnerContextID: "alice", Text: "second"}, time.Now()); err == nil {
 		t.Fatal("different delivery reused a durable idempotency key")
 	}
 	if _, err := o.enqueue("alice", commodel.Delivery{IdempotencyKey: "missing-id"}, time.Now()); err == nil {
 		t.Fatal("delivery without an outbox ID was accepted")
 	}
+	if _, err := o.enqueue("alice", commodel.Delivery{ID: "no-owner", IdempotencyKey: "no-owner", Text: "unbound"}, time.Now()); err == nil {
+		t.Fatal("delivery without an owner scope was accepted")
+	}
 	items, err := o.pending()
 	if err != nil || len(items) != 1 || items[0].Delivery.Text != "first" {
 		t.Fatalf("conflict changed the original delivery: %+v, %v", items, err)
+	}
+}
+
+func TestDeliveryOutboxMigratesLegacyRecords(t *testing.T) {
+	o := &deliveryOutbox{dir: t.TempDir()}
+	write := func(key, text string) {
+		rec := outboxRecord{Key: key, Principal: "alice", Delivery: commodel.Delivery{ID: key, IdempotencyKey: key, Text: text}}
+		rec.path = o.recordPath("alice", key)
+		if err := os.MkdirAll(filepath.Dir(rec.path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeJSONAtomic(rec.path, &rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Records persisted before owner-context stamping carried no pair.
+	write("legacy-replay", "old")
+	write("legacy-pending", "older")
+	got, err := o.enqueue("alice", commodel.Delivery{ID: "legacy-replay", IdempotencyKey: "legacy-replay", OwnerPrincipalID: "alice", OwnerContextID: "alice", Text: "old"}, time.Now())
+	if err != nil {
+		t.Fatalf("rediscovery of a pre-context record conflicted: %v", err)
+	}
+	if got.Delivery.OwnerPrincipalID != "alice" || got.Delivery.OwnerContextID != "alice" {
+		t.Fatalf("owner pair not upgraded on replay: %+v", got.Delivery)
+	}
+	items, err := o.pending()
+	if err != nil || len(items) != 2 {
+		t.Fatalf("pending after migration: %+v, %v", items, err)
+	}
+	for _, item := range items {
+		if item.Delivery.OwnerPrincipalID != "alice" || item.Delivery.OwnerContextID != "alice" {
+			t.Fatalf("record %s kept no owner scope: %+v", item.Key, item.Delivery)
+		}
 	}
 }
 
