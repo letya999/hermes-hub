@@ -176,7 +176,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		}
 		if text != "" || event.Status == "completed" && (event.Voice != "" || len(event.Artifacts) > 0) {
 			receipt.StatusDelivery = statusDelivery
-			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, StreamPosition: receipt.Position, CreatedAt: time.Now().UTC()}
+			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, StreamPosition: receipt.Position, CreatedAt: time.Now().UTC()}
 			if markdown {
 				receipt.Delivery.Format = formatMarkdown
 			}

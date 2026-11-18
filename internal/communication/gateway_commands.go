@@ -88,6 +88,6 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		if job.ChatID < 0 && job.TopicID != 0 {
 			_ = g.api.EditForumTopic(ctx, job.ChatID, job.TopicID, strings.TrimSpace(report.Title))
 		}
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "chat.auto-titled", strings.TrimSpace(report.Title)), CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "chat.auto-titled", strings.TrimSpace(report.Title)), CreatedAt: g.now().UTC()})
 	}
 }

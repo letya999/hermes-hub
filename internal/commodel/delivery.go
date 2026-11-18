@@ -78,6 +78,18 @@ func (job Job) MemoryAudience() memory.Audience {
 type Delivery struct {
 	BlockedBy        string `json:"blocked_by,omitempty"`
 	OwnerPrincipalID string `json:"owner_principal_id,omitempty"`
+	// OwnerContextID completes the durable revocation scope of a standalone
+	// delivery: the record matches only the exact (principal, context) pair.
+	// Job/approval-bound records resolve their owner through the durable job
+	// mapping instead; an ownerless standalone record never matches a scope
+	// revocation (fail closed).
+	OwnerContextID string `json:"owner_context_id,omitempty"`
+	// Automation marks a record admitted through the service-control delivery
+	// boundary (/v1/automation/deliveries, speech): the send worker re-verifies
+	// the owner binding and send-right before send, and skips local job-mapping
+	// resolution because its bindings live in the caller's store. Hub-stamped
+	// only — the body can never set it.
+	Automation       bool   `json:"automation,omitempty"`
 	ID               string `json:"id"`
 	OccurrenceID     string `json:"occurrence_id,omitempty"`
 	JobID            string `json:"job_id"`

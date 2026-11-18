@@ -184,6 +184,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "routine" {
 		return runRoutine(ctx, args[1:])
 	}
+	if op == "user" {
+		return runUser(ctx, args[1:])
+	}
 	if op == "usage" {
 		f := flag.NewFlagSet("usage", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")
@@ -954,9 +957,12 @@ func run(ctx context.Context, args []string) error {
 		if f.NArg() == 0 {
 			return fmt.Errorf("exec requires -- command arguments")
 		}
+		if _, err := runtimeIntrospectionGate(abs, *environment, "exec"); err != nil {
+			return err
+		}
 		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
-		s, err := stack.ReadEffective(abs, *environment)
+		s, err := runtimeIntrospectionGate(abs, *environment, "chat")
 		if err != nil {
 			return err
 		}
@@ -975,6 +981,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return dockerCmd("run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "/opt/telegram/session_string_generator.py", "--phone").Run()
 	case "meet-auth":
+		if _, err := runtimeIntrospectionGate(abs, *environment, "meet_auth"); err != nil {
+			return err
+		}
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
 	}
 	return nil

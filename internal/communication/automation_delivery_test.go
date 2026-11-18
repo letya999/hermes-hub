@@ -25,31 +25,46 @@ func TestAutomationDeliveryHandoffBindsOwnerAndRequestID(t *testing.T) {
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
 	client := automation.HTTPCommunicationClient{URL: srv.URL, Token: "automation-service"}
-	if err := (&automation.HTTPCommunicationClient{URL: srv.URL, Token: "service"}).PostDelivery(context.Background(), "alice", Delivery{ID: "automation-control-token", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "denied"}); err == nil {
+	if err := (&automation.HTTPCommunicationClient{URL: srv.URL, Token: "service"}).PostDelivery(context.Background(), "alice", "alice", Delivery{ID: "automation-control-token", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "denied"}); err == nil {
 		t.Fatal("ordinary control token admitted a service-only delivery")
 	}
 	delivery := Delivery{ID: "automation-1", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "result"}
 	for i := 0; i < 2; i++ {
-		if err := client.PostDelivery(context.Background(), "alice", delivery); err != nil {
+		if err := client.PostDelivery(context.Background(), "alice", "alice", delivery); err != nil {
 			t.Fatalf("handoff %d: %v", i, err)
 		}
 	}
-	if err := client.PostDelivery(context.Background(), "bob", delivery); err == nil {
+	if err := client.PostDelivery(context.Background(), "bob", "bob", delivery); err == nil {
 		t.Fatal("bob handed off a delivery to alice's chat")
 	}
 	wrongTarget := delivery
 	wrongTarget.ID = "automation-wrong-target"
 	wrongTarget.DeliveryTargetID = "telegram-22"
-	if err := client.PostDelivery(context.Background(), "alice", wrongTarget); err == nil {
+	if err := client.PostDelivery(context.Background(), "alice", "alice", wrongTarget); err == nil {
 		t.Fatal("delivery target did not match the routed chat")
 	}
+	if err := client.PostDelivery(context.Background(), "alice", "", delivery); err == nil {
+		t.Fatal("delivery without an owner context was accepted")
+	}
+	// A forged scope inside the body never reaches the spool: the service
+	// contract carries principal/context in headers only.
+	forged := delivery
+	forged.ID = "automation-forged"
+	forged.OwnerPrincipalID, forged.OwnerContextID = "mallory", "mallory"
+	if err := client.PostDelivery(context.Background(), "alice", "alice", forged); err != nil {
+		t.Fatalf("client must strip body owner fields before posting: %v", err)
+	}
 	client.Token = "wrong"
-	if err := client.PostDelivery(context.Background(), "alice", Delivery{ID: "automation-2", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11"}); err == nil {
+	if err := client.PostDelivery(context.Background(), "alice", "alice", Delivery{ID: "automation-2", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11"}); err == nil {
 		t.Fatal("wrong service bearer was accepted")
 	}
 	claimed, err := spool.ClaimDelivery()
-	if err != nil || claimed == nil || claimed.ID != delivery.ID || claimed.OwnerPrincipalID != "alice" || claimed.IdempotencyKey != delivery.ID {
+	if err != nil || claimed == nil || claimed.ID != delivery.ID || claimed.OwnerPrincipalID != "alice" || claimed.OwnerContextID != "alice" || claimed.IdempotencyKey != delivery.ID {
 		t.Fatalf("owner or request ID not durably bound: %+v, %v", claimed, err)
+	}
+	forgedClaim, err := spool.ClaimDelivery()
+	if err != nil || forgedClaim == nil || forgedClaim.ID != "automation-forged" || forgedClaim.OwnerPrincipalID != "alice" || forgedClaim.OwnerContextID != "alice" {
+		t.Fatalf("body-forged owner reached the spool: %+v, %v", forgedClaim, err)
 	}
 	if duplicate, err := spool.ClaimDelivery(); err != nil || duplicate != nil {
 		t.Fatalf("duplicate handoff created another delivery: %+v, %v", duplicate, err)
@@ -78,7 +93,7 @@ func TestAutomationDeliveryUsesLiveSendRight(t *testing.T) {
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	client := automation.HTTPCommunicationClient{URL: server.URL, Token: "service"}
-	if err := client.PostDelivery(context.Background(), "alice", Delivery{ID: "automation-allowed", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "result"}); err != nil {
+	if err := client.PostDelivery(context.Background(), "alice", "alice", Delivery{ID: "automation-allowed", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "result"}); err != nil {
 		t.Fatal(err)
 	}
 	g.deliverOne(context.Background())
@@ -154,7 +169,7 @@ func TestOccurrenceDeliveryFenceRechecksOwner(t *testing.T) {
 	defer control.Close()
 	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: control.URL, AutomationAuth: "automation-test", Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
 	put := func(id, occ string) {
-		if err := spool.EnqueueDelivery(Delivery{ID: id, OccurrenceID: occ, OwnerPrincipalID: "alice", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "note"}); err != nil {
+		if err := spool.EnqueueDelivery(Delivery{ID: id, OccurrenceID: occ, OwnerPrincipalID: "alice", OwnerContextID: "alice", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "note"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -220,7 +235,7 @@ func TestAutomationDeliveryRechecksOwnerBeforeSend(t *testing.T) {
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	api := &fakeAPI{}
 	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
-	if err := spool.EnqueueDelivery(Delivery{ID: "automation-revoked", OwnerPrincipalID: "alice", Channel: "telegram_bot", ChatID: 11, Text: "private"}); err != nil {
+	if err := spool.EnqueueDelivery(Delivery{ID: "automation-revoked", OwnerPrincipalID: "alice", OwnerContextID: "alice", Automation: true, Channel: "telegram_bot", ChatID: 11, Text: "private"}); err != nil {
 		t.Fatal(err)
 	}
 	g.config.Users[0].Enabled = false

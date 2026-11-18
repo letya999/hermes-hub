@@ -204,13 +204,17 @@ func resolveStatusToken(dir string) string {
 	return ""
 }
 
-// resolveGatewayToken: the gateway's control bearer is ControlAuth —
-// HUB_COMMUNICATION_AUTH, provisioned into the infra space's
-// communication.<env>.env. An explicit --auth or the supervisor token is
-// the fallback (unsupervised gateways accept RuntimeAuth).
+// resolveGatewayToken: the gateway's control bearer is ControlAuth. Compose
+// deployments interpolate HUB_COMMUNICATION_AUTH from the supervisor token,
+// so the infra supervisor.auth — passed in as fallback — is the live bearer;
+// the communication.<env>.env copy only matters when a gateway runs outside
+// compose with its own control token.
 func resolveGatewayToken(dir, env, fallback string) string {
 	if tok := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")); tok != "" {
 		return tok
+	}
+	if fallback != "" {
+		return fallback
 	}
 	if env == "" {
 		env = "dev"
@@ -220,5 +224,5 @@ func resolveGatewayToken(dir, env, fallback string) string {
 			return tok
 		}
 	}
-	return fallback
+	return ""
 }

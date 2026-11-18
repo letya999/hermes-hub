@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	v1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/credential-broker/identity"
 )
 
 // Acquire denials carry a reason so operators can tell a grant/identity
@@ -102,5 +103,35 @@ func TestCreateGrantReplacesStaleBindingForSameDedicatedWorkload(t *testing.T) {
 	}
 	if _, err := f.b.Acquire(oldActor, v1.AcquireLease{GrantID: old.ID}); !errors.Is(err, ErrDenied) {
 		t.Fatalf("old binding acquired after rotation: %v", err)
+	}
+}
+
+func TestRevokePrincipalGrantsIsScopedAndDropsLeases(t *testing.T) {
+	f := newFixture(t)
+	aliceCredential := f.enroll(alice, "pat", "alice-service")
+	bobCredential := f.enroll(bob, "pat", "bob-service")
+	aliceGrant, aliceActor := f.grant(alice, aliceCredential, "pat", "binding1", "workload1")
+	bobGrant, _ := f.grant(bob, bobCredential, "pat", "binding1", "workload1")
+	f.lease(aliceActor, aliceGrant)
+	manager := identity.Actor{PrincipalID: "toolhub", ContextID: alice.ContextID, RuntimeID: "toolhub", PolicyVersion: "policy_v1", ContextManager: true}
+	if _, err := f.b.RevokePrincipalGrants(bob, v1.PrincipalRevocationRequest{PrincipalID: alice.PrincipalID, ContextID: alice.ContextID}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("sibling revocation allowed: %v", err)
+	}
+	report, err := f.b.RevokePrincipalGrants(manager, v1.PrincipalRevocationRequest{PrincipalID: alice.PrincipalID, ContextID: alice.ContextID})
+	if err != nil || report.Grants != 1 {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	if _, err := f.b.Acquire(aliceActor, v1.AcquireLease{GrantID: aliceGrant.ID}); !errors.Is(err, ErrDenied) {
+		t.Fatalf("revoked grant acquired: %v", err)
+	}
+	if got, err := f.b.GetGrant(alice, aliceGrant.ID); err != nil || got.Active {
+		t.Fatalf("alice grant after bulk revoke: %+v %v", got, err)
+	}
+	if got, err := f.b.GetGrant(bob, bobGrant.ID); err != nil || !got.Active {
+		t.Fatalf("bob grant after alice revoke: %+v %v", got, err)
+	}
+	report, err = f.b.RevokePrincipalGrants(manager, v1.PrincipalRevocationRequest{PrincipalID: alice.PrincipalID, ContextID: alice.ContextID})
+	if err != nil || report.Grants != 0 {
+		t.Fatalf("second report=%+v err=%v", report, err)
 	}
 }

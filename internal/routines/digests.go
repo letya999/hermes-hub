@@ -112,7 +112,7 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 			}
 			lines = append(lines, message)
 		}
-		delivery, err := e.normalizeDelivery(commodel.Delivery{ID: "digest-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + strings.Join(lines, "\n"), NotBefore: QuietDefer(digest, now), CreatedAt: now.UTC()})
+		delivery, err := e.normalizeDelivery(commodel.Delivery{ID: "digest-" + o.Job.ID, OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + strings.Join(lines, "\n"), NotBefore: QuietDefer(digest, now), CreatedAt: now.UTC()})
 		if err != nil {
 			return err
 		}
@@ -217,7 +217,7 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 		if unavailable > 0 {
 			message += locale.T(lang, "routines.unavailable-count", unavailable)
 		}
-		d, err := e.normalizeDelivery(commodel.Delivery{ID: "brief-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + message, CreatedAt: now.UTC()})
+		d, err := e.normalizeDelivery(commodel.Delivery{ID: "brief-" + o.Job.ID, OccurrenceID: o.Job.ID, OwnerPrincipalID: o.Job.PrincipalID, OwnerContextID: o.Job.ContextID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + message, CreatedAt: now.UTC()})
 		if err != nil {
 			return err
 		}

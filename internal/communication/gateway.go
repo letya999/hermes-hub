@@ -503,7 +503,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				return nil
 			}
 			_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, locale.T(locale.LangOf(user.WorkspaceDir), "chat.group-no-secrets"))
+			return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, locale.T(locale.LangOf(user.WorkspaceDir), "chat.group-no-secrets"))
 		}
 		if !ok || message.Chat.ID >= 0 {
 			return nil
@@ -524,17 +524,17 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if hint := g.iamEnrolHint(message.From.ID); hint != "" {
 			answer = locale.T(lang, "chat.no-access-enrol", hint)
 		}
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), answer)
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), answer)
 	}
 	// The locale ladder: strong channel evidence adopts a language once;
 	// otherwise the stored preference decides.
 	switch lang, action := locale.Resolve(user.WorkspaceDir, message.From.LanguageCode); action {
 	case "detected":
 		locale.StoreResult(user.WorkspaceDir, lang, action)
-		_ = g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-lang", message.Chat.ID, messageTopicID(message), locale.T(lang, "lang.detected", locale.Names[lang]))
+		_ = g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-lang", message.Chat.ID, messageTopicID(message), locale.T(lang, "lang.detected", locale.Names[lang]))
 	case "picker":
 		locale.StoreResult(user.WorkspaceDir, lang, action)
-		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID}
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID, context: user.ID}
 		_ = g.languagePicker(ctx, route, messageTopicID(message), "telegram-"+strconv.Itoa(update.UpdateID), lang)
 	}
 	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
@@ -560,7 +560,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		return nil
 	}
 	if edited {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.edit-norestart"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.edit-norestart"))
 	}
 	if strings.HasPrefix(text, "/") {
 		topic := messageTopicID(message)
@@ -568,9 +568,9 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		// topic: /task new is the explicit binding action.
 		task, taskErr := g.spool.ResolveTask(user, message.Chat.ID, topic, false)
 		if taskErr != nil {
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
+			return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 		}
-		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID}
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID, transportID: "telegram-" + strconv.FormatInt(message.From.ID, 10), principal: user.ID, context: user.ID}
 		return g.dispatchChannelCommand(ctx, user, task, route, "telegram-"+strconv.Itoa(update.UpdateID), text)
 	}
 	if message.Voice != nil || message.Audio != nil {
@@ -589,7 +589,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	// topic adopts it, root-DM text follows the chat's current task.
 	task, err := g.spool.ResolveTask(user, message.Chat.ID, messageTopicID(message), true)
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
+		return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 	}
 	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "", message.ForwardOrigin != nil)
 }
@@ -608,15 +608,17 @@ type commandRoute struct {
 	slackChannel     string
 	slackThread      string
 	// transportID/principal carry the verified channel identity for
-	// IAM link challenges — never derived from command text.
+	// IAM link challenges — never derived from command text. context is the
+	// verified envelope context that pairs with principal for owner scope.
 	transportID string
 	principal   string
+	context     string
 }
 
 // queueCommandReply enqueues a command answer on the route that carried the
 // command — Slack threads need their channel ids, telegram needs chat/topic.
 func (g *Gateway) queueCommandReply(_ context.Context, key string, route commandRoute, topicID int64, text string) error {
-	return g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, Channel: route.channel, ChatID: route.chatID, TopicID: topicID, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Text: text, CreatedAt: g.now().UTC()})
+	return g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, OwnerPrincipalID: route.principal, OwnerContextID: route.context, Channel: route.channel, ChatID: route.chatID, TopicID: topicID, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Text: text, CreatedAt: g.now().UTC()})
 }
 
 // dispatchChannelCommand runs one slash command for an already authenticated
@@ -852,7 +854,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 // affordances get one button per language; the prompt text is still
 // self-sufficient so text-only channels can answer with /language <code>.
 func (g *Gateway) languagePicker(_ context.Context, route commandRoute, topic int64, deliveryKey string, lang locale.Lang) error {
-	d := Delivery{ID: deliveryKey + "-lang", IdempotencyKey: deliveryKey + "-lang", Channel: route.channel, ChatID: route.chatID, TopicID: topic, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Kind: "lang-picker", Text: locale.T(lang, "lang.choose"), CreatedAt: g.now().UTC()}
+	d := Delivery{ID: deliveryKey + "-lang", IdempotencyKey: deliveryKey + "-lang", OwnerPrincipalID: route.principal, OwnerContextID: route.context, Channel: route.channel, ChatID: route.chatID, TopicID: topic, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Kind: "lang-picker", Text: locale.T(lang, "lang.choose"), CreatedAt: g.now().UTC()}
 	if ch := g.channel(route.channel); ch != nil && ch.Caps().Actions {
 		for _, l := range locale.All {
 			d.Buttons = append(d.Buttons, DeliveryButton{Text: locale.Names[l], Data: "lang:" + string(l)})
@@ -895,7 +897,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	}
 	if channel == "telegram_bot" {
 		lang := locale.LangOf(user.WorkspaceDir)
-		if err := g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + job.ID + "-status", Channel: channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: chatID, TaskID: task.TaskID, TopicID: task.TopicID, Text: locale.T(lang, "chat.queued") + " · " + formatElapsed(lang, 0), CreatedAt: g.now().UTC()}); err != nil {
+		if err := g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + job.ID + "-status", OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: chatID, TaskID: task.TaskID, TopicID: task.TopicID, Text: locale.T(lang, "chat.queued") + " · " + formatElapsed(lang, 0), CreatedAt: g.now().UTC()}); err != nil {
 			log.Printf("gateway job_id=%q status=queued_notice_failed", job.ID)
 		}
 	}
@@ -980,7 +982,7 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if base == "" {
 			base = locale.T(lang, "chat.working")
 		}
-		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(lang, g.now().Sub(m.CreatedAt)), StreamPosition: m.EventPosition, CreatedAt: g.now().UTC()})
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", OwnerPrincipalID: m.PrincipalID, OwnerContextID: m.ContextID, Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(lang, g.now().Sub(m.CreatedAt)), StreamPosition: m.EventPosition, CreatedAt: g.now().UTC()})
 	}
 }
 
@@ -1015,7 +1017,7 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			reply = locale.T(lang, "chat.secrets-form", form.FormURL)
 		}
 	}
-	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
+	return g.queueDelivery(ctx, user.ID, user.ID, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
 }
 
 // noteEgress flips the named <channel>-egress condition once per transition:
@@ -1042,7 +1044,7 @@ func (g *Gateway) noteEgress(channel string, err error) {
 func (g *Gateway) notifyTelegramConflict() {
 	for _, u := range g.config.Users {
 		if u.Enabled && len(u.TelegramIDs) > 0 {
-			_ = g.queueDelivery(context.Background(), "telegram-conflict", u.TelegramIDs[0], 0, locale.T(locale.LangOf(u.WorkspaceDir), "chat.bot-conflict"))
+			_ = g.queueDelivery(context.Background(), u.ID, u.ID, "telegram-conflict", u.TelegramIDs[0], 0, locale.T(locale.LangOf(u.WorkspaceDir), "chat.bot-conflict"))
 			return
 		}
 	}

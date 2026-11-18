@@ -44,15 +44,16 @@ func (m *Manager) administrativeHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		PrincipalID   string `json:"principal_id"`
-		ContextID     string `json:"context_id"`
-		Reason        string `json:"reason"`
-		ExpectedEpoch uint64 `json:"expected_epoch"`
+		PrincipalID      string `json:"principal_id"`
+		ContextID        string `json:"context_id"`
+		Reason           string `json:"reason"`
+		ExpectedEpoch    uint64 `json:"expected_epoch"`
+		DeferContainment bool   `json:"defer_containment"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	if d.Decode(&request) != nil || d.Decode(new(any)) != io.EOF || !identity.ValidID(request.PrincipalID) || !identity.ValidID(request.ContextID) || request.Reason != "manual" {
+	if d.Decode(&request) != nil || d.Decode(new(any)) != io.EOF || !identity.ValidID(request.PrincipalID) || !identity.ValidID(request.ContextID) || request.Reason != "manual" || (request.DeferContainment && r.Method != http.MethodPost) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid hold request"})
 		return
 	}
@@ -87,7 +88,7 @@ func (m *Manager) administrativeHold(w http.ResponseWriter, r *http.Request) {
 	}
 	m.holds[key] = hold
 	previousJobs := map[string]jobRecord{}
-	if hold.Active {
+	if hold.Active && !request.DeferContainment {
 		for id, record := range m.jobs {
 			if record.Request.PrincipalID != hold.PrincipalID || record.Request.ContextID != hold.ContextID || terminalRunStatus(record.Status) {
 				continue
@@ -109,7 +110,7 @@ func (m *Manager) administrativeHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Unlock()
-	if hold.Active {
+	if hold.Active && !request.DeferContainment {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 45*time.Second)
 		defer cancel()
 		if err := m.containHeldScope(ctx, hold); err != nil {

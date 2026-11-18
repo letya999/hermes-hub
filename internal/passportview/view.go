@@ -297,6 +297,9 @@ type Runtime struct {
 	Goals       RuntimeGoals     `yaml:"goals,omitempty"`
 	Compression map[string]any   `yaml:"compression,omitempty"`
 	Auxiliary   RuntimeAuxiliary `yaml:"auxiliary,omitempty"`
+	// Introspection gates operator hubctl exec/chat/meet-auth. Nil keeps the
+	// personal-space default; group and organization scopes stay opt-in.
+	Introspection *bool `yaml:"introspection,omitempty"`
 }
 
 type RuntimeContext struct {

@@ -89,6 +89,7 @@ func (g *Gateway) enqueueAlert(user User, chatID int64, slackChannel, key, text 
 	}
 	_ = g.spool.EnqueueDelivery(Delivery{
 		ID: key, IdempotencyKey: key,
+		OwnerPrincipalID: user.ID, OwnerContextID: user.ID,
 		Channel: channel, ChatID: chatID, SlackChannel: slackChannel,
 		Text: text, CreatedAt: g.now().UTC(),
 	})

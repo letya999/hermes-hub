@@ -122,6 +122,10 @@ type OrganizationSettings struct {
 	MCP            map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	ReadOnlyMCP    []string             `yaml:"read_only_mcp,omitempty"`
 	OrgActions     []string             `yaml:"org_actions,omitempty"`
+	// RuntimeIntrospection is the organization ceiling for hubctl runtime
+	// introspection. Nil and false both deny; a member still needs its own
+	// runtime.introspection flag to opt in.
+	RuntimeIntrospection *bool `yaml:"runtime_introspection,omitempty"`
 }
 
 // OrgMember is one org member: a role plus an optional provisioning profile
@@ -284,10 +288,26 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	s.OrganizationSkillsDir = filepath.Join(orgDir, "skills")
 	s.OrganizationRole = role
 	s.OrgActions = append([]string(nil), o.OrgActions...)
+	s.OrgRuntimeIntrospection = o.RuntimeIntrospection
 	return s, nil
 }
 
 func (s Settings) OrgScoped() bool { return s.Organization != "" }
+
+// RuntimeIntrospectionAllowed resolves the per-scope operator flag. Personal
+// spaces preserve the historical permissive default; group and organization
+// scopes require both an explicit space flag and, when an organization is
+// attached, an explicit organization ceiling.
+func (s Settings) RuntimeIntrospectionAllowed() bool {
+	flag := s.PassportConfig != nil && s.PassportConfig.Runtime.Introspection != nil && *s.PassportConfig.Runtime.Introspection
+	if s.OrgScoped() {
+		return flag && s.OrgRuntimeIntrospection != nil && *s.OrgRuntimeIntrospection
+	}
+	if s.ScopeKind == string(GroupScope) {
+		return flag
+	}
+	return flag || s.PassportConfig == nil || s.PassportConfig.Runtime.Introspection == nil
+}
 
 // orgActionTool maps an organization write-action to the tools: entry whose
 // access mode governs it. An `access: ro` entry strips the action from the

@@ -153,6 +153,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/memory-capture", g.gate().background(http.HandlerFunc(g.serveMemoryCapture)))
 	mux.Handle("/v1/memory-context", g.gate().interactive(http.HandlerFunc(g.serveMemoryContext)))
 	mux.Handle("/v1/rights/decide", g.gate().interactive(http.HandlerFunc(g.serveRightsDecide)))
+	mux.Handle("/v1/admin/revocations", http.HandlerFunc(g.servePrincipalRevocation))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", g.gate().background(http.HandlerFunc(g.serveAdminDiagnose)))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))

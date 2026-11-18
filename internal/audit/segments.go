@@ -46,6 +46,20 @@ type Page struct {
 	More   bool
 }
 
+// ExportRecord is one ledger-sequence event plus the cursor position that
+// acknowledges it. ExportPage is all-principals because the durable cursor is
+// meaningful only in ledger append order.
+type ExportRecord struct {
+	Index uint64
+	Event Event
+}
+
+type ExportPage struct {
+	Records []ExportRecord
+	Next    uint64
+	More    bool
+}
+
 func Open(path string) (*Ledger, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("%w: ledger path must be absolute", ErrInvalid)
@@ -319,6 +333,44 @@ func (l *Ledger) ReadPage(scope Scope, after uint64, limit int) (Page, error) {
 	})
 	if err != nil {
 		return Page{}, err
+	}
+	return page, nil
+}
+
+// ExportPage reads a bounded all-principals page in ledger order. Exporter
+// control records are deliberately excluded so an export transition cannot
+// recursively generate another export item.
+func (l *Ledger) ExportPage(after uint64, limit int, kinds map[string]bool) (ExportPage, error) {
+	var page ExportPage
+	if l == nil || limit < 1 || limit > MaxPageRecords {
+		return page, fmt.Errorf("%w: audit export page limit", ErrInvalid)
+	}
+	page.Records = make([]ExportRecord, 0, limit)
+	err := l.locked(func(root *os.Root) error {
+		stats, err := l.scan(root, func(event Event, index uint64) {
+			if index <= after || event.Kind == "audit-export" || kinds != nil && !kinds[event.Kind] {
+				return
+			}
+			if len(page.Records) == limit {
+				page.More = true
+				return
+			}
+			page.Records = append(page.Records, ExportRecord{Index: index, Event: event})
+			page.Next = index
+		})
+		if err != nil {
+			return err
+		}
+		if after > stats.records {
+			return fmt.Errorf("%w: future audit cursor", ErrInvalid)
+		}
+		if !page.More {
+			page.Next = stats.records
+		}
+		return nil
+	})
+	if err != nil {
+		return ExportPage{}, err
 	}
 	return page, nil
 }

@@ -136,7 +136,8 @@ func (g *Gateway) opsDeps() commops.Deps {
 			return err == nil
 		},
 		NotifyOwner: func(ctx context.Context, idempotency string, chatID int64, text string) {
-			_ = g.queueDelivery(ctx, idempotency, chatID, 0, text)
+			owner := g.userByChatID(chatID)
+			_ = g.queueDelivery(ctx, owner.ID, owner.ID, idempotency, chatID, 0, text)
 		},
 		JobTimeout:      func() time.Duration { return canaryJobTimeout },
 		DeliveryGrace:   func() time.Duration { return canaryDeliveryGrace },
