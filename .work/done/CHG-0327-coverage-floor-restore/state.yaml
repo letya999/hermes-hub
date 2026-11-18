@@ -1,0 +1,7 @@
+status: done
+last_verified: "2026-11-18"
+notes: >
+  Done 2026-11-18: merged via PR #564 (c0a69dfa) + PR #565 index fix
+  (45f16745). Local merged profile 85.19% overall, internal/uno 64%→86%;
+  dev CI run 44360858745 fully green — coverage gate passed, all checks
+  shards, lint, container-gates incl. m32 (prod m32 flake cleared on rerun).
