@@ -1041,6 +1041,12 @@ func connectRemotePrivate(ctx context.Context, registry *toolhub.Store, backend 
 		if wantBearer && connection.CredentialRefID == "" {
 			return fmt.Errorf("cannot attach a credential to an immutable registration — re-register under a new name")
 		}
+		if _, err := registry.Enable(auth, existing.DefinitionID, existing.Version); err != nil {
+			return err
+		}
+		if err := registry.Save(registryPath); err != nil {
+			return err
+		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"definition_id": definitionID, "version": existing.Version, "connection_id": connectionID, "unchanged": true})
 	}
 	var credentials []api.CredentialInput
@@ -1098,6 +1104,12 @@ func connectRemotePrivate(ctx context.Context, registry *toolhub.Store, backend 
 		credentialRefID = ref.CredentialRefID
 	}
 	if err := registry.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: credentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"mcp_endpoint": canonical}}); err != nil {
+		return err
+	}
+	// The registering principal is the connection owner — enable immediately
+	// like connectTelegram does, so the frozen tool set reaches the
+	// principal's projection without a second operator step.
+	if _, err := registry.Enable(auth, definition.DefinitionID, definition.Version); err != nil {
 		return err
 	}
 	if err := registry.Save(registryPath); err != nil {
