@@ -11,12 +11,12 @@ import (
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/sqlitedb"
+	"github.com/letya999/hermes-hub/shared/store"
 )
 
 func TestRegistryRefusesForeignSQLiteWithoutMutation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "foreign.sqlite")
-	db, err := sqlitedb.Open(path, 1, func(tx *sql.Tx) error { _, err := tx.Exec("CREATE TABLE unrelated(value TEXT)"); return err })
+	db, err := store.OpenVersioned(path, 1, func(tx *sql.Tx) error { _, err := tx.Exec("CREATE TABLE unrelated(value TEXT)"); return err })
 	if err != nil {
 		t.Fatal(err)
 	}

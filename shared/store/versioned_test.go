@@ -1,4 +1,4 @@
-package sqlitedb
+package store
 
 import (
 	"database/sql"
@@ -9,10 +9,10 @@ import (
 	"testing"
 )
 
-func TestOpenCreatesSchemaAndRefusesForeignVersion(t *testing.T) {
+func TestVersionedOpenCreatesSchemaAndRefusesForeignVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.db")
-	db, err := Open(path, 2, func(tx *sql.Tx) error {
+	db, err := OpenVersioned(path, 2, func(tx *sql.Tx) error {
 		_, err := tx.Exec("CREATE TABLE rec(id TEXT PRIMARY KEY)")
 		return err
 	})
@@ -37,11 +37,11 @@ func TestOpenCreatesSchemaAndRefusesForeignVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Foreign schema version refuses instead of repairing.
-	if _, err := Open(path, 3, nil); !errors.Is(err, ErrSchema) {
+	if _, err := OpenVersioned(path, 3, nil); !errors.Is(err, ErrSchema) {
 		t.Fatalf("expected schema refusal, got %v", err)
 	}
 	// Same version reopens cleanly and the migration does not re-run.
-	db, err = Open(path, 2, func(tx *sql.Tx) error {
+	db, err = OpenVersioned(path, 2, func(tx *sql.Tx) error {
 		return errors.New("must not run")
 	})
 	if err != nil {
@@ -50,9 +50,9 @@ func TestOpenCreatesSchemaAndRefusesForeignVersion(t *testing.T) {
 	_ = db.Close()
 }
 
-func TestOpenEnablesWALAndFullSync(t *testing.T) {
+func TestVersionedOpenEnablesWALAndFullSync(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.db")
-	db, err := Open(path, 1, nil)
+	db, err := OpenVersioned(path, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,12 +68,12 @@ func TestOpenEnablesWALAndFullSync(t *testing.T) {
 	_ = mode
 }
 
-func TestOpenPrivateStoreWhenChmodIsUnavailable(t *testing.T) {
+func TestVersionedOpenPrivateStoreWhenChmodIsUnavailable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows host file modes do not model the container mount")
 	}
 	path := filepath.Join(t.TempDir(), "s.db")
-	db, err := Open(path, 1, nil)
+	db, err := OpenVersioned(path, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestOpenPrivateStoreWhenChmodIsUnavailable(t *testing.T) {
 	original := chmodStore
 	chmodStore = func(string, os.FileMode) error { return os.ErrPermission }
 	defer func() { chmodStore = original }()
-	db, err = Open(path, 1, nil)
+	db, err = OpenVersioned(path, 1, nil)
 	if err != nil {
 		t.Fatalf("already private store was refused: %v", err)
 	}
@@ -91,18 +91,18 @@ func TestOpenPrivateStoreWhenChmodIsUnavailable(t *testing.T) {
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path, 1, nil); !errors.Is(err, os.ErrPermission) {
+	if _, err := OpenVersioned(path, 1, nil); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("permissive store must fail closed: %v", err)
 	}
 }
 
 // A failed migration rolls back: the store keeps no user_version and no
 // partial table, so the next Open re-runs the migration cleanly.
-func TestOpenRollsBackFailedMigration(t *testing.T) {
+func TestVersionedOpenRollsBackFailedMigration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.db")
 	sentinel := errors.New("boom")
-	if _, err := Open(path, 1, func(tx *sql.Tx) error {
+	if _, err := OpenVersioned(path, 1, func(tx *sql.Tx) error {
 		if _, err := tx.Exec("CREATE TABLE rec(id TEXT)"); err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func TestOpenRollsBackFailedMigration(t *testing.T) {
 	}); !errors.Is(err, sentinel) {
 		t.Fatalf("expected migration error, got %v", err)
 	}
-	db, err := Open(path, 1, func(tx *sql.Tx) error {
+	db, err := OpenVersioned(path, 1, func(tx *sql.Tx) error {
 		_, err := tx.Exec("CREATE TABLE rec(id TEXT)")
 		return err
 	})
@@ -125,8 +125,8 @@ func TestOpenRollsBackFailedMigration(t *testing.T) {
 }
 
 // A store path inside a missing directory fails at Ping — no db leaks.
-func TestOpenFailsOnUnreachablePath(t *testing.T) {
-	if _, err := Open(filepath.Join(t.TempDir(), "missing", "s.db"), 1, nil); err == nil {
+func TestVersionedOpenFailsOnUnreachablePath(t *testing.T) {
+	if _, err := OpenVersioned(filepath.Join(t.TempDir(), "missing", "s.db"), 1, nil); err == nil {
 		t.Fatal("unreachable store path opened")
 	}
 }

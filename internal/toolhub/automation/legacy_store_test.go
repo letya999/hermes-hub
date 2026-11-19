@@ -9,12 +9,12 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/sqlitedb"
+	"github.com/letya999/hermes-hub/shared/store"
 )
 
 func TestActivatedLegacySpoolUsesCurrentRowsAndKeepsOwnerBoundary(t *testing.T) {
 	root := t.TempDir()
-	db, err := sqlitedb.Open(filepath.Join(root, "spool.db"), 2, func(tx *sql.Tx) error {
+	db, err := store.OpenVersioned(filepath.Join(root, "spool.db"), 2, func(tx *sql.Tx) error {
 		_, err := tx.Exec("CREATE TABLE rec(path TEXT PRIMARY KEY, body BLOB NOT NULL, mtime INTEGER NOT NULL)")
 		return err
 	})
