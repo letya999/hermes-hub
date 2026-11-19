@@ -5,16 +5,16 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 var (
-	ErrNotFound    = wire.ErrNotFound
-	ErrConflict    = wire.ErrConflict
-	ErrForbidden   = wire.ErrForbidden
-	ErrInvalid     = wire.ErrInvalid
-	ErrUnavailable = wire.ErrUnavailable
+	ErrNotFound    = httpapi.ErrNotFound
+	ErrConflict    = httpapi.ErrConflict
+	ErrForbidden   = httpapi.ErrForbidden
+	ErrInvalid     = httpapi.ErrInvalid
+	ErrUnavailable = httpapi.ErrUnavailable
 )
 
 type Transport string
@@ -44,21 +44,21 @@ func (c inProc) Catalog(ctx context.Context, envelope identity.Envelope) ([]Cata
 	if err := envelope.Validate(envelope.PrincipalID, envelope.ContextID, envelope.RuntimeID, envelope.PolicyVersion); err != nil {
 		return nil, ErrForbidden
 	}
-	envelope, err := wire.Copy(envelope)
+	envelope, err := httpapi.Copy(envelope)
 	if err != nil {
 		return nil, err
 	}
 	entries, err := c.server.Catalog(ctx, envelope)
 	if err != nil {
-		return nil, wire.Normalize(err)
+		return nil, httpapi.Normalize(err)
 	}
-	return wire.Copy(entries)
+	return httpapi.Copy(entries)
 }
 
-type httpClient struct{ wire.Client }
+type httpClient struct{ httpapi.Client }
 
 func NewHTTPClient(baseURL, token string, hc *http.Client) Client {
-	return httpClient{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return httpClient{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (c httpClient) Catalog(ctx context.Context, envelope identity.Envelope) ([]CatalogEntry, error) {
@@ -68,12 +68,12 @@ func (c httpClient) Catalog(ctx context.Context, envelope identity.Envelope) ([]
 }
 
 func Handler(server Client, token string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/toolsurface/catalog" {
 			return nil, ErrNotFound
 		}
 		var envelope identity.Envelope
-		if err := wire.Decode(r, &envelope); err != nil {
+		if err := httpapi.Decode(r, &envelope); err != nil {
 			return nil, err
 		}
 		return NewInProc(server).Catalog(r.Context(), envelope)

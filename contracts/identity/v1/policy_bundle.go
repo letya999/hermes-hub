@@ -12,8 +12,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 const maxPolicyBundleBytes = 512 << 10
@@ -117,7 +117,7 @@ func (c inProc) Policy(ctx context.Context, digest string) (SignedPolicy, error)
 	}
 	value, err := c.server.Policy(ctx, digest)
 	if err != nil {
-		return SignedPolicy{}, wire.Normalize(err)
+		return SignedPolicy{}, httpapi.Normalize(err)
 	}
 	return checkPolicyResponse(value, digest)
 }

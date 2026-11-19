@@ -1,4 +1,4 @@
-package wire
+package httpapi
 
 import (
 	"net/http"

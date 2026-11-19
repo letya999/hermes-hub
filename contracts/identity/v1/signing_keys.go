@@ -5,18 +5,18 @@ import (
 	"crypto/ed25519"
 	"net/http"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 func (c inProc) SigningKeys(ctx context.Context) ([]PublicSigningKey, error) {
 	keys, err := c.server.SigningKeys(ctx)
 	if err != nil {
-		return nil, wire.Normalize(err)
+		return nil, httpapi.Normalize(err)
 	}
 	if !validSigningKeys(keys) {
 		return nil, ErrUnavailable
 	}
-	return wire.Copy(keys)
+	return httpapi.Copy(keys)
 }
 
 func (c httpClient) SigningKeys(ctx context.Context) ([]PublicSigningKey, error) {

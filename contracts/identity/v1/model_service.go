@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 const (
@@ -87,10 +87,10 @@ type ServicePassportsReader interface {
 	ActiveServicePassports(ctx context.Context, space, environment string) (string, error)
 }
 
-type servicePassportsHTTP struct{ wire.Client }
+type servicePassportsHTTP struct{ httpapi.Client }
 
 func NewServicePassportsReader(baseURL, token string, hc *http.Client) ServicePassportsReader {
-	return servicePassportsHTTP{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return servicePassportsHTTP{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (c servicePassportsHTTP) ActiveServicePassports(ctx context.Context, space, environment string) (string, error) {
@@ -109,7 +109,7 @@ func (c servicePassportsHTTP) ActiveServicePassports(ctx context.Context, space,
 }
 
 func ServicePassportsHandler(reader ServicePassportsReader, token, environment string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		if r.Method != http.MethodGet || r.Header.Get("Origin") != "" {
 			return nil, ErrForbidden
 		}

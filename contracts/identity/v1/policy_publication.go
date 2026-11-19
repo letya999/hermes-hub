@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 const PassportPublicationPath = "/v1/admin/identity/passports"
@@ -29,10 +29,10 @@ type passportPointer struct {
 	Digest string `json:"digest"`
 }
 
-type passportPublisherHTTP struct{ wire.Client }
+type passportPublisherHTTP struct{ httpapi.Client }
 
 func NewPassportPublisherHTTPClient(baseURL, token string, hc *http.Client) PassportPublisher {
-	return passportPublisherHTTP{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return passportPublisherHTTP{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (c passportPublisherHTTP) StagePassports(ctx context.Context, bundle PolicyBundle) (SignedPolicy, error) {
@@ -75,7 +75,7 @@ func (c passportPublisherHTTP) ActivatePassports(ctx context.Context, space, env
 }
 
 func PassportPublicationHandler(publisher PassportPublisher, token, environment string, validate func(PolicyBundle) error) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		if r.Header.Get("Origin") != "" {
 			return nil, ErrForbidden
 		}

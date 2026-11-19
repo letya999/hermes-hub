@@ -7,16 +7,16 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 var (
-	ErrNotFound    = wire.ErrNotFound
-	ErrConflict    = wire.ErrConflict
-	ErrForbidden   = wire.ErrForbidden
-	ErrInvalid     = wire.ErrInvalid
-	ErrUnavailable = wire.ErrUnavailable
+	ErrNotFound    = httpapi.ErrNotFound
+	ErrConflict    = httpapi.ErrConflict
+	ErrForbidden   = httpapi.ErrForbidden
+	ErrInvalid     = httpapi.ErrInvalid
+	ErrUnavailable = httpapi.ErrUnavailable
 )
 
 type PrincipalKind string
@@ -63,9 +63,9 @@ func (c inProc) Resolve(ctx context.Context, channel ChannelIdentity) (Principal
 	}
 	principal, err := c.server.Resolve(ctx, channel)
 	if err != nil {
-		return Principal{}, wire.Normalize(err)
+		return Principal{}, httpapi.Normalize(err)
 	}
-	return wire.Copy(principal)
+	return httpapi.Copy(principal)
 }
 
 func (c inProc) Principal(ctx context.Context, id string) (Principal, error) {
@@ -74,9 +74,9 @@ func (c inProc) Principal(ctx context.Context, id string) (Principal, error) {
 	}
 	principal, err := c.server.Principal(ctx, id)
 	if err != nil {
-		return Principal{}, wire.Normalize(err)
+		return Principal{}, httpapi.Normalize(err)
 	}
-	return wire.Copy(principal)
+	return httpapi.Copy(principal)
 }
 
 func (c inProc) Template(ctx context.Context, query TemplateRequest) (AgentTemplate, error) {
@@ -85,12 +85,12 @@ func (c inProc) Template(ctx context.Context, query TemplateRequest) (AgentTempl
 	}
 	value, err := c.server.Template(ctx, query)
 	if err != nil {
-		return AgentTemplate{}, wire.Normalize(err)
+		return AgentTemplate{}, httpapi.Normalize(err)
 	}
 	if !validTemplate(query, value) {
 		return AgentTemplate{}, ErrUnavailable
 	}
-	return wire.Copy(value)
+	return httpapi.Copy(value)
 }
 
 func validTemplate(query TemplateRequest, value AgentTemplate) bool {
@@ -107,10 +107,10 @@ func validTemplate(query TemplateRequest, value AgentTemplate) bool {
 	return false
 }
 
-type httpClient struct{ wire.Client }
+type httpClient struct{ httpapi.Client }
 
 func NewHTTPClient(baseURL, token string, hc *http.Client) Client {
-	return httpClient{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return httpClient{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (c httpClient) Resolve(ctx context.Context, channel ChannelIdentity) (Principal, error) {
@@ -138,18 +138,18 @@ func (c httpClient) Template(ctx context.Context, query TemplateRequest) (AgentT
 }
 
 func Handler(server Client, token string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		client := NewInProc(server)
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/identity/resolve":
 			var channel ChannelIdentity
-			if err := wire.Decode(r, &channel); err != nil {
+			if err := httpapi.Decode(r, &channel); err != nil {
 				return nil, err
 			}
 			return client.Resolve(r.Context(), channel)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/identity/template":
 			var query TemplateRequest
-			if err := wire.Decode(r, &query); err != nil {
+			if err := httpapi.Decode(r, &query); err != nil {
 				return nil, err
 			}
 			return client.Template(r.Context(), query)

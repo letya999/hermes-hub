@@ -1,6 +1,6 @@
-// Package wire is the shared JSON-over-HTTP plumbing of the v1 contracts
-// (ADR-0105 D5, SPEC-0100 R2). Only contracts/... may import it.
-package wire
+// Package httpapi is the shared JSON-over-HTTP plumbing of the v1 contracts
+// (ADR-0105 D5, SPEC-0100 R2), shared by every v1 contract and service.
+package httpapi
 
 import (
 	"bytes"
