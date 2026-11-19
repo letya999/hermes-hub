@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/commops"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"net"
 	"net/http"
@@ -21,12 +19,16 @@ import (
 	"testing"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -44,6 +46,9 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 	var calls [2]atomic.Int32
 	users := []string{"m32adream", "m32bdream"}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(contract.ModelServiceTokenHeader) != "" {
+			t.Error("provider received the dreaming proof")
+		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil || r.URL.Path != "/v1/chat/completions" {
 			t.Error("unexpected dreaming upstream request")
@@ -92,14 +97,17 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 	t.Cleanup(provider.Close)
 	f, err := devcheck.NewM32Fixture(t.TempDir(), "prod", provider.URL+"/v1", "dream")
 	m32Require(t, err)
-	h := newM32Lifecycle(t, ctx, "", "prod", f)
+	const dreamingAuth = "independent-fixture-dreaming"
+	h := newM32LifecycleWithDreaming(t, ctx, "", "prod", f, dreamingAuth)
 	runs := map[string]api.RunContext{}
 	for _, user := range f.Users {
 		runs["job-dream-read-"+user] = api.RunContext{JobID: "job-dream-read-" + user, RunID: "run-dream-read-" + user,
 			RuntimeGeneration: "dream-gen", CurrentGeneration: "dream-gen", Environment: "prod", Status: "running",
 			ScopeID: "user:" + user, Trigger: "message", Channel: "telegram_bot", UserID: user, Envelope: f.Auth[user]}
 	}
-	authority := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	control := http.NewServeMux()
+	control.Handle("/v1/identity/", h.manager.Handler())
+	control.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		run, ok := runs[strings.TrimPrefix(r.URL.Path, "/v1/jobs/")]
 		if r.Method != http.MethodGet || !ok || r.Header.Get("Authorization") != "Bearer "+h.control {
 			w.WriteHeader(http.StatusForbidden)
@@ -107,10 +115,13 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(run)
-	}))
+	})
+	authority := httptest.NewServer(control)
 	t.Cleanup(authority.Close)
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", authority.URL)
-	t.Setenv("HUB_NIGHT_RELAY_CALLERS", filepath.Join(f.Root, "spaces"))
+	t.Setenv(contract.DreamingServiceAuthEnv, dreamingAuth)
+	t.Setenv("HUB_RUN_VERIFY_URL", authority.URL)
+	t.Setenv("HUB_RUN_VERIFY_AUTH", task.VerificationCredential(h.control))
 	t.Setenv("HUB_TOOLHUB_URL", h.toolURL)
 	t.Setenv("HUB_TOOLHUB_CONTROL", h.control)
 	t.Setenv("HUB_ENVIRONMENT", "prod")
@@ -118,7 +129,7 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 	t.Setenv("HUB_CREDENTIAL_BROKER_MODEL_TOKEN", "")
 
 	// Resolve only the rendered private relay aliases to native loopback servers.
-	// The production request URL, caller bearer and relay PDP remain unchanged.
+	// Requests use the real issuer, verifier and relay PDP.
 	relays := map[string]string{}
 	original := http.DefaultTransport
 	transport := original.(*http.Transport).Clone()
@@ -157,6 +168,9 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 		m32Require(t, daily.Append(memory.Entry{ID: "m32-dream-" + user, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate,
 			Body: "M32-dream-private-" + user, ObservedAt: time.Date(2026, 3, 7, 12, 0, 0, 0, zone)}, "telegram_bot"))
 	}
+	// The older memory-read scenarios in this fixture have synthetic run records.
+	t.Setenv("HUB_RUN_VERIFY_URL", "")
+	t.Setenv("HUB_RUN_VERIFY_AUTH", "")
 	config, err := toolhub.EndpointConfigFromEnv()
 	m32Require(t, err)
 	store, err := toolhub.Load(f.StorePath)
@@ -217,8 +231,10 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 	go func() { finished <- host.Tick(ctx, now) }()
 	select {
 	case <-entered:
+	case err := <-finished:
+		t.Fatalf("dreaming finished before reaching the model provider: %v", err)
 	case <-ctx.Done():
-		t.Fatal("dreaming did not reach the real model relay")
+		t.Fatal("dreaming did not reach the model provider")
 	}
 	gitHead := func(user string) string {
 		t.Helper()

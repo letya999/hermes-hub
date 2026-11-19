@@ -693,33 +693,12 @@ func TestComposeMountsModelRelayAdminsWhenPresent(t *testing.T) {
 	}
 	adminSource := false
 	for _, raw := range toolhub["env_file"].([]any) {
-		if strings.HasSuffix(raw.(M)["path"].(string), "/model-relay.auth") {
+		if strings.HasSuffix(raw.(M)["path"].(string), "/model-relay-admin.auth") {
 			adminSource = true
 		}
 	}
 	if !adminSource {
-		t.Fatal("ToolHub owner model relay bearer missing")
-	}
-}
-
-func TestModelRelayCallerReadableByToolHubGroup(t *testing.T) {
-	dir := t.TempDir()
-	if err := writeEnvFile(filepath.Join(dir, "model-relay.auth"), map[string]string{"HUB_MODEL_RELAY_AUTH": "fixture"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeModelRelayCallerAuth(dir); err != nil {
-		t.Fatal(err)
-	}
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(filepath.Join(dir, "model-relay-caller.auth"))
-		if err != nil || info.Mode().Perm() != 0640 {
-			t.Fatalf("caller auth is not group readable: %v", err)
-		}
-	}
-	s := Settings{Schema: 1, Environment: "dev", User: "infra", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
-	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
-	if !slices.Contains(toolhub["group_add"].([]string), fmt.Sprint(max(0, os.Getgid()))) {
-		t.Fatal("ToolHub lacks the caller auth file group")
+		t.Fatal("ToolHub owner model relay admin credential missing")
 	}
 }
 

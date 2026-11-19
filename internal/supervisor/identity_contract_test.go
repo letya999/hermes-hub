@@ -2,7 +2,9 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +57,60 @@ func TestServiceIssuanceRejectsSharedControlCredential(t *testing.T) {
 	capture := contract.NewMemoryCaptureServiceSigner(server.URL, contract.MemoryCaptureServiceCredential(issuer))
 	if _, err := capture.IssueMemoryCaptureService(t.Context(), scope); err != nil {
 		t.Fatalf("independent capture issuer rejected: %v", err)
+	}
+}
+
+func TestDreamingModelIssuanceRequiresAnActiveAllowedPassport(t *testing.T) {
+	registry, _ := fixtureIdentity(t)
+	ctx := t.Context()
+	if err := registry.EnsureSigningKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	publish := func(previous, rev string, enabled bool) string {
+		t.Helper()
+		bundle := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: rev, Passports: map[string]json.RawMessage{}}
+		for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+			bundle.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":%q},"memory":{"enabled":%t},"allow":{"models":["use"],"memory":["dreaming"]}}`, name, rev, enabled))
+		}
+		policy, err := registry.StagePassports(ctx, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.ActivatePassports(ctx, "alice", "dev", previous, policy.Digest); err != nil {
+			t.Fatal(err)
+		}
+		return policy.Digest
+	}
+	digest := publish("", "r-1", true)
+	const control, communication, dreaming = "mock-control", "mock-communication", "mock-dreaming"
+	m := &Manager{cfg: Config{Identity: registry, RuntimeAuth: control, CommunicationServiceAuth: communication, DreamingServiceAuth: dreaming, Environment: "dev"}}
+	server := httptest.NewServer(m.Handler())
+	defer server.Close()
+	scope := contract.ServiceRequest{Space: "alice", Environment: "dev", PolicyRevision: digest, RequestDigest: contract.PolicyDigest([]byte("fixture"))}
+	for _, bootstrap := range []string{control, communication, contract.MemoryCaptureServiceCredential(communication)} {
+		if _, err := contract.NewDreamingModelSigner(server.URL, bootstrap).IssueDreamingModelService(ctx, scope); !errors.Is(err, contract.ErrForbidden) {
+			t.Fatalf("another control credential reached dreaming issuance: %v", err)
+		}
+	}
+	client := contract.NewDreamingModelSigner(server.URL, dreaming)
+	proof, err := client.IssueDreamingModelService(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := registry.SigningKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audience, err := contract.VerifyModelServiceToken(proof, scope, keys, time.Now()); err != nil || audience != contract.DreamingModelAudience {
+		t.Fatal("issuer did not sign the requested dreaming authority")
+	}
+	next := publish(digest, "r-2", false)
+	if _, err := client.IssueDreamingModelService(ctx, scope); !errors.Is(err, contract.ErrForbidden) {
+		t.Fatalf("obsolete passport reached dreaming issuance: %v", err)
+	}
+	scope.PolicyRevision = next
+	if _, err := client.IssueDreamingModelService(ctx, scope); !errors.Is(err, contract.ErrForbidden) {
+		t.Fatalf("disabled memory reached dreaming issuance: %v", err)
 	}
 }
 

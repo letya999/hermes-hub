@@ -122,6 +122,15 @@ this independent credential. Compose provisions a private
 use the credential for its own environment. Helm reads `communication-service-token`
 from the control Secret. Signed `hubctl routine` uses the same environment variable.
 
+ToolHub requests a per-body dreaming assertion from
+`POST /v1/identity/dreaming-model-token`. The supervisor accepts the independent
+`HUB_DREAMING_SERVICE_AUTH` credential only for its own environment and checks
+that the caller's published digest is active for an enabled personal space.
+Compose provisions `dreaming-service.<env>.auth` in the infra space for
+supervisor and ToolHub. Helm reads the optional `dreaming-service-token` key
+from the control Secret. Configure the same environment-specific credential in
+both services when enabling dreaming.
+
 The remaining service-token and deployment acceptance work is tracked in
 [CHG-0332](../../.work/in-progress/CHG-0332-run-tokens/plan.md).
 

@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -596,6 +598,25 @@ func TestProjectionFingerprintTracksPersistedInputs(t *testing.T) {
 	third, cacheable, err := g.projectionFingerprint(aliceAuth())
 	if err != nil || !cacheable || third == second {
 		t.Fatalf("passport change missed: cacheable=%t err=%v", cacheable, err)
+	}
+	digest := contract.PolicyDigest([]byte("signed fixture"))
+	root := filepath.Dir(revisionDir)
+	if err := os.WriteFile(filepath.Join(root, "current"), []byte(digest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := g.projectionFingerprint(aliceAuth()); err == nil || ok {
+		t.Fatal("projection accepts a missing digest index")
+	}
+	index := filepath.Join(root, ".policy")
+	if err := os.Mkdir(index, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(index, strings.TrimPrefix(digest, "sha256:")), []byte("r1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	signed, cacheable, err := g.projectionFingerprint(aliceAuth())
+	if err != nil || !cacheable || signed == third {
+		t.Fatalf("signed publication change missed: cacheable=%t err=%v", cacheable, err)
 	}
 	if _, err := seed.db.Exec("UPDATE meta SET v='foreign' WHERE k='digest'"); err != nil {
 		t.Fatal(err)

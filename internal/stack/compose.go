@@ -536,7 +536,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/.local/diagnostics"}}
-		svc["env_file"] = []any{M{"path": filepath.ToSlash(communicationServiceAuthPath(dir, s.Environment)), "format": "raw"}}
+		svc["env_file"] = []any{
+			M{"path": filepath.ToSlash(communicationServiceAuthPath(dir, s.Environment)), "format": "raw"},
+			M{"path": filepath.ToSlash(dreamingServiceAuthPath(dir, s.Environment)), "format": "raw"},
+		}
 		svc["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
 		// Operator-side apply/respawn reaches the supervisor from the host;
 		// container IPs are not routable there (Docker Desktop, WSL), so the
@@ -695,7 +698,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
 			toolhubEnv["HUB_INBOX_BY_PRINCIPAL"] = "/inboxes-by"
 			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
-			toolhubEnv["HUB_NIGHT_RELAY_CALLERS"] = "/model-relay-callers"
 			toolhubEnv["HUB_MODEL_USAGE_BY"] = "/model-state-by"
 			toolhubEnv["HUB_MODEL_REGISTRY_BY"] = "/model-config-by"
 			if siblings, err := os.ReadDir(parent); err == nil {
@@ -727,10 +729,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						if enabled {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
 						}
-					}
-					callerAuth := filepath.Join(parent, sibling.Name(), "model-relay-caller.auth")
-					if info, err := os.Lstat(callerAuth); err == nil && info.Mode().IsRegular() { // #nosec G703 -- sibling is a validated directory entry under the operator-owned spaces root
-						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(callerAuth), "target": "/model-relay-callers/" + sibling.Name() + "/model-relay-caller.auth", "read_only": true})
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
 					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
@@ -777,7 +775,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub := cloneMap(controlCommon)
 		toolhub["build"] = imageBuild(s.Environment + "-control")
 		toolhub["entrypoint"] = []string{"toolhub"}
-		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"}}
+		toolhubAuthFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay-admin.auth")), "format": "raw"}}
+		if supervisorURL != "" {
+			toolhubAuthFiles = append(toolhubAuthFiles, M{"path": filepath.ToSlash(dreamingServiceAuthPath(InfraSpaceDir(dir), s.Environment)), "format": "raw"})
+		}
+		toolhub["env_file"] = toolhubAuthFiles
 		toolhubEnv["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
 		toolhub["environment"] = toolhubEnv
 		toolhub["volumes"] = toolhubVolumes

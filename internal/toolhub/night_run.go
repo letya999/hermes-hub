@@ -12,31 +12,34 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/memory/prune"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // NightRun executes the protected occurrence in its enrolled owner's vault.
-// The caller token file is rendered separately from the relay admin token.
 func (e *projectionEndpoint) NightRun(ctx context.Context, auth identity.Envelope, leafDate string, plan night.Schedule, lang locale.Lang, sink func(context.Context, night.IntentProposal) error) (string, error) {
-	if !identity.ValidID(auth.PrincipalID) {
+	if !identity.ValidID(auth.PrincipalID) || e.gateway.PassportRoot == "" {
 		return "", api.ErrUnauthorized
 	}
-	root := os.Getenv("HUB_NIGHT_RELAY_CALLERS")
-	if root == "" {
-		return "", errors.New("night relay unavailable")
-	}
-	path := filepath.Join(root, auth.PrincipalID, "model-relay-caller.auth")
-	token, err := relayCallerToken(path)
+	digest, err := passportview.CurrentPolicyDigestGenerated(filepath.Join(e.gateway.PassportRoot, auth.PrincipalID))
 	if err != nil {
 		return "", err
 	}
+	issuerURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
+	bootstrap := strings.TrimSpace(os.Getenv(contract.DreamingServiceAuthEnv))
+	if issuerURL == "" || bootstrap == "" {
+		return "", errors.New("night relay unavailable")
+	}
+	signer := contract.NewDreamingModelSigner(issuerURL, bootstrap)
+	scope := contract.ServiceRequest{Space: auth.PrincipalID, Environment: auth.Environment, PolicyRevision: digest}
 	url := "http://model-relay-" + auth.PrincipalID + ":8318"
 	return e.nightRunWithRelay(ctx, auth, leafDate, plan, lang, sink, func(ctx context.Context, system, user string) (string, error) {
-		return callNightRelay(ctx, url, token, system, user)
+		return callNightRelay(ctx, url, signer, scope, system, user)
 	})
 }
 
@@ -85,7 +88,13 @@ func (e *projectionEndpoint) nightRunWithRelay(ctx context.Context, auth identit
 				return sink(ctx, p)
 			}
 		}
-		opt := night.Options{Relay: relay, Now: now, TZ: loc, IntentSink: guardedSink, FoldBytes: int64(plan.FoldBytes), BeforeCommit: check}
+		guardedRelay := func(ctx context.Context, system, user string) (string, error) {
+			if err := check(); err != nil {
+				return "", err
+			}
+			return relay(ctx, system, user)
+		}
+		opt := night.Options{Relay: guardedRelay, Now: now, TZ: loc, IntentSink: guardedSink, FoldBytes: int64(plan.FoldBytes), BeforeCommit: check}
 		res, err := night.Run(ctx, root, day, opt)
 		if err != nil {
 			return err
@@ -155,34 +164,22 @@ func nightPruneLine(digest string, pr prune.Report, lang locale.Lang) string {
 	return digest
 }
 
-func relayCallerToken(path string) (string, error) {
-	info, err := os.Lstat(path) // #nosec G703 -- path joins an operator-owned root with a validated principal ID and fixed filename
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
-		return "", errors.New("night relay authority unavailable")
-	}
-	body, err := os.ReadFile(path) // #nosec G703 -- regular file and size are checked above; parent bind is operator-owned
-	if err != nil {
-		return "", errors.New("night relay authority unavailable")
-	}
-	const prefix = "HUB_MODEL_RELAY_AUTH="
-	line := strings.TrimSpace(string(body))
-	if !strings.HasPrefix(line, prefix) || strings.ContainsAny(line, "\r\n") || len(line) <= len(prefix) {
-		return "", errors.New("night relay authority unavailable")
-	}
-	return strings.TrimPrefix(line, prefix), nil
-}
-
-func callNightRelay(ctx context.Context, url, token, system, user string) (string, error) {
+func callNightRelay(ctx context.Context, url string, signer contract.DreamingModelSigner, scope contract.ServiceRequest, system, user string) (string, error) {
 	body, err := json.Marshal(map[string]any{"model": "", "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}})
 	if err != nil {
 		return "", errors.New("night relay unavailable")
+	}
+	scope.RequestDigest = contract.PolicyDigest(body)
+	token, err := signer.IssueDreamingModelService(ctx, scope)
+	if err != nil {
+		return "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/chat/completions", bytes.NewReader(body)) // #nosec G704 -- server-rendered per-principal relay alias
 	if err != nil {
 		return "", errors.New("night relay unavailable")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(contract.ModelServiceTokenHeader, token)
 	client := &http.Client{Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req) // #nosec G704 -- server-rendered per-principal relay alias
 	if err != nil {

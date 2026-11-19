@@ -44,14 +44,22 @@ func (r ServiceRequest) Valid() bool {
 }
 
 func VerifyServiceToken(token, audience, service string, request ServiceRequest, keys []PublicSigningKey, now time.Time) error {
-	var claims ServiceClaims
-	body, err := verifySignedPayload(token, SignService, keys, now, 4096)
-	if err != nil || !canonicalSignedJSON(body, &claims) || !claims.ServiceRequest.Valid() ||
-		claims.Issuer != RunTokenIssuer || claims.Audience != audience || claims.Service != service ||
-		claims.ServiceRequest != request || now.Unix() >= claims.Expires {
+	claims, err := verifyServiceRequest(token, request, keys, now)
+	if err != nil || claims.Audience != audience || claims.Service != service {
 		return ErrForbidden
 	}
 	return nil
+}
+
+func verifyServiceRequest(token string, request ServiceRequest, keys []PublicSigningKey, now time.Time) (ServiceClaims, error) {
+	var claims ServiceClaims
+	body, err := verifySignedPayload(token, SignService, keys, now, 4096)
+	if err != nil || !canonicalSignedJSON(body, &claims) || !claims.ServiceRequest.Valid() ||
+		claims.Issuer != RunTokenIssuer ||
+		claims.ServiceRequest != request || now.Unix() >= claims.Expires {
+		return ServiceClaims{}, ErrForbidden
+	}
+	return claims, nil
 }
 
 func AutomationServiceCredential(serviceRoot string) string {

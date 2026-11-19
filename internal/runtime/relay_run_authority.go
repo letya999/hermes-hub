@@ -39,34 +39,38 @@ func relayRunAuthorityFromEnv() *relayRunAuthority {
 	return a
 }
 
-func (a *relayRunAuthority) authorizePersonalModel(r *http.Request, space string, body []byte) error {
+func (a *relayRunAuthority) authorizeModelService(r *http.Request, space string, body []byte) (string, error) {
 	values := r.Header.Values(identity.ModelServiceTokenHeader)
 	if a == nil || a.identities == nil || a.servicePassports == nil || len(values) != 1 ||
 		r.Header.Get("Origin") != "" || len(r.Header.Values(identity.RunTokenHeader)) != 0 ||
 		len(r.Header.Values(api.HeaderRunID)) != 0 || len(r.Header.Values(api.HeaderJobID)) != 0 {
-		return identity.ErrForbidden
+		return "", identity.ErrForbidden
 	}
 	ctx := r.Context()
 	digest, err := a.servicePassports.ActiveServicePassports(ctx, space, a.environment)
 	if err != nil {
-		return identity.ErrForbidden
+		return "", identity.ErrForbidden
 	}
 	keys, err := a.identities.SigningKeys(ctx)
 	now := time.Now()
 	claim := identity.ServiceRequest{Space: space, Environment: a.environment,
 		RequestDigest: identity.PolicyDigest(body), PolicyRevision: digest}
-	if err != nil || identity.VerifyServiceToken(values[0], identity.PersonalModelAudience, identity.PersonalModelPrincipal, claim, keys, now) != nil {
-		return identity.ErrForbidden
+	if err != nil {
+		return "", identity.ErrForbidden
+	}
+	audience, err := identity.VerifyModelServiceToken(values[0], claim, keys, now)
+	if err != nil {
+		return "", identity.ErrForbidden
 	}
 	signed, err := a.identities.Policy(ctx, digest)
 	if err != nil || signed.Digest != digest {
-		return identity.ErrForbidden
+		return "", identity.ErrForbidden
 	}
 	policy, err := identity.VerifyPolicyBundle(signed.JWS, digest, space, a.environment, keys, now)
-	if err != nil || policy.Identity != nil || !policy.HasPassportRight("agents", "monitor_self") || !policy.HasPassportRight("models", "use") {
-		return identity.ErrForbidden
+	if err != nil || !policy.AllowsModelService(audience) {
+		return "", identity.ErrForbidden
 	}
-	return nil
+	return audience, nil
 }
 
 func (a *relayRunAuthority) authorize(r *http.Request, audience, space string) (identity.PolicyBundle, error) {

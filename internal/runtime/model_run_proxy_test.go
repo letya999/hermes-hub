@@ -52,12 +52,12 @@ func (f servicePassportsFunc) ActiveServicePassports(ctx context.Context, space,
 	return f(ctx, space, environment)
 }
 
-func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.T) {
+func TestModelRelayServiceRequiresExactScopeAndCurrentPolicy(t *testing.T) {
 	authority := modelPolicyAuthority{}
 	mint := modelFixtureSigner(t, &authority)
 	bundle := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: "r-1", Passports: map[string]json.RawMessage{}}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
-		bundle.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"models":["use"],"agents":["monitor_self"]}}`, name))
+		bundle.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"memory":{"enabled":true},"allow":{"models":["use"],"agents":["monitor_self"],"memory":["dreaming"]}}`, name))
 	}
 	canonical, digest, err := bundle.Canonical()
 	if err != nil {
@@ -71,6 +71,11 @@ func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.
 	claims := contract.ServiceClaims{Issuer: contract.RunTokenIssuer, Audience: contract.PersonalModelAudience, Service: contract.PersonalModelPrincipal,
 		Expires: time.Now().Add(time.Minute).Unix(), ServiceRequest: contract.ServiceRequest{Space: "alice", Environment: "dev", PolicyRevision: digest, RequestDigest: contract.PolicyDigest([]byte(body))}}
 	token := mint(contract.SignService, claims)
+	dreaming := claims
+	dreaming.Audience, dreaming.Service = contract.DreamingModelAudience, contract.DreamingModelPrincipal
+	dreamingToken := mint(contract.SignService, dreaming)
+	dreaming.Service = contract.PersonalModelPrincipal
+	mixedToken := mint(contract.SignService, dreaming)
 	foreign, wrongAudience, expired := claims, claims, claims
 	foreign.Space = "bob"
 	wrongAudience.Audience = contract.MemoryContextServiceAudience
@@ -94,7 +99,7 @@ func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.
 	t.Setenv("HUB_RUN_VERIFY_AUTH", readAuth)
 	t.Setenv("HUB_ENVIRONMENT", "dev")
 	t.Setenv("HUB_MODEL_RELAY_AUTH", "synthetic-model")
-	var monitorDenied atomic.Bool
+	var monitorDenied, dreamingDenied atomic.Bool
 	decider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		if r.URL.Path != "/v1/rights/decide" || r.Header.Get("Authorization") != "Bearer synthetic-decider" ||
@@ -103,6 +108,7 @@ func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.
 			return
 		}
 		allowed := (body["capability"] == "agents" && body["operation"] == "monitor_self" && body["scope"] == "runtime" && !monitorDenied.Load()) ||
+			(body["capability"] == "memory" && body["operation"] == "dreaming" && body["scope"] == "" && !dreamingDenied.Load()) ||
 			(body["capability"] == "models" && body["operation"] == "use" && body["scope"] == "default")
 		_ = json.NewEncoder(w).Encode(api.RightDecision{Allow: allowed})
 	}))
@@ -143,7 +149,7 @@ func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.
 			t.Fatalf("model service status=%d provider_calls=%d, want %d/%d", out.Code, calls.Load(), status, providerCalls)
 		}
 	}
-	for _, proof := range []string{"", "forged", foreignToken, wrongToken, expiredToken} {
+	for _, proof := range []string{"", "forged", foreignToken, wrongToken, expiredToken, mixedToken} {
 		check(proof, body, map[string]string{"Authorization": "Bearer synthetic-model"}, http.StatusForbidden, 0)
 	}
 	check(token, body+" ", nil, http.StatusForbidden, 0)
@@ -152,8 +158,14 @@ func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.
 	monitorDenied.Store(true)
 	check(token, body, nil, http.StatusForbidden, 1)
 	monitorDenied.Store(false)
+	check(dreamingToken, body+" ", nil, http.StatusForbidden, 1)
+	check(dreamingToken, body, nil, http.StatusOK, 2)
+	dreamingDenied.Store(true)
+	check(dreamingToken, body, nil, http.StatusForbidden, 2)
+	dreamingDenied.Store(false)
 	active.Store(contract.PolicyDigest([]byte("changed policy")))
-	check(token, body, nil, http.StatusForbidden, 1)
+	check(token, body, nil, http.StatusForbidden, 2)
+	check(dreamingToken, body, nil, http.StatusForbidden, 2)
 }
 
 func modelFixtureSigner(t *testing.T, authority *modelPolicyAuthority) func(contract.SigningPurpose, any) string {

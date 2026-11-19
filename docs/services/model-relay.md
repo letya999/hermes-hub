@@ -80,12 +80,14 @@ the token after supervisor has recorded admission. With `HUB_RUN_VERIFY_URL`
 and the scoped read credential, the relay verifies the current generation,
 revocation, space, signed `models.use` ceiling and any assignment ancestry
 before contacting a provider. The provider receives its own credential and
-the normal model payload. The personal supervisor uses a separate signed
-service token bound to the exact request body, space, environment and active
-publication. The relay checks the signed `agents.monitor_self` and
-`models.use` grants and rechecks live ToolHub rights before provider attempts.
-Other model callers outside an admitted Hermes run still need scoped service
-authorization.
+the normal model payload. The personal supervisor and ToolHub dreaming use
+distinct signed service audiences bound to the exact request body, space,
+environment and active publication. Both require `models.use`. The personal
+supervisor also requires `agents.monitor_self`, and dreaming requires
+`memory.dreaming` and signed `memory.enabled: true`. The relay verifies the
+current publication and rechecks live ToolHub rights before each provider
+attempt. Other model callers outside an admitted Hermes run still need scoped
+service authorization.
 
 The retired layered files `spaces/models.yaml`,
 `spaces/<organization>/models.yaml` and `spaces/<owner>/models.yaml` are

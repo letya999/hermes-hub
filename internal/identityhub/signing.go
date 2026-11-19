@@ -55,19 +55,40 @@ func (r *Registry) IssueMemoryCaptureService(ctx context.Context, request contra
 }
 
 func (r *Registry) IssuePersonalModelService(ctx context.Context, request contract.ServiceRequest) (string, error) {
-	if !request.Valid() || request.PolicyRevision != "" {
+	if request.PolicyRevision != "" {
+		return "", contract.ErrInvalid
+	}
+	return r.issueModelService(ctx, contract.PersonalModelPrincipal, contract.PersonalModelAudience, request)
+}
+
+func (r *Registry) IssueDreamingModelService(ctx context.Context, request contract.ServiceRequest) (string, error) {
+	if !request.Valid() || !contract.ValidPolicyDigest(request.PolicyRevision) {
+		return "", contract.ErrInvalid
+	}
+	principal, err := r.Principal(ctx, request.Space)
+	if err != nil || principal.Kind != contract.Human {
+		return "", contract.ErrForbidden
+	}
+	return r.issueModelService(ctx, contract.DreamingModelPrincipal, contract.DreamingModelAudience, request)
+}
+
+func (r *Registry) issueModelService(ctx context.Context, service, audience string, request contract.ServiceRequest) (string, error) {
+	if !request.Valid() {
 		return "", contract.ErrInvalid
 	}
 	digest, err := r.ActiveServicePassports(ctx, request.Space, request.Environment)
 	if err != nil {
 		return "", err
 	}
+	if request.PolicyRevision != "" && request.PolicyRevision != digest {
+		return "", contract.ErrForbidden
+	}
 	policy, err := r.verifiedPolicy(ctx, digest, request.Space, request.Environment)
-	if err != nil || policy.Identity != nil || !policy.HasPassportRight("agents", "monitor_self") || !policy.HasPassportRight("models", "use") {
+	if err != nil || !policy.AllowsModelService(audience) {
 		return "", contract.ErrForbidden
 	}
 	request.PolicyRevision = digest
-	return r.issueService(ctx, contract.PersonalModelPrincipal, contract.PersonalModelAudience, request)
+	return r.issueService(ctx, service, audience, request)
 }
 
 func (r *Registry) issueService(ctx context.Context, service, audience string, request contract.ServiceRequest) (string, error) {

@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	task "github.com/letya999/hermes-hub/contracts/task/v1"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"io/fs"
 	"net"
@@ -24,13 +22,17 @@ import (
 	"testing"
 	"time"
 
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/identityhub"
+	"github.com/letya999/hermes-hub/internal/passport"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -188,6 +190,11 @@ type m32Lifecycle struct {
 
 func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment string, f devcheck.M32Fixture) *m32Lifecycle {
 	t.Helper()
+	return newM32LifecycleWithDreaming(t, ctx, image, environment, f, "")
+}
+
+func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, environment string, f devcheck.M32Fixture, dreamingAuth string) *m32Lifecycle {
+	t.Helper()
 	h := &m32Lifecycle{f: f, image: image, environment: environment, control: strings.Repeat("m32-control-", 4), tokens: map[string]string{}}
 	bind := "127.0.0.1:0"
 	if image != "" {
@@ -204,6 +211,9 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	registry, err := identityhub.Open(registryPath)
 	m32Require(t, err)
 	t.Cleanup(func() { m32Require(t, registry.Close()) })
+	if dreamingAuth != "" {
+		m32Require(t, registry.EnsureSigningKeys(ctx))
+	}
 	// Register cleanup before the first resource; each successful create is owned explicitly.
 	t.Cleanup(func() {
 		if image == "" {
@@ -272,7 +282,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	if runtimeImage == "" {
 		runtimeImage = "m32-unspawned"
 	}
-	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command, Identity: registry})
+	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command, Identity: registry, DreamingServiceAuth: dreamingAuth})
 	m32Require(t, err)
 	h.supervisor = httptest.NewServer(h.manager.Handler())
 	t.Cleanup(h.supervisor.Close)
@@ -287,6 +297,22 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		m32Require(t, err)
 		h.tokens[user] = auth["HUB_RUNTIME_AUTH"]
 		m32Require(t, os.MkdirAll(filepath.Join(owners, user), 0700))
+		if dreamingAuth != "" {
+			current, err := passport.Current(dir)
+			m32Require(t, err)
+			revision := passport.Revision{ID: current, Docs: make(map[string][]byte)}
+			for _, name := range passport.Names {
+				revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml"))
+				m32Require(t, err)
+			}
+			bundle, err := passportview.PolicyProjection(user, environment, current, revision.Docs)
+			m32Require(t, err)
+			signed, err := registry.StagePassports(ctx, bundle)
+			m32Require(t, err)
+			m32Require(t, registry.ActivatePassports(ctx, user, environment, "", signed.Digest))
+			m32Require(t, revision.LinkPolicyDigest(dir, signed.Digest))
+			m32Require(t, passport.PointCurrent(dir, current))
+		}
 		m32Require(t, os.CopyFS(filepath.Join(passportRoot, user), os.DirFS(filepath.Join(dir, "generated"))))
 		v := filepath.Join(vaultRoot, user)
 		m32Require(t, vault.Ensure(v))

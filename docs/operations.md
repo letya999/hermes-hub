@@ -1088,11 +1088,13 @@ vault checkpoints live under `vault/runtime/memory/night/`. A disabled memory
 passport or missing `memory.dreaming` right prevents a model call and vault
 commit. The published revision must match the active capability profile;
 an incomplete apply denies admission and each subsequent commit guard.
-Failed work stays pending; a communication outage leaves the digest
-in ToolHub's delivery outbox. `model-relay-caller.auth` is a rendered,
-caller-only file mounted read-only for the matching owner; never inspect or
-copy its contents into diagnostics. Rendering gives the service group read access
-(0640); ToolHub joins the host file group so nightly work can read the mount.
+Failed work stays pending and a communication outage leaves the digest in
+ToolHub's delivery outbox. ToolHub obtains a short-lived assertion for each
+model request from the supervisor using the environment-specific dreaming
+credential. The assertion binds the request bytes to the owner's space and
+current signed publication. The relay rechecks `memory.dreaming` and
+`models.use` before any provider attempt. There is no ToolHub mount for the
+former `model-relay-caller.auth` file.
 
 An external memory backend rides the hub-owned provider seam, never the
 upstream plugin path: select `memory_provider: {via: native}` in the

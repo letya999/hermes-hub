@@ -61,6 +61,7 @@ services:
     secretEnv:
       HUB_SUPERVISOR_AUTH: {name: hermes-hub-control, key: supervisor-token}
       HUB_COMMUNICATION_SERVICE_AUTH: {name: hermes-hub-control, key: communication-service-token}
+      HUB_DREAMING_SERVICE_AUTH: {name: hermes-hub-control, key: dreaming-service-token, optional: true}
     mounts:
       - {claim: spaces, path: /data}
     resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
@@ -79,6 +80,7 @@ services:
     secretEnv:
       HUB_RUNTIME_AUTH: {name: hermes-hub-control, key: runtime-token}
       HUB_COMMUNICATION_AUTH: {name: hermes-hub-control, key: supervisor-token}
+      HUB_DREAMING_SERVICE_AUTH: {name: hermes-hub-control, key: dreaming-service-token, optional: true}
     mounts:
       - {claim: spaces, path: /data}
       - {claim: spool, path: /spool, readOnly: true}

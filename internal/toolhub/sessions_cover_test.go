@@ -3,14 +3,14 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/prune"
@@ -130,43 +130,25 @@ func TestExecSessionValidationAndStatusMapping(t *testing.T) {
 	}
 }
 
-func TestRelayCallerTokenGuards(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "model-relay-caller.auth")
-	if _, err := relayCallerToken(path); err == nil {
-		t.Fatal("missing token file accepted")
-	}
-	for _, body := range []string{"", "TOKEN=abc", "HUB_MODEL_RELAY_AUTH=", "HUB_MODEL_RELAY_AUTH=a\nINJECTED=b"} {
-		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := relayCallerToken(path); err == nil {
-			t.Fatalf("malformed token accepted: %q", body)
-		}
-	}
-	if err := os.WriteFile(path, []byte("HUB_MODEL_RELAY_AUTH=caller-secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	token, err := relayCallerToken(path)
-	if err != nil || token != "caller-secret" {
-		t.Fatalf("token = %q %v", token, err)
-	}
-	// A directory at the token path is refused by the regular-file check.
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := relayCallerToken(path); err == nil {
-		t.Fatal("directory token accepted")
-	}
+type dreamingSignerFunc func(context.Context, contract.ServiceRequest) (string, error)
+
+func (f dreamingSignerFunc) IssueDreamingModelService(ctx context.Context, scope contract.ServiceRequest) (string, error) {
+	return f(ctx, scope)
 }
 
 func TestCallNightRelayContract(t *testing.T) {
-	var gotAuth, gotBody string
+	scope := contract.ServiceRequest{Space: "alice", Environment: "dev", PolicyRevision: contract.PolicyDigest([]byte("synthetic policy"))}
+	var signed contract.ServiceRequest
+	signer := dreamingSignerFunc(func(_ context.Context, request contract.ServiceRequest) (string, error) {
+		signed = request
+		return "synthetic-proof", nil
+	})
+	var gotAuth, gotProof, gotBody string
+	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
 		gotAuth = r.Header.Get("Authorization")
+		gotProof = r.Header.Get(contract.ModelServiceTokenHeader)
 		body, _ := io.ReadAll(r.Body)
 		gotBody = string(body)
 		if r.URL.Path != "/v1/chat/completions" {
@@ -178,12 +160,20 @@ func TestCallNightRelayContract(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	answer, err := callNightRelay(context.Background(), srv.URL, "tok-1", "sys", "usr")
+	answer, err := callNightRelay(t.Context(), srv.URL, signer, scope, "sys", "usr")
 	if err != nil || answer != "night answer" {
 		t.Fatalf("relay answer = %q %v", answer, err)
 	}
-	if gotAuth != "Bearer tok-1" || !strings.Contains(gotBody, `"system"`) || !strings.Contains(gotBody, `"usr"`) {
-		t.Fatalf("relay contract drifted: %s %s", gotAuth, gotBody)
+	expected := scope
+	expected.RequestDigest = contract.PolicyDigest([]byte(gotBody))
+	if signed != expected || gotAuth != "" || gotProof != "synthetic-proof" || !strings.Contains(gotBody, `"system"`) || !strings.Contains(gotBody, `"usr"`) {
+		t.Fatal("relay did not send the exact request covered by its proof")
+	}
+	deny := dreamingSignerFunc(func(context.Context, contract.ServiceRequest) (string, error) {
+		return "", errors.New("synthetic signing denial")
+	})
+	if _, err := callNightRelay(t.Context(), srv.URL, deny, scope, "sys", "usr"); err == nil || calls != 1 {
+		t.Fatal("denied issuance reached the relay")
 	}
 
 	// Non-200, malformed and choice-less responses all collapse to unavailable.
@@ -192,17 +182,17 @@ func TestCallNightRelayContract(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(resp))
 		}))
-		if _, err := callNightRelay(context.Background(), bad.URL, "t", "s", "u"); err == nil {
+		if _, err := callNightRelay(t.Context(), bad.URL, signer, scope, "s", "u"); err == nil {
 			t.Fatalf("malformed relay response accepted: %s", resp)
 		}
 		bad.Close()
 	}
 	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
-	if _, err := callNightRelay(context.Background(), refused.URL, "t", "s", "u"); err == nil {
+	if _, err := callNightRelay(t.Context(), refused.URL, signer, scope, "s", "u"); err == nil {
 		t.Fatal("refused relay accepted")
 	}
 	refused.Close()
-	if _, err := callNightRelay(context.Background(), "http://127.0.0.1:1", "t", "s", "u"); err == nil {
+	if _, err := callNightRelay(t.Context(), "http://127.0.0.1:1", signer, scope, "s", "u"); err == nil {
 		t.Fatal("unreachable relay accepted")
 	}
 }

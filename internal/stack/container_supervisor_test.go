@@ -103,7 +103,7 @@ func TestComposeSupervisorForwardsOptInAuthorities(t *testing.T) {
 	}
 }
 
-func TestCommunicationServiceAuthIsEnvironmentScopedAndProjectedOnlyToIssuers(t *testing.T) {
+func TestServiceAuthIsEnvironmentScopedAndProjectedOnlyToIssuers(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
@@ -111,32 +111,64 @@ func TestCommunicationServiceAuthIsEnvironmentScopedAndProjectedOnlyToIssuers(t 
 		t.Fatal(err)
 	}
 	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
-	var keys []string
+	legacyCaller := filepath.ToSlash(filepath.Join(dir, "model-relay-caller.auth"))
+	if err := os.WriteFile(legacyCaller, []byte("synthetic legacy file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	issuers := []struct {
+		key, consumer string
+		ensure        func(string, string) error
+		path          func(string, string) string
+		values        []string
+	}{
+		{key: contract.CommunicationServiceAuthEnv, consumer: "communication-hub", ensure: ensureCommunicationServiceAuth, path: communicationServiceAuthPath},
+		{key: contract.DreamingServiceAuthEnv, consumer: "toolhub", ensure: ensureDreamingServiceAuth, path: dreamingServiceAuthPath},
+	}
 	for _, environment := range []string{"dev", "prod", "dev"} {
-		if err := ensureCommunicationServiceAuth(dir, environment); err != nil {
-			t.Fatal(err)
-		}
-		file := communicationServiceAuthPath(dir, environment)
-		values, err := ReadSecrets(file)
-		key := values[contract.CommunicationServiceAuthEnv]
-		if err != nil || len(key) != 64 {
-			t.Fatal("service issuer credential not provisioned")
-		}
-		keys = append(keys, key)
 		s.Environment = environment
-		for name, raw := range Compose(s, root, dir)["services"].(M) {
-			service := raw.(M)
-			envFiles, _ := service["env_file"].([]any)
-			projected := slices.ContainsFunc(envFiles, func(entry any) bool {
-				fileSpec, _ := entry.(M)
-				return fileSpec["path"] == filepath.ToSlash(file)
-			})
-			if projected != (name == "supervisor" || name == "communication-hub") {
-				t.Errorf("unexpected service issuer credential projection for %s/%s", environment, name)
+		services := Compose(s, root, dir)["services"].(M)
+		for i := range issuers {
+			issuer := &issuers[i]
+			if err := issuer.ensure(dir, environment); err != nil {
+				t.Fatal(err)
+			}
+			file := issuer.path(dir, environment)
+			values, err := ReadSecrets(file)
+			if err != nil || len(values[issuer.key]) != 64 {
+				t.Fatal("service issuer credential not provisioned")
+			}
+			issuer.values = append(issuer.values, values[issuer.key])
+			for name, raw := range services {
+				service := raw.(M)
+				envFiles, _ := service["env_file"].([]any)
+				projected := slices.ContainsFunc(envFiles, func(entry any) bool {
+					fileSpec, _ := entry.(M)
+					return fileSpec["path"] == filepath.ToSlash(file)
+				})
+				if projected != (name == "supervisor" || name == issuer.consumer) {
+					t.Errorf("unexpected %s issuer credential projection for %s/%s", issuer.consumer, environment, name)
+				}
+			}
+		}
+		toolhub := services["toolhub"].(M)
+		for _, raw := range toolhub["volumes"].([]any) {
+			mount, _ := raw.(M)
+			if mount["source"] == legacyCaller {
+				t.Fatal("obsolete model caller file mounted into ToolHub")
+			}
+		}
+		for _, raw := range toolhub["env_file"].([]any) {
+			if raw.(M)["path"] == filepath.ToSlash(filepath.Join(dir, "model-relay.auth")) {
+				t.Fatal("ToolHub receives the combined model relay credentials")
 			}
 		}
 	}
-	if keys[0] == keys[1] || keys[0] != keys[2] || !GatewayOwnedSecret(contract.CommunicationServiceAuthEnv) {
-		t.Fatal("service issuer secret is shared across environments, rotated during render, or exposed to runtime")
+	for _, issuer := range issuers {
+		if issuer.values[0] == issuer.values[1] || issuer.values[0] != issuer.values[2] || !GatewayOwnedSecret(issuer.key) {
+			t.Fatalf("%s issuer secret is shared across environments, rotated during render, or exposed to runtime", issuer.consumer)
+		}
+	}
+	if issuers[0].values[0] == issuers[1].values[0] {
+		t.Fatal("the issuers share a bootstrap credential")
 	}
 }

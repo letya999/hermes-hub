@@ -32,11 +32,22 @@ func PolicyProjection(space, environment, revision string, docs map[string][]byt
 }
 
 func MatchesPolicyPointer(spaceDir, digest string) bool {
-	if !contract.ValidPolicyDigest(digest) {
-		return false
+	current, err := CurrentPolicyDigestGenerated(filepath.Join(spaceDir, "generated"))
+	return err == nil && current == digest
+}
+
+// CurrentPolicyDigestGenerated reads the signed-publication pointer from a
+// generated tree. Revision-only pointers cannot authorize model services.
+func CurrentPolicyDigestGenerated(dir string) (string, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "passports", "current")) // #nosec G304 -- operator-owned generated tree and fixed relative path
+	if err != nil {
+		return "", contract.ErrUnavailable
 	}
-	body, err := os.ReadFile(filepath.Join(spaceDir, "generated", "passports", "current"))
-	return err == nil && strings.TrimSpace(string(body)) == digest
+	digest := strings.TrimSpace(string(body))
+	if !contract.ValidPolicyDigest(digest) {
+		return "", contract.ErrForbidden
+	}
+	return digest, nil
 }
 
 // VerifyPolicyProjection attests the rendered source against the already

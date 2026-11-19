@@ -757,13 +757,13 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			return
 		}
 		chat := req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions"
-		personalModel := chat && len(req.Header.Values(identitycontract.ModelServiceTokenHeader)) != 0
+		serviceModel := chat && len(req.Header.Values(identitycontract.ModelServiceTokenHeader)) != 0
 		denialKey := "run.authorization-denied"
-		if personalModel {
+		if serviceModel {
 			denialKey = "model.service-authorization-denied"
 		}
 		var authorize func() error
-		if chat && !personalModel && (r.runs != nil || req.Header.Get(identitycontract.RunTokenHeader) != "") {
+		if chat && !serviceModel && (r.runs != nil || req.Header.Get(identitycontract.RunTokenHeader) != "") {
 			authorize = func() error {
 				policy, err := r.runs.authorize(req, identitycontract.ModelAudience, r.owner)
 				if err != nil || !policy.AllowsRight("models", "use") {
@@ -822,7 +822,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": names})
 			return
 		}
-		if chat && !personalModel && r.auth != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) != 1 {
+		if chat && !serviceModel && r.auth != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) != 1 {
 			log.Printf("model-relay owner=%s outcome=deny reason=caller", r.owner)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -852,16 +852,16 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			}
 			_ = req.Body.Close()
 			requested = requestedModel(body)
-			if personalModel {
+			if serviceModel {
 				authorize = func() error {
-					if err := r.runs.authorizePersonalModel(req, r.owner, body); err != nil || !r.grantsRight(req.Context(), "use", requested) {
+					audience, err := r.runs.authorizeModelService(req, r.owner, body)
+					if err != nil || !r.decider.Enabled() || !r.grantsRight(req.Context(), "use", requested) {
 						return identitycontract.ErrForbidden
 					}
-					if r.decider.Enabled() {
-						allowed, err := r.decider.GrantsRight(req.Context(), "agents", "monitor_self", "runtime")
-						if err != nil || !allowed {
-							return identitycontract.ErrForbidden
-						}
+					capability, operation, scope := identitycontract.ModelServiceRight(audience)
+					allowed, err := r.decider.GrantsRight(req.Context(), capability, operation, scope)
+					if err != nil || !allowed {
+						return identitycontract.ErrForbidden
 					}
 					return nil
 				}
@@ -876,7 +876,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 				http.Error(w, "unapproved model", http.StatusForbidden)
 				return
 			}
-			if !personalModel && !r.grantsRight(req.Context(), "use", requested) {
+			if !serviceModel && !r.grantsRight(req.Context(), "use", requested) {
 				log.Printf("model-relay owner=%s outcome=deny reason=rights models.use", r.owner)
 				http.Error(w, "right denied", http.StatusForbidden)
 				return
@@ -898,7 +898,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			return
 		}
 		providerAuth := req.Header.Get("Authorization")
-		if r.auth != "" || personalModel {
+		if r.auth != "" || serviceModel {
 			providerAuth = ""
 		}
 		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout, authorize)

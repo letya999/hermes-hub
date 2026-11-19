@@ -6,10 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/systemguide"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,7 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passportview"
+	"github.com/letya999/hermes-hub/internal/systemguide"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // projectionFingerprint covers every persisted input that can change a
@@ -55,15 +55,11 @@ func (g *Gateway) projectionFingerprint(auth identity.Envelope) ([32]byte, bool,
 		if _, err := os.Stat(filepath.Join(space, "passports", passportview.ApplyJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
 			return empty, false, fmt.Errorf("%w: passport apply incomplete", api.ErrUnauthorized)
 		}
-		current, err := os.ReadFile(filepath.Join(space, "passports", "current"))
+		reference, rev, err := passportview.CurrentReferenceGenerated(space)
 		if err != nil {
 			return empty, false, err
 		}
-		rev := strings.TrimSpace(string(current))
-		if rev == "pending" || !filepath.IsLocal(rev) {
-			return empty, false, fmt.Errorf("%w: invalid passport pointer", api.ErrUnauthorized)
-		}
-		h.Write([]byte(rev))
+		h.Write([]byte(reference))
 		for _, name := range passportview.Names {
 			body, err := os.ReadFile(filepath.Join(space, "passports", rev, name+".yaml")) // #nosec G703 -- rev is validated filepath.IsLocal; names come from the fixed passport view list.
 			if err != nil {

@@ -35,26 +35,33 @@ func Current(spaceDir string) (string, error) {
 // currentGenerated reads the current pointer inside a generated/ dir and
 // rejects ids that could escape the passports tree.
 func currentGenerated(genDir string) (string, error) {
+	_, revision, err := CurrentReferenceGenerated(genDir)
+	return revision, err
+}
+
+// CurrentReferenceGenerated returns the pointer and its resolved cache revision.
+func CurrentReferenceGenerated(genDir string) (reference, revision string, err error) {
 	root := filepath.Join(genDir, "passports")
 	b, err := os.ReadFile(filepath.Join(root, "current"))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	rev := strings.TrimSpace(string(b))
-	if contract.ValidPolicyDigest(rev) {
-		b, err := os.ReadFile(filepath.Join(root, ".policy", strings.TrimPrefix(rev, "sha256:")))
+	reference = strings.TrimSpace(string(b))
+	revision = reference
+	if contract.ValidPolicyDigest(reference) {
+		b, err := os.ReadFile(filepath.Join(root, ".policy", strings.TrimPrefix(reference, "sha256:")))
 		if err != nil {
-			return "", fmt.Errorf("current policy cache: %w", err)
+			return "", "", fmt.Errorf("current policy cache: %w", err)
 		}
-		rev = strings.TrimSpace(string(b))
+		revision = strings.TrimSpace(string(b))
 	}
-	if rev == "pending" {
-		return "", fmt.Errorf("current revision is pending activation")
+	if revision == "pending" {
+		return "", "", fmt.Errorf("current revision is pending activation")
 	}
-	if !filepath.IsLocal(rev) {
-		return "", fmt.Errorf("current names a non-local revision %q", rev)
+	if !filepath.IsLocal(revision) {
+		return "", "", fmt.Errorf("current names a non-local revision %q", revision)
 	}
-	return rev, nil
+	return reference, revision, nil
 }
 
 // Effective is the current revision as typed data — the single read path

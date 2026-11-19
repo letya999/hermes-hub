@@ -21,6 +21,15 @@ import (
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == identitycontract.DreamingModelTokenPath {
+		signer, ok := m.identityClient().(identitycontract.DreamingModelSigner)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return
+		}
+		identitycontract.DreamingModelTokenHandler(signer, m.cfg.DreamingServiceAuth, m.environment()).ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == identitycontract.MemoryCaptureServiceAssertionPath {
 		signer, ok := m.identityClient().(identitycontract.MemoryCaptureServiceSigner)
 		if !ok {

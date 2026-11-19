@@ -97,6 +97,7 @@ type Config struct {
 	Identity                 identitycontract.Client
 	IdentityLinkAuth         string
 	CommunicationServiceAuth string
+	DreamingServiceAuth      string
 
 	ExecutionBackend string
 	ContainerRuntime string
@@ -595,6 +596,12 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if auth := cfg.CommunicationServiceAuth; auth != "" && (auth == cfg.RuntimeAuth || auth == cfg.AdminAuth || auth == cfg.IdentityLinkAuth) {
 		return nil, errors.New(locale.T(locale.Operator(), "supervisor.communication-service-auth-distinct"))
+	}
+	if cfg.DreamingServiceAuth == "" {
+		cfg.DreamingServiceAuth = strings.TrimSpace(os.Getenv(identitycontract.DreamingServiceAuthEnv))
+	}
+	if auth := cfg.DreamingServiceAuth; auth != "" && (auth == cfg.RuntimeAuth || auth == cfg.AdminAuth || auth == cfg.IdentityLinkAuth || auth == cfg.CommunicationServiceAuth) {
+		return nil, errors.New(locale.T(locale.Operator(), "supervisor.dreaming-service-auth-distinct"))
 	}
 	if cfg.BackupEvery == 0 {
 		cfg.BackupEvery = backupDurationEnv("HUB_BACKUP_EVERY", 24*time.Hour)

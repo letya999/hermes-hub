@@ -207,6 +207,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		if err = ensureCommunicationServiceAuth(dir, s.Environment); err != nil {
 			return err
 		}
+		if err = ensureDreamingServiceAuth(dir, s.Environment); err != nil {
+			return err
+		}
 	}
 	if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
 		return err
@@ -214,7 +217,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
 		return err
 	}
-	if err = writeModelRelayCallerAuth(dir); err != nil {
+	if err = writeModelRelayAdminAuth(dir); err != nil {
 		return err
 	}
 	if voiceServicesEnabled(s) || s.Has("image_gen") {
@@ -627,10 +630,7 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 			gateway[key] = value
 		}
 	}
-	// The night rollup's model seam (SPEC-0085 R5.1) resolves the relay
-	// through the env pair. Managed spaces get both rendered onto the
-	// service; an unmanaged owner opts in through secrets — the keys stay
-	// runtime-visible too since they are not gateway-owned secrets.
+	// Keep explicitly configured gateway model selection and quota settings.
 	for _, key := range []string{"HUB_MODEL_RELAY_URL", "HUB_MODEL_RELAY_AUTH", "HUB_MODEL_RELAY_ADMIN"} {
 		if value := user[key]; value != "" {
 			gateway[key] = value

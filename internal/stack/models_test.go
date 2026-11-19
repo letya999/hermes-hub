@@ -299,12 +299,12 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if managed["HUB_MODEL_RELAY_ADMIN"] != "" || provider["OPENAI_API_KEY"] != "provider-fixture" {
 		t.Error("credential ownership changed across relay and runtime")
 	}
-	caller, err := ReadSecrets(filepath.Join(user, "model-relay-caller.auth"))
+	admin, err := ReadSecrets(filepath.Join(user, "model-relay-admin.auth"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(caller) != 1 || caller["HUB_MODEL_RELAY_AUTH"] != relayAuth["HUB_MODEL_RELAY_AUTH"] {
-		t.Error("ToolHub caller auth must contain only the relay caller bearer")
+	if len(admin) != 1 || admin["HUB_MODEL_RELAY_ADMIN"] != relayAuth["HUB_MODEL_RELAY_ADMIN"] {
+		t.Error("ToolHub auth must contain only the relay admin credential")
 	}
 	if err := RenderEnvironment(user, root, "prod"); err != nil {
 		t.Fatal(err)

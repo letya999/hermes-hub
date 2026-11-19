@@ -23,6 +23,7 @@ func init() {
 		"communication.identity-link-authority-required": "OIDC арқылы байланыстыру үшін identity-hub кіріс арнасының бөлек кілті қажет",
 		"supervisor.identity-link-auth-distinct":         "Identity-hub кіріс арнасының кілті service-control кілтінен өзгеше болуы тиіс",
 		"supervisor.communication-service-auth-distinct": "Communication қызметтік рұқсаттарын беру үшін бөлек кілт қажет",
+		"supervisor.dreaming-service-auth-distinct":      "Жадты түнде өңдеу рұқсаттары үшін бөлек кілт қажет",
 		"supervisor.identity-unavailable":                "Сәйкестендіру тізілімі қолжетімсіз",
 		"supervisor.identity-upkeep-pending":             "Сәйкестендіру тізіліміне қызмет көрсету қайта орындалуды күтуде",
 

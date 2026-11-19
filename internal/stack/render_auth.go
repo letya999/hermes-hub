@@ -24,6 +24,14 @@ func ensureCommunicationServiceAuth(dir, environment string) error {
 	return ensureServiceAuthFile(communicationServiceAuthPath(dir, environment), identitycontract.CommunicationServiceAuthEnv)
 }
 
+func dreamingServiceAuthPath(dir, environment string) string {
+	return filepath.Join(dir, "dreaming-service."+environment+".auth")
+}
+
+func ensureDreamingServiceAuth(dir, environment string) error {
+	return ensureServiceAuthFile(dreamingServiceAuthPath(dir, environment), identitycontract.DreamingServiceAuthEnv)
+}
+
 func ensureServiceAuthFile(path, key string) error {
 	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
@@ -170,17 +178,13 @@ func ensureIAMAuth(path string) error {
 	return writeEnvFile(path, values)
 }
 
-// The shared ToolHub gets only the caller bearer, never relay admin authority.
-func writeModelRelayCallerAuth(dir string) error {
+// ToolHub's owner model selection uses only the relay admin bearer.
+func writeModelRelayAdminAuth(dir string) error {
 	values, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
-	if err != nil || values["HUB_MODEL_RELAY_AUTH"] == "" {
-		return fmt.Errorf("model-relay caller auth unavailable")
+	if err != nil || values["HUB_MODEL_RELAY_ADMIN"] == "" {
+		return os.ErrInvalid
 	}
-	path := filepath.Join(dir, "model-relay-caller.auth")
-	if err := writeEnvFile(path, map[string]string{"HUB_MODEL_RELAY_AUTH": values["HUB_MODEL_RELAY_AUTH"]}); err != nil {
-		return err
-	}
-	return allowServiceGroupRead(path)
+	return writeEnvFile(filepath.Join(dir, "model-relay-admin.auth"), map[string]string{"HUB_MODEL_RELAY_ADMIN": values["HUB_MODEL_RELAY_ADMIN"]})
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
