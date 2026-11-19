@@ -1002,3 +1002,39 @@ func TestCanaryTimeoutStartsWhenRoundActuallyRuns(t *testing.T) {
 	}
 	t.Fatal("two canary rounds did not finish")
 }
+
+// A claimed job whose admission mapping no longer matches must not stay in
+// running/ with its conversation lane held: every worker exit settles it.
+func TestCorruptMappingSettlesClaimedJob(t *testing.T) {
+	s, job := streamJob(t)
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatalf("mapping=%+v found=%v err=%v", mapping, found, err)
+	}
+	mapping.Fingerprint = "corrupt"
+	if err := atomicJSON(s.mappingPath(job.ID), &mapping); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{spool: s, api: &fakeAPI{}, runner: uncertainRunner{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
+	settled := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(s.root, "failed", spoolFileID(job.ID)+".json")); err == nil {
+			settled = true
+			break
+		}
+	}
+	cancel()
+	<-done
+	if _, err := os.Stat(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json")); err == nil || !settled {
+		t.Fatalf("claimed job left in running/ (settled=%v)", settled)
+	}
+	s.mu.Lock()
+	held := len(s.inFlight)
+	s.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("conversation lane still held: %d", held)
+	}
+}
