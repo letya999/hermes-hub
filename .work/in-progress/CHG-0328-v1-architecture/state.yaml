@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0328
+title: v1 architecture decisions and documentation reset
+status: in_progress
+branch: feature/m40-v1-platform
+updated: 2026-11-19
+phase: implementation
+adr: ADR-0105
+spec: SPEC-0100
+requirements: [SPEC-0100, SPEC-0101, SPEC-0102]
+depends_on: []
+github_milestone: M40 - v1.0 Proactive Agent Platform
+github_issue: 572
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S0.1-adrs: green
+  S0.2-specs: in_progress
+  S0.3-living-docs: not_started
+  S0.4-supersession-index: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_applicable
+  red_team: not_started
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

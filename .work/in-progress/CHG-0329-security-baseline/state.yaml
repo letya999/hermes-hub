@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0329
+title: Close the security baseline and remove fail-open paths
+status: in_progress
+branch: feature/m40-v1-platform
+updated: 2026-11-19
+phase: implementation
+adr: ADR-0105
+spec: SPEC-0100
+requirements: [R5.1, R5.2, R5.3, R5.4, R7.1]
+depends_on: [CHG-0328]
+github_milestone: M40 - v1.0 Proactive Agent Platform
+github_issue: 573
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1.1-t01-t22-receipts: not_started
+  S1.2-moved-chg-links: not_started
+  S1.3-remove-hermes-runner: not_started
+  S1.4-remove-unmanaged-mode: not_started
+  S1.5-supervisor-fail-closed: not_started
+  S1.6-path-bug-dirs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

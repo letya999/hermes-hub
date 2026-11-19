@@ -1,11 +1,109 @@
 ---
-description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-11-06
+description: System overview - the v1 target (trust zones, five hub processes, service extraction map, package owners) and the current v0 system it is extracted from; details live in services/, rbac.md, spaces.md and the ADRs.
+last_verified: 2026-11-19
 ---
 
 # Architecture
 
-## Split of responsibility
+This page has two halves. **v1 target** is the direction fixed by
+ADR-0105..ADR-0109 (milestone M40); each part lands with the CHG named in
+[SPEC-0100](../specs/active/SPEC-0100-v1-contracts.md). **Current system**
+describes what runs on `dev` today. When the halves disagree, the current
+half is what is deployed.
+
+## v1 target
+
+### Trust zones and processes
+
+| Zone | Process | Modules | Holds |
+|---|---|---|---|
+| control | `hub-control` (`hub serve --zone control`) | identity-hub, spawn-controller, task-engine, proactive-engine | principals and layers, signed policy bundles, the one job ledger, container authority, the proactive clock |
+| agent | `hub-agent` (`hub serve --zone agent`) | tool-hub, memory-hub, model-gateway | tool admission and routing, memory, model routing; verifies run tokens |
+| edge | `hub-edge` (`hub serve --zone edge`) | channel-hub, hosting-hub, ingress | channel credentials, public listeners, `?t=` links, hosted sites |
+| secret | `credential-broker` | credential-broker | user and connector credentials, OAuth, leases |
+| egress | `egress-gateway` | egress-gateway | outbound network, boundary credential injection |
+| space (untrusted) | spawned per space | harness-runtime, browser-runtime, workers | Hermes, the space mounts, browser profile |
+
+Minimal topology: one `hub` process (`--zone control`, optionally
+`control,agent,edge`) plus one `harness-runtime` with native Hermes tools.
+Zones co-hosted in one process still talk only through contracts.
+Crossings and refusals: [boundaries.md](boundaries.md),
+[ADR-0105](adr/ADR-0105-v1-topology.md).
+
+### Contracts and the dependency gate
+
+Modules talk through `contracts/<name>/v1` (DTOs, one `Client` interface,
+in-process and HTTP transports, a conformance suite run against both).
+`devcheck` checks the full `go list -deps` closure of every binary against a
+shrink-only allowlist; a new forbidden edge fails `just check`
+(ADR-0105 D5-D6, CHG-0330).
+
+### Identity, tokens, policy
+
+identity-hub owns principals (human, agent profile, system) and verified
+channel identities; layers narrow `platform -> org -> user -> agent
+profile`. task-engine signs a run token per admitted run; tool-hub,
+memory-hub, model-gateway and egress-gateway verify it (signature, audience,
+expiry, current generation) before any backend. Policy is a signed bundle
+loaded by digest ([ADR-0106](adr/ADR-0106-identity-layers-run-tokens.md)).
+
+### Execution and proactivity
+
+spawn-controller is the only container authority and creates a space from
+an identity plus six template passports by rendering only the runtime spec;
+task-engine owns one job ledger with lanes and execution classes
+(interactive, assignment, routine, system) and never retries `uncertain`
+([ADR-0107](adr/ADR-0107-execution-spawn-task-runtime.md)). proactive-engine
+owns listeners, the event inbox, Watch/Routine/Assignment, task and progress
+ledgers and the attention inbox
+([ADR-0108](adr/ADR-0108-proactive-engine.md)). Every run carries an action
+mode (`read-only`, `plan`, `ask`, `ask-critical`, `full-access`) under the
+grants ([ADR-0109](adr/ADR-0109-action-modes-owner-decisions.md)).
+
+### Service extraction map
+
+v1 services are built by moving existing code, never by rewriting beside it.
+
+| v1 service | Built from (v0) | CHG |
+|---|---|---|
+| identity-hub | internal/identity, internal/iam, communication.users.yaml, TELEGRAM_ALLOWED_USERS | CHG-0331 |
+| spawn-controller | internal/supervisor, passport publication in internal/stack and internal/passport, ToolHub workload controller (generic_*.go, cell_*.go) | CHG-0333 |
+| task-engine | communication spool jobs, supervisor jobs and lanes, toolhub/automation dispatch/outbox/tasks, research jobs | CHG-0335 |
+| proactive-engine | internal/routines, toolhub/automation, commodel routine/assignment, communication goal/watchers, runtime goal judge, agenttools routines/assignments/goals | CHG-0344 |
+| harness-runtime | internal/runtime without relays and model relay | CHG-0336 |
+| tool-hub | internal/toolhub admission and connector lifecycle, remainder of toolhub/api | CHG-0337 |
+| memory-hub | internal/memory, internal/vault, ToolHub memory_*/night_*/knowledge_view, knowledge image (OpenKnowledge) | CHG-0342 |
+| model-gateway | internal/runtime/model_relay*, cliproxy, internal/mediasvc generation, remote STT/TTS engines | CHG-0341 |
+| credential-broker | services/credential-broker plus ToolHub OAuth, internal/credstore, internal/oauth, internal/secrets | CHG-0339 |
+| egress-gateway | runtime egress-relay, cellinit cred-proxy, tcp_forwards, internal/netguard | CHG-0340 |
+| channel-hub, hosting-hub, ingress | internal/communication remainder, internal/channel, internal/commops, internal/hosting, internal/exposure, internal/dns | CHG-0343 |
+| browser-runtime | docker/browser and agenttools/browser.go | CHG-0351 |
+
+### Package owners
+
+Target owner of every `internal/` package. Shared platform packages may be
+imported by any module; everything else is reached through its owner's
+contract once that owner's CHG lands.
+
+| Owner | Packages |
+|---|---|
+| shared platform | audit, diagnostics, locale, migration, serviceauth, sqlitedb, storagebudget, identity (envelope primitives only) |
+| identity-hub | iam, identity (registry part) |
+| spawn-controller | supervisor (spawn part), stack (render), passport, passportview, reconcile, catalog (templates), firecracker, uno, contextlife |
+| task-engine | supervisor (jobs, lanes), commodel (jobs), communication (spool jobs) |
+| proactive-engine | routines, toolhub/automation, commodel (routine/assignment) |
+| tool-hub | toolhub, toolhub/api (until moved to contracts), agenttools (hub side), sshcap, skillstore, skilleval, selfsettings |
+| memory-hub | memory, vault, compaction (memory side) |
+| model-gateway | media, mediasvc, runtime (model relay) |
+| credential-broker | credentialbroker, credstore, oauth, secrets, envstore |
+| egress-gateway | netguard |
+| channel-hub, hosting-hub | communication (remainder), channel, commops, inboundfile, hosting, exposure, dns |
+| harness-runtime | runtime (without relays), agenttools (executor side), companion, systemguide, compaction (runtime side) |
+| tooling | devcheck, e2e |
+
+## Current system (v0)
+
+### Split of responsibility
 
 **Hermes** (upstream, pinned — ADR-0012) owns reasoning, chat, tool
 selection, memory, skills and hooks. It is never patched in place; a
@@ -18,7 +116,7 @@ supervisor. There is no replacement agent loop, CRM, crawler, database
 queue or vector database. Retrieval is search → read → reason over files
 and tools.
 
-## Component map
+### Component map
 
 | Service | Role | Detail |
 |---|---|---|
@@ -37,7 +135,7 @@ The agent-visible tool surface these produce is catalogued in
 docs/tools.md; space layout and config in docs/spaces.md; the authorization
 model in docs/rbac.md; runtime operation in docs/operations.md.
 
-## Identity and scope
+### Identity and scope
 
 [ADR-0011](adr/ADR-0011-stable-identity-identifiers.md) separates the human
 principal from verified channel identities, execution contexts, runtimes,
@@ -53,13 +151,15 @@ users and organizations are peers; an org job requires the trusted
 effective user scope is org baseline *narrowed by* user settings — never
 widened.
 
-## Trust boundary
+### Trust boundary
 
-Default-deny capability posture (ADR-0031, ADR-0032 — accepted; T01–T22
-acceptance rows evidenced in CHG-0065 and awaiting owner sign-off, so the
-deployed stack is not yet certified against every guarantee — see
-`.work/in-progress/CHG-0065-capability-enforcement/acceptance-matrix.md`
-for the per-row enforced-vs-target delta). The rules:
+Default-deny capability posture (ADR-0031, ADR-0032). The rules below are
+enforced in code; certification of the deployed stack is pending owner
+sign-off of T01-T22 (CHG-0329 S1.1 records the current receipts; rows that
+need real-Docker canaries or the pinned probe are re-run at the M40 release
+gate). Per-row evidence and open items:
+[acceptance matrix](../.work/done/CHG-0065-capability-enforcement/acceptance-matrix.md).
+The rules:
 
 - The model never sees credential values, host env, host paths or
   unrestricted egress; ToolHub projects only tools the principal's policy
@@ -90,7 +190,7 @@ for the per-row enforced-vs-target delta). The rules:
 
 Threat model: docs/threat-model.md. Engineering rules: docs/engineering.md.
 
-## Networks and lifecycle
+### Networks and lifecycle
 
 Managed Compose gives each `spaces/<id>` an internal agent network; Hermes
 reaches ToolHub and the per-space model relay there. CLIProxy, broker and
@@ -148,7 +248,7 @@ gone, dead credential ciphertext degrades the connection, and recipe,
 credential-recipe and live-surface drift park it until a human /confirm
 re-pins the observed digest (CHG-0153).
 
-## Jobs, runs and events
+### Jobs, runs and events
 
 Channel message → normalized `Envelope` → durable job → supervisor lease →
 runtime spawn/warm hit → Hermes run. An admitted run streams NDJSON events
@@ -196,7 +296,7 @@ sending upstream or cooling down a healthy provider. This is a conservative
 text bound, not a measured tokenizer result or a substitute for the selected
 model's own limits.
 
-## Capabilities and egress
+### Capabilities and egress
 
 Each capability has exactly one surface — a native toolset, a hub-rendered
 MCP entry, an owner `mcp_servers` entry, or a ToolHub projection; hub-owned
@@ -212,7 +312,7 @@ destinations; credential-derived URLs/endpoints join the ACL at readiness;
 `tcp_forwards` relay one credential-bound `host:port` each through the
 same proxy — the model can never choose destinations.
 
-## State
+### State
 
 Per space: `connections/`, `workspace/`, `runtime/`, `hermes/`,
 `generated/`, `diagnostics/` (layout: docs/spaces.md). Shared: broker state
@@ -222,7 +322,7 @@ are content-addressed or revision-fenced: policies and recipes by digest,
 grants/bindings by revision, projection revisions monotonic, tombstones
 retained for idempotent replay (removed 30 d, terminal operations 7 d).
 
-## Non-goals
+### Non-goals
 
 - No public multi-tenant service — this is an isolated owner deployment
   boundary; ingress auth + principal mapping are out of repo scope.
@@ -234,6 +334,6 @@ retained for idempotent replay (removed 30 d, terminal operations 7 d).
 - Not every guarantee is deployed yet — ADR-0031/32 acceptance is tracked
   in .work; describe the deployed stack, not the target, when answering.
 
-## Site hosting
+### Site hosting
 
 Opt-in `hosting` adds an owner/env Go web tier and a hosting-only workload controller. It consumes sish exposure and per-user wildcard DNS/TLS. Site snapshots have separate volumes; user code runs outside Hermes with no Hub network. See [hosting](services/hosting.md) for boundaries, fleet/zone coordination and deployment prerequisites.

@@ -7,6 +7,9 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0102](active/SPEC-0102-v1-proactive-modes-eval.md) | Active: M40 proactive-engine, action modes and eval thresholds (ADR-0108/0109; CHG-0344..0349, 0352) |
+| [SPEC-0101](active/SPEC-0101-v1-execution-slos.md) | Active: M40 execution and provisioning SLOs — spawn-controller, instant spaces, task-engine, runtimes, capacity (ADR-0107; CHG-0333..0336, 0351, 0353) |
+| [SPEC-0100](active/SPEC-0100-v1-contracts.md) | Active: M40 v1 contracts and master exit-criteria trace — topology, contract pattern, dependency gate, single owners, fail-closed config, run tokens, security baseline (ADR-0105/0106; CHG-0329..0332) |
 | [SPEC-0099](active/SPEC-0099-m32-automation-slices.md) | Delivered: #521–#525 engine separation, inactive host preparation, single owner cutover, dreaming; refines SPEC-0094 R3/R4 |
 | [SPEC-0098](active/SPEC-0098-m32-memory-slices.md) | Delivered: #513–#520 vault, exact-run, capture, memory APIs, confirmed edits, OpenKnowledge; refines SPEC-0094 R1/R2 |
 | [SPEC-0097](active/SPEC-0097-m32-config-slices.md) | Delivered: #508–#512 passport authority, scopes, selection, activation and recovery; refines SPEC-0095 |
