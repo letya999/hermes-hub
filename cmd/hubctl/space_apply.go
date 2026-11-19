@@ -133,13 +133,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		if next.Tools.Binding == nil {
 			return errors.New(locale.T(lang, "hubctl.space-apply-organization-binding"))
 		}
-		storePath := filepath.Join(stack.InfraSpaceDir(abs), "runtime", "toolhub", "store.json")
-		if _, err := os.Stat(filepath.Join(filepath.Dir(storePath), "store.db")); err == nil {
-			if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
-				storePath = filepath.Join(filepath.Dir(storePath), "store.db")
-			}
-		}
-		store, err := toolhub.Load(storePath)
+		store, err := toolhub.Load(toolhub.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(abs), "runtime", "toolhub")))
 		if err != nil {
 			return errors.New(locale.T(lang, "hubctl.space-apply-organization-policy"))
 		}

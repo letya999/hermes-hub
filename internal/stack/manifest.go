@@ -77,7 +77,7 @@ func writeToolManifest(dir string, s Settings) error {
 // deploy that follows already finds matching state.
 func migrateToolhubBindings(dir string, s Settings) error {
 	manifest := toolManifest(s)
-	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
+	storePath := toolhub.ResolveStorePath(filepath.Join(dir, "runtime", "toolhub"))
 	if _, err := os.Stat(storePath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -88,6 +88,7 @@ func migrateToolhubBindings(dir string, s Settings) error {
 	if err != nil {
 		return fmt.Errorf("toolhub store: %w", err)
 	}
+	defer func() { _ = store.CloseDB() }()
 	report, err := toolhub.MigrateProjection(store, s.User, manifest.Context, s.User, manifest.PolicyVersion)
 	if err != nil {
 		return fmt.Errorf("toolhub policy-version migration -> %s: %w", manifest.PolicyVersion, err)

@@ -33,15 +33,7 @@ import (
 // the same files the shared ToolHub serves — so derivation resolves through
 // InfraSpaceDir, exactly like the governance read path.
 func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, docs catalog.Docs, now time.Time) error {
-	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
-	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
-		// SPEC-0090 R5.1: the SQLite substrate is authoritative once the
-		// verified store.db exists and the legacy store.json was retired.
-		if _, err := os.Stat(storePath); os.IsNotExist(err) {
-			storePath = filepath.Join(root, "store.db")
-		}
-	}
+	storePath := toolhub.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
 	store, err := toolhub.Load(storePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // unmanaged space: no principal to bind
@@ -83,13 +75,7 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 	if profileID == "" {
 		return fmt.Errorf("rights restore: bound profile is required")
 	}
-	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
-	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
-		if _, err := os.Stat(storePath); os.IsNotExist(err) {
-			storePath = filepath.Join(root, "store.db")
-		}
-	}
+	storePath := toolhub.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
 	store, err := toolhub.Load(storePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -126,13 +112,7 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 // SetSpaceProfileActive gates a rejected or superseded binding without
 // changing any issued grant or another principal/environment's profile.
 func SetSpaceProfileActive(dir, user, environment, profileID string, active bool, now time.Time) error {
-	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
-	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
-		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
-			storePath = filepath.Join(root, "store.db")
-		}
-	}
+	storePath := toolhub.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
 	store, err := toolhub.Load(storePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -160,13 +140,7 @@ func ValidateSelectedConnectors(dir string, toolsBody []byte, docs catalog.Docs)
 	if !selected {
 		return nil, nil
 	}
-	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
-	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
-		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
-			storePath = filepath.Join(root, "store.db")
-		}
-	}
+	storePath := toolhub.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
 	store, err := toolhub.Load(storePath)
 	if err != nil {
 		return nil, fmt.Errorf("connector selection store: %w", err)
