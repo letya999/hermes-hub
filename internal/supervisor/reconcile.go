@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -261,6 +262,32 @@ func (m *Manager) tryRecoveryWorker() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// sweepStuckRunning names "running" records past the run budget plus one warm
+// TTL of grace uncertain, exactly as a restart does. A failed persist of the
+// uncertain (or terminal) transition rolls the record back to running with
+// Unconfirmed=false; reconcileUnconfirmed and ExpireUncertain never look at
+// such a record, so without this it pins its runtime and blocks every retry
+// of the job until the supervisor restarts.
+func (m *Manager) sweepStuckRunning(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, record := range m.jobs {
+		if record.Status != "running" || !now.After(record.UpdatedAt.Add(hubruntime.RunBudget()+m.cfg.WarmTTL)) {
+			continue
+		}
+		previous := record
+		record.Status = "uncertain"
+		record.Response.Status, record.Response.LastEvent = "uncertain", "run.unknown"
+		record.UpdatedAt = now.UTC()
+		m.jobs[key] = record
+		if err := m.persistLocked(); err != nil {
+			m.jobs[key] = previous
+			log.Printf("supervisor stuck-run sweep job_id=%q persistence failed: %v", key, err)
+			return
+		}
 	}
 }
 

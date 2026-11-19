@@ -708,6 +708,7 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	m.ReconcileHealth(sweepCtx, now)
 	if sweepCtx.Err() == nil {
 		m.ExpireApprovals(sweepCtx, now)
+		m.sweepStuckRunning(now)
 		m.reconcileUnconfirmed(sweepCtx, now)
 		m.ExpireUncertain(sweepCtx, now)
 		m.CompactJobs(now)
