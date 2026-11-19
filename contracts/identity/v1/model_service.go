@@ -8,6 +8,7 @@ import (
 	"time"
 
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/auth"
 	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
@@ -39,7 +40,7 @@ func DreamingModelTokenHandler(signer DreamingModelSigner, bootstrap, environmen
 }
 
 func VerifyModelServiceToken(token string, request ServiceRequest, keys []PublicSigningKey, now time.Time) (string, error) {
-	claims, err := verifyServiceRequest(token, request, keys, now)
+	claims, err := auth.VerifyServiceRequest(token, request, keys, now)
 	if err != nil || !ValidPolicyDigest(request.PolicyRevision) {
 		return "", ErrForbidden
 	}

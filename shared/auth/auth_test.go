@@ -1,4 +1,4 @@
-package identity
+package auth
 
 import (
 	"crypto/ed25519"
@@ -69,5 +69,37 @@ func TestRunTokenVerifiesOnlyForItsPurposeAudienceAndLifetime(t *testing.T) {
 	keys[0].VerifyUntil = now.Unix()
 	if _, err := VerifyRunToken(token, claims.Audience, keys, now); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("retired key passed verification: %v", err)
+	}
+}
+
+func TestServiceTokenBindsExactRequest(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := PublicSigningKey{ID: SigningKeyID(public), Purpose: SignService, Public: public}
+	request := ServiceRequest{Space: "alice", Environment: "dev", RequestDigest: "sha256:" + strings.Repeat("b", 64)}
+	claims := ServiceClaims{Issuer: RunTokenIssuer, Audience: "tool-hub-automation", Service: "system:communication", ServiceRequest: request, Expires: now.Add(time.Minute).Unix()}
+	header, _ := json.Marshal(SignatureHeader{Algorithm: "EdDSA", Type: SignService.Type(), KeyID: key.ID})
+	payload, _ := json.Marshal(claims)
+	encode := base64.RawURLEncoding.EncodeToString
+	input := encode(header) + "." + encode(payload)
+	token := input + "." + encode(ed25519.Sign(private, []byte(input)))
+	if err := VerifyServiceToken(token, claims.Audience, claims.Service, request, []PublicSigningKey{key}, now); err != nil {
+		t.Fatalf("valid service token: %v", err)
+	}
+	other := request
+	other.RequestDigest = "sha256:" + strings.Repeat("c", 64)
+	for name, check := range map[string]error{
+		"other request":  VerifyServiceToken(token, claims.Audience, claims.Service, other, []PublicSigningKey{key}, now),
+		"other audience": VerifyServiceToken(token, "model-gateway", claims.Service, request, []PublicSigningKey{key}, now),
+		"other service":  VerifyServiceToken(token, claims.Audience, "system:toolhub", request, []PublicSigningKey{key}, now),
+		"expired":        VerifyServiceToken(token, claims.Audience, claims.Service, request, []PublicSigningKey{key}, now.Add(time.Hour)),
+		"run key":        VerifyServiceToken(token, claims.Audience, claims.Service, request, []PublicSigningKey{{ID: key.ID, Purpose: SignRun, Public: public}}, now),
+	} {
+		if !errors.Is(check, ErrForbidden) {
+			t.Errorf("%s: want forbidden, got %v", name, check)
+		}
 	}
 }

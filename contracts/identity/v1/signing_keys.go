@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"crypto/ed25519"
 	"net/http"
 
 	"github.com/letya999/hermes-hub/shared/httpapi"
@@ -34,7 +33,7 @@ func validSigningKeys(keys []PublicSigningKey) bool {
 	seen := make(map[string]bool, len(keys))
 	active := map[SigningPurpose]bool{}
 	for _, key := range keys {
-		if !key.valid() || seen[key.ID] {
+		if !key.Valid() || seen[key.ID] {
 			return false
 		}
 		seen[key.ID] = true
@@ -46,13 +45,4 @@ func validSigningKeys(keys []PublicSigningKey) bool {
 		}
 	}
 	return len(active) == 4
-}
-
-func (key PublicSigningKey) valid() bool {
-	switch key.Purpose {
-	case SignRun, SignLink, SignService, SignPolicy:
-		return key.VerifyUntil >= 0 && len(key.Public) == ed25519.PublicKeySize && SigningKeyID(key.Public) == key.ID
-	default:
-		return false
-	}
 }
