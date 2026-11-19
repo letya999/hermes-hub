@@ -3,6 +3,8 @@ package communication
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,4 +102,94 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 		}
 	}
 	return nil
+}
+
+var (
+	errResolveNotUncertain = errors.New("job is not uncertain")
+	errResolveObserving    = errors.New("job is being observed")
+)
+
+// ResolveUncertainJob is the operator's way out of an uncertain job the
+// supervisor can no longer settle: it records the operator-named terminal
+// status through the ordinary terminal handoff, which releases the
+// conversation lane. Only a parked job (failed/) is resolved; one claimed or
+// requeued for observation is refused so the operator retries after it.
+func (s *Spool) ResolveUncertainJob(jobID, status string) error {
+	if status != "failed" && status != "cancelled" && status != "interrupted" {
+		return errors.New("invalid resolve status")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mapping, err := s.loadMappingLocked(jobID)
+	if err != nil {
+		return err
+	}
+	if mapping.Status != "uncertain" {
+		return errResolveNotUncertain
+	}
+	body, err := s.readEventRecordLocked(filepath.Join(s.root, "failed", spoolFileID(jobID)+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return errResolveObserving
+	}
+	if err != nil {
+		return err
+	}
+	var job Job
+	if strictEventJSON(body, &job) != nil || job.ID != jobID {
+		return errors.New("invalid uncertain job record")
+	}
+	if err := s.recordTerminalOutcomeLocked(job, RunOutcome{Status: status, LastEvent: "run." + status}, nil); err != nil {
+		return err
+	}
+	s.signal()
+	return nil
+}
+
+// serveJobResolve is the service-only operator boundary for
+// ResolveUncertainJob (hubctl job resolve).
+func (g *Gateway) serveJobResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "browser origin forbidden", http.StatusForbidden)
+		return
+	}
+	if !g.serviceControlTokenAccepted(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&body); err != nil || d.Decode(new(any)) != io.EOF || body.JobID == "" || len(body.JobID) > 512 {
+		http.Error(w, "invalid resolve request", http.StatusBadRequest)
+		return
+	}
+	if body.Status == "" {
+		body.Status = "interrupted"
+	}
+	if body.Status != "failed" && body.Status != "cancelled" && body.Status != "interrupted" {
+		http.Error(w, "invalid resolve status", http.StatusBadRequest)
+		return
+	}
+	err := g.spool.ResolveUncertainJob(body.JobID, body.Status)
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrNotExist):
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	case errors.Is(err, errResolveNotUncertain), errors.Is(err, errResolveObserving):
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	default:
+		http.Error(w, "resolve failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"job_id": body.JobID, "status": body.Status})
 }

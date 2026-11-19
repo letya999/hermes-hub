@@ -37,6 +37,10 @@ func init() {
 		"hubctl.user-disable-stage-failed":        "%s кезеңінде principal revocation орындалмады",
 		"hubctl.user-disable-stage":               "%-10s кезеңі аяқталды %s",
 		"hubctl.user-disable-complete":            "Principal %s:%s өшірілді; таралу реті ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.job-resolve-usage":                "Қолдану: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":                 "Communication service-control bearer қолжетімсіз; --gateway-auth беріңіз немесе кеңістік auth файлдарын баптаңыз",
+		"hubctl.job-resolve-failed":               "%s тапсырмасы жабылмады: HTTP %d",
+		"hubctl.job-resolved":                     "%s тапсырмасы %s күйімен жабылды; сөйлесу жолағы бос",
 		// Language picker and /language.
 		"lang.choose":   "Тілді таңдаңыз:",
 		"lang.saved":    "Тіл орнатылды: %s.",

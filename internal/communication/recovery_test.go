@@ -1103,3 +1103,71 @@ func TestUncertainJobReleasesLaneAfterSupervisorSettles(t *testing.T) {
 		t.Fatalf("conversation lane still held after settlement: %d", held)
 	}
 }
+
+// The operator resolves an uncertain job the supervisor can no longer settle:
+// the named terminal status goes through the ordinary handoff and frees the
+// conversation lane. Work still under observation is refused.
+func TestOperatorResolveSettlesUncertainJob(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{config: Config{AutomationAuth: "service"}, spool: s}
+	post := func(token, body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/jobs/resolve", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		g.serveJobResolve(w, req)
+		return w.Code
+	}
+	valid := `{"job_id":"` + job.ID + `"}`
+	if code := post("wrong", valid); code != http.StatusUnauthorized {
+		t.Fatalf("wrong bearer: %d", code)
+	}
+	if code := post("service", `{"job_id":"`+job.ID+`","status":"completed"}`); code != http.StatusBadRequest {
+		t.Fatalf("completed is not an operator verdict: %d", code)
+	}
+	if code := post("service", `{"job_id":"missing"}`); code != http.StatusNotFound {
+		t.Fatalf("missing job: %d", code)
+	}
+	if err := s.RequeueObservations(time.Now().Add(time.Minute), false); err != nil {
+		t.Fatal(err)
+	}
+	if code := post("service", valid); code != http.StatusConflict {
+		t.Fatalf("job under observation resolved: %d", code)
+	}
+	if claimed, err := s.ClaimJob(); err != nil || claimed == nil {
+		t.Fatalf("observation claim=%v err=%v", claimed, err)
+	}
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code := post("service", valid); code != http.StatusOK {
+		t.Fatalf("resolve: %d", code)
+	}
+	mapping, _, err := s.Mapping(job.ID)
+	if err != nil || mapping.Status != "interrupted" {
+		t.Fatalf("mapping=%+v err=%v", mapping, err)
+	}
+	s.mu.Lock()
+	held := len(s.inFlight)
+	s.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("lane still held after operator resolve: %d", held)
+	}
+	if code := post("service", valid); code != http.StatusConflict {
+		t.Fatalf("terminal job resolved twice: %d", code)
+	}
+}

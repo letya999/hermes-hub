@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-18
+last_verified: 2026-11-20
 ---
 
 # communication-hub
@@ -70,6 +70,18 @@ everything entering or leaving the human conversation. Listens
   past the 5-minute aging bound. Control deliveries (approvals, marked
   control sends) claim ahead of ordinary replies and are exempt from the
   ordinary outbox cap.
+  An admitted job whose outcome is unknown stays `uncertain` and keeps its
+  conversation lane. Re-observation backs off 5 s → 30 s; once the
+  budget notice (`job-<id>-uncertain`) is durable past `HUB_RUN_BUDGET` it
+  continues every 5 minutes, so the supervisor's terminal result still
+  settles the job and frees the lane. A claimed job that leaves the worker
+  without a durable terminal handoff is settled through `FailJob`.
+  Operator escape: `hubctl job resolve --dir <space> --job <id>
+  [--status interrupted|failed|cancelled]` calls
+  `POST /v1/admin/jobs/resolve` (communication service bearer, browser
+  `Origin` refused). It records the named terminal status through the
+  ordinary terminal handoff; a job that is not uncertain or is currently
+  requeued/claimed for observation answers 409, an unknown job 404.
 - **Memory capture outbox** (`capture_outbox.go`): accepted jobs and completed
   run receipts mint durable `capture/` records before their transport handoff
   completes. The pump posts them to ToolHub with the communication service

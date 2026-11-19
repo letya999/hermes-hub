@@ -37,6 +37,10 @@ func init() {
 		"hubctl.user-disable-stage-failed":        "Falló la revocación del principal en la etapa %s",
 		"hubctl.user-disable-stage":               "Revocado %-10s %s",
 		"hubctl.user-disable-complete":            "Principal %s:%s deshabilitado; orden de propagación ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.job-resolve-usage":                "Uso: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":                 "Bearer de service-control de communication no disponible; pase --gateway-auth o configure los archivos auth del espacio",
+		"hubctl.job-resolve-failed":               "Tarea %s no resuelta: HTTP %d",
+		"hubctl.job-resolved":                     "Tarea %s resuelta como %s; su carril de conversación queda libre",
 		// Language picker and /language.
 		"lang.choose":   "Elige tu idioma:",
 		"lang.saved":    "Idioma establecido: %s.",
