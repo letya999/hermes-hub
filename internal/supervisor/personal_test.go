@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -295,6 +296,9 @@ func TestSupervisorRestartHonoredBySweep(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.ReleaseBinding(b); err != nil {
+		t.Fatal(err)
+	}
 	ready.Store(false)
 	m.ReconcileHealth(context.Background(), m.cfg.Now())
 	m.ReconcileHealth(context.Background(), m.cfg.Now())
@@ -303,6 +307,7 @@ func TestSupervisorRestartHonoredBySweep(t *testing.T) {
 	}
 	m.mu.Lock()
 	key := "alice\x00alice\x00gateway"
+	m.pins[key] = hubruntime.ExecuteRequest{JobID: "pinned-runtime"}
 	m.recordIncidentLocked(m.items[key], "uncertain")
 	m.mu.Unlock()
 	m.drainPersonal(context.Background())

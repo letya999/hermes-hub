@@ -1,0 +1,33 @@
+schema: 1
+change: CHG-0333
+title: Live-stack wedges and lost updates
+status: in_progress
+branch: fix/live-wedges
+updated: 2026-11-20
+phase: verification
+github_issue: 598
+github_milestone: M40 - v1 Service Split
+implementation_status: implemented
+slices:
+  S1-uncertain: green
+  S2-leases: green
+  S3-running-deadline: green
+  S4-event-revision: green
+  S5-claimed-job: green
+  S6-goal-update: green
+  S7-dreaming: green
+  S8-store-path: green
+  S9-first-apply: green
+  S10-paused-assignment: green
+validation:
+  just_check: pending
+  affected_packages: pending
+  live_smoke: pending_owner_instruction
+  remote_acceptance: unavailable_unpublished
+evidence:
+  - "Lease regression red on 56106e46: Ensure consumers empty; green on 71942292."
+  - "Named communication and supervisor regressions passed. Resolve localized in en/ru/kk/es."
+remaining:
+  - "Complete local gates, then owner review and live-smoke decision."
+limitations:
+  - "No push, PR or CI run authorized."

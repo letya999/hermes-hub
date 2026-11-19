@@ -1692,16 +1692,23 @@ func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
-	if _, err := m.Ensure(context.Background(), b); err != nil {
+	lease, _, err := m.Acquire(context.Background(), b, LeaseStream)
+	if err != nil {
 		t.Fatal(err)
 	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	held := entry.leases[lease.ID]
+	held.Owner = "caller"
+	entry.leases[lease.ID] = held
+	m.mu.Unlock()
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if stops != 0 {
 		t.Fatal("active lease was reaped")
 	}
-	if err := m.Release("alice", "gateway"); err != nil {
+	if err := m.ReleaseLease(lease.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Minute)); err != nil {

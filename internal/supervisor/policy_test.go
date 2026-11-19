@@ -54,7 +54,7 @@ func TestSupervisorPolicyGovernsReleaseDeadline(t *testing.T) {
 	binding := Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", ContextRoot: dir}
 	key := "alice\x00alice\x00gateway"
 	entry := &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", State: Busy, Generation: "gen-1"}, binding: binding, leases: map[string]Lease{
-		"lease-1": {ID: "lease-1", Kind: LeaseStream, Owner: "caller", Generation: "gen-1"},
+		"lease-1": {ID: "lease-1", Kind: LeaseJob, Owner: "supervisor", Reason: ensureHoldReason, Generation: "gen-1"},
 	}}
 	m.items = map[string]*runtimeEntry{key: entry}
 	m.jobs = map[string]jobRecord{}

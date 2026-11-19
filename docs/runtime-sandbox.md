@@ -1,6 +1,6 @@
 ---
 description: Operator-selected runtime isolation, prerequisites and real boundaries.
-last_verified: 2026-11-17
+last_verified: 2026-11-20
 ---
 # Runtime sandbox selection
 

@@ -3,10 +3,8 @@ description: Routine business tools, interval windows, lifecycle, authorization 
 last_verified: "2026-11-20"
 ---
 # Routines
-
 ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
 Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights. Research jobs persist separately and replay their Supervisor job ID after restart; research_read shows the final report only after completion.
-
 `media_speak` uses this outbox for the active run's recorded destination: `delivery_id` and `status=queued` acknowledge enqueue, not sending. The worker rechecks `channels.send_voice`; synthesis/sending can still fail and uncertain sends are never blindly repeated.
 In the mock channel, the worker synthesizes audio and stores its bytes in the owner-scoped mock outbox; only a captured `voice_sent=true` record proves mock delivery. The ToolHub admission lock is released and authority rechecked before the communication callback, which asks ToolHub for the live send right.
 The M32 cutover places the clock, assignments, watches and protected nightly
@@ -23,7 +21,6 @@ Settings edits require current `config.edit_own` and `settings_read`'s revision;
 Edits may respawn the runtime, so same-turn restore is uncertain.
 ToolHub reads gateway bindings from files or activated SQLite in place, read-only; cutover refuses legacy automation records/jobs until migration.
 New occurrences persist the current supervisor admission epoch; holds block admission and retries never adopt a later epoch.
-
 Decision: [ADR-0042](adr/ADR-0042-routine-lifecycle.md). Requirements:
 [SPEC-0056](../specs/active/SPEC-0056-routine-lifecycle.md). Acceptance:
 [CHG-0112](../.work/done/CHG-0112-routine-lifecycle/state.yaml).
@@ -39,9 +36,7 @@ The opt-in owner brief follows [ADR-0041](adr/ADR-0041-proactive-automation.md) 
 and [SPEC-0054](../specs/active/SPEC-0054-proactive-automation.md) R4; rollout
 evidence: [CHG-0102](../.work/done/CHG-0102-owner-brief/state.yaml).
 Deterministic and MCP contract tests do not establish deployed acceptance.
-
 ## Business tools
-
 | Tool | Contract |
 |---|---|
 | routine_create | Save ID, timezone, expression, text, action and destination; return configuration and deadline. Repeating the same intent returns current state. |
@@ -49,7 +44,6 @@ Deterministic and MCP contract tests do not establish deployed acceptance.
 | routine_read | Full configuration, revision, state, named saved destination and its availability, baseline/errors and event health. Optional include=[history,next_runs] adds bounded history and planned dates. A known retired ID remains readable. |
 | routine_edit | Apply action=update, pause, resume or snooze using expected_revision. update takes patch, including destination_task_id for moving future results; snooze takes until RFC3339. pause/resume accept neither field. |
 | routine_remove | Permanently retire ID, retain evidence and stop admission. Already sent messages remain sent. |
-
 There are exactly five public routine tools. For edit, update requires a nonempty
 patch. Pause stops future admission, including stream responses already in flight.
 Resume advances recurrence from now; expired once schedules need a new due time.

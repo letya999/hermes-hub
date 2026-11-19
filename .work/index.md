@@ -16,7 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
-| — | No active changes: M9 closeout sweep 2026-11-18 moved all records to done/ or deferred |
+| [CHG-0333](in-progress/CHG-0333-live-wedges/plan.md) | Ten live-stack wedge fixes; local verification and owner decisions pending |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 
