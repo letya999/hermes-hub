@@ -1,6 +1,6 @@
 ---
 description: cellinit + cell cred-proxy + egress-relay — the sandboxed cell pid1, brokered-header forward proxy and managed-network egress path.
-last_verified: 2026-10-20
+last_verified: 2026-11-19
 ---
 
 # cell proxy (cellinit, cred-proxy, egress-relay)
@@ -49,5 +49,5 @@ see services/model-relay.md).
 - Cells: created only via controller admission, seeded/verified by cellinit
   canaries, swept on teardown.
 - Credentials: injected at the proxy, never stored in the cell.
-- Egress: allowlist-only in managed mode; unmanaged spaces keep the default
-  network posture.
+- Egress: runtime traffic uses the allowlisted relay on an internal agent
+  network; there is no unmanaged network fallback.

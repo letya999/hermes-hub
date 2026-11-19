@@ -1,6 +1,9 @@
 package stack
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -8,6 +11,34 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
+
+func TestHermesMaterializationRejectsLegacyConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts MaterializeOptions
+	}{
+		{"missing_authority", MaterializeOptions{}},
+		{"injected_mcp", MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			original := bytes.Replace(reviewedHermesSource(t), []byte("mcp_servers: {}"), []byte("mcp_servers:\n  injected:\n    command: arbitrary-command"), 1)
+			if !bytes.Contains(original, []byte("arbitrary-command")) {
+				t.Fatal("fixture did not inject an MCP server")
+			}
+			if err := os.WriteFile(path, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyHermesConfig(path, tc.opts); err == nil {
+				t.Fatal("legacy config accepted without passport validation")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, original) {
+				t.Fatal("refused materialization modified the config")
+			}
+		})
+	}
+}
 
 // The unmanaged capability mode is gone: no Settings field or YAML key can
 // select it, every passport refuses a stray capability_mode key, and a

@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: "2026-11-18"
+last_verified: "2026-11-19"
 ---
 
 # toolhub
@@ -367,8 +367,9 @@ name feeds `DockerBindSource` mountpoint resolution for sibling bind mounts),
 `HUB_CLI_ALLOWLIST` (`rg,bash` —
 owner-registered bounded CLI commands), `HUB_RECIPE_CATALOGS`,
 `HUB_AGENT_EXEC_MODE=supervisor` (agent-tools exec via docker exec, never the
-agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
-(managed mode), `HUB_CREDENTIAL_BROKER_*` client env, `HUB_BUILD_SECCOMP`
+agent network), `HUB_CAPABILITY_PROFILE_ID`/`HUB_CAPABILITY_GENERATION`/
+`HUB_CAPABILITY_ENVIRONMENT` (scoped admission),
+`HUB_CREDENTIAL_BROKER_*` client env, `HUB_BUILD_SECCOMP`
 (rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`,
 `HUB_PASSPORTS_BY_PRINCIPAL` + `HUB_VAULTS_BY_PRINCIPAL` (per-principal
 passport/vault mount roots).

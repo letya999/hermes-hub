@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/media"
@@ -50,12 +49,10 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		}
 	}
 	return stack.MaterializeOptions{
-		Managed:            true,
 		ToolHubEndpoint:    toolHubEndpoint(),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: os.Getenv(tokenEnv) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_RECONNECT")), "false"),
-		SelfServicesPath:   filepath.Join(state, selfServicesFile),
 		NativeToolsets:     envList("HUB_NATIVE_TOOLSETS"),
 		Web:                web,
 		ImageGen:           imageGen,

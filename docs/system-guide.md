@@ -1,6 +1,6 @@
 ---
 description: Mandatory English system reference, delivery paths and evidence boundaries.
-last_verified: 2026-11-03
+last_verified: 2026-11-19
 ---
 # System guide
 
@@ -14,9 +14,9 @@ of the glossary in several skills. It contains no deployment data or credentials
 | Surface | Implementation |
 |---|---|
 | ToolHub | Every authenticated MCP projection includes static read tool `platform_guide`, even without connector control grants. The tool does not read account state or call a provider. Projection refresh preserves it. |
-| Unmanaged Hermes | `MaterializeGlobalSkills` adds the exact embedded skill to `generated/skills/hermes-hub-system-guide/SKILL.md`; Compose and supervisor mount the filtered catalog read-only. The native search path includes `/opt/hub/skills`. |
+| Rendered skill catalog | `MaterializeGlobalSkills` adds the exact embedded skill to `generated/skills/hermes-hub-system-guide/SKILL.md`; this materialization does not grant the native skill loader. |
 | Managed Hermes | Uses ToolHub's reviewed reference surface. Native skills remain disabled; no general loader or plugin permission is added. |
-| Session instruction | `ChannelContract` routes terminology/inventory/access questions to the guide and forbids readiness claims without evidence. `MaterializeSoulEffective` appends it to the owner persona for both environments/modes. Supervisor config materialization refreshes it at spawn. |
+| Session instruction | `ChannelContract` routes terminology/inventory/access questions to the guide and forbids readiness claims without evidence. `MaterializeSoulEffective` appends it to the owner persona for dev/prod. Supervisor config materialization refreshes it at spawn. |
 
 The mandatory reference does not depend on feature flags or a custom skill
 catalog. The reserved `hermes-hub-system-guide` directory in an optional catalog

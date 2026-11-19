@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-11-04
+last_verified: 2026-11-19
 ---
 
 # Agent home
@@ -43,7 +43,7 @@ content is the single source for the installed skill and ToolHub `system_guide`.
 It covers vocabulary, formats, ownership, surfaces, inventory, status evidence,
 credential diagnosis and source navigation. See [system guide delivery](system-guide.md).
 
-Unmanaged rendering materializes this guide under
+Rendering materializes this guide under
 `generated/skills/hermes-hub-system-guide/SKILL.md` even when no custom catalog
 is configured. `/opt/hub/skills` is read-only and included in the native skill
 search path. Optional catalog errors remain errors, but the required guide is
@@ -58,7 +58,7 @@ mode disables the native skill loader and shadows extension roots. Its reviewed
 reference is the authenticated, static ToolHub `system_guide` read tool; it does
 not enable native skills, plugins or connector lifecycle permissions.
 
-Both modes receive a short guide-routing rule in the hub-owned channel
+Every runtime receives a short guide-routing rule in the hub-owned channel
 contract. Render and supervisor config materialization compose that contract
 with the owner persona into `generated/soul-effective.<env>.md`. A context
 without a persona gets the contract alone. The source `SOUL.md` is not replaced.
@@ -84,17 +84,15 @@ catalog dump.
 
 ## Hooks and plugins
 
-An unmanaged space's `settings.yaml` `hooks:` map renders into Hermes
-config (managed spaces reject hooks — the contract admits no hook
-extensions); hub-gated plugins materialize under `generated/plugins/<name>`
-and mount read-only into `/opt/hermes/plugins/` (bundled + backend =
-auto-load, agent-untouchable). Managed mode additionally
-read-only-shadows `hermes/hooks`.
+The reviewed source template admits no owner hook or plugin extensions.
+Materialization validates that template before adding the ToolHub proxy;
+runtime-writable hooks and extension roots are shadowed read-only. A retired
+`settings.yaml` cannot re-enable hooks or select a weaker mode.
 
 ## Memory and state
 
-`memory: true` in settings enables the memory feature; `honcho`/`honcho_url`
-wire the optional Honcho backend. Runtime-writable state sits under
-`spaces/<id>/runtime/` (`/state` in the container) — see docs/spaces.md for
-the full layout; the agent-visible Hermes state under `state/hermes/` is the
-only subtree the runtime shadows read-only in managed mode.
+Published tool grants select native memory or the hub memory vault; the
+native memory subsystem stays disabled when the vault replaces it.
+Runtime state lives under `spaces/<id>/managed/<env>/`, with its runtime,
+Hermes, home, cache and workspace roots mounted separately. See
+[spaces](spaces.md) for the read-only authority mounts and writable roots.

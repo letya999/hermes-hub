@@ -169,7 +169,7 @@ func TestManagedContextMaterializeAndAttest(t *testing.T) {
 		GoalsEngine: "hub", GoalsJudge: "self", GoalsMaxTurns: 12,
 		ModelURL: "http://model-relay:8318/v1",
 	}
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, Context: ctx}
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, Context: ctx}
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}

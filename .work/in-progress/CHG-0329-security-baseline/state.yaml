@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0329
 title: Close the security baseline and remove fail-open paths
 status: in_progress
-branch: feature/m40-v1-platform
+branch: feat/m40-v1-platform
 updated: 2026-11-19
-phase: implementation
+phase: acceptance
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [R5.1, R5.2, R5.3, R5.4, R7.1]
@@ -12,20 +12,38 @@ depends_on: [CHG-0328]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 573
 design_status: accepted
-implementation_status: in_progress
+implementation_status: locally_verified_pending_live_acceptance
 slices:
-  S1.1-t01-t22-receipts: not_started
-  S1.2-moved-chg-links: not_started
-  S1.3-remove-hermes-runner: not_started
-  S1.4-remove-unmanaged-mode: not_started
-  S1.5-supervisor-fail-closed: not_started
-  S1.6-path-bug-dirs: not_started
+  S1.1-t01-t22-receipts: green
+  S1.2-moved-chg-links: green
+  S1.3-remove-hermes-runner: green
+  S1.4-remove-unmanaged-mode: green
+  S1.5-supervisor-fail-closed: green
+  S1.6-path-bug-dirs: green
 validation:
-  documents: pending
-  just_check: not_run
-  docker_check: not_run
-  red_team: not_started
-  live_acceptance: not_started
-evidence: []
-remaining: []
-limitations: []
+  documents: passed
+  just_check: passed
+  affected_packages: passed
+  docker_check: not_authorized_live_stack
+  red_team: local_regressions_passed
+  live_acceptance: pending_owner_authorization
+evidence:
+  - "Merged aace6e10, 99693e0b and 45a288b5 into feat/m40-v1-platform at 63c0b94bafe2a329bd724a038b3456cf3f8efccf. Worktree retained."
+  - "go build ./... passed after merge."
+  - "TestHermesMaterializationRejectsLegacyConfig: both missing-authority and injected-MCP cases failed before the fix, passed after it; refused config remains unchanged."
+  - "Removed the optional MaterializeOptions.Managed selector, legacy config merge helpers and User.Env/runtimeEnv; Kubernetes always uses the managed env and model relay."
+  - "go vet -p=2 stack/supervisor/communication/commodel/runtime passed."
+  - "devcheck docs and just check passed with inherited CHG-0330 files isolated."
+  - "Gitleaks stdin --redact over the local diff: no leaks."
+  - "Initial package verification: supervisor, commodel, runtime and agenttools passed; Windows refused testexec launches in other packages. A file-isolation change during that attempt invalidated devcheck compilation; a stable scoped run follows."
+  - "Final stable just test passed: stack, communication, toolhub, toolhub/api, toolhub/automation, cmd/hubctl, cmd/toolhub, cmd/communication and devcheck. The earlier passed supervisor, commodel, runtime and agenttools runs covered their final source."
+  - "T01-T22 Go-layer package receipts are local short tests only: no new race, Docker, pinned Hermes or provider acceptance is inferred."
+  - "README/architecture/validation retain downgraded T01-T22 claims; no current deployed-stack certification or owner signature claimed."
+remaining:
+  - "Live dev-rebuild of communication-hub and supervisor requires the owner's separate instruction."
+  - "Pinned probe, real Docker canaries and T01-T22 owner signature remain at CHG-0353."
+  - "CI receipt needs a published source SHA and run URL; neither exists for this dirty local checkpoint."
+limitations:
+  - "HUB_USER_LANG was not carried by the HTTP execution contract before this change and is still not carried."
+  - "Runtime.Managed remains an admission/ownership receipt; non-managed runtime requests are refused by backend checks, not executed by a fallback."
+  - "Windows intermittently denies freshly built Go executables; Probity remains enabled."

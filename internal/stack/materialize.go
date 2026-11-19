@@ -175,12 +175,10 @@ func materializeHermesConfig(dir string, s Settings) error {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
-		Managed:            true,
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_RECONNECT"]), "false"),
-		SelfServicesPath:   filepath.Join(dir, "runtime", "self-services.json"),
 		NativeToolsets:     s.nativeCarveouts(),
 		Web:                s.Web,
 		ImageGen:           s.managedImageGenGrant(),

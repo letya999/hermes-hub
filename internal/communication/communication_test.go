@@ -726,27 +726,13 @@ func TestConfigFromEnvAndIDs(t *testing.T) {
 	if err != nil || len(c.Users) != 1 || len(c.Users[0].TelegramIDs) != 2 || !c.Users[0].ConfiguredEnv["GITHUB_TOKEN"] {
 		t.Fatal(c, err)
 	}
-	if _, ok := c.Users[0].Env["TELEGRAM_BOT_TOKEN"]; ok {
-		t.Fatal("gateway bot token leaked into Hermes environment")
-	}
 	for _, raw := range []string{"", "*", "11,11", "0"} {
 		t.Setenv("TELEGRAM_ALLOWED_USERS", raw)
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Fatal("invalid IDs accepted", raw)
 		}
 	}
-	for key, value := range map[string]string{"JIRA_URL": "https://jira.example", "JIRA_USERNAME": "alice@example.com", "JIRA_API_TOKEN": "jira-token", "GITLAB_HOST": "gitlab.example", "GOOGLE_EMAIL": "alice@example.com", "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost", "HH_USER_AGENT": "hub/test", "SLACK_MCP_ADD_MESSAGE_TOOL": "true"} {
-		t.Setenv(key, value)
-	}
-	scoped := runtimeEnv([]string{"atlassian", "gitlab", "google", "workspace", "hh", "slack"})
-	for key := range map[string]bool{"JIRA_URL": true, "JIRA_USERNAME": true, "JIRA_API_TOKEN": true, "GITLAB_HOST": true, "GOOGLE_EMAIL": true, "GOOGLE_OAUTH_REDIRECT_URI": true, "HH_USER_AGENT": true, "SLACK_MCP_ADD_MESSAGE_TOOL": true} {
-		if scoped[key] == "" {
-			t.Fatal("feature environment was not selected", key)
-		}
-	}
-	if scoped["TELEGRAM_BOT_TOKEN"] != "" {
-		t.Fatal("gateway token selected for Hermes")
-	}
+
 }
 
 func TestConfigFromYAMLEnvBranch(t *testing.T) {

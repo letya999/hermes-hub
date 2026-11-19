@@ -45,14 +45,13 @@ type User struct {
 	OIDCSubject string `yaml:"oidc_subject,omitempty" json:"oidc_subject,omitempty"`
 	// SSOIssuer/SSOSubject carry verified link provenance onto envelopes
 	// minted for this resolved user; empty means channel-mapped (local).
-	SSOIssuer      string            `yaml:"-" json:"-"`
-	SSOSubject     string            `yaml:"-" json:"-"`
-	StateDir       string            `yaml:"state_dir" json:"state_dir"`
-	WorkspaceDir   string            `yaml:"workspace_dir" json:"workspace_dir"`
-	Features       []string          `yaml:"features,omitempty" json:"features,omitempty"`
-	PolicyDisabled []string          `yaml:"policy_disabled,omitempty" json:"policy_disabled,omitempty"`
-	ConfiguredEnv  map[string]bool   `yaml:"-" json:"-"`
-	Env            map[string]string `yaml:"-" json:"-"`
+	SSOIssuer      string          `yaml:"-" json:"-"`
+	SSOSubject     string          `yaml:"-" json:"-"`
+	StateDir       string          `yaml:"state_dir" json:"state_dir"`
+	WorkspaceDir   string          `yaml:"workspace_dir" json:"workspace_dir"`
+	Features       []string        `yaml:"features,omitempty" json:"features,omitempty"`
+	PolicyDisabled []string        `yaml:"policy_disabled,omitempty" json:"policy_disabled,omitempty"`
+	ConfiguredEnv  map[string]bool `yaml:"-" json:"-"`
 }
 
 // envelope binds each verified channel user independently of process-wide env.

@@ -27,12 +27,10 @@ const managedToolHubProxyEndpoint = "http://127.0.0.1:8080/mcp"
 // normally reads from the environment when it materializes the effective
 // Hermes config.
 type MaterializeOptions struct {
-	Managed            bool
 	ToolHubEndpoint    string
 	ToolHubTokenEnv    string
 	RuntimeAuthPresent bool
 	ToolHubReconnect   bool
-	SelfServicesPath   string
 	// NativeToolsets is the operator-approved carve-out list rendered into
 	// this runtime's denylist (settings.yaml `tools:` entries with
 	// `via: native`, or HUB_NATIVE_TOOLSETS inside the container).
@@ -101,72 +99,22 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	return os.Rename(name, destPath)
 }
 
-// ApplyHermesConfig rewrites the effective config in place: self-service MCP
-// entries and the ToolHub control entry are merged onto whatever is already
-// there. Used in-container when no source config mount exists.
+// ApplyHermesConfig validates the reviewed template before adding the scoped
+// ToolHub proxy and context controls.
 func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
-	if opts.Managed {
-		if opts.ToolHubEndpoint == "" || !opts.RuntimeAuthPresent {
-			return fmt.Errorf("managed capabilities require a scoped ToolHub endpoint and token")
-		}
-		if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
-			return fmt.Errorf("native_toolsets: %w", err)
-		}
-		if err := validateManagedSourceConfig(configPath, opts); err != nil {
-			return err
-		}
-	} else {
-		if err := applySelfServicesFrom(configPath, opts.SelfServicesPath); err != nil {
-			return err
-		}
-		if err := applyHubCommunicationConfig(configPath); err != nil {
-			return err
-		}
+	if opts.ToolHubEndpoint == "" || !opts.RuntimeAuthPresent {
+		return fmt.Errorf("managed capabilities require a scoped ToolHub endpoint and token")
+	}
+	if err := ValidateNativeToolsets(opts.NativeToolsets); err != nil {
+		return fmt.Errorf("native_toolsets: %w", err)
+	}
+	if err := validateManagedSourceConfig(configPath, opts); err != nil {
+		return err
 	}
 	if err := applyToolHubConfigWith(configPath, opts); err != nil {
 		return err
 	}
 	return applyContextConfig(configPath, opts.Context)
-}
-
-func hubCommunicationEnv() M {
-	e := M{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "OPENAI_API_KEY": "${OPENAI_API_KEY}", "HUB_HERMES_CONFIG": "/state/hermes/config.yaml"}
-	for _, key := range []string{"HUB_PRINCIPAL_ID", "HUB_USER_ID", "HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_TOOL_POLICY", "HUB_TOOLS_RO", "HUB_ORG_SCOPED", "HUB_ORG_ACTIONS", "HUB_FEATURES", "HUB_DEFER_RUNTIME_RESTART"} {
-		e[key] = "${" + key + "}"
-	}
-	return e
-}
-
-func applyHubCommunicationConfig(configPath string) error {
-	body, err := os.ReadFile(configPath) // #nosec G304 G703 -- operator-owned materialized configuration.
-	if err != nil {
-		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return err
-	}
-	servers, _ := config["mcp_servers"].(map[string]any)
-	hub, ok := servers["hub"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	e, ok := hub["env"].(map[string]any)
-	if !ok {
-		e = map[string]any{}
-		hub["env"] = e
-	}
-	for key, value := range hubCommunicationEnv() {
-		e[key] = value
-	}
-	// HUB_HERMES_CONFIG stays the container mount path from
-	// hubCommunicationEnv: the hub child runs inside the runtime container
-	// and cannot resolve this host-side materialization path.
-	updated, err := yaml.Marshal(config)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, updated, 0660) // #nosec G703 -- operator config path
 }
 
 // The selected model and timezone may vary, but capability-bearing fields
@@ -292,7 +240,7 @@ func applyContextConfig(configPath string, ctx *ContextConfig) error {
 // ValidateManagedEffectiveConfig prevents Hermes from falling back to its
 // defaults when a mounted managed config is missing, malformed or changed.
 func ValidateManagedEffectiveConfig(configPath string, s Settings, opts MaterializeOptions) error {
-	if !opts.Managed || !opts.RuntimeAuthPresent || opts.ToolHubEndpoint == "" ||
+	if !opts.RuntimeAuthPresent || opts.ToolHubEndpoint == "" ||
 		s.Model == "" || s.ModelURL == "" || s.Timezone == "" {
 		return fmt.Errorf("managed effective config identity is incomplete")
 	}
@@ -406,36 +354,6 @@ func ReadSelfServicesFeatures(path string) ([]string, error) {
 	return current.Features, nil
 }
 
-func applySelfServicesFrom(configPath, servicesPath string) error {
-	features, err := ReadSelfServicesFeatures(servicesPath)
-	if err != nil || len(features) == 0 {
-		return err
-	}
-	config, err := readHermesConfigMap(configPath)
-	if err != nil {
-		return err
-	}
-	servers, ok := config["mcp_servers"].(map[string]any)
-	if !ok {
-		servers = map[string]any{}
-		config["mcp_servers"] = servers
-	}
-	for _, feature := range features {
-		name, server, ok, err := ServiceMCPConfig(feature)
-		if err != nil {
-			return err
-		}
-		if ok && name != "" {
-			servers[name] = server
-		}
-	}
-	updated, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("write Hermes config: %w", err)
-	}
-	return os.WriteFile(configPath, updated, 0660)
-}
-
 // readHermesConfigMap loads the materialized config as a non-nil map: an
 // empty file unmarshals to nil and later merge writes would panic.
 func readHermesConfigMap(configPath string) (M, error) {
@@ -458,9 +376,7 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return fmt.Errorf("HUB_TOOLHUB_ENDPOINT: %w", err)
 	}
-	if opts.Managed {
-		endpoint = managedToolHubProxyEndpoint
-	}
+	endpoint = managedToolHubProxyEndpoint
 	tokenEnv := opts.ToolHubTokenEnv
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"

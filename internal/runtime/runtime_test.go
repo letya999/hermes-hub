@@ -176,7 +176,7 @@ func managedRuntimeConfig(t *testing.T) string {
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://toolhub:8090/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", "synthetic-auth")
 	if err := stack.MaterializeHermesConfig(source, effective, stack.MaterializeOptions{
-		Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
+		ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

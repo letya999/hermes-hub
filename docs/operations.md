@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-18
+last_verified: "2026-11-19"
 ---
 
 # Operations
@@ -723,7 +723,7 @@ iam:
 IdP's secrets at rest and never rotates — losing it bricks the store, so
 back it up with the other auth files.
 
-Direct env override still works for unmanaged stacks: `HUB_OIDC_ISSUER`
+Without a published `iam:` override, Compose passes through `HUB_OIDC_ISSUER`
 + `HUB_OIDC_CLIENT_ID` compose passthrough — a published `iam:` block
 takes precedence, and a bundled mode without `client_id` renders empty
 env so the gateway boots in local mode until bootstrap finishes (it
@@ -1731,7 +1731,9 @@ provider identity evidence; do not invent a universal identity endpoint.
   fixture — no Telegram contact. CI publishes `cli-tools`/`cell-proxy`
   stages; `just docker-check-prebuilt` pulls them.
 - Never `hermes update` in prod — bump the reviewed pin and rebuild.
-- `HUB_TOOLHUB_AUTOSTART=true` starts the shipped `hub-toolhub` binary.
+- The runtime never starts ToolHub itself. Configure the scoped ToolHub endpoint
+  and run the gateway with `HUB_RUNTIME_SUPERVISOR_URL` or `HUB_RUNTIME_URL`;
+  missing execution endpoints refuse startup.
 
 ## M16 runtime preparation and group scopes
 

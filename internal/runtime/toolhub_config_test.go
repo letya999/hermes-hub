@@ -74,7 +74,7 @@ func TestMaterializeOptionsFromEnvCarriesNativeToolsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !opts.Managed || len(opts.NativeToolsets) != 3 || opts.NativeToolsets[0] != "terminal" || opts.NativeToolsets[1] != "memory" || opts.NativeToolsets[2] != "todo" {
+	if len(opts.NativeToolsets) != 3 || opts.NativeToolsets[0] != "terminal" || opts.NativeToolsets[1] != "memory" || opts.NativeToolsets[2] != "todo" {
 		t.Fatalf("native toolsets lost in env transit: %+v", opts)
 	}
 	t.Setenv("HUB_NATIVE_TOOLSETS", "")

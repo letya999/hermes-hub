@@ -80,7 +80,7 @@ func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 	if err := os.WriteFile(services, []byte(`{"features":["github"]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, SelfServicesPath: services}
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true}
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 		})
 	}
 	write(zero)
-	for _, omitted := range []MaterializeOptions{{Managed: true, ToolHubEndpoint: opts.ToolHubEndpoint}, {Managed: true, RuntimeAuthPresent: true}} {
+	for _, omitted := range []MaterializeOptions{{ToolHubEndpoint: opts.ToolHubEndpoint}, {RuntimeAuthPresent: true}} {
 		if err := MaterializeHermesConfig(source, dest, omitted); err == nil {
 			t.Fatal("managed endpoint/token absence accepted")
 		}
@@ -518,7 +518,7 @@ func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
 	if err := os.WriteFile(source, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, NativeToolsets: []string{"terminal"}}
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, NativeToolsets: []string{"terminal"}}
 	dest := filepath.Join(dir, "effective.yaml")
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatalf("carved materialize: %v", err)
@@ -591,7 +591,7 @@ func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "effective.yaml")
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
 		NativeToolsets: []string{"memory"}, MemoryVault: true}
 	if err := MaterializeHermesConfig(source, dest, opts); err == nil {
 		t.Fatal("a source carrying open_knowledge attested under the retired data plane")
@@ -938,7 +938,7 @@ func TestManagedBrowserMaterializeAndAttest(t *testing.T) {
 	if err := os.WriteFile(source, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
 		Browser: BrowserGrant{Persistent: true, Guest: true, Act: true}, User: "alice"}
 	dest := filepath.Join(dir, "effective.yaml")
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {

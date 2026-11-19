@@ -1,6 +1,6 @@
 ---
 description: Operator-selected runtime isolation, prerequisites and real boundaries.
-last_verified: 2026-11-17
+last_verified: 2026-11-19
 ---
 # Runtime sandbox selection
 
@@ -28,7 +28,7 @@ Qualify those limits; the cell spike used 64 PIDs and 256 MiB.
 The daemon must register the exact selected name. A missing/broken runtime
 fails; Hermes never retries using runc. Sandbox runtime spawning currently
 requires managed supervision without browser/meet. Those sidecars have not been
-qualified under these sandboxes. Static/unmanaged deployments must provide
+qualified under these sandboxes. Static deployments must provide
 sandbox-compatible discovery themselves; the static Compose selector alone is
 not integration acceptance.
 

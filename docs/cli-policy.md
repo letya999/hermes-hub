@@ -1,6 +1,6 @@
 ---
 description: CLI catalog operations, isolated terminal and opt-in package registries.
-last_verified: 2026-11-17
+last_verified: 2026-11-19
 ---
 # CLI policy and operator catalog
 
@@ -13,7 +13,7 @@ runtime and tool binding. Revocation cancels the process; ToolHub and Docker
 cleanup verify the container has stopped. Scratch writes are ephemeral and
 are not copied back to the workspace. The current terminal has no network.
 It removes native `terminal` and native `code_execution` on every channel,
-including Telegram and unmanaged supervisor spaces. Scratch execution has
+including Telegram and supervised spaces. Scratch execution has
 network none, a read-only root and no Hermes home or control state. It may
 invoke binaries already in its image. Explicit `terminal: native` still grants
 Hermes its native shell; do not select it when internet installation must be

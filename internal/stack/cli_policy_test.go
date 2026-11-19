@@ -52,7 +52,7 @@ func TestRetiredSelfSettingsCannotChangeMaterializedConfig(t *testing.T) {
 	if err := os.WriteFile(source, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}
+	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}
 	first := filepath.Join(dir, "first.yaml")
 	if err := MaterializeHermesConfig(source, first, opts); err != nil {
 		t.Fatal(err)

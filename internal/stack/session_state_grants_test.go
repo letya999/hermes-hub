@@ -30,7 +30,7 @@ func TestSessionStateGrantsAttestAndUseSeparateOwnerHomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			os.WriteFile(source, body, 0600)
-			opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, NativeToolsets: s.NativeCarveouts()}
+			opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, NativeToolsets: s.NativeCarveouts()}
 			if err := MaterializeHermesConfig(source, dest, opts); err != nil {
 				t.Fatal(err)
 			}

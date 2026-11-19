@@ -1,6 +1,6 @@
 ---
 description: Runtime images, supervisor lifecycle, per-context rollout and preparation runbook.
-last_verified: 2026-11-10
+last_verified: 2026-11-19
 ---
 
 # Runtime operations
@@ -43,8 +43,8 @@ Desktop/WSL, Optimize-VHD).
 
 CI: `image` job runs `devcheck docker-publish <target>` → immutable
 `ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` + moving `edge-<target>`;
-`containers` job runs `just docker-check-prebuilt` (`docker-pull` resolves
-sha tag, `edge-*` fallback, warns when pulled revision ≠ local HEAD). Local
+`containers` job runs `just docker-check-prebuilt` (`docker-pull` requires
+the exact source SHA; stale `edge-*` images are not accepted). Local
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
 
@@ -57,8 +57,9 @@ native static per-user Compose remains the explicit alternative and the
 v0.2.1 artifact the drain/stop/audit rollback (v0.3.0 removed the one-shot
 executor — see SPEC-0016/CHG-0018).
 
-In supervisor mode the runtime joins the space's project network and mounts
-its `broker-secrets-runtime` volume read-only. Footprint (dev host sample,
+In supervisor mode the runtime joins its internal per-space agent network;
+scoped relays provide ToolHub, model and allowlisted egress access. The
+ordinary runtime receives no broker client mount. Footprint (dev host sample,
 2026-10-07): always-on ≈160 MiB per stack + ~410 MiB per warm runtime;
 cold start ~60–80 s, warm lease ~0.6 s; `--max-runtimes` (8) is the
 concurrency bound; crash-loop denial after 3 crashes/10 min window.
@@ -109,7 +110,7 @@ Canary: `HUB_CANARY_INTERVAL` runs a periodic end-to-end mock-conversation
 probe requiring exactly one `file_list` receipt + delivered reply; journal
 `canary.jsonl` (1000 lines), one notice per new failure class + one recovery.
 
-Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (336 h) —
+Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (72 h) —
 live work, open approvals and in-flight receipts never removed. `occurrences`
 archive holds 48 h detail + dedup receipt for the retention period; catch-up
 ≤1 h, ≤16 occurrences per tick; malformed → `occurrences/quarantine`
@@ -126,7 +127,8 @@ Long Telegram turns queue via `display.busy_input_mode: queue`; heartbeat
 `HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit. An editable
 status appears at acceptance and ticks through cold start; typing starts after
 admission.
-Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
+Replies split into bounded channel parts; beyond five parts the gateway sends
+a truncation notice, the final part and the full `answer.md` attachment. Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
 `scope.yaml` IDs are immutable; Telegram links are provisioned only in
 trusted host config after verifying the numeric account ID — never link
@@ -151,14 +153,13 @@ do not reactivate native definitions already migrated to hub occurrences.
 
 ## M16 runtime preparation and group scopes
 
-Optional managed-sandbox preparation lives in `workspace.yaml` (unmanaged
-spaces only — the v2 passport vocabulary has no `goal`/`bootstrap_revision`
-leaf yet, so migration reports them as preserved conflicts):
+Optional sandbox preparation lives in the published `workspace.yaml`
+passport (`goal` and `bootstrap_revision`). Retired workspace files are not
+runtime authority. The passport body includes:
 
 ```yaml
-workspace:
-  goal: Prepare the workspace tools needed for this project.
-  bootstrap_revision: 1
+goal: Prepare the workspace tools needed for this project.
+bootstrap_revision: 1
 ```
 
 Before an ordinary job, the runtime runs that goal once with its existing

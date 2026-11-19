@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-18
+last_verified: 2026-11-19
 ---
 
 # communication-hub
@@ -101,6 +101,12 @@ never enqueue an agent job,
 channel (`config.channels.*.voice` in the published revision, or the legacy
 `transcription` feature),
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
+
+Startup requires `HUB_RUNTIME_SUPERVISOR_URL` or `HUB_RUNTIME_URL`; without
+either endpoint the gateway exits with a localized error before opening its
+spool. It never starts Hermes locally or copies provider env into user records.
+The HTTP job contract does not carry `HUB_USER_LANG`; removing the local
+runner does not change that existing language propagation limitation.
 
 Protected ToolHub confirmation notices require the service bearer and an
 owner-bound actor. The signed actor's current policy may differ from the

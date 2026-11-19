@@ -312,12 +312,10 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		}
 	}
 	opts := stack.MaterializeOptions{
-		Managed:            true,
 		ToolHubEndpoint:    strings.TrimSpace(secrets["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: authPresent,
 		ToolHubReconnect:   !strings.EqualFold(strings.TrimSpace(secrets["HUB_TOOLHUB_RECONNECT"]), "false"),
-		SelfServicesPath:   filepath.Join(binding.ContextRoot, "runtime", "self-services.json"),
 		NativeToolsets:     settings.NativeCarveouts(),
 		Web:                settings.Web,
 		ImageGen:           settings.ManagedImageGenGrant(),

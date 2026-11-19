@@ -9,15 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func writeSelfServicesState(t *testing.T, dir, body string) string {
-	t.Helper()
-	path := filepath.Join(dir, "self-services.json")
-	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func TestApplyHermesConfigEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	effective := filepath.Join(dir, "config.yaml")
@@ -30,22 +21,19 @@ func TestApplyHermesConfigEmptyFile(t *testing.T) {
 		RuntimeAuthPresent: true,
 		Context:            &ContextConfig{CompactEngine: "auto"},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("empty config accepted without a reviewed template")
 	}
-	body, err := os.ReadFile(effective)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), "http://toolhub:8090/mcp") {
-		t.Fatalf("empty config did not gain toolhub entry: %s", body)
+	body, readErr := os.ReadFile(effective)
+	if readErr != nil || len(body) != 0 {
+		t.Fatal("refused config was modified")
 	}
 }
 
 func TestMaterializeHermesConfigAddsToolHubServer(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
-	if err := os.WriteFile(source, []byte("model: {}\n"), 0600); err != nil {
+	if err := os.WriteFile(source, reviewedHermesSource(t), 0600); err != nil {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "nested", "config.yaml")
@@ -63,17 +51,17 @@ func TestMaterializeHermesConfigAddsToolHubServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	for _, want := range []string{"http://toolhub:8090/mcp", "${HUB_RUNTIME_AUTH}", "timeout: 1800", "mcp_reload_confirm: false"} {
+	for _, want := range []string{managedToolHubProxyEndpoint, "${HUB_RUNTIME_AUTH}", "timeout: 1800", "mcp_reload_confirm: false"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("materialized config missing %s: %s", want, text)
 		}
 	}
 }
 
-func TestLegacyMaterializationReplacesFileAndPreservesItOnFailure(t *testing.T) {
+func TestMaterializationReplacesFileAndPreservesItOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
-	if err := os.WriteFile(source, []byte("model: {}\n"), 0600); err != nil {
+	if err := os.WriteFile(source, reviewedHermesSource(t), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(dest, []byte("previous\n"), 0644); err != nil {
@@ -87,7 +75,7 @@ func TestLegacyMaterializationReplacesFileAndPreservesItOnFailure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err != nil {
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(dest)
@@ -104,37 +92,12 @@ func TestLegacyMaterializationReplacesFileAndPreservesItOnFailure(t *testing.T) 
 	if err := os.WriteFile(source, []byte("invalid: [\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err == nil {
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err == nil {
 		t.Fatal("invalid YAML accepted")
 	}
 	unchanged, err := os.ReadFile(dest)
 	if err != nil || string(unchanged) != string(good) {
 		t.Fatalf("failed edit changed config: %q %v", unchanged, err)
-	}
-}
-
-func TestLegacyHubReceivesRoutineControlEnvironment(t *testing.T) {
-	dir := t.TempDir()
-	source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
-	if err := os.WriteFile(source, []byte("mcp_servers:\n  hub:\n    command: hubctl\n    env:\n      CUSTOM: keep\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(body, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	e := cfg["mcp_servers"].(map[string]any)["hub"].(map[string]any)["env"].(map[string]any)
-	for key, want := range map[string]string{"HUB_COMMUNICATION_CONTROL_URL": "${HUB_COMMUNICATION_CONTROL_URL}", "HUB_COMMUNICATION_AUTH": "${HUB_RUNTIME_AUTH}", "HUB_PRINCIPAL_ID": "${HUB_PRINCIPAL_ID}", "HUB_USER_ID": "${HUB_USER_ID}", "HUB_ORG_ACTIONS": "${HUB_ORG_ACTIONS}", "CUSTOM": "keep"} {
-		if e[key] != want {
-			t.Errorf("hub child env %s: got %v, want %s", key, e[key], want)
-		}
 	}
 }
 
@@ -150,7 +113,7 @@ func TestSupervisedComposeRequiresControlAuth(t *testing.T) {
 	}
 }
 
-func TestMaterializeHermesConfigToolHubOptIn(t *testing.T) {
+func TestMaterializeHermesConfigRequiresToolHub(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
 	original := []byte("model: {}\n")
@@ -158,35 +121,37 @@ func TestMaterializeHermesConfigToolHubOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "config.yaml")
-	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{ToolHubEndpoint: ""}); err != nil {
-		t.Fatal(err)
+	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{}); err == nil {
+		t.Fatal("missing ToolHub authority accepted")
 	}
-	body, err := os.ReadFile(dest)
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("refused materialization created a destination")
+	}
+	body, err := os.ReadFile(source)
 	if err != nil || string(body) != string(original) {
 		t.Fatalf("opt-out config changed: %q %v", body, err)
 	}
 }
 
-func TestMaterializeHermesConfigLeavesExistingApproval(t *testing.T) {
+func TestToolHubConfigLeavesExistingApproval(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
 	if err := os.WriteFile(source, []byte("model: {}\napprovals:\n  mcp_reload_confirm: true\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	dest := filepath.Join(dir, "config.yaml")
 	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, ToolHubReconnect: true}
-	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
+	if err := applyToolHubConfigWith(source, opts); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(dest)
+	body, err := os.ReadFile(source)
 	if err != nil || !strings.Contains(string(body), "mcp_reload_confirm: true") {
 		t.Fatalf("existing approval value not preserved: %s %v", body, err)
 	}
 	opts.ToolHubReconnect = false
-	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
+	if err := applyToolHubConfigWith(source, opts); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(dest)
+	body, err = os.ReadFile(source)
 	if err != nil || !strings.Contains(string(body), "mcp_reload_confirm: true") {
 		t.Fatalf("disabled reconnect dropped the approval: %s %v", body, err)
 	}
@@ -222,7 +187,7 @@ func TestManagedToolHubConfigUsesRunBindingProxy(t *testing.T) {
 	if err := os.WriteFile(path, []byte("model: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyToolHubConfigWith(path, MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err != nil {
+	if err := applyToolHubConfigWith(path, MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(path)
@@ -231,28 +196,6 @@ func TestManagedToolHubConfigUsesRunBindingProxy(t *testing.T) {
 	}
 	if !strings.Contains(string(body), managedToolHubProxyEndpoint) || strings.Contains(string(body), "http://toolhub:8090/mcp") {
 		t.Fatalf("managed ToolHub bypasses runtime run binding: %s", body)
-	}
-}
-
-func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
-	dir := t.TempDir()
-	services := writeSelfServicesState(t, dir, `{"features":["atlassian","gitlab"]}`)
-	config := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(config, []byte("model: {}\nmcp_servers: {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServicesFrom(config, services); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	// Connectors are ToolHub-managed: enabling them must not inject a direct
-	// MCP definition into the Hermes config.
-	if strings.Contains(text, "mcp-atlassian") || strings.Contains(text, "mcp.atlassian.com") || strings.Contains(text, "gitlab") {
-		t.Fatal(text)
 	}
 }
 
@@ -281,25 +224,11 @@ func TestSelfServicesRejectsInvalidState(t *testing.T) {
 	}
 }
 
-func TestApplySelfServicesNoopAndConfigErrors(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "absent", "self-services.json")
-	if err := applySelfServicesFrom(filepath.Join(dir, "missing.yaml"), missing); err != nil {
+func reviewedHermesSource(t *testing.T) []byte {
+	t.Helper()
+	body, err := yaml.Marshal(Config(Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}))
+	if err != nil {
 		t.Fatal(err)
 	}
-	services := writeSelfServicesState(t, dir, `{"features":["github"]}`)
-	bad := filepath.Join(dir, "bad.yaml")
-	if err := os.WriteFile(bad, []byte("not: [yaml"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServicesFrom(bad, services); err == nil {
-		t.Fatal("invalid Hermes config accepted")
-	}
-	noServers := filepath.Join(dir, "no-servers.yaml")
-	if err := os.WriteFile(noServers, []byte("model: test\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySelfServicesFrom(noServers, services); err != nil {
-		t.Fatal(err)
-	}
+	return body
 }

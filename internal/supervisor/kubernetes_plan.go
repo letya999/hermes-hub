@@ -211,10 +211,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	service := stack.RuntimeService(settings, "", binding.ContextRoot)
 	in := &kubeInputs{root: root, data: map[string][]byte{}}
 	values := map[string]string{}
-	envName := "runtime." + settings.Environment + ".env"
-	if rt.Managed {
-		envName = "managed-runtime." + settings.Environment + ".env"
-	}
+	envName := "managed-runtime." + settings.Environment + ".env"
 	for _, name := range []string{envName, filepath.Base(binding.EnvFile)} {
 		info, e := root.Lstat(name)
 		if e != nil || !info.Mode().IsRegular() || info.Size() > kubeInputBudget {
@@ -236,13 +233,11 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	for key, value := range service["environment"].(stack.M) {
 		values[key] = fmt.Sprint(value)
 	}
-	if rt.Managed {
-		auth, err := stack.ReadSecrets(filepath.Join(binding.ContextRoot, "model-relay.auth"))
-		if err != nil || auth["HUB_MODEL_RELAY_AUTH"] == "" {
-			return nil, nil, errors.New("model relay caller credential unavailable")
-		}
-		values["OPENAI_API_KEY"], values["OPENAI_BASE_URL"] = auth["HUB_MODEL_RELAY_AUTH"], "http://model-relay:8318/v1"
+	auth, err := stack.ReadSecrets(filepath.Join(binding.ContextRoot, "model-relay.auth"))
+	if err != nil || auth["HUB_MODEL_RELAY_AUTH"] == "" {
+		return nil, nil, errors.New("model relay caller credential unavailable")
 	}
+	values["OPENAI_API_KEY"], values["OPENAI_BASE_URL"] = auth["HUB_MODEL_RELAY_AUTH"], "http://model-relay:8318/v1"
 	values["HUB_EXECUTION_SUBSTRATE"], values["HUB_RUNTIME_MODE"] = "kubernetes", binding.RuntimeMode
 	delete(values, "HUB_KUBERNETES_POD_NAME")
 	delete(values, "HUB_KUBERNETES_POD_NAMESPACE")

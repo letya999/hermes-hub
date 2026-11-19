@@ -1,6 +1,6 @@
 ---
 description: Normative tool-design rules — one catalog, closed verb vocabulary, typed schemas, rights-vs-schema separation, bounded results, context budget, machine-checkable conformance.
-last_verified: "2026-11-08"
+last_verified: "2026-11-19"
 ---
 
 # Tool design charter
@@ -28,14 +28,14 @@ see [tools](tools.md); for placement and budgets see ADR-0092 D6 and
 | `member` | A tool that belongs to a toolset. `tools.include`/`tools.exclude` in `tools.yaml` operate on members only. |
 | `audience` | Who a tool is for: `model` | `internal` | `operator`. Internal operations (e.g. `inbox_fetch`, legacy control ops) execute through ToolHub but never appear on the model surface or in placeable toolsets. |
 | `right` | A `domain.operation` from `rights.yaml` (`workspace.write`, `connectors.enable`). A right is not a tool: each member declares `requires:` rights; a grant satisfies them. |
-| `surface` | A delivery channel: `mcp__toolhub__*` (managed), `mcp__hub__*` (unmanaged), `tool_search`/`tool_call` (extended). A surface is a projection of the catalog, never a second authoring site. |
+| `surface` | A delivery channel: `mcp__toolhub__*` (managed), `mcp__hub__*` (executor stdio), `tool_search`/`tool_call` (extended). A surface is a projection of the catalog, never a second authoring site. |
 | `effect` | `read` or `write` declared on the tool spec; drives MCP annotations, access narrowing and evidence requirements. |
 
 ## 1. Inventory — one catalog, one author
 
 **1.1 One ToolSpec is the only source.** Every model-visible tool exists exactly
 once in `HubToolsDefinition()`. All surfaces — the managed `mcp__toolhub__*`
-projection, the unmanaged `mcp__hub__*` stdio server, and the extended
+projection, the `mcp__hub__*` executor stdio server, and the extended
 `tool_search`/`tool_call` path — are generated from that spec. Hand-written schemas
 or descriptions inside `Server()` or a facade are forbidden: they are the root
 of every documented drift (80-field reflection schemas, divergent descriptions,

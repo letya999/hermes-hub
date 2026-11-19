@@ -299,11 +299,6 @@ func ConfigFromEnv() (Config, error) {
 		config.RuntimeURL = runtimeURLFromEnv()
 		config.Supervised = strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != ""
 		config.RuntimeAuth = runtimeAuthFromEnv()
-		for i := range config.Users {
-			if config.Users[i].Env == nil {
-				config.Users[i].Env = runtimeEnv(config.Users[i].Features)
-			}
-		}
 		config.PollTimeout = 25 * time.Second
 		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
@@ -360,7 +355,7 @@ func ConfigFromEnv() (Config, error) {
 			}
 		}
 	}
-	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
+	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured}
 	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
@@ -590,41 +585,6 @@ func splitList(raw string) []string {
 	for _, item := range strings.Split(raw, ",") {
 		if item = strings.TrimSpace(item); item != "" {
 			result = append(result, item)
-		}
-	}
-	return result
-}
-
-func runtimeEnv(features []string) map[string]string {
-	keys := map[string]bool{"OPENAI_API_KEY": true}
-	if api.Contains(features, "gitlab") {
-		keys["GITLAB_HOST"] = true
-	}
-	if api.Contains(features, "google") {
-		keys["GOOGLE_EMAIL"] = true
-		keys["GOOGLE_OAUTH_REDIRECT_URI"] = true
-	}
-	if api.Contains(features, "workspace") || api.Contains(features, "hh") {
-		keys["HH_USER_AGENT"] = true
-	}
-	if api.Contains(features, "slack") {
-		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
-	}
-	for _, feature := range stack.Features {
-		if !api.Contains(features, feature.Name) {
-			continue
-		}
-		for _, key := range feature.Requires {
-			keys[key] = true
-		}
-	}
-	result := map[string]string{}
-	for key := range keys {
-		if gatewayOwnedEnv[key] || stack.GatewayOwnedSecret(key) {
-			continue
-		}
-		if value := os.Getenv(key); value != "" {
-			result[key] = value
 		}
 	}
 	return result

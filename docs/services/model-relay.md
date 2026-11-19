@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-11-08
+last_verified: 2026-11-19
 ---
 
 # model-relay
@@ -73,10 +73,9 @@ provider credential. A foreign bearer or ungranted requested model is rejected
 before dispatch. The pinned Hermes model name is an alias for the owner's saved
 selection, so `/model` switching does not require editing Hermes.
 
-Registry layers on unmanaged spaces are `spaces/models.yaml`,
-`spaces/<organization>/models.yaml`, then `spaces/<owner>/models.yaml`;
-later entries replace the same named entry. Under a published passport
-revision the layered files are never consulted — the `models.yaml`
+The retired layered files `spaces/models.yaml`,
+`spaces/<organization>/models.yaml` and `spaces/<owner>/models.yaml` are
+never consulted by runtime readers. The published `models.yaml`
 passport (`services`/`routes`/`default`) compiles into the mounted
 registry alone and is the only model authority. For example, these are
 references, not credential values:

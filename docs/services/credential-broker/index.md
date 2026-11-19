@@ -1,6 +1,6 @@
 ---
 description: "credential-broker — единственный компонент, держащий значения секретов: TLS API, sealed store, provider plugins, delivery contracts."
-last_verified: "2026-10-24"
+last_verified: "2026-11-19"
 ---
 
 # credential-broker
@@ -13,9 +13,9 @@ last_verified: "2026-10-24"
 
 ADR-0022 (поправка 2026-10-19): Broker — единственный орган власти над секретами
 для connector/CLI путей. Исключения: локальный credstore остаётся подложкой
-хранения и входом для uncontracted credential-gate admissions, а unmanaged
-deployment хранит `secrets.<env>.env` через runtime self-env (ADR-0049 говорит
-про intake-каналы, не про единственное хранилище). ToolHub хранит
+хранения и входом для uncontracted credential-gate admissions. Режим unmanaged
+удалён; шлюз не запускает Hermes локально и не переносит provider env в
+пользовательские записи (ADR-0049 описывает intake-каналы). ToolHub хранит
 references (`broker_credential_id`, `broker_grant_id`, `broker_contract_id`);
 runtime получает materialized secrets через broker-controlled delivery или
 том `/run/broker-materialized` — никогда через ToolHub, compose env или audit

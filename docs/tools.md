@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-15"
+last_verified: "2026-11-19"
 ---
 
 # Tool surface
@@ -156,7 +156,7 @@ Six tools are always projected, never operator-selectable or removable
 | `tool_search` | Search the extended inventory by name, description, params, definition or authored `toolset`; the `toolsets` block answers which toolsets are selected (authored core/extended names with live admitted counts, `state:pending` on an authored connector set whose selections are not materialized yet), `sources` groups admitted tools by definition |
 | `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call; core/visible names are rejected and must be invoked directly |
 
-Upstream's own deferred-tool bridge (`tool_search`/`tool_describe`/`tool_call` meta-tools grouping the deferred catalog by transport source) renders `tools.tool_search.enabled: off` in managed and unmanaged configs: ToolHub's pair is the only default discovery surface, so upstream source grouping cannot re-label the projected inventory. The reviewed pseudo-toolset `native:tool_search` (`via: native`) re-enables it — the name maps to the upstream config flag, never an upstream toolset.
+Upstream's own deferred-tool bridge (`tool_search`/`tool_describe`/`tool_call` meta-tools grouping the deferred catalog by transport source) renders `tools.tool_search.enabled: off` in every rendered config: ToolHub's pair is the only default discovery surface, so upstream source grouping cannot re-label the projected inventory. The reviewed pseudo-toolset `native:tool_search` (`via: native`) re-enables it — the name maps to the upstream config flag, never an upstream toolset.
 Selection in `tools.yaml` and rights in `grants.yaml` are independent. On
 apply, first-party `toolhub` family members in the published revision replace
 that definition's selections in the bound capability profile, pinned to the
