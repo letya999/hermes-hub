@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0329
 title: Close the security baseline and remove fail-open paths
-status: in_progress
+status: done
 branch: feat/m40-v1-platform
-updated: 2026-11-19
-phase: acceptance
+updated: 2026-11-20
+phase: done
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [R5.1, R5.2, R5.3, R5.4, R7.1]
@@ -12,7 +12,7 @@ depends_on: [CHG-0328]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 573
 design_status: accepted
-implementation_status: locally_verified_pending_live_acceptance
+implementation_status: complete_locally
 slices:
   S1.1-t01-t22-receipts: green
   S1.2-moved-chg-links: green
@@ -39,11 +39,11 @@ evidence:
   - "Final stable just test passed: stack, communication, toolhub, toolhub/api, toolhub/automation, cmd/hubctl, cmd/toolhub, cmd/communication and devcheck. The earlier passed supervisor, commodel, runtime and agenttools runs covered their final source."
   - "T01-T22 Go-layer package receipts are local short tests only: no new race, Docker, pinned Hermes or provider acceptance is inferred."
   - "README/architecture/validation retain downgraded T01-T22 claims; no current deployed-stack certification or owner signature claimed."
-remaining:
-  - "Live dev-rebuild of communication-hub and supervisor requires the owner's separate instruction."
-  - "Pinned probe, real Docker canaries and T01-T22 owner signature remain at CHG-0353."
-  - "CI receipt needs a published source SHA and run URL; neither exists for this dirty local checkpoint."
+  - "2026-11-20 (CHG-0334 reconciliation): local scope complete and committed on feat/m40-v1-platform (63c0b94b, 3955d88b). Old issue 573 maps to 'closed as is, leftovers in M40.2' in the M40 replan. Requirement IDs R5.1-R5.4 and R7.1 keep their meaning in the rewritten SPEC-0100."
+remaining: []
 limitations:
   - "HUB_USER_LANG was not carried by the HTTP execution contract before this change and is still not carried."
   - "Runtime.Managed remains an admission/ownership receipt; non-managed runtime requests are refused by backend checks, not executed by a fallback."
   - "Windows intermittently denies freshly built Go executables; Probity remains enabled."
+  - "Done means the local scope is complete and committed on feat/m40-v1-platform; it is not merged to dev and has no published SHA or CI run."
+  - "Re-homed: live dev-rebuild smoke of communication-hub and supervisor (needs owner instruction); T01-T22 re-run and owner signature move to M40.16 (SPEC-0100 R7.1, A16.1); leftovers (service_enable refusal without policy, dead ReadSelfServicesFeatures, HUB_ACTIVE_FEATURES) move to M40.2."

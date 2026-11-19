@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0330
 title: Enforce module boundaries with versioned contracts
-status: in_progress
+status: done
 branch: feat/m40-v1-platform
-updated: 2026-11-19
-phase: acceptance
+updated: 2026-11-20
+phase: done
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [R1.3, R2.1, R2.2, R2.3, R2.4, R2.5, R3.1, R3.2, R3.3, R4.3]
@@ -12,7 +12,7 @@ depends_on: [CHG-0328, CHG-0329]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 574
 design_status: accepted
-implementation_status: locally_verified_pending_acceptance
+implementation_status: complete_locally_partly_superseded
 slices:
   S2.1-contracts: green
   S2.2-dependency-gate: green
@@ -59,8 +59,9 @@ evidence:
   - "Release review found missing hub builds/contract sources and ignored-data inclusion. Source archive regression was red with .work/tmp/private.txt and untracked config/local.txt in the archive; now only tracked allowed inputs enter it."
   - "Named release regressions (hub binaries, contracts, ignored/untracked data, tracked symlink refusal) and cmd/package vet passed. The source allowlist also includes the local broker module, workspace files and pinned platform assets."
   - "Final release-tail source: just check passed; just test ./cmd/package ./internal/locale passed. Earlier full affected-package receipt remains valid for all unchanged packages."
-remaining:
-  - "Owner acceptance/merge and remote CI remain separate from local verification."
+  - "2026-11-20 (CHG-0334 reconciliation): local scope complete and committed (d8f880b0, 98514d40). Partly superseded by the v1 service model (ADR-0105 rewrite): M40.2 deletes cmd/hub and hub serve --zone, the devcheck deps gate and baseline, and contracts/toolsurface. Kept: task/v1 and identity/v1 contracts, wire (becomes shared/httpapi in M40.2), ToolHub store isolation."
+remaining: []
 limitations:
   - "Live stack unchanged; Docker/CI acceptance is not claimed."
   - "Windows sometimes refuses freshly built compile/test executables; no safety check was disabled."
+  - "Done means the local scope is complete and committed on feat/m40-v1-platform; not merged to dev, no remote CI receipt, no owner acceptance."

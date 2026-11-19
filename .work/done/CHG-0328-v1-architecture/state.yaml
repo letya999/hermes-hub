@@ -1,18 +1,19 @@
 schema: 1
 change: CHG-0328
 title: v1 architecture decisions and documentation reset
-status: in_progress
+status: abandoned
+abandoned: "2026-11-20"
 branch: feat/m40-v1-platform
-updated: 2026-11-19
-phase: acceptance
+updated: 2026-11-20
+phase: done
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [SPEC-0100, SPEC-0101, SPEC-0102]
 depends_on: []
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 572
-design_status: accepted
-implementation_status: in_progress
+design_status: superseded
+implementation_status: superseded_by_CHG-0334
 slices:
   S0.1-adrs: green
   S0.2-specs: green
@@ -29,6 +30,6 @@ evidence:
   - "2026-11-19: aligned ADR-0106 D2/D4/D7/D8, SPEC-0100 R6 and living vocabulary with identity-hub token ownership, RunAuthority, roles and org memory."
   - "2026-11-19: devcheck docs and just check passed on the security checkpoint; CHG-0330 work was isolated."
   - "Source base: 63c0b94bafe2a329bd724a038b3456cf3f8efccf plus the reviewed documentation diff; no published run URL."
-remaining:
-  - "Owner ADR acceptance and authorized issue closure; no dev merge or remote acceptance claimed."
+  - "2026-11-20: superseded by CHG-0334 (M40.1, issue 599). The owner-approved simplified v1 plan replaced the five-hub-process topology: ADR-0105/0106 and SPEC-0100 were rewritten, ADR-0107..0109 aligned, SPEC-0101/0102 given scope notes. The records were never owner-accepted or merged to dev. research.md stays as prior art."
+remaining: []
 limitations: []

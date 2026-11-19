@@ -1,6 +1,6 @@
 ---
 description: Control-zone identity registry — principals, profiles, narrowing layers, verified channels and explicit legacy migration.
-last_verified: 2026-11-19
+last_verified: 2026-11-20
 ---
 
 # Identity registry module
@@ -131,8 +131,10 @@ supervisor and ToolHub. Helm reads the optional `dreaming-service-token` key
 from the control Secret. Configure the same environment-specific credential in
 both services when enabling dreaming.
 
-The remaining service-token and deployment acceptance work is tracked in
-[CHG-0332](../../.work/in-progress/CHG-0332-run-tokens/plan.md).
+The remaining service-token and deployment acceptance work was parked in
+[CHG-0332](../../.work/done/CHG-0332-run-tokens/plan.md) (deferred
+2026-11-20); v1 redoes run tokens on the new services in M40.14
+([ADR-0106](../adr/ADR-0106-identity-layers-run-tokens.md)).
 
 `POST /v1/identity/links/oidc` and `/v1/identity/links/revoke` require the
 separate `HUB_IDENTITY_LINK_AUTH`, which must differ from service-control.

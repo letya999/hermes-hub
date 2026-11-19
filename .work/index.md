@@ -16,16 +16,15 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
-| [CHG-0332](in-progress/CHG-0332-run-tokens/plan.md) | M40.4 (#576): signed run identity and immutable policy bundles, live run authority and revocation before backend calls |
-| [CHG-0330](in-progress/CHG-0330-module-boundaries/plan.md) | M40.2 (#574): contract pattern (identity, task, toolsurface), per-binary dependency gate, no in-process ToolHub store, one `hub` binary |
-| [CHG-0329](in-progress/CHG-0329-security-baseline/plan.md) | M40.1 (#573): fail-closed baseline — no HermesRunner, no unmanaged mode, supervisor env errors, path-bug dirs, T01-T22 claims |
-| [CHG-0328](in-progress/CHG-0328-v1-architecture/plan.md) | M40.0 (#572): ADR-0105..0109, SPEC-0100..0102, v1 architecture/boundaries/glossary reset, supersession rows |
+| [CHG-0334](in-progress/CHG-0334-v1-rules/plan.md) | M40.1 (#599): v1 rulebook, architecture, state-machine catalog, service README template with devcheck rule, ADR-0105..0112 and SPEC-0100 rewrite; owner review pending |
 
 ## Done — M40 v1 platform
 
 | Change | State |
 |---|---|
-| [CHG-0331](done/CHG-0331-identity-hub/plan.md) | M40.3 (#575): registry cutover, migration and operator deactivation verified locally. Live deployment and remote acceptance are pending. |
+| [CHG-0331](done/CHG-0331-identity-hub/plan.md) | Old M40.3 (#575): registry cutover, migration and operator deactivation verified locally. Live deployment and remote acceptance are pending. |
+| [CHG-0330](done/CHG-0330-module-boundaries/plan.md) | Old M40.2 (#574), reconciled 2026-11-20: contracts task/v1 and identity/v1, wire, ToolHub store isolation, dependency gate and `hub` binary done locally; not merged to dev; gate, `cmd/hub` and toolsurface are deleted by new M40.2 |
+| [CHG-0329](done/CHG-0329-security-baseline/plan.md) | Old M40.1 (#573), reconciled 2026-11-20: fail-closed baseline done locally (no HermesRunner, no unmanaged mode, supervisor env errors, path-bug dirs, downgraded T01-T22 claims); not merged to dev; leftovers to M40.2, T01-T22 sign-off to M40.16 |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 
@@ -134,11 +133,13 @@ Implementation incomplete, blocked or deferred to a backlog milestone; records p
 | [CHG-0314](done/CHG-0314-rights-derive-in-writer/plan.md) | Deferred 2026-11-18 — rights derivation inside the ToolHub writer (derive/restore under its write lock so apply/recovery stops racing store.db); all slices pending — design accepted, implementation not started; incident context in CHG-0313 |
 | [CHG-0315](done/CHG-0315-sso-gated-bearer-links/plan.md) | Deferred 2026-11-18 — SSO-gated bearer links: minted interactive links bound to verified principal via shared-HMAC session cookie; all slices pending — base IAM delivered by CHG-0313 |
 | [CHG-0316](done/CHG-0316-user-provisioning-command/plan.md) | Deferred 2026-11-18 — `hubctl provision` one-command onboarding: s1–s8 done (profile assets, capability bundle, command+preflight, recovery gate, warnings, foreign-commit self-heal, persist-failure rollback; danil_silantyev --confirm live in ~43s); s9 open: automation routing, full users.yaml records, cliproxy model grants in provision flow |
+| [CHG-0332](done/CHG-0332-run-tokens/plan.md) | Deferred 2026-11-20 - old M40.4 (#576) signed run tokens and policy bundles on the v0 topology; committed slices on feat/m40-v1-platform (5e4952d1..380fb5aa), unfinished work parked as 6e6b53c6 on `chore/park-chg-0332-run-tokens`; redone on v1 services in M40.14 (#612) |
 
 ## Abandoned / superseded
 
 | Change | State |
 |---|---|
+| [CHG-0328](done/CHG-0328-v1-architecture/plan.md) | Superseded 2026-11-20 by CHG-0334: first v1 decision set (five hub processes, signed bundles) replaced by the simplified v1 plan before owner acceptance; research.md kept as prior art |
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
 

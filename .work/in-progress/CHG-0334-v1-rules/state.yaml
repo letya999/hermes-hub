@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0334
+title: v1 rules, architecture and service README template
+status: in_progress
+branch: feat/m40-v1-platform
+updated: 2026-11-20
+phase: acceptance
+adr: ADR-0105
+spec: SPEC-0100
+requirements: [SPEC-0100]
+depends_on: [CHG-0333]
+github_milestone: M40 - v1 Service Split - minimal isolated services
+github_issue: 599
+design_status: proposed
+implementation_status: written_pending_owner_review
+slices:
+  S1-rulebook: green
+  S2-architecture: green
+  S3-decisions: green
+  S4-contract-list: green
+  S5-readme-template-devcheck: green
+  S6-state-machine-catalog: green
+  S7-record-reconciliation: green
+validation:
+  documents: pending
+  devcheck_unit: pending
+  just_check: not_run_coordinator_runs_repo_gates
+  docker_check: not_applicable
+  red_team: pending
+  live_acceptance: not_applicable
+  owner_review: pending
+evidence: []
+remaining:
+  - "Owner review of docs/engineering.md, docs/architecture.md, docs/state-machines.md, services/README.template.md and ADR-0105..0112 (issue #599 acceptance)."
+  - "Repo-wide just check by the coordinator."
+limitations: []
