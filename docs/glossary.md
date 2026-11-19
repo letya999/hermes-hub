@@ -23,7 +23,7 @@ follow ADR-0105..ADR-0109; where a v0 name still exists in code it is noted.
 | assignment | A long-running owner intent with acceptance criteria, budget, deadline, task ledger and progress ledger (ADR-0108). Sibling kinds: *watch* (deterministic condition over events) and *routine* (clock-triggered work). |
 | task / job | One unit in the task-engine ledger with an execution class (`interactive`, `assignment`, `routine`, `system`) and the lifecycle of ADR-0107 D6. v0 code says "job". |
 | run | One execution of a job inside a runtime generation. Carries a signed run token (job, run, generation, policy digest, mode). |
-| run token | Ed25519-signed snapshot of a run's identity, verified by every agent-zone service before any backend (ADR-0106 D4). Not a grant. |
+| run token | Ed25519-signed identity snapshot issued by identity-hub: `sub`, `act`, `org`, `space`, `conversation` or `assignment`, `task`, `run`, `gen`, `policy_rev`, `origin`, `mode`, `exp`. Every zone verifies signature/audience/expiry and RunAuthority checks generation/revocation before a backend. Token kinds: run, link, service (ADR-0106 D4). |
 | policy bundle | Immutable, signed compilation of the six passports plus org and platform layers; its digest is the policy version. |
 | action mode | `read-only`, `plan`, `ask`, `ask-critical`, `full-access`: how much a run may do without asking, under its grants (ADR-0109). |
 | owner decision | Durable approval/denial/question record bound to an exact call digest; resumes the parked job. |
@@ -31,7 +31,7 @@ follow ADR-0105..ADR-0109; where a v0 name still exists in code it is noted.
 | connector | An integration definition (catalog entry) describing what can be connected and through which backend format (MCP, bounded CLI, provider API, hub executor). |
 | connection | An owned, configured instance of a connector with lifecycle state and a credential reference. |
 | credential | Secret material for a connection (token, key, OAuth grant). Held only by credential-broker; everything else sees a reference. |
-| memory scope | Whose memory a read or write touches: the user's vault, an agent profile's notes, or an org knowledge view. Owned by memory-hub; never widened by a profile. |
+| memory scope | Whose memory a read or write touches: platform reference, user's vault, agent profile's notes, or the company brain in the org layer and shared space. Owned by memory-hub; layers and profiles only narrow access. |
 | module / process / zone | A module is code with a contract (`contracts/<name>/v1`); a process hosts modules of one zone; a zone is a trust class (control, agent, edge, secret, egress). |
 
 ## Configuration

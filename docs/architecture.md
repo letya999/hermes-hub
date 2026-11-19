@@ -42,9 +42,10 @@ shrink-only allowlist; a new forbidden edge fails `just check`
 
 identity-hub owns principals (human, agent profile, system) and verified
 channel identities; layers narrow `platform -> org -> user -> agent
-profile`. task-engine signs a run token per admitted run; tool-hub,
-memory-hub, model-gateway and egress-gateway verify it (signature, audience,
-expiry, current generation) before any backend. Policy is a signed bundle
+profile`. identity-hub's token service signs a token per admitted run;
+tool-hub, memory-hub, model-gateway and egress-gateway verify its signature,
+audience and expiry locally, and check generation and revocation through
+RunAuthority (`task/v1`) before any backend. Policy is a signed bundle
 loaded by digest ([ADR-0106](adr/ADR-0106-identity-layers-run-tokens.md)).
 
 ### Execution and proactivity

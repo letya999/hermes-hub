@@ -103,14 +103,19 @@ CHG-0353.
 ## R6 Identity, run tokens, policy bundles
 
 - R6.1 Every tool, memory, model and egress call from a runtime carries a
-  run token signed by task-engine; verifiers check signature, audience,
-  expiry and current generation.
+  run token signed by identity-hub's token service. Run claims are `sub`,
+  `act`, `org`, `space`, `conversation` or `assignment`, `task`, `run`, `gen`,
+  `policy_rev`, `origin`, `mode`, `exp`. Token kinds are `run`, `link`,
+  `service`; verifiers check signature, audience and expiry locally, then
+  live generation and revocation through RunAuthority (`task/v1`).
 - R6.2 Missing, forged, expired, wrong-audience, cross-space, run-aliased
   and stale-generation tokens are refused before any backend is contacted.
 - R6.3 Policy is loaded only from signed bundles by digest.
 - R6.4 Layers narrow only: platform -> org -> user -> agent profile.
 - R6.5 System principals hold no user credentials; work for a user records
-  `initiator`.
+  its originating actor. Administrative roles are `platform-admin`,
+  `org-admin`, `member`; system rights require explicit grants and super-admin
+  is an audited break-glass grant. Org memory lives in its layer and shared space.
 
 ## R7 Security baseline
 
