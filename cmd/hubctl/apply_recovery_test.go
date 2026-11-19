@@ -316,6 +316,32 @@ func TestApplyCrashRecoveryFirstApplyRefusesUncertainService(t *testing.T) {
 	}
 }
 
+// A first apply that stopped after entering the effects phase but had no
+// service actions has nothing uncertain to replay: recovery rolls back and
+// clears the journal instead of wedging the space on operator intervention.
+func TestFirstApplyCrashRecoversWithoutIntervention(t *testing.T) {
+	root, dir, next, _ := recoveryRevisions(t, nil)
+	if err := passport.RestoreCurrent(dir, "", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	record := applyJournal{Environment: "dev", Revision: next.ID, NextProfile: "alice-default", Phase: "effects"}
+	if err := writeApplyJournal(dir, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := passport.PointCurrent(dir, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverApply(context.Background(), dir, root, "dev", reconcile.Handlers{}); err != nil {
+		t.Fatalf("first apply without service effects needs no intervention: %v", err)
+	}
+	if _, err := os.Stat(applyJournalPath(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovery kept the apply journal: %v", err)
+	}
+	if _, err := passport.Current(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rolled-back first apply left a readable revision: %v", err)
+	}
+}
+
 func TestApplyCrashRecoveryFirstApplyBeforeEffects(t *testing.T) {
 	root, dir, next, _ := recoveryRevisions(t, nil)
 	if err := passport.RestoreCurrent(dir, "", "dev"); err != nil {
