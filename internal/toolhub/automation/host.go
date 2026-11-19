@@ -694,7 +694,7 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 					},
 					func() error { return h.tickStreams(ctx, e, owner.principal, now) },
 					func() error { return e.DispatchDueOccurrences(now, dueAuth) },
-					func() error { return e.RunDueDreaming(ctx, dueAuth, h.runDreamingOccurrence) },
+					func() error { return e.RunDueDreaming(ctx, now, dueAuth, h.runDreamingOccurrence) },
 					func() error { return e.RunDueScripts(ctx, now, dueAuth, h.cfg.Supervisor.RunScript) },
 					func() error {
 						return e.ProbeDueOccurrencesContext(ctx, now, dueAuth, h.cfg.Fetch, h.cfg.ToolCall, nil)

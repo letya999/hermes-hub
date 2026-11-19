@@ -14,6 +14,8 @@ dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
 schedule with a normal routine occurrence and due recovery, keyed once per
 owner and local date. Its operation processes memory and queues its digest
 through the normal delivery outbox; ordinary routine CRUD cannot change it.
+A night whose operation fails three times (retried after 1 and 2 minutes)
+settles `failed`, so it never blocks later nights.
 The schedule time and timezone come from the current published passport.
 Memory disablement overrides tool selection. Calls require `tools.use` and
 their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
