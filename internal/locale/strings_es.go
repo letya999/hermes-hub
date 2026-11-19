@@ -2,6 +2,7 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"communication.runtime-endpoint-required": "El gateway requiere un endpoint de runtime o supervisor (HUB_RUNTIME_SUPERVISOR_URL o HUB_RUNTIME_URL); no ejecuta Hermes dentro del proceso.",
 		"tools.workspace-boundary-invalid":        "El pasaporte workspace falta, no es válido o no está activo.",
 		"hubctl.replay-config-invalid":            "La configuración de replay requiere una revisión publicada completa y válida de los seis pasaportes.",
 		"doctor.model-default":                    "Configure default y routes en passports/models.yaml y publique con space apply.",

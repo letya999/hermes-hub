@@ -230,6 +230,8 @@ func TestConfigFromEnvIgnoresLegacyCredentialStore(t *testing.T) {
 	t.Setenv("HUB_CREDENTIAL_STORE", storePath)
 	t.Setenv("HUB_CREDENTIAL_KEY_FILE", filepath.Join(dir, "credential.key"))
 	t.Setenv("HUB_AUDIT_LEDGER", filepath.Join(dir, "credentials", "audit.jsonl"))
+	t.Setenv("HUB_RUNTIME_URL", "http://127.0.0.1:1")
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-test")
 	yamlPath := filepath.Join(dir, "gw.yaml")
 	body := "organization_id: acme\nspool_dir: " + filepath.ToSlash(filepath.Join(dir, "spool")) + "\nusers:\n  - id: me\n    enabled: true\n    state_dir: " + filepath.ToSlash(filepath.Join(dir, "st")) + "\n    workspace_dir: " + filepath.ToSlash(filepath.Join(dir, "ws")) + "\n"
 	if err := os.WriteFile(yamlPath, []byte(body), 0600); err != nil {

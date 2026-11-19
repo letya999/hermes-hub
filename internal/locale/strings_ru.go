@@ -2,6 +2,7 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"communication.runtime-endpoint-required": "Шлюзу нужен адрес runtime или supervisor (HUB_RUNTIME_SUPERVISOR_URL или HUB_RUNTIME_URL); Hermes внутри шлюза не запускается.",
 		"tools.workspace-boundary-invalid":        "Паспорт workspace отсутствует, некорректен или не активирован.",
 		"hubctl.replay-config-invalid":            "Для конфигурации replay нужна полная корректная опубликованная ревизия шести паспортов.",
 		"doctor.model-default":                    "Задайте default и routes в passports/models.yaml, затем опубликуйте через space apply.",
