@@ -83,7 +83,12 @@ func runChaosService(t *testing.T, configPath, role string) {
 	root := filepath.Dir(configPath)
 	switch role {
 	case "supervisor":
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: root, Image: cfg.Image, Network: cfg.Network, RuntimeAuth: "synthetic-chaos-control", PortBase: 32000, PortRange: 1000, WarmTTL: time.Minute, AllowWildcardListen: true})
+		registry, err := integrationIdentity(t.Context(), root, []communication.User{{ID: cfg.Principal, Enabled: true, TelegramIDs: []int64{21}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer registry.Close()
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: root, Image: cfg.Image, Network: cfg.Network, RuntimeAuth: "synthetic-chaos-control", PortBase: 32000, PortRange: 1000, WarmTTL: time.Minute, AllowWildcardListen: true, Identity: registry})
 		if err != nil {
 			t.Fatal(err)
 		}

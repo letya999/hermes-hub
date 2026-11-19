@@ -177,7 +177,7 @@ func TestObservationGenerationRebindIsDurableAndFenced(t *testing.T) {
 	if err != nil || actual.Generation != runtime.Generation || actual.Response.RunID != "original" {
 		t.Fatalf("rebind=%+v %v", actual, err)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestDurableTerminalIdentityAndTextCannotBeReplaced(t *testing.T) {
 	if err := m.finishJobGeneration(request, hubruntime.ExecuteResponse{}, "completed", "gen-1"); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestLateJSONFinalCannotCrossRegisteredRuntimeGeneration(t *testing.T) {
 	if err := m.finishJobGeneration(request, event, "completed", runtime.Generation); err == nil {
 		t.Fatal("obsolete producer persisted a terminal result after replacement")
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

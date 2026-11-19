@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -53,7 +54,7 @@ func grantNativeToolset(t *testing.T, space, principal, section string) {
 // The idle-retention default must survive a process started with no explicit
 // flag: 30 minutes keeps short conversation gaps warm.
 func TestDefaultWarmTTLIsThirtyMinutes(t *testing.T) {
-	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	m, err := newTestManager(t, Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestDefaultWarmTTLIsThirtyMinutes(t *testing.T) {
 // SPEC-0083 R3.1: sidecar idle grace defaults to 15 minutes — shorter than
 // the runtime warm TTL because an idle browser stack costs real memory.
 func TestDefaultBrowserIdleTTLIsFifteenMinutes(t *testing.T) {
-	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	m, err := newTestManager(t, Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestDefaultBrowserIdleTTLIsFifteenMinutes(t *testing.T) {
 // The runtime memory default must cover Hermes plus the lazy browser stack:
 // 2g leaves headroom for Chromium without changing warm-retention semantics.
 func TestDefaultMemoryIsTwoGigabytes(t *testing.T) {
-	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	m, err := newTestManager(t, Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 		t.Fatal(err)
 	}
 	writeHermesSources(t, ctxRoot)
-	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: wrappedCommand, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
+	m, err := newTestManager(t, Config{SpacesRoot: root, RuntimeAuth: "secret", Image: "hermes:test", WarmTTL: time.Minute, Command: wrappedCommand, Probe: probe, Now: func() time.Time { return time.Unix(100, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,12 +259,9 @@ func TestProtectedSelfEnvIsProxiedToOwnedRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SelfEnvRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Values: map[string]string{"GOOGLE_OAUTH_CLIENT_SECRET": "client-secret"}}
 	body, err := json.Marshal(request)
@@ -294,12 +292,9 @@ func TestSkillApplyIsProxiedToOwnedRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillApplyRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Action: "publish", DraftID: "draft-1", SkillName: "probe", Scope: "user", Approver: "alice"}
 	body, err := json.Marshal(request)
@@ -317,12 +312,9 @@ func TestSkillApplyIsProxiedToOwnedRuntime(t *testing.T) {
 
 func TestSkillApplyRuntimeFailure(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://127.0.0.1:1", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://127.0.0.1:1", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillApplyRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Action: "publish", DraftID: "draft-1", SkillName: "probe", Scope: "user", Approver: "alice"}
 	body, _ := json.Marshal(request)
@@ -337,12 +329,9 @@ func TestSkillApplyRuntimeFailure(t *testing.T) {
 
 func TestSkillApplyMalformedRuntimeAddress(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://bad addr", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://bad addr", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillApplyRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Action: "publish", DraftID: "draft-1", SkillName: "probe", Scope: "user", Approver: "alice"}
 	body, _ := json.Marshal(request)
@@ -361,12 +350,9 @@ func TestSkillApplyOversizedRuntimeReply(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillApplyRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Action: "publish", DraftID: "draft-1", SkillName: "probe", Scope: "user", Approver: "alice"}
 	body, _ := json.Marshal(request)
@@ -706,7 +692,7 @@ func TestRestartReasonSurvivesSupervisorRestart(t *testing.T) {
 	if status.PendingRestart == nil || status.PendingRestart.Reason != "tool_projection_change" || status.PendingRestart.OperationID != "projection-abc" || status.PendingRestart.Revision != 3 || status.PendingRestart.Generation != entry.Generation {
 		t.Fatalf("pending restart cause missing from status: %+v", status.PendingRestart)
 	}
-	reloaded, err := New(m.cfg)
+	reloaded, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +741,7 @@ func TestAppliedRestartClearsPendingCause(t *testing.T) {
 	if status.PendingRestart != nil {
 		t.Fatalf("applied restart left a stale cause: %+v", status.PendingRestart)
 	}
-	reloaded, err := New(m.cfg)
+	reloaded, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,12 +837,9 @@ func TestRestartRequestCannotMarkAnotherPrincipal(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	// Identity fields are lookup keys only: a request naming a different
 	// principal never reaches alice's runtime.
@@ -896,12 +879,9 @@ func TestArtifactForwardReachesOwningRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Busy}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Busy}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.ArtifactRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", JobID: "job-1", IdempotencyKey: "job-1"}, Name: "documents/report.pdf"}
 	body, err := json.Marshal(request)
@@ -952,12 +932,9 @@ func TestUsageForwardReachesOwningRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	envelope.ConversationID = "telegram-11-t-aabbccdd"
@@ -1086,7 +1063,7 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 		return []byte("running"), nil
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: commands, Probe: func(context.Context, string, string) error { return nil }, Now: func() time.Time { return time.Unix(100, 0) }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1114,7 +1091,7 @@ func TestSupervisorStateSurvivesRestart(t *testing.T) {
 		}
 		return commands(ctx, args...)
 	}
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1160,7 +1137,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 		return []byte("running"), nil
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: commands, Probe: func(context.Context, string, string) error { return nil }, Now: func() time.Time { return time.Unix(100, 0) }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1187,7 +1164,7 @@ func TestSupervisorReapsRestoredIdleRuntimeWithoutLocalSlot(t *testing.T) {
 		}
 		return commands(ctx, args...)
 	}
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1222,7 +1199,7 @@ func TestSupervisorRejectsStaleLeaseAndCorruptState(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not-json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Config{SpacesRoot: root, StateDir: filepath.Dir(bad), RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
+	if _, err := newTestManager(t, Config{SpacesRoot: root, StateDir: filepath.Dir(bad), RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
 		t.Fatal("corrupt supervisor state accepted")
 	}
 }
@@ -1232,7 +1209,7 @@ func TestSupervisorRejectsInvalidPersistedRuntime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "supervisor.json"), []byte(`{"items":[{"runtime":{"context_id":""}}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
+	if _, err := newTestManager(t, Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"}); err == nil {
 		t.Fatal("invalid persisted runtime accepted")
 	}
 }
@@ -1285,7 +1262,7 @@ func TestSupervisorForwardsJobCorrelationHeader(t *testing.T) {
 		}
 		return []byte("running"), nil
 	}
-	m, err := New(Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }})
+	m, err := newTestManager(t, Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1409,7 +1386,7 @@ func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
 		return []byte("running"), nil
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1435,7 +1412,7 @@ func TestSupervisorJobOutcomeReplaysAfterRestart(t *testing.T) {
 	if runs != 1 {
 		t.Fatalf("backend runs=%d", runs)
 	}
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1453,7 +1430,7 @@ func TestSupervisorMarksInFlightJobUncertainOnRestart(t *testing.T) {
 	if _, replay, err := m.beginJob(request); err != nil || replay {
 		t.Fatalf("begin replay=%v err=%v", replay, err)
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1538,7 +1515,7 @@ func TestSupervisorMarksTransportOutcomeUncertain(t *testing.T) {
 	if runtime.State != Busy || runtime.Leases != 1 {
 		t.Fatalf("uncertain execution was reaped: %+v", runtime)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1929,7 +1906,7 @@ func TestTypedLeasesProtectStreamsApprovalsAndPrincipalIsolation(t *testing.T) {
 }
 
 func TestNewDefaultsAndServeStopsOnContext(t *testing.T) {
-	if _, err := New(Config{}); err == nil {
+	if _, err := newTestManager(t, Config{}); err == nil {
 		t.Fatal("empty supervisor config accepted")
 	}
 	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
@@ -2537,7 +2514,7 @@ func TestRunArgsHealsStubSoulAndEnrollsSibling(t *testing.T) {
 	write(filepath.Join(alice, "runtime.auth"), "HUB_RUNTIME_AUTH="+ownerToken+"\n")
 	write(filepath.Join(bob, "runtime.auth"), "HUB_RUNTIME_AUTH="+bobToken+"\n")
 	write(filepath.Join(alice, "SOUL.md"), "# User instructions\n\n")
-	m, err := New(Config{SpacesRoot: spaces, RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) {
+	m, err := newTestManager(t, Config{SpacesRoot: spaces, RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) {
 		return nil, nil
 	}})
 	if err != nil {
@@ -2635,12 +2612,9 @@ func TestCompactForwardReachesOwningRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	envelope.ConversationID = "telegram-11-t-aabbccdd"
@@ -2690,12 +2664,9 @@ func TestGoalForwardReachesOwningRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	envelope.ConversationID = "telegram-11-t-aabbccdd"
@@ -2799,6 +2770,7 @@ func TestRunArgsMountsViewRebuildContract(t *testing.T) {
 func TestRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
 	t.Setenv("HUB_ENV", "dev")
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	testSetIdentity(t, m, "acme", commodel.User{ID: "bob", Enabled: true})
 	ctx := filepath.Join(root, "spaces", "bob")
 	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
 		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
@@ -2830,7 +2802,8 @@ func TestRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
 			"  cliproxy: {mode: per-space}\n"
 	})
 	writeHermesSources(t, ctx)
-	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	bound := Binding{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", UserID: "bob", OrganizationID: "acme", PolicyVersion: "policy-1", ContextRoot: ctx}
+	rawArgs, err := m.runArgs(bound, "hermes-context-bob", 19001)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2861,12 +2834,9 @@ func TestSkillCredsIsProxiedToOwnedRuntime(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillCredsRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Skill: "secret-probe", Values: map[string]string{"PROBE_CANARY": "c4nary"}}
 	body, err := json.Marshal(request)
@@ -2909,12 +2879,9 @@ func TestSkillCredsRejectsBadRequests(t *testing.T) {
 
 func TestSkillCredsRuntimeFailure(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://127.0.0.1:0", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: "http://127.0.0.1:0", State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillCredsRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Skill: "s", Values: map[string]string{"K": "v"}}
 	body, _ := json.Marshal(request)
@@ -2934,12 +2901,9 @@ func TestSkillCredsOversizedRuntimeReply(t *testing.T) {
 	}))
 	defer runtimeAPI.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Address: runtimeAPI.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.SkillCredsRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Skill: "s", Values: map[string]string{"K": "v"}}
 	body, _ := json.Marshal(request)

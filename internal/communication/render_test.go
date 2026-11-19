@@ -215,7 +215,7 @@ func TestRenderSlackSplitsWithinLimit(t *testing.T) {
 
 func TestMarkdownDeliverySendsOrderedPartsAndProgress(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestMarkdownDeliverySendsOrderedPartsAndProgress(t *testing.T) {
 
 func TestMarkdownDeliveryPartialSendPersistsProgress(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestMarkdownDeliveryPartialSendPersistsProgress(t *testing.T) {
 
 func TestPlainDeliveryStaysPlain(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestPlainDeliveryStaysPlain(t *testing.T) {
 
 func TestMarkdownDeliverySendsSourceDocWhenDegraded(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestMarkdownDeliveryCapsPathologicalFanout(t *testing.T) {
 	// chat: beyond telegramMaxParts the delivery degrades to the truncation
 	// notice + final part + the full source as a document.
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

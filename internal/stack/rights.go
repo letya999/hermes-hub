@@ -43,6 +43,9 @@ var settingsFieldRights = map[string]string{
 	"Diagnostics":            "",
 	"SpaceDir":               "",
 	"PassportRevision":       "",
+	// Identity narrowing has its own supervisor revision and generation fence.
+	"IdentityRestrictions": "",
+	"IdentityRevision":     "",
 
 	"CapabilityProfileID":   "CapabilityProfileID",
 	"CapabilityGeneration":  "CapabilityGeneration",

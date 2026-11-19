@@ -2,6 +2,7 @@ package identityhub
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/sqlitedb"
 )
 
@@ -35,6 +37,39 @@ func TestRegistryRefusesForeignSQLiteWithoutMutation(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("foreign database was changed")
+	}
+}
+
+func TestRegistrySchemaOneUpgradePreservesIdentityAndImportReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.sqlite")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := []commodel.User{{ID: "alice", Enabled: true, TelegramIDs: []int64{7}}}
+	if _, err := r.ImportLegacy(context.Background(), "original", "personal", users); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.db.Exec("DROP TABLE space_members; DROP TABLE shared_spaces; DROP TABLE subjects; PRAGMA user_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.ImportLegacy(context.Background(), "original", "personal", users); err != nil {
+		t.Fatal("old receipt changed during schema upgrade")
+	}
+	if principal, err := r.Resolve(context.Background(), contract.ChannelIdentity{Channel: contract.Telegram, ID: "7"}); err != nil || principal.ID != "alice" {
+		t.Fatal("upgrade lost identity")
+	}
+	var version int
+	if err := r.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schema {
+		t.Fatal("schema upgrade incomplete")
 	}
 }
 

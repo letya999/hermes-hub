@@ -13,6 +13,16 @@ var principalTransitions = map[string]map[string]string{"active": {"delete": "in
 // DeactivateHuman retires registry authority and owned profiles atomically;
 // principal tombstones retain history and prevent accidental ID reuse.
 func (r *Registry) DeactivateHuman(ctx context.Context, actor, owner string) error {
+	return r.deactivateHuman(ctx, actor, owner, false)
+}
+
+// DeactivateHumanAsOperator is the retryable mutation for the authenticated
+// local control administrator. The control process owns authentication.
+func (r *Registry) DeactivateHumanAsOperator(ctx context.Context, owner string) error {
+	return r.deactivateHuman(ctx, "operator:supervisor", owner, true)
+}
+
+func (r *Registry) deactivateHuman(ctx context.Context, actor, owner string, operator bool) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return storeError(err)
@@ -26,7 +36,7 @@ func (r *Registry) DeactivateHuman(ctx context.Context, actor, owner string) err
 		}
 		return storeError(err)
 	}
-	if actor != owner {
+	if !operator && actor != owner {
 		scope := orgScope(org)
 		if scope == "" {
 			scope = "platform"
@@ -40,6 +50,9 @@ func (r *Registry) DeactivateHuman(ctx context.Context, actor, owner string) err
 		state = "active"
 	}
 	if principalTransitions[state]["delete"] != "inactive" {
+		if operator && !enabled {
+			return nil
+		}
 		return contract.ErrConflict
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT id,state FROM links WHERE principal_id=? AND state IN ('pending','verified')", owner)
@@ -81,6 +94,7 @@ func (r *Registry) DeactivateHuman(ctx context.Context, actor, owner string) err
 	}
 	for _, statement := range []string{
 		"DELETE FROM memberships WHERE principal_id=?",
+		"DELETE FROM space_members WHERE human=?",
 		"DELETE FROM spaces WHERE human=?",
 		"DELETE FROM profiles WHERE id IN (SELECT id FROM principals WHERE owner_id=?)",
 	} {

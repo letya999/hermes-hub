@@ -19,7 +19,9 @@ func TestPrimaryRuntimeControlBearerPinsPrincipal(t *testing.T) {
 		{"legacy service retains routing", "", "owner-token", "bob", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := &Gateway{config: Config{Supervised: tc.supervised, ControlAuth: "owner-token", ControlPrincipal: tc.owner, AutomationAuth: "service-token", controlAuthExtra: []string{"service-token"}, Users: []User{alice, bob}}, users: map[int64]User{11: alice, 22: bob}}
+			g := &Gateway{config: Config{Supervised: tc.supervised, ControlAuth: "owner-token", ControlPrincipal: tc.owner, AutomationAuth: "service-token", controlAuthExtra: []string{"service-token"}, Users: []User{alice, bob}}}
+			provisionTestIdentity(t, &g.config)
+
 			r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
 			r.Header.Set("Authorization", "Bearer "+tc.token)
 			r.Header.Set("X-Hub-Principal", "bob")

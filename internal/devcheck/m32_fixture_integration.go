@@ -22,6 +22,7 @@ import (
 // and the derived registry. No running deployment is read or modified here.
 type M32Fixture struct {
 	Root, Infra, StorePath string
+	GroupSpace             string
 	Users                  []string
 	Auth                   map[string]identity.Envelope
 }
@@ -91,6 +92,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 		kind := "user"
 		if groupSecond && i == 1 {
 			kind = "group"
+			f.GroupSpace = user
 		}
 		services := "  hermes-runtime: {mode: supervised}\n  model-relay: {mode: per-space}\n  cliproxy: {mode: shared}\n  toolhub-relay: {mode: per-space}\n  egress-relay: {mode: per-space}\n  toolhub: {mode: shared}\n  supervisor: {mode: shared}\n  communication-hub: {mode: shared}\n  credential-broker: {mode: shared}\n"
 		bodies := map[string]string{

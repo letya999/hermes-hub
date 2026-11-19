@@ -282,7 +282,7 @@ func TestMockChannelRunsModelCommand(t *testing.T) {
 
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

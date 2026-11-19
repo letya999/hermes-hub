@@ -17,7 +17,7 @@ func TestPrepareDeliveryStatusRequiresOwnerAndReportsReceipt(t *testing.T) {
 	cfg.ControlAuth = "runtime-bearer"
 	cfg.RuntimeAuth = cfg.ControlAuth
 	cfg.AutomationAuth = "service-bearer"
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

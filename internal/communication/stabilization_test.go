@@ -601,7 +601,7 @@ func TestM10DeleteAfterDispatchFencesDeliveryAndAgent(t *testing.T) {
 func TestM10CapturedAttachmentsRemainReadableOnlyByOwner(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +647,7 @@ func TestM10EnrolledKnowledgeContextAndRevocation(t *testing.T) {
 	// internal/agenttools tests.
 	c := testConfig(t)
 	c.ControlAuth = "operator"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func (r *m10BlockingUsage) SessionUsage(ctx context.Context, _ hubruntime.Execut
 
 func TestM10UsageQueriesBoundAndStopWithGateway(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +716,7 @@ func TestM10UsageQueriesBoundAndStopWithGateway(t *testing.T) {
 
 func TestM10StatusRoutinesConnectorsStayDeterministic(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +827,7 @@ func TestM10MappedDeliveryRechecksOwnerPolicyAndTarget(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			s, job := streamJob(t)
 			c := testConfig(t)
-			g, err := New(c)
+			g, err := newTestGateway(t, c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1169,7 +1169,7 @@ func TestM10ControlTokenRevocationAndOwnerDeliveryIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.config.ControlAuth = "enrolled"
-	g.config.Users = []User{{ID: "alice", Enabled: true}}
+	fixtureRevokeChannel(t, g, 11)
 	req := httptest.NewRequest("GET", "/v1/tasks", nil)
 	req.Header.Set("Authorization", "Bearer enrolled")
 	req.Header.Set("X-Hub-Principal", "alice")

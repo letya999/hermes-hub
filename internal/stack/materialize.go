@@ -2,6 +2,8 @@ package stack
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -39,11 +41,11 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if profile := profileSoulLayer(dir, s); profile != "" {
 		body += "\n\n" + profile
 	}
-	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir)
+	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir, s)
 	if !utf8.ValidString(body) {
 		return fmt.Errorf("system contract is not valid UTF-8")
 	}
-	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
+	path := EffectiveSoulPath(dir, s)
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
 	}
@@ -207,6 +209,27 @@ func GeneratedSkillsMetaDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills-meta")
 }
 
+// A narrowed profile owns its view and rebuild inputs; parallel runtimes and
+// later renders must not replace another profile's mounted skill tree.
+func identityViewRoot(dir string, s Settings) string {
+	if s.IdentityRestrictions == nil || s.IdentityRestrictions.Skills == nil {
+		return filepath.Join(dir, "generated")
+	}
+	constraints, _ := json.Marshal(s.IdentityRestrictions)
+	digest := sha256.Sum256([]byte(s.IdentityRevision + "\x00" + s.PassportRevision + "\x00" + s.Environment + "\x00" + string(constraints)))
+	return filepath.Join(dir, "generated", "identity", hex.EncodeToString(digest[:]))
+}
+
+func EffectiveSkillsDir(dir string, s Settings) string {
+	return filepath.Join(identityViewRoot(dir, s), "skills-effective")
+}
+func EffectiveSkillsMetaDir(dir string, s Settings) string {
+	return filepath.Join(identityViewRoot(dir, s), "skills-meta")
+}
+func EffectiveSoulPath(dir string, s Settings) string {
+	return filepath.Join(identityViewRoot(dir, s), "soul-effective."+s.Environment+".md")
+}
+
 // MaterializeEffectiveSkills stages the platform tier and builds the
 // agent-visible effective view at generated/skills-effective (SPEC-0083 R2.5).
 func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIndex, error) {
@@ -218,7 +241,11 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 		sources = append(sources, skillstore.Source{Name: "org", Dir: filepath.Join(s.OrganizationDir, "skills")})
 	}
 	sources = append(sources, skillstore.Source{Name: "user", Dir: filepath.Join(dir, "skills")})
-	idx, err := skillstore.Build(GeneratedEffectiveSkillsDir(dir), sources)
+	var ceiling []string
+	if s.IdentityRestrictions != nil {
+		ceiling = s.IdentityRestrictions.Skills
+	}
+	idx, err := skillstore.BuildWithSkillCeiling(EffectiveSkillsDir(dir, s), sources, ceiling)
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +264,10 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 	// Persist the inputs a post-publish rebuild replays: the capability
 	// snapshot and pins — the runtime can refresh the view after apply
 	// without re-resolving space settings it cannot see.
-	if err := skillstore.WriteViewMeta(GeneratedSkillsMetaDir(dir), skillstore.ViewMeta{Capabilities: caps, Pins: pins}); err != nil {
+	if err := skillstore.WriteViewMeta(EffectiveSkillsMetaDir(dir, s), skillstore.ViewMeta{Capabilities: caps, Pins: pins, SkillCeiling: ceiling}); err != nil {
 		return nil, err
 	}
-	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
+	return idx, skillstore.WriteIndex(EffectiveSkillsDir(dir, s), idx)
 }
 
 // profileSkillPins resolves the space's assigned provisioning profile and
@@ -329,8 +356,8 @@ func skillCapabilities(dir string, s Settings) skillstore.Capabilities {
 
 // tier0Block renders the session-pinned <available_skills> catalog appended to
 // soul-effective (R6.2): eligible, implicit-visible skills only.
-func tier0Block(dir string) string {
-	raw, err := os.ReadFile(filepath.Join(GeneratedEffectiveSkillsDir(dir), "index.json"))
+func tier0Block(dir string, s Settings) string {
+	raw, err := os.ReadFile(filepath.Join(EffectiveSkillsDir(dir, s), "index.json"))
 	if err != nil {
 		return ""
 	}

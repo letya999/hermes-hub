@@ -101,7 +101,7 @@ func TestLeaseChangeWhileRunningPersists(t *testing.T) {
 	if err := m.finishJobGeneration(request, waiting, waiting.Status, runtime.Generation); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestTerminalJobsCompacted(t *testing.T) {
 	_ = m.persistLocked()
 	m.mu.Unlock()
 	m.CompactJobs(time.Now().UTC())
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

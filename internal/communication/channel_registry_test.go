@@ -100,7 +100,7 @@ func registerTestChannel(t *testing.T, ch *recordingChannel) {
 // silently fall through to the Telegram sender — the correct outcome is an
 // uncertain marking plus a diagnostic, never a misrouted send.
 func TestUnknownDeliveryChannelNeverFallsBackToTelegram(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestUnknownDeliveryChannelNeverFallsBackToTelegram(t *testing.T) {
 // advertising Typing gets SendPresence for its admitted runs, no matter what
 // its ID is.
 func TestProgressPresenceFollowsChannelCaps(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestEditableStatusFollowsChannelCaps(t *testing.T) {
 // refs only when the channel advertises Artifacts, and the channel itself
 // decides how a ref is sent (binary upload, note, drop).
 func TestArtifactsFollowChannelCaps(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestRoutineCardDestinationFollowsChannelCaps(t *testing.T) {
 // passes origin_job_id upstream so the agent can route routine outcomes
 // back to the owner.
 func TestRoutineOriginFollowsChannelCaps(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestRoutineOriginFollowsChannelCaps(t *testing.T) {
 // VerifyDeliveryTarget; a failed check marks the delivery uncertain instead
 // of sending to a target the owner no longer controls.
 func TestDeliveryTargetVerifierMarksUncertain(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestBlockedNoticeRoutesThroughChannel(t *testing.T) {
 // Inbound job admission takes its envelope and its typing notice from the
 // channel: the provider owns identity mapping and presence signaling.
 func TestInboundJobUsesChannelEnvelopeAndPresence(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

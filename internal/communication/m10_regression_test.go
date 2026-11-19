@@ -17,7 +17,7 @@ import (
 
 func TestM10RegressionMockAttachmentNeverCallsTelegram(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,9 +182,8 @@ func TestM10RegressionDigestIncludesSameTickChange(t *testing.T) {
 	}
 }
 func TestM10RegressionMockScheduleRejectsForeignChat(t *testing.T) {
-	_, _, g := occurrenceFixture(t)
+	_, _, g := occurrenceFixture(t, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}})
 	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, {ID: "bob", Enabled: true, TelegramIDs: []int64{22}}}
 	if err := g.mockLinkClaim(42, "alice"); err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +197,8 @@ func TestM10RegressionMockScheduleRejectsForeignChat(t *testing.T) {
 	}
 }
 func TestM10RegressionMockClientIDIsOwnerScoped(t *testing.T) {
-	_, _, g := occurrenceFixture(t)
+	_, _, g := occurrenceFixture(t, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}})
 	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, {ID: "bob", Enabled: true, TelegramIDs: []int64{22}}}
 	for i, p := range []string{"alice", "bob"} {
 		req := httptest.NewRequest("POST", "/v1/mock/message", strings.NewReader(fmt.Sprintf(`{"chat_id":%d,"text":"hello","client_id":"same-id"}`, 42+i)))
 		req.Header.Set("Authorization", "Bearer tok")

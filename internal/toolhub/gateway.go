@@ -42,9 +42,10 @@ type Gateway struct {
 	// OAuthRefresh restores a token only after a trusted backend proves setup
 	// authentication failed before tools/call dispatch. It never retries an
 	// uncertain business operation. Nil disables this setup recovery.
-	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
-	Control      *ControlPlane
-	Research     *researchHost
+	OAuthRefresh   func(context.Context, api.EffectiveBinding) (bool, error)
+	Control        *ControlPlane
+	Research       *researchHost
+	pauseSchedules func(context.Context, identity.Envelope) (int, error)
 	// governance is the host-owned tool policy document (issue 139). Nil
 	// keeps the legacy projection behavior; a configured but unreadable
 	// document fails every projection closed.

@@ -103,6 +103,7 @@ func TestWorkerUsesDurableCompletionAndDoesNotSuggestUncertainReplay(t *testing.
 			defer api.Close()
 			transport := &fakeAPI{}
 			g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+			provisionTestIdentity(t, &g.config)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
 			go func() { defer close(done); g.worker(ctx) }()
@@ -269,6 +270,7 @@ func TestGatewayNoUncertainNoticeBeforeBudget(t *testing.T) {
 	s, job := streamJob(t)
 	transport := &fakeAPI{}
 	g := &Gateway{spool: s, api: transport, runner: uncertainRunner{}, config: Config{RuntimeURL: "http://runtime", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -323,6 +325,7 @@ func TestUncertainNoticeAfterBudget(t *testing.T) {
 	}
 	transport := &fakeAPI{}
 	g := &Gateway{spool: s, api: transport, runner: uncertainRunner{}, config: Config{RuntimeURL: "http://runtime", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -382,6 +385,7 @@ func TestWorkerReObservesUnknownAdmission(t *testing.T) {
 	defer api.Close()
 	transport := &fakeAPI{}
 	g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, JobsAPI: true}, config: Config{RuntimeURL: api.URL, RuntimeAuth: "secret", Supervised: true, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -439,6 +443,7 @@ func TestHandleUpdateErrorQuarantinesAndContinues(t *testing.T) {
 	}
 	api := &fakeAPI{err: errors.New("answer callback failed")}
 	g := &Gateway{spool: s, api: api, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	updates := []Update{
 		{UpdateID: 100, CallbackQuery: &CallbackQuery{ID: "cb-poison", From: &TGUser{ID: 11}, Data: "bogus"}},
 		{UpdateID: 101, Message: &Message{MessageID: 5, From: &TGUser{ID: 99}, Chat: TGChat{ID: 55, Type: "private"}, Text: "hello"}},
@@ -469,6 +474,7 @@ func TestQuarantineHasNoContentByDefault(t *testing.T) {
 	}
 	api := &fakeAPI{err: errors.New("answer failed")}
 	g := &Gateway{spool: s, api: api, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	poison := Update{UpdateID: 200, CallbackQuery: &CallbackQuery{ID: "cb-x", From: &TGUser{ID: 11}, Data: "opaque-secret-payload", Message: &Message{Chat: TGChat{ID: 55}, Text: "do not store me"}}}
 	if _, err := g.processBatch(context.Background(), []Update{poison}, 0); err != nil {
 		t.Fatal(err)
@@ -542,6 +548,7 @@ func TestCanaryUsesOwnConversation(t *testing.T) {
 	defer api.Close()
 	transport := &fakeAPI{}
 	g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -602,6 +609,7 @@ func TestCanaryNoticeOncePerFailureClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	for i := 0; i < 3; i++ {
 		g.recordCanary(context.Background(), time.Now(), "timeout")
 	}
@@ -626,6 +634,7 @@ func TestCanaryRecoveryNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	g.recordCanary(context.Background(), time.Now(), "timeout")
 	g.recordCanary(context.Background(), time.Now(), "")
 	g.recordCanary(context.Background(), time.Now(), "")
@@ -664,6 +673,7 @@ func TestCanaryToolCallVerified(t *testing.T) {
 	}))
 	defer api.Close()
 	g := &Gateway{spool: s, api: &fakeAPI{}, runner: HTTPRunner{URL: api.URL, Auth: "x", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -695,6 +705,7 @@ func TestCanaryRejectsWriteTool(t *testing.T) {
 	}))
 	defer api.Close()
 	g := &Gateway{spool: s, api: &fakeAPI{}, runner: HTTPRunner{URL: api.URL, Auth: "x", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -726,6 +737,7 @@ func TestCanaryRejectsExtraToolCalls(t *testing.T) {
 	}))
 	defer api.Close()
 	g := &Gateway{spool: s, api: &fakeAPI{}, runner: HTTPRunner{URL: api.URL, Auth: "x", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
@@ -770,6 +782,7 @@ func TestCanaryDeliveryMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	prev := canaryDeliveryGrace
 	canaryDeliveryGrace = 300 * time.Millisecond
 	defer func() { canaryDeliveryGrace = prev }()
@@ -829,6 +842,7 @@ func TestCanarySurfaceFailure(t *testing.T) {
 		RuntimeAuth: "supervisor-auth",
 		Users:       []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}},
 	}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	prev := canaryJobTimeout
 	canaryJobTimeout = 2 * time.Second
 	defer func() { canaryJobTimeout = prev }()
@@ -844,6 +858,7 @@ func TestCanaryJournalBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	for i := 0; i < 5; i++ {
 		g.recordCanary(context.Background(), time.Now(), "")
 	}
@@ -883,6 +898,7 @@ func TestCanaryJournalTruncates(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	g.recordCanary(context.Background(), time.Now(), "timeout")
 	b, err := os.ReadFile(journal)
 	if err != nil {
@@ -905,6 +921,7 @@ func TestCanaryLoopTicksAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{spool: s, api: &fakeAPI{}, config: Config{Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	provisionTestIdentity(t, &g.config)
 	prev := canaryJobTimeout
 	canaryJobTimeout = 150 * time.Millisecond
 	defer func() { canaryJobTimeout = prev }()
@@ -942,7 +959,7 @@ func TestRunStartsCanaryWhenConfigured(t *testing.T) {
 	canaryJobTimeout = 100 * time.Millisecond
 	defer func() { canaryJobTimeout = prev }()
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +984,7 @@ func TestRunStartsCanaryWhenConfigured(t *testing.T) {
 
 func TestCanaryTimeoutStartsWhenRoundActuallyRuns(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

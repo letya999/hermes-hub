@@ -68,7 +68,7 @@ func TestMasterNoticeQueuesBeforeAcknowledgement(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestMasterNoticeAcksUndeliverable(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestSyncMasterNoticesReportsPending(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestNoticePollIdlesWhenClean(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestControlLoopCompactsWithConfiguredLimits(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestMasterHoldFencesOutbox(t *testing.T) {
 			c.Supervised = true
 			c.RuntimeURL = srv.URL
 			c.RuntimeAuth = "synthetic-service"
-			g, err := New(c)
+			g, err := newTestGateway(t, c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,7 +370,7 @@ func TestEnqueueUsesFreshAdmissionEpoch(t *testing.T) {
 			c.Supervised = true
 			c.RuntimeURL = srv.URL
 			c.RuntimeAuth = "synthetic-service"
-			g, err := New(c)
+			g, err := newTestGateway(t, c)
 			if err != nil {
 				t.Fatal(err)
 			}

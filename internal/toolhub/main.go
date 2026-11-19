@@ -106,6 +106,7 @@ func Serve(ctx context.Context) error {
 			return err
 		}
 		defer host.Close()
+		handler.(*projectionEndpoint).gateway.pauseSchedules = host.PauseAllForPrincipal
 		automationTick = host.Tick
 		automationCompact = host.CompactOccurrences
 		mux := http.NewServeMux()

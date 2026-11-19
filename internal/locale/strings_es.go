@@ -2,6 +2,23 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"hubctl.identity-usage":       "Uso: hubctl identity migrate --config <YAML anterior> --control-dir <estado de control> --env dev|prod --import-id <id> [--oidc-links <JSON anterior>] [--legacy-env-user <id>] [--apply]",
+		"hubctl.identity-source":      "Ruta de la configuración de canales anterior",
+		"hubctl.identity-control-dir": "Directorio de estado de control",
+		"hubctl.identity-environment": "Entorno: dev o prod",
+		"hubctl.identity-import-id":   "ID único del recibo de migración",
+		"hubctl.identity-links":       "Archivo explícito de vínculos OIDC verificados anteriores",
+		"hubctl.identity-env-user":    "Usuario cuyos ID de canal proceden de TELEGRAM_ALLOWED_USERS y SLACK_ALLOWED_USERS",
+		"hubctl.identity-apply":       "Aplicar la migración; sin la opción, mostrar cantidades del origen",
+		"hubctl.identity-invalid":     "La entrada de migración de identidad no es válida o no está disponible",
+		"hubctl.identity-failed":      "La migración de identidad falló; no se guardaron cambios de identidad",
+
+		"communication.identity-endpoint-required":       "Se requiere un endpoint de identity-hub autenticado",
+		"communication.identity-link-authority-required": "La vinculación OIDC requiere una credencial de entrada independiente de identity-hub",
+		"supervisor.identity-link-auth-distinct":         "Las credenciales de entrada de identity-hub y de service-control deben ser distintas",
+		"supervisor.identity-unavailable":                "El registro de identidad no está disponible",
+		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
+
 		"package.sources-unavailable":              "Las fuentes del paquete no están disponibles",
 		"package.source-invalid":                   "Las fuentes del paquete deben ser archivos regulares sin enlaces simbólicos",
 		"hub.usage":                                "Uso: hub serve --zone control|agent|edge [argumentos de zona]",
@@ -47,10 +64,10 @@ func init() {
 		"hubctl.user-disable-usage":                "Uso: hubctl user disable --dir <space> [--env dev|prod] [--context <id>] [--supervisor-url <url>] [--gateway-url <url>] [--toolhub-url <url>]",
 		"hubctl.user-disable-env":                  "user disable requiere --env dev o --env prod",
 		"hubctl.user-disable-scope":                "Principal o context id no válido",
-		"hubctl.user-disable-auth":                 "Bearer de service-control no disponible; pase --supervisor-auth/--gateway-auth/--toolhub-auth o configure los archivos auth del espacio",
+		"hubctl.user-disable-auth":                 "Faltan las credenciales de revocación. Configure HUB_SUPERVISOR_ADMIN_AUTH o use --supervisor-auth, y configure las credenciales de control de la pasarela y ToolHub.",
 		"hubctl.user-disable-stage-failed":         "Falló la revocación del principal en la etapa %s",
 		"hubctl.user-disable-stage":                "Revocado %-10s %s",
-		"hubctl.user-disable-complete":             "Principal %s:%s deshabilitado; orden de propagación ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.user-disable-complete":             "Principal %s:%s deshabilitado; orden de propagación ingress→identity→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
 		// Language picker and /language.
 		"lang.choose":   "Elige tu idioma:",
 		"lang.saved":    "Idioma establecido: %s.",

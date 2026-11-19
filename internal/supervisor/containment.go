@@ -33,9 +33,14 @@ func (m *Manager) operationallyCurrentLocked(record jobRecord) bool {
 	return !hold.Active && record.OperationalEpoch == hold.Epoch
 }
 
-func (m *Manager) administrativeHold(w http.ResponseWriter, r *http.Request) {
+func (m *Manager) adminAuthorized(r *http.Request) bool {
 	provided := r.Header.Get("Authorization")
-	if m.cfg.AdminAuth == "" || m.cfg.AdminAuth == m.cfg.RuntimeAuth || subtle.ConstantTimeCompare([]byte(provided), []byte("Bearer "+m.cfg.AdminAuth)) != 1 {
+	return m.cfg.AdminAuth != "" && m.cfg.AdminAuth != m.cfg.RuntimeAuth &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte("Bearer "+m.cfg.AdminAuth)) == 1
+}
+
+func (m *Manager) administrativeHold(w http.ResponseWriter, r *http.Request) {
+	if !m.adminAuthorized(r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrative authority required"})
 		return
 	}

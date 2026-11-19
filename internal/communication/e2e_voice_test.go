@@ -12,7 +12,7 @@ import (
 func TestVoiceReceiptDistinguishesRealSendFromFallback(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		c := testConfig(t)
-		g, err := New(c)
+		g, err := newTestGateway(t, c)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,7 @@ func (a uncertainVoiceAPI) SendVoice(ctx context.Context, chatID, topicID int64,
 
 func TestUncertainVoiceSendDoesNotFallbackOrRepeat(t *testing.T) {
 	for _, text := range []string{"", "intro"} {
-		g, err := New(testConfig(t))
+		g, err := newTestGateway(t, testConfig(t))
 		if err != nil {
 			t.Fatal(err)
 		}

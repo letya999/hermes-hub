@@ -8,11 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/identityhub"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -89,6 +93,8 @@ type LeaseConsumer struct {
 const DefaultWarmTTL = 30 * time.Minute
 
 type Config struct {
+	Identity         identitycontract.Client
+	IdentityLinkAuth string
 	ExecutionBackend string
 	ContainerRuntime string
 	Kubernetes       KubernetesConfig
@@ -156,6 +162,9 @@ type Config struct {
 }
 
 type Binding struct {
+	SubjectID        string
+	AgentID          string
+	IdentityRevision string
 	PrincipalID      string
 	ContextID        string
 	RuntimeID        string
@@ -171,6 +180,7 @@ type Binding struct {
 }
 
 type Runtime struct {
+	IdentityRevision  string      `json:"identity_revision,omitempty"`
 	ComputeID         string      `json:"compute_id,omitempty"`
 	ComputeConditions []Condition `json:"compute_conditions,omitempty"`
 	ConnectorHealth   string      `json:"connector_health,omitempty"`
@@ -253,15 +263,16 @@ type runtimeEntry struct {
 }
 
 type Manager struct {
-	backend ComputeBackend
-	holds   map[string]AdministrativeHold
-	pins    map[string]hubruntime.ExecuteRequest
-	orphans []OrphanRuntime
-	cfg     Config
-	mu      sync.Mutex
-	items   map[string]*runtimeEntry
-	locks   map[string]*sync.Mutex
-	sem     chan struct{}
+	ownedIdentity identitycontract.Client
+	backend       ComputeBackend
+	holds         map[string]AdministrativeHold
+	pins          map[string]hubruntime.ExecuteRequest
+	orphans       []OrphanRuntime
+	cfg           Config
+	mu            sync.Mutex
+	items         map[string]*runtimeEntry
+	locks         map[string]*sync.Mutex
+	sem           chan struct{}
 	// Warm runtimes hold sem for their lifetime; disposable scripts need their own bound.
 	scriptSem chan struct{}
 	// recoverySem bounds detached observation and missing-work workers so one
@@ -344,6 +355,29 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			return fmt.Errorf("wildcard listen %q requires an explicit opt-in; the control plane binds a private address by default", listen)
 		}
 	}
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	identityClient := manager.cfg.Identity
+	if identityClient == nil {
+		path, err := identityhub.StorePath(manager.cfg.StateDir, manager.environment())
+		if err != nil {
+			return err
+		}
+		registry, err := identityhub.Open(path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "supervisor.identity-unavailable"), err)
+		}
+		identityClient = registry
+		manager.mu.Lock()
+		manager.ownedIdentity = registry
+		manager.mu.Unlock()
+		defer func() { manager.mu.Lock(); manager.ownedIdentity = nil; manager.mu.Unlock(); _ = registry.Close() }()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	server := &http.Server{Addr: listen, Handler: diagnostics.HTTP("supervisor", manager.Handler()), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
 	var loops sync.WaitGroup
 	if manager.cfg.Decide != nil {
@@ -368,6 +402,11 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 				return
 			case now := <-ticker.C:
 				manager.sweep(ctx, now)
+				if registry, ok := identityClient.(*identityhub.Registry); ok {
+					if err := registry.ExpirePendingLinks(ctx, now); err != nil && ctx.Err() == nil {
+						log.Print(locale.T(locale.Operator(), "supervisor.identity-upkeep-pending"))
+					}
+				}
 			}
 		}
 	}()
@@ -387,18 +426,25 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			}
 		}
 	}()
-	go func() { // #nosec G118 -- detached reconcile worker
+	shutdownDone := make(chan struct{})
+	go func() { // #nosec G118 -- joined shutdown worker
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = server.Shutdown(shutdown)
+		if err := server.Shutdown(shutdown); err != nil {
+			_ = server.Close()
+		}
 	}()
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
+	serveErr := server.Serve(listener)
+	cancel()
 	// Do not report the service stopped while an in-flight pass may still
 	// write spool/control state underneath a shutting-down caller.
 	loops.Wait()
+	<-shutdownDone
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
 	return nil
 }
 
@@ -519,6 +565,12 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.AdminAuth == "" {
 		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
+	}
+	if cfg.IdentityLinkAuth == "" {
+		cfg.IdentityLinkAuth = os.Getenv("HUB_IDENTITY_LINK_AUTH")
+	}
+	if cfg.IdentityLinkAuth != "" && cfg.IdentityLinkAuth == cfg.RuntimeAuth {
+		return nil, errors.New(locale.T(locale.Operator(), "supervisor.identity-link-auth-distinct"))
 	}
 	if cfg.BackupEvery == 0 {
 		cfg.BackupEvery = backupDurationEnv("HUB_BACKUP_EVERY", 24*time.Hour)
@@ -828,7 +880,25 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 		}
 		m.mu.Unlock()
 	}
-	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: mode, ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
+	subject := request.UserID
+	if strings.HasPrefix(request.ScopeID, "group:") {
+		external, ok := strings.CutPrefix(request.ExternalIdentityID, "telegram-")
+		if !ok {
+			return Binding{}, identitycontract.ErrForbidden
+		}
+		principal, _, err := identitycontract.ResolveChannel(context.Background(), m.identityClient(), identitycontract.ChannelIdentity{Channel: identitycontract.Telegram, ID: external})
+		if err != nil {
+			return Binding{}, err
+		}
+		subject = principal.ID
+	}
+	bound := Binding{SubjectID: subject, AgentID: "agent:" + subject + ":default", PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: mode, ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot}
+	_, revision, err := m.identityTemplate(context.Background(), bound)
+	if err != nil {
+		return Binding{}, err
+	}
+	bound.IdentityRevision = revision
+	return m.normalize(bound)
 }
 
 func runtimeKey(binding Binding) string {

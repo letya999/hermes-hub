@@ -57,7 +57,7 @@ func TestSandboxDockerSelectionFailsClosed(t *testing.T) {
 	m, _ := testManager(t, nil, nil)
 	cfg := m.cfg
 	cfg.ContainerRuntime = "runsc "
-	if _, err := New(cfg); err == nil {
+	if _, err := newTestManager(t, cfg); err == nil {
 		t.Fatal("invalid runtime accepted")
 	}
 }
@@ -131,7 +131,7 @@ func TestSandboxSelectionPersistsAndRefusesWarmChange(t *testing.T) {
 	}
 	cfg := m.cfg
 	cfg.ContainerRuntime = "runc"
-	if _, err = New(cfg); err == nil || !strings.Contains(err.Error(), "requires stopped runtimes") {
+	if _, err = newTestManager(t, cfg); err == nil || !strings.Contains(err.Error(), "requires stopped runtimes") {
 		t.Fatalf("warm downgrade=%v", err)
 	}
 }

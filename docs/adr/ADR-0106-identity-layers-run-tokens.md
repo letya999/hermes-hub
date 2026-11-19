@@ -144,3 +144,13 @@ or run termination makes every outstanding token stale at once.
 - Credentials never enter the model plane: tokens carry ids, never secrets,
   and runtimes cannot mint them.
 - ADR-0100 D1: transport ids never become routing or authorization keys.
+
+## Appendix A: Legacy shared-space migration (2026-11-19)
+
+Legacy dedicated group spaces remain shared resources and preserve their
+explicit member ACLs. Empty member lists freeze the existing enabled Telegram
+membership. Channel-only members receive no private home or org role.
+Disabled or retired identities cannot reappear through a guest alias. Tokens
+distinguish the verified human `sub`, its owned agent `act`, and the shared
+target `space`. The shared passport and credential namespace and existing
+session IDs remain stable.

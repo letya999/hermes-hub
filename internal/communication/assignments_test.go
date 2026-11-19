@@ -55,7 +55,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	// Pause → resume → cancel lifecycle over REST — each verb must reach the
 	// durable state, not just return 200.
 	for _, step := range []struct{ action, want string }{{"pause", "paused"}, {"resume", "active"}, {"cancel", "cancelled"}} {
-		current, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
+		current, err := host.LoadAssignment(context.Background(), g.userByChatID(11).Envelope(11), id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 		if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
 			t.Fatalf("%s failed: %d %s", step.action, w.Code, w.Body.String())
 		}
-		item, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
+		item, err := host.LoadAssignment(context.Background(), g.userByChatID(11).Envelope(11), id)
 		if err != nil || item.State != step.want {
 			t.Fatalf("%s did not reach state %q: %v %+v", step.action, step.want, err, item)
 		}
@@ -76,7 +76,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	// DELETE removes the record under the same CAS fence (ADR-0094
 	// assignment_remove): a stale revision conflicts, a matching one deletes
 	// and the id reads 404 afterwards.
-	current, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
+	current, err := host.LoadAssignment(context.Background(), g.userByChatID(11).Envelope(11), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 func TestAssignmentPlanDryRun(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	}
 	// The applied artifact must carry the gateway org + owner actor/scope —
 	// otherwise every occurrence fails owner authorization at tick time.
-	scheds, err := host.ListSchedules(context.Background(), g.users[11].Envelope(11))
+	scheds, err := host.ListSchedules(context.Background(), g.userByChatID(11).Envelope(11))
 	if err != nil || len(scheds) != 1 {
 		t.Fatalf("applied schedule missing: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("complete failed: %d %s", w.Code, w.Body.String())
 	}
-	item, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), created.AssignmentID)
+	item, err := host.LoadAssignment(context.Background(), g.userByChatID(11).Envelope(11), created.AssignmentID)
 	if err != nil || item.State != "completed" {
 		t.Fatalf("not completed: %v %+v", err, item)
 	}
@@ -204,7 +204,7 @@ func TestAssignmentProgressRejectsCommunicationRunningFile(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("unbound progress accepted: %d", w.Code)
 	}
-	job := Job{ID: "trigger-1", Envelope: g.users[11].Envelope(11), AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AppliedRev}
+	job := Job{ID: "trigger-1", Envelope: g.userByChatID(11).Envelope(11), AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AppliedRev}
 	if err := atomicJSON(filepath.Join(g.spool.root, "running", spoolFileID(job.ID)+".json"), job); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestAssignmentCommands(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	g, host, _ := automationGatewayFixture(t, c)
-	user := g.users[11]
+	user := g.userByChatID(11)
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"},"unavailable":[{"reference":"private community","reason":"membership required"}]}}`)
 	var created commodel.Assignment
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
@@ -279,7 +279,7 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	g, _, _ := automationGatewayFixture(t, c)
-	user := g.users[11]
+	user := g.userByChatID(11)
 	out := g.assignmentsCommand(user, 11, locale.LangEN)
 	if !strings.Contains(out, "None yet.") {
 		t.Errorf("en empty list wrong: %q", out)

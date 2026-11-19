@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"io"
 	"net/http"
 	"os"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/netguard"
 )
@@ -175,14 +175,9 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if !validSlackThread(threadTS) {
 		threadTS = ""
 	}
-	user, ok := g.slackUsers[strings.ToLower(teamID)+"/"+strings.ToLower(slackUser)]
+	user, ok := g.identityUser(ctx, identitycontract.ChannelIdentity{Channel: identitycontract.Slack, ID: (SlackLink{TeamID: teamID, UserID: slackUser}).Key()})
 	if !ok {
-		user, ok = g.iamResolveTransport(identity.SlackIdentity(teamID, slackUser))
-		if !ok {
-			return errors.New("unmapped slack sender")
-		}
-	} else {
-		user = g.user(user.ID)
+		return errors.New("unmapped slack sender")
 	}
 	if !user.Enabled {
 		return errors.New("unavailable slack route")
@@ -202,7 +197,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 		if taskErr != nil {
 			return taskErr
 		}
-		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS, transportID: envelope.ExternalIdentityID, principal: user.ID, context: envelope.ContextID}
+		route := commandRoute{verifiedChannel: identitycontract.ChannelIdentity{Channel: identitycontract.Slack, ID: (SlackLink{TeamID: teamID, UserID: slackUser}).Key()}, channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS, transportID: envelope.ExternalIdentityID, principal: user.ID, context: envelope.ContextID}
 		return g.dispatchChannelCommand(ctx, user, task, route, "slack-"+eventID, text)
 	}
 	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}

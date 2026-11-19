@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -51,6 +52,7 @@ func recoveryJob(t *testing.T, m *Manager, spacesRoot, principal string) (hubrun
 // the function still waits for every worker it spawned.
 func TestStuckRecoveryDoesNotStarveOtherOwners(t *testing.T) {
 	m, aliceRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	testSetIdentity(t, m, "personal", commodel.User{ID: "stuck", Enabled: true}, commodel.User{ID: "free", Enabled: true})
 	spacesRoot := filepath.Dir(aliceRoot)
 	_, stuckKey := recoveryJob(t, m, spacesRoot, "stuck")
 	_, freeKey := recoveryJob(t, m, spacesRoot, "free")

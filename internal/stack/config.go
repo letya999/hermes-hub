@@ -2,6 +2,7 @@ package stack
 
 import (
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"net/url"
@@ -17,7 +18,9 @@ import (
 // Package stack generates a private, per-user Hermes deployment.
 
 type Settings struct {
-	Hosting              HostingSettings `yaml:"hosting,omitempty"`
+	IdentityRestrictions *identitycontract.Restrictions `yaml:"-" json:"-"`
+	IdentityRevision     string                         `yaml:"-" json:"-"`
+	Hosting              HostingSettings                `yaml:"hosting,omitempty"`
 	defaultGlobalSkills  bool
 	ExecutionMode        string `yaml:"-"`
 	SupervisorURL        string `yaml:"-"`

@@ -48,7 +48,7 @@ func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
 		t.Fatal("invalid thread accepted")
 	}
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSlackEventsIgnoreBotsAndSecrets(t *testing.T) {
 	c := testConfig(t)
 	c.SlackSigningSecret = "slack-secret"
 	c.Users[0].SlackIDs = []SlackLink{{TeamID: "TTEAM", UserID: "UUSER"}}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,8 +239,7 @@ func TestRoutineHTTPItemErrorsAndVoiceDownloadFailure(t *testing.T) {
 }
 
 func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.users = map[int64]User{11: {ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	created, err := s.CreateSchedule(Schedule{ScheduleID: "expire-me", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "later"}, caller, "")
 	if err != nil {
@@ -319,7 +318,7 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 	if err := gw.handleUpdate(context.Background(), Update{UpdateID: 77, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "big", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(c); err != nil {
+	if _, err := newTestGateway(t, c); err != nil {
 		t.Fatal(err)
 	}
 }

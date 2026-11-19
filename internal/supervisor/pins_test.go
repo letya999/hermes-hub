@@ -39,7 +39,7 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	if m.pins[pinKey(request)].Text != "" {
 		t.Fatal("pin persisted prompt")
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

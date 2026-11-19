@@ -16,7 +16,7 @@ import (
 func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	writeManagedSpaceDocs(t, dir, "alice", nil)
-	expected := []string{"ingress", "jobs", "runs", "toolhub", "connectors", "cron", "oauth", "delivery"}
+	expected := []string{"ingress", "identity", "jobs", "runs", "toolhub", "connectors", "cron", "oauth", "delivery"}
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Origin") != "" || r.Header.Get("X-Hub-Principal") != "alice" {
@@ -26,15 +26,22 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 		var body struct {
 			PrincipalID      string `json:"principal_id"`
 			ContextID        string `json:"context_id"`
+			Environment      string `json:"environment"`
 			Stage            string `json:"stage"`
 			DeferContainment bool   `json:"defer_containment"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.PrincipalID != "alice" || body.ContextID != "alice" {
+		identityStage := r.URL.Path == "/v1/admin/identity/deactivate"
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.PrincipalID != "alice" || (!identityStage && body.ContextID != "alice") {
 			t.Errorf("bad revocation body: %+v", body)
 			return
 		}
 		stage := body.Stage
 		switch r.URL.Path {
+		case "/v1/admin/identity/deactivate":
+			if token != "supervisor-token" || body.ContextID != "" || body.Environment != "dev" {
+				t.Error("deactivation must use the admin credential and target the human globally")
+			}
+			stage = "identity"
 		case "/v1/admin/holds":
 			if token != "supervisor-token" {
 				t.Errorf("wrong supervisor bearer")
@@ -45,7 +52,11 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 				stage = "runs"
 			}
 		case "/v1/admin/revocations":
-			if token != "service-token" && token != "toolhub-token" {
+			want := "toolhub-token"
+			if stage == "jobs" || stage == "delivery" {
+				want = "service-token"
+			}
+			if token != want {
 				t.Errorf("wrong service bearer")
 			}
 		default:
@@ -77,7 +88,7 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 		t.Fatalf("audit leaked control material: %s", data)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 18 {
+	if len(lines) != (len(expected)+1)*2 {
 		t.Fatalf("audit events=%d\n%s", len(lines), data)
 	}
 	correlationID := ""
@@ -87,7 +98,7 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 			t.Fatalf("event %d: %s", i, line)
 		}
 		wantStage := "complete"
-		if i < 16 {
+		if i/2 < len(expected) {
 			wantStage = expected[i/2]
 		}
 		if event.Action != wantStage {
@@ -103,7 +114,7 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 			t.Fatalf("event %d outcome=%s", i, event.Outcome)
 		}
 	}
-	if !strings.Contains(out.String(), "ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery") {
+	if !strings.Contains(out.String(), "ingress→identity→jobs→runs→ToolHub→connectors→cron→OAuth→delivery") {
 		t.Fatalf("missing order summary: %q", out.String())
 	}
 }
@@ -119,6 +130,9 @@ func TestUserDisableStopsOnFirstFailedStage(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		stage := body.Stage
+		if r.URL.Path == "/v1/admin/identity/deactivate" {
+			stage = "identity"
+		}
 		if r.URL.Path == "/v1/admin/holds" {
 			if body.DeferContainment {
 				stage = "ingress"
@@ -139,7 +153,7 @@ func TestUserDisableStopsOnFirstFailedStage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "toolhub") {
 		t.Fatalf("expected stage failure, got %v", err)
 	}
-	if got := strings.Join(calls, ","); got != "ingress,jobs,runs,toolhub" {
+	if got := strings.Join(calls, ","); got != "ingress,identity,jobs,runs,toolhub" {
 		t.Fatalf("propagated after failure: %s", got)
 	}
 	data, readErr := os.ReadFile(opts.AuditPath)

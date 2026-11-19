@@ -121,24 +121,14 @@ func TestIAMPendingAndSweepExpireState(t *testing.T) {
 	}
 }
 
-func TestIAMPrincipalBySubjectDeniesAmbiguity(t *testing.T) {
+func TestIAMEnrollmentIgnoresLegacySubjectMutation(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
-	g.config.Users = append(g.config.Users,
-		User{ID: "bob", Enabled: true, OIDCSubject: "corp-sub-1"},
-		User{ID: "carol", Enabled: true, OIDCSubject: "corp-sub-1"},
-		User{ID: "dave", Enabled: false, OIDCSubject: "corp-sub-1"})
-	if principal, ok := g.iamPrincipalBySubject("corp-sub-1"); ok || principal != "" {
-		t.Fatalf("ambiguous subject must deny: %q", principal)
-	}
-	g.config.Users = g.config.Users[:1]
 	g.config.Users[0].OIDCSubject = "corp-sub-1"
-	if principal, ok := g.iamPrincipalBySubject("corp-sub-1"); !ok || principal != "alice" {
-		t.Fatalf("single subject must resolve: %q ok=%v", principal, ok)
-	}
-	if _, ok := g.iamPrincipalBySubject("other"); ok {
-		t.Fatal("unknown subject must deny")
+	token := g.iamMintNonce("telegram-55", "")
+	if code := iamRunFlow(t, g, idp, token); code != http.StatusForbidden {
+		t.Fatalf("legacy subject mutation authorized enrolment: %d", code)
 	}
 }
 
@@ -146,21 +136,21 @@ func TestIAMResolveTransportDeniesDisabledAndUnlinked(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
-	if _, ok := g.iamResolveTransport("telegram-nothing"); ok {
+	if _, ok := g.telegramUserFor(99, 99); ok {
 		t.Fatal("unlinked transport must deny")
 	}
-	if err := g.iam.links.Link(idp.URL, "corp-sub-1", "ghost", "telegram-ghost"); err != nil {
-		t.Fatal(err)
+	if err := fixtureOIDCLink(t, g, "ghost", "telegram-99", "corp-sub-1"); err == nil {
+		t.Fatal("unknown human accepted")
 	}
-	if _, ok := g.iamResolveTransport("telegram-ghost"); ok {
+	if _, ok := g.telegramUserFor(99, 99); ok {
 		t.Fatal("link to a disabled/unknown user must deny")
 	}
 	// An IAM-less gateway cannot resolve transports at all.
-	plain, err := New(baseTestConfig(t))
+	plain, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := plain.iamResolveTransport("telegram-77"); ok {
+	if _, ok := plain.telegramUserFor(77, 77); ok {
 		t.Fatal("iam-disabled gateway must deny")
 	}
 }
@@ -177,7 +167,7 @@ func TestOIDCProviderRequiresFormOrigin(t *testing.T) {
 
 func TestLinkAndEnrolCommandsStayHonest(t *testing.T) {
 	// IAM-disabled gateways answer the disabled line, never a URL.
-	plain, err := New(baseTestConfig(t))
+	plain, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +247,7 @@ func TestSpoolQueueStatusCountsAndAges(t *testing.T) {
 // statusView must degrade to unavailable while ToolHub is down and project
 // routine aggregates when it answers.
 func TestGatewayStatusViewDegradesAndAggregates(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +284,7 @@ func TestGatewayStatusViewDegradesAndAggregates(t *testing.T) {
 func TestMetricsAndStatusHTTPContract(t *testing.T) {
 	config := baseTestConfig(t)
 	config.ControlAuth = "ctl-secret"
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}

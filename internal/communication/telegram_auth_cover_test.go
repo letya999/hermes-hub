@@ -24,7 +24,7 @@ func testTelegramGateway(t *testing.T) *Gateway {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Gateway{
+	g := &Gateway{
 		config: Config{
 			FormOrigin:    "http://127.0.0.1:9",
 			BrokerApprove: credentialbroker.Config{URL: "http://127.0.0.1:9"},
@@ -33,6 +33,8 @@ func testTelegramGateway(t *testing.T) *Gateway {
 		telegramAuth: state,
 		now:          time.Now,
 	}
+	provisionTestIdentity(t, &g.config)
+	return g
 }
 
 func TestNewTelegramAuthStateGuards(t *testing.T) {

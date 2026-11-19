@@ -2,6 +2,23 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"hubctl.identity-usage":       "Қолданылуы: hubctl identity migrate --config <ескі YAML> --control-dir <control каталогы> --env dev|prod --import-id <id> [--oidc-links <ескі JSON>] [--legacy-env-user <id>] [--apply]",
+		"hubctl.identity-source":      "Ескі арна конфигурациясының жолы",
+		"hubctl.identity-control-dir": "Control күйінің каталогы",
+		"hubctl.identity-environment": "Орта: dev немесе prod",
+		"hubctl.identity-import-id":   "Көшіру түбіртегінің бірегей ID мәні",
+		"hubctl.identity-links":       "Расталған OIDC байланыстарының нақты таңдалған файлы",
+		"hubctl.identity-env-user":    "Арна ID мәндері TELEGRAM_ALLOWED_USERS және SLACK_ALLOWED_USERS ішінен алынатын пайдаланушы",
+		"hubctl.identity-apply":       "Көшіруді қолдану; жалаушасыз бастапқы жазбалар санын көрсету",
+		"hubctl.identity-invalid":     "Сәйкестендіруді көшіру деректері қате немесе қолжетімсіз",
+		"hubctl.identity-failed":      "Сәйкестендіруді көшіру орындалмады; сәйкестендіру өзгерістері сақталмады",
+
+		"communication.identity-endpoint-required":       "Аутентификациясы бар identity-hub мекенжайы қажет",
+		"communication.identity-link-authority-required": "OIDC арқылы байланыстыру үшін identity-hub кіріс арнасының бөлек кілті қажет",
+		"supervisor.identity-link-auth-distinct":         "Identity-hub кіріс арнасының кілті service-control кілтінен өзгеше болуы тиіс",
+		"supervisor.identity-unavailable":                "Сәйкестендіру тізілімі қолжетімсіз",
+		"supervisor.identity-upkeep-pending":             "Сәйкестендіру тізіліміне қызмет көрсету қайта орындалуды күтуде",
+
 		"package.sources-unavailable":              "Мұрағатқа арналған бастапқы файлдар қолжетімсіз",
 		"package.source-invalid":                   "Мұрағатта символдық сілтемелері жоқ кәдімгі файлдар ғана болуы тиіс",
 		"hub.usage":                                "Қолданылуы: hub serve --zone control|agent|edge [аймақ аргументтері]",
@@ -47,10 +64,10 @@ func init() {
 		"hubctl.user-disable-usage":                "Қолдану: hubctl user disable --dir <space> [--env dev|prod] [--context <id>] [--supervisor-url <url>] [--gateway-url <url>] [--toolhub-url <url>]",
 		"hubctl.user-disable-env":                  "user disable үшін --env dev немесе --env prod қажет",
 		"hubctl.user-disable-scope":                "Principal немесе context id жарамсыз",
-		"hubctl.user-disable-auth":                 "Service-control bearer қолжетімсіз; --supervisor-auth/--gateway-auth/--toolhub-auth беріңіз немесе кеңістік auth файлдарын баптаңыз",
+		"hubctl.user-disable-auth":                 "Құқықты қайтарып алу деректері қолжетімсіз. HUB_SUPERVISOR_ADMIN_AUTH орнатыңыз немесе --supervisor-auth беріңіз, сондай-ақ шлюз бен ToolHub басқару деректерін баптаңыз.",
 		"hubctl.user-disable-stage-failed":         "%s кезеңінде principal revocation орындалмады",
 		"hubctl.user-disable-stage":                "%-10s кезеңі аяқталды %s",
-		"hubctl.user-disable-complete":             "Principal %s:%s өшірілді; таралу реті ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.user-disable-complete":             "Principal %s:%s өшірілді; таралу реті ingress→identity→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
 		// Language picker and /language.
 		"lang.choose":   "Тілді таңдаңыз:",
 		"lang.saved":    "Тіл орнатылды: %s.",

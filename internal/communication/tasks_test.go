@@ -44,7 +44,7 @@ func TestMessageTopicIDParsesDirectTopic(t *testing.T) {
 
 func TestTaskLifecycleCommands(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestTaskLifecycleCommands(t *testing.T) {
 
 func TestTaskJobsGetOwnConversationAndTopicDelivery(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestTaskJobsGetOwnConversationAndTopicDelivery(t *testing.T) {
 
 func TestTaskCommandsDoNotAdoptUnboundTopic(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestTaskCommandsDoNotAdoptUnboundTopic(t *testing.T) {
 
 func TestTaskExplicitBindAndWrongTopicGuards(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestTaskExplicitBindAndWrongTopicGuards(t *testing.T) {
 
 func TestStyleSnapshotPinnedPerJobAndIsolated(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestStyleSnapshotPinnedPerJobAndIsolated(t *testing.T) {
 
 func TestStyleLimitsAndIsolation(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func float64ptr(v float64) *float64 { return &v }
 
 func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestUsageCommandRendersMeasuredFields(t *testing.T) {
 
 func TestUsageCommandMarksTruncatedLineage(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestUsageCommandMarksTruncatedLineage(t *testing.T) {
 // only; no journal field carries text into chat.
 func TestUsageCommandSurfacesInPlaceCompactions(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func (b *blockingUsageRunner) SessionUsage(_ context.Context, _ hubruntime.Execu
 // returns with an ack and the report arrives as a second delivery.
 func TestUsageUpdateRunsBesideUpdatePoll(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestUsageOverviewIncludesQuotaWithoutBlockingPoll(t *testing.T) {
 	defer relay.Close()
 	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "test-key")
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestUsageCommandResolvesQuotaThroughCallerRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
 
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestUsageOverviewResolvesQuotaThroughCallerRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_URL", "")
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
 	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestUsageOverviewResolvesQuotaThroughCallerRelay(t *testing.T) {
 
 func TestTaskUseByNameSwitchesCurrent(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestTaskUseByNameSwitchesCurrent(t *testing.T) {
 
 func TestTaskCommandRejectsBadInput(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestTaskCommandRejectsBadInput(t *testing.T) {
 
 func TestTaskTopicAdoptionConflictAndArchive(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +746,7 @@ func TestHTTPRunnerSessionUsageSurfacesErrors(t *testing.T) {
 
 func TestTaskMappingSurvivesSpoolReopen(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

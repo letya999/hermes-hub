@@ -39,7 +39,7 @@ func TestStatusShowsMissingTools(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = supervisor.URL
 	c.RuntimeAuth = "supervisor-auth"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestStatusShowsMissingToolsUnsupervised(t *testing.T) {
 	c.Supervised = false
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-auth"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestRunInstructionsArePerRunOnly(t *testing.T) {
 // SPEC-0053 R3.6: /status carries a "Здоровье" block even when nothing has
 // run — the empty case is explicit, not a missing section.
 func TestStatusHealthWithNoData(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestStatusHealthBlock(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = supervisor.URL
 	c.RuntimeAuth = "supervisor-auth"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

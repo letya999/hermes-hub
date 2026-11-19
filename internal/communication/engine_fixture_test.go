@@ -49,12 +49,12 @@ type testOwner struct {
 	mu sync.Mutex
 }
 
-func ownerFixture(t *testing.T) *testOwner {
+func ownerFixture(t *testing.T, additionalUsers ...User) *testOwner {
 	t.Helper()
-	return ownerFixtureDeps(t, routines.Deps{})
+	return ownerFixtureDeps(t, routines.Deps{}, additionalUsers...)
 }
 
-func ownerFixtureDeps(t *testing.T, extra routines.Deps) *testOwner {
+func ownerFixtureDeps(t *testing.T, extra routines.Deps, additionalUsers ...User) *testOwner {
 	t.Helper()
 	// One durable root, like the retired unified spool: engine record dirs
 	// and the communication outbox/tasks/mappings trees share it, so
@@ -69,7 +69,10 @@ func ownerFixtureDeps(t *testing.T, extra routines.Deps) *testOwner {
 			t.Fatal(err)
 		}
 	}
-	g := &Gateway{spool: spool, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, users: map[int64]User{11: {ID: "alice", Enabled: true}}}
+	g := &Gateway{spool: spool, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}}
+	g.config.Users = append(g.config.Users, additionalUsers...)
+	provisionTestIdentity(t, &g.config)
+
 	channels := map[string]routines.OccurrenceChannel{
 		"telegram_bot": channel.NewTelegram(g.telegramDeps()),
 		"mock":         channel.NewMock(g.mockDeps()),
@@ -86,7 +89,7 @@ func ownerFixtureDeps(t *testing.T, extra routines.Deps) *testOwner {
 	} else if err := os.WriteFile(routingPath, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	o.policy = automation.ChannelPolicy{RoutingFile: routingPath, LegacyRoot: root}
+	o.policy = automation.ChannelPolicy{Identity: g.config.Identity, RoutingFile: routingPath, LegacyRoot: root}
 	deps := routines.Deps{
 		Hooks: routines.DraftHooks{
 			Channel: func(in commodel.Schedule) error {

@@ -40,12 +40,9 @@ func TestRelayRunStreamOutlivesLegacyClientTimeout(t *testing.T) {
 	}))
 	defer api.Close()
 	m.cfg.HTTP = &http.Client{Timeout: 40 * time.Millisecond}
-	normalized, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
+	normalized := testWarmBinding(t, m, binding(root))
 	m.mu.Lock()
-	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "g1", Address: api.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{IdentityRevision: normalized.IdentityRevision, PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "g1", Address: api.URL, State: Ready}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
 	m.mu.Unlock()
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "long-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "long", Text: "private"}
 	body, _ := json.Marshal(request)

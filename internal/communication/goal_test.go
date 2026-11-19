@@ -150,7 +150,7 @@ func TestGoalClear(t *testing.T) {
 // and queues the kickoff turn as an ordinary spool job (SPEC-0074).
 func TestGoalSetRoutesToRuntimeAndPersists(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestGoalSetRoutesToRuntimeAndPersists(t *testing.T) {
 // no goal says so honestly instead of fabricating one.
 func TestGoalStatusCommand(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestGoalStatusCommand(t *testing.T) {
 // model call; resuming re-queues the turn as an ordinary spool job.
 func TestGoalPauseResumeHub(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestGoalPauseResumeHub(t *testing.T) {
 // answering — the local row is only a mirror.
 func TestGoalNativeStatusMirrorsUpstream(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestGoalNativeStatusMirrorsUpstream(t *testing.T) {
 // the returned state.
 func TestGoalNativeControlOpsRouteToRuntime(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestGoalNativeControlOpsRouteToRuntime(t *testing.T) {
 // turns still in the spool become stale at claim (SPEC-0074).
 func TestGoalClearCommand(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestGoalClearCommand(t *testing.T) {
 // collide with the cleared goal's kickoff still durable in the spool.
 func TestGoalSetAfterClearEnqueuesFreshKickoff(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +534,7 @@ func TestGoalSetAfterClearEnqueuesFreshKickoff(t *testing.T) {
 // never silently become goal text (SPEC-0074).
 func TestGoalUnsupportedVerbRefusal(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +568,7 @@ func TestGoalUnsupportedVerbRefusal(t *testing.T) {
 // goal become stale (SPEC-0074).
 func TestGoalResetBumpsEpochAndPinsEngine(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestGoalResetBumpsEpochAndPinsEngine(t *testing.T) {
 // surfaces verbatim and must not leave a half-written record.
 func TestGoalSetNamedRefusal(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +698,7 @@ func (f *goalLoopRunner) Goal(_ context.Context, request hubruntime.GoalRequest)
 // verdict increments the turn counter and queues the next turn (SPEC-0074).
 func TestGoalAfterJobContinueEnqueuesNext(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +750,7 @@ func TestGoalAfterJobContinueEnqueuesNext(t *testing.T) {
 // mirrors them instead of incrementing a second, diverging count.
 func TestGoalAfterJobNativeMirrorsTurnBudget(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +793,7 @@ func TestGoalAfterJobNativeMirrorsTurnBudget(t *testing.T) {
 // evidence excerpt — never a bare "done" claim (SPEC-0074 R3).
 func TestGoalAfterJobDoneNotifiesWithEvidence(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,7 +851,7 @@ func TestGoalAfterJobDoneNotifiesWithEvidence(t *testing.T) {
 // its done notification must not collide with the earlier goal's.
 func TestGoalDoneNotificationsDoNotCollideAcrossLifetimes(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,7 +890,7 @@ func TestGoalDoneNotificationsDoNotCollideAcrossLifetimes(t *testing.T) {
 // are queued (SPEC-0074).
 func TestGoalAfterJobBlockedStops(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -939,7 +939,7 @@ func TestGoalAfterJobBlockedStops(t *testing.T) {
 // on a continue verdict (SPEC-0074).
 func TestGoalAfterJobMaxTurnsStops(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -988,7 +988,7 @@ func TestGoalAfterJobMaxTurnsStops(t *testing.T) {
 // the budget on blind turns (SPEC-0074).
 func TestGoalAfterJobTransportStreakPauses(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1037,7 +1037,7 @@ func TestGoalAfterJobTransportStreakPauses(t *testing.T) {
 // never invoked for a goal that moved on (SPEC-0074).
 func TestGoalStaleEpochNoOpsAtClaim(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,7 +1085,7 @@ func TestGoalStaleEpochNoOpsAtClaim(t *testing.T) {
 // reason).
 func TestGoalTurnRunFailurePausesWithoutResubmission(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1142,7 @@ func TestGoalTurnRunFailurePausesWithoutResubmission(t *testing.T) {
 // an instant "empty Hermes prompt" failure at run time.
 func TestGoalAfterJobHubContinueRestatesGoal(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,7 +1188,7 @@ func TestGoalAfterJobHubContinueRestatesGoal(t *testing.T) {
 func TestGoalsEndpointOps(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1283,7 @@ func TestGoalsEndpointOps(t *testing.T) {
 // user's turn (SPEC-0074).
 func TestGoalUserMessagePreemptsContinuation(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -54,7 +54,9 @@ func TestHandleStatusAuthAndShape(t *testing.T) {
 	}
 	writeSpoolRecord(t, root, filepath.Join("failed", "j9.json"))
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
-	g := &Gateway{config: Config{ControlAuth: "service", Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", Users: []User{alice}}, spool: spool, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 

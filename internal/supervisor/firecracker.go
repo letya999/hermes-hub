@@ -130,7 +130,7 @@ func (m *Manager) fcGuestMounts(binding Binding, settings stack.Settings, envNam
 		{"/run/model-config/models.yaml", filepath.Join(dir, "generated", "model-registry", envName, "models.yaml"), true},
 		{"/run/model-state", filepath.Join(managedDir, "model-relay"), false},
 	}
-	if soul := filepath.Join(dir, "generated", "soul-effective."+envName+".md"); fileExists(soul) {
+	if soul := stack.EffectiveSoulPath(dir, settings); fileExists(soul) {
 		mounts = append(mounts, fcMount{"/state/hermes/SOUL.md", soul, true})
 	}
 	if settings.PassportWorkspace != nil {
@@ -280,8 +280,16 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	envName := m.environment()
 	m.prepareSpawnFiles(binding, envName)
 	settings := request.Settings
+	var identityErr error
+	settings, identityErr = m.applyIdentityTemplate(binding, settings)
+	if identityErr != nil {
+		return ComputeObservation{}, identityErr
+	}
 	if settings.Environment == "" {
 		settings.Environment = envName
+	}
+	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
+		return ComputeObservation{}, err
 	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, envName)
 	if err != nil {

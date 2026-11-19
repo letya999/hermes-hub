@@ -51,13 +51,7 @@ func (g *Gateway) handleAutomationOwnerHome(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	var chatID int64
-	for _, candidate := range user.TelegramIDs {
-		if mapped, ok := g.users[candidate]; ok && mapped.ID == principal {
-			chatID = candidate
-			break
-		}
-	}
+	chatID, _, _ := g.ownerHome(user)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		ChatID int64       `json:"chat_id"`

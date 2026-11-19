@@ -16,7 +16,9 @@ func TestAutomationOwnerHomeUsesLiveOwner(t *testing.T) {
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
-	g := &Gateway{config: Config{ControlAuth: "service", OrganizationID: "personal", Users: []User{alice, bob}}, spool: spool, users: map[int64]User{11: alice, 22: bob}, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", OrganizationID: "personal", Users: []User{alice, bob}}, spool: spool, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	client := automation.HTTPCommunicationClient{URL: server.URL, Token: "service"}
@@ -28,7 +30,7 @@ func TestAutomationOwnerHomeUsesLiveOwner(t *testing.T) {
 		t.Fatal("wrong service bearer read an owner home")
 	}
 	client.Token = "service"
-	g.users[11] = bob
+	fixtureRevokeChannel(t, g, 11)
 	if home, _, err := client.OwnerHome(context.Background(), "alice"); err != nil || home != 0 {
 		t.Fatalf("rebound home was still routable: chat=%d err=%v", home, err)
 	}
@@ -36,7 +38,9 @@ func TestAutomationOwnerHomeUsesLiveOwner(t *testing.T) {
 
 func TestAutomationOwnerHomeRequiresAutomationServiceBearer(t *testing.T) {
 	owner := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
-	g := &Gateway{config: Config{ControlAuth: "owner-runtime", AutomationAuth: "automation-service", Users: []User{owner}}, users: map[int64]User{11: owner}}
+	g := &Gateway{config: Config{ControlAuth: "owner-runtime", AutomationAuth: "automation-service", Users: []User{owner}}}
+	provisionTestIdentity(t, &g.config)
+
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	client := automation.HTTPCommunicationClient{URL: server.URL, Token: "automation-service"}

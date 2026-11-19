@@ -1,8 +1,9 @@
 package communication
 
 import (
-	"crypto/subtle"
+	"context"
 	"errors"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"html"
 	"io"
 	"net/http"
@@ -24,7 +25,6 @@ import (
 type iamState struct {
 	mu       sync.Mutex
 	provider *iam.Provider
-	links    *iam.LinkStore
 	nonces   map[string]linkNonce
 	pending  map[string]oidcPending
 }
@@ -33,6 +33,7 @@ type iamState struct {
 // set binds the verified login to that user (/link); empty principal means
 // enrolment — the callback resolves the principal by OIDCSubject match.
 type linkNonce struct {
+	channel     contract.ChannelIdentity
 	transportID string
 	principal   string
 	expires     time.Time
@@ -41,6 +42,7 @@ type linkNonce struct {
 // oidcPending binds an in-flight authorize round trip: state → verifier,
 // expected id_token nonce and the original link challenge.
 type oidcPending struct {
+	channel     contract.ChannelIdentity
 	verifier    string
 	oidcNonce   string
 	transportID string
@@ -73,49 +75,19 @@ func (g *Gateway) oidcProvider() (*iam.Provider, error) {
 	return provider, nil
 }
 
-// iamResolveTransport is the ingress fallback for channel accounts bound via
-// a verified link instead of the static users.yaml mapping. The resolved user
-// carries SSO provenance so every envelope it mints shows who vouched for it.
-func (g *Gateway) iamResolveTransport(transportID string) (User, bool) {
-	if !g.iamEnabled() || g.iam.links == nil {
-		return User{}, false
-	}
-	link, ok := g.iam.links.Resolve(transportID)
-	if !ok {
-		return User{}, false
-	}
-	user := g.user(link.Principal)
-	if !user.Enabled {
-		return User{}, false
-	}
-	user.SSOIssuer, user.SSOSubject = link.Issuer, link.Subject
-	return user, true
-}
-
-// iamPrincipalBySubject resolves the single enabled user provisioned with
-// this corporate subject. Zero or ambiguous matches deny.
-func (g *Gateway) iamPrincipalBySubject(subject string) (string, bool) {
-	principal := ""
-	for _, user := range g.config.Users {
-		if !user.Enabled || user.OIDCSubject == "" || subtle.ConstantTimeCompare([]byte(user.OIDCSubject), []byte(subject)) != 1 {
-			continue
-		}
-		if principal != "" {
-			return "", false
-		}
-		principal = user.ID
-	}
-	return principal, principal != ""
-}
-
 // iamMintNonce issues a single-use link challenge for transportID; principal
 // may be empty (enrolment) — the callback decides by subject match.
 func (g *Gateway) iamMintNonce(transportID, principal string) string {
+	channel, _ := LegacyChannelIdentity(transportID, g.config.Users)
+	return g.iamMintChannelNonce(channel, transportID, principal)
+}
+
+func (g *Gateway) iamMintChannelNonce(channel contract.ChannelIdentity, transportID, principal string) string {
 	st := g.iam
 	token := iam.RandomToken()
 	st.mu.Lock()
 	g.iamSweepLocked()
-	st.nonces[token] = linkNonce{transportID: transportID, principal: principal, expires: g.now().Add(iamLinkTTL)}
+	st.nonces[token] = linkNonce{channel: channel, transportID: transportID, principal: principal, expires: g.now().Add(iamLinkTTL)}
 	st.mu.Unlock()
 	return token
 }
@@ -245,7 +217,7 @@ func (g *Gateway) serveOIDCStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	verifier, oidcNonce := iam.RandomToken(), iam.RandomToken()
-	state := g.iamPutPending(oidcPending{verifier: verifier, oidcNonce: oidcNonce, transportID: nonce.transportID, principal: nonce.principal, expires: g.now().Add(iamLinkTTL)})
+	state := g.iamPutPending(oidcPending{channel: nonce.channel, verifier: verifier, oidcNonce: oidcNonce, transportID: nonce.transportID, principal: nonce.principal, expires: g.now().Add(iamLinkTTL)})
 	authURL, err := provider.AuthURL(r.Context(), state, oidcNonce, iam.PKCEChallenge(verifier))
 	if err != nil {
 		g.iamTakePending(state)
@@ -280,17 +252,15 @@ func (g *Gateway) serveOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		deny("iam.denied-body", http.StatusForbidden)
 		return
 	}
-	principal := pending.principal
-	if principal == "" {
-		resolved, found := g.iamPrincipalBySubject(claims.Subject)
-		if !found {
-			deny("iam.unprovisioned-body", http.StatusForbidden)
-			return
+	if err := g.config.IdentityLinks.VerifyOIDC(r.Context(), contract.OIDCLink{Channel: pending.channel, PrincipalID: pending.principal, Issuer: claims.Issuer, Subject: claims.Subject}); err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, contract.ErrForbidden) || errors.Is(err, contract.ErrInvalid) {
+			status = http.StatusForbidden
 		}
-		principal = resolved
-	}
-	if err := g.iam.links.Link(claims.Issuer, claims.Subject, principal, pending.transportID); err != nil {
-		deny("iam.conflict-body", http.StatusConflict)
+		if errors.Is(err, contract.ErrUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		deny("iam.conflict-body", status)
 		return
 	}
 	g.iamPage(w, lang, "iam.done", "iam.done-body", http.StatusOK)
@@ -306,7 +276,15 @@ func (g *Gateway) linkCommand(lang locale.Lang, route commandRoute) string {
 	if origin == "" || route.transportID == "" {
 		return locale.T(lang, "chat.link-unavailable")
 	}
-	token := g.iamMintNonce(route.transportID, route.principal)
+	channel := route.verifiedChannel
+	if channel.Channel == "" {
+		channel, _ = LegacyChannelIdentity(route.transportID, g.config.Users)
+	}
+	principal, _, ok := g.identityChannel(context.Background(), channel)
+	if !ok {
+		return locale.T(lang, "chat.link-unavailable")
+	}
+	token := g.iamMintChannelNonce(channel, route.transportID, principal.ID)
 	return locale.T(lang, "chat.link-url", origin+"/iam/link/"+token)
 }
 
@@ -316,7 +294,12 @@ func (g *Gateway) unlinkCommand(lang locale.Lang, route commandRoute) string {
 	if !g.iamEnabled() {
 		return locale.T(lang, "chat.link-disabled")
 	}
-	if route.transportID == "" || !g.iam.links.Unlink(route.transportID) {
+	channel := route.verifiedChannel
+	if channel.Channel == "" {
+		channel, _ = LegacyChannelIdentity(route.transportID, g.config.Users)
+	}
+	principal, _, ok := g.identityChannel(context.Background(), channel)
+	if !ok || g.config.IdentityLinks.Unlink(context.Background(), contract.UnlinkRequest{Channel: channel, PrincipalID: principal.ID}) != nil {
 		return locale.T(lang, "chat.unlink-none")
 	}
 	return locale.T(lang, "chat.unlinked")
@@ -342,6 +325,6 @@ func (g *Gateway) slackEnrolHint(teamID, userID string) string {
 	if !g.iamEnabled() || strings.TrimSpace(g.config.FormOrigin) == "" {
 		return ""
 	}
-	token := g.iamMintNonce(identity.SlackIdentity(teamID, userID), "")
+	token := g.iamMintChannelNonce(contract.ChannelIdentity{Channel: contract.Slack, ID: (SlackLink{TeamID: teamID, UserID: userID}).Key()}, identity.SlackIdentity(teamID, userID), "")
 	return strings.TrimSuffix(g.config.FormOrigin, "/") + "/iam/link/" + token
 }

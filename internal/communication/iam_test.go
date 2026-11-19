@@ -79,14 +79,13 @@ func newIAMGateway(t *testing.T, idp *iamFixtureIdP) *Gateway {
 	config.OIDCIssuer = idp.URL
 	config.OIDCClientID = "hub-client"
 	config.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if g.iam == nil {
 		t.Fatal("iam state not configured")
 	}
-	t.Cleanup(func() { _ = g.iam.links.Close() })
 	return g
 }
 
@@ -120,7 +119,7 @@ func TestIAMLinkBindsVerifiedSubject(t *testing.T) {
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
 
-	token := g.iamMintNonce("telegram-99", "alice")
+	token := g.iamMintNonce("telegram-11", "alice")
 	page := httptest.NewRecorder()
 	g.Handler().ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/iam/link/"+token, nil))
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "iam/oidc/start") {
@@ -129,8 +128,8 @@ func TestIAMLinkBindsVerifiedSubject(t *testing.T) {
 	if code := iamRunFlow(t, g, idp, token); code != http.StatusOK {
 		t.Fatalf("callback = %d", code)
 	}
-	link, ok := g.iam.links.Resolve("telegram-99")
-	if !ok || link.Principal != "alice" || link.Subject != "corp-sub-1" || link.Issuer != idp.URL {
+	link, ok := fixtureBinding(g, "alice", "telegram-11")
+	if !ok || link.PrincipalID != "alice" || link.Subject != "corp-sub-1" || link.Issuer != idp.URL {
 		t.Fatalf("link = %+v ok=%v", link, ok)
 	}
 }
@@ -139,7 +138,7 @@ func TestIAMLinkedTransportResolvesWithProvenance(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
-	if err := g.iam.links.Link(idp.URL, "corp-sub-1", "alice", "telegram-77"); err != nil {
+	if err := fixtureOIDCLink(t, g, "alice", "telegram-77", "corp-sub-1"); err != nil {
 		t.Fatal(err)
 	}
 	user, ok := g.telegramUserFor(77, 77)
@@ -159,7 +158,7 @@ func TestIAMLinkTokenSingleUse(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
-	token := g.iamMintNonce("telegram-98", "alice")
+	token := g.iamMintNonce("telegram-11", "alice")
 	if code := iamRunFlow(t, g, idp, token); code != http.StatusOK {
 		t.Fatalf("first flow = %d", code)
 	}
@@ -188,11 +187,10 @@ func TestIAMEnrolResolvesProvisionedSubject(t *testing.T) {
 	config.OIDCClientID = "hub-client"
 	config.FormOrigin = "http://127.0.0.1:8081"
 	config.Users[0].OIDCSubject = "corp-sub-1"
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = g.iam.links.Close() })
 	token := g.iamMintNonce("telegram-55", "")
 	if code := iamRunFlow(t, g, idp, token); code != http.StatusOK {
 		t.Fatalf("enrol flow = %d", code)
@@ -211,7 +209,7 @@ func TestIAMEnrolUnprovisionedDenied(t *testing.T) {
 	if code := iamRunFlow(t, g, idp, token); code != http.StatusForbidden {
 		t.Fatalf("unprovisioned enrol = %d", code)
 	}
-	if _, ok := g.iam.links.Resolve("telegram-56"); ok {
+	if _, ok := fixtureBinding(g, "alice", "telegram-56"); ok {
 		t.Fatal("unprovisioned subject created a link")
 	}
 }
@@ -219,19 +217,25 @@ func TestIAMEnrolUnprovisionedDenied(t *testing.T) {
 func TestIAMConflictDenied(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
-	g := newIAMGateway(t, idp)
-	// Subject already bound to a different principal → ambiguous identity.
-	if err := g.iam.links.Link(idp.URL, "corp-sub-1", "bob", "telegram-44"); err != nil {
+	config := baseTestConfig(t)
+	config.OIDCIssuer, config.OIDCClientID, config.FormOrigin = idp.URL, "hub-client", "http://127.0.0.1:8081"
+	config.Users = append(config.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{44}, StateDir: config.Users[0].StateDir + "-bob", WorkspaceDir: config.Users[0].WorkspaceDir + "-bob"})
+	g, err := newTestGateway(t, config)
+	if err != nil {
 		t.Fatal(err)
 	}
-	token := g.iamMintNonce("telegram-45", "alice")
+	// Subject already bound to a different principal → ambiguous identity.
+	if err := fixtureOIDCLink(t, g, "bob", "telegram-44", "corp-sub-1"); err != nil {
+		t.Fatal(err)
+	}
+	token := g.iamMintNonce("telegram-11", "alice")
 	if code := iamRunFlow(t, g, idp, token); code != http.StatusConflict {
 		t.Fatalf("conflict = %d", code)
 	}
 }
 
 func TestIAMRoutesAbsentWithoutOIDC(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,14 +266,14 @@ func TestIAMUnlinkDropsBinding(t *testing.T) {
 	idp := newIAMFixtureIdP(t)
 	defer idp.Close()
 	g := newIAMGateway(t, idp)
-	if err := g.iam.links.Link(idp.URL, "corp-sub-1", "alice", "telegram-88"); err != nil {
+	if err := fixtureOIDCLink(t, g, "alice", "telegram-88", "corp-sub-1"); err != nil {
 		t.Fatal(err)
 	}
 	route := commandRoute{channel: "telegram_bot", transportID: "telegram-88"}
 	if answer := g.unlinkCommand("en", route); !strings.Contains(answer, "removed") {
 		t.Fatalf("unlink answer = %q", answer)
 	}
-	if _, ok := g.iam.links.Resolve("telegram-88"); ok {
+	if _, ok := fixtureBinding(g, "alice", "telegram-88"); ok {
 		t.Fatal("link survived unlink")
 	}
 	if _, ok := g.telegramUserFor(88, 88); ok {

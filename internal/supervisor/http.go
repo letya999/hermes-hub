@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"io"
 	"log"
@@ -18,8 +19,21 @@ import (
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/identity/links/") {
+		client, ok := m.identityClient().(identitycontract.LinkClient)
+		if !ok || m.cfg.IdentityLinkAuth == "" || m.cfg.IdentityLinkAuth == m.cfg.RuntimeAuth {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return
+		}
+		identitycontract.LinkHandler(client, m.cfg.IdentityLinkAuth).ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/admin/holds" {
 		m.administrativeHold(w, r)
+		return
+	}
+	if r.URL.Path == "/v1/admin/identity/deactivate" {
+		m.deactivateIdentity(w, r)
 		return
 	}
 	if !m.authorized(r) {
@@ -103,6 +117,15 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/script":
 		m.scriptHTTP(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/v1/identity/") {
+			client := m.identityClient()
+			if client == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+				return
+			}
+			identitycontract.Handler(client, m.cfg.RuntimeAuth).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 			m.jobStatus(w, r, strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
 			return

@@ -194,7 +194,7 @@ func TestWatchdogIncidentCoalescing(t *testing.T) {
 	if got := lines(); got != 1 {
 		t.Fatalf("repeat observation appended signal noise: %d", got)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

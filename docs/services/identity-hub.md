@@ -1,31 +1,36 @@
 ---
-description: Identity registry module — SQLite principals, owned agents, scoped administration, narrowing layers and proof-bound channel links; deployment wiring remains in CHG-0331.
+description: Control-zone identity registry — principals, profiles, narrowing layers, verified channels and explicit legacy migration.
 last_verified: 2026-11-19
 ---
 
 # Identity registry module
 
-`internal/identityhub` is the registry foundation for ADR-0106. It implements
-the read side of `contracts/identity/v1` and builds `AgentTemplate` DTOs.
-Control-process wiring, the gateway cutover and verified OIDC-link import
-remain in [CHG-0331](../../.work/in-progress/CHG-0331-identity-hub/plan.md).
+`internal/identityhub` implements ADR-0106's registry in the supervisor/control
+process. `contracts/identity/v1` exposes principal/channel reads, owned-agent
+templates and a separate verified-ingress link interface. Local verification
+and remaining acceptance are tracked in
+[CHG-0331](../../.work/done/CHG-0331-identity-hub/plan.md).
 The existing optional ZITADEL container is an authentication source; this
-module does not replace that deployment. Current gateways still use their
-legacy mapping until the cutover is complete.
+module does not replace that deployment. Gateway configuration retains routing
+paths and passport metadata; its channel lists are migration inputs, never a
+fallback after registry refusal.
 
 ## State and boundaries
 
-`Open(path)` uses `internal/sqlitedb`, schema 1, a private SQLite file and WAL.
+`Open(path)` uses `internal/sqlitedb`, schema 2, a private SQLite file and WAL.
 An existing file must carry the registry's `HID1` application ID and schema
-version. A read-only probe checks those fixed metadata fields before WAL is
+version. Schema-1 registry stores upgrade transactionally without rewriting
+identity/import receipts. A read-only probe checks fixed metadata before WAL is
 enabled; a foreign SQLite store or a symlink is refused. Registry tables hold
 principals, organizations, memberships, owned profiles, space mappings,
-layers, import receipts, channel links, administrative grants and audit.
+layers, shared-space ACLs, exact OIDC subjects, import receipts, channel links,
+administrative grants and audit.
 
 Principal kinds are human, agent and system. An agent has exactly one human
-owner and an assigned space; a bare agent cannot impersonate its human or
-inherit an administrative role. `CanAct` and `Template` use the same database
-predicate, including current org membership. System principals have no owner
+owner. It can act in its assigned private space, explicit shared-space ACLs,
+or its organization's company space with current membership. A bare agent
+cannot impersonate its human or inherit an administrative role. `CanAct` and
+`Template` share the same database predicate. System principals have no owner
 credentials or inherited user grants.
 
 `Diagnostics` returns a fixed struct of counts only: schema, humans, agents,
@@ -55,9 +60,54 @@ mode is `ask-critical`. A stricter parent immediately narrows existing child
 profiles when a template is built. Org company memory names the org's shared
 space, which cannot alias a human's private space.
 
-These constraints do not grant permissions: their consumer must intersect
-them with the published passport ceiling. Spawn-template consumption and
-signed policy publication are not yet wired into the running services.
+Supervisor resolves the template before admission/spawn and records its digest
+beside the runtime generation. A changed digest replaces the stale generation;
+drift during materialization refuses the spawn. Skills narrow the published
+readiness/pin ceiling. Narrowed profiles use separate generated view/meta/SOUL
+paths, including environment and passport revision; parallel profiles cannot
+replace each other's mounted skill view. Post-publish rebuild replays the same
+nullable skill ceiling: null inherits, empty denies all.
+
+Grants, guardrail references, memory scopes and action mode remain template
+constraints, not new rights. Cryptographic policy publication and enforcement
+at run-scoped calls belong to CHG-0332; this registry does not replace the
+published passport/PDP ceiling or claim deployed acceptance.
+
+## Control and edge wiring
+
+`Serve` owns `<StateDir>/identity.<dev|prod>.sqlite`; the default state directory
+is `<spaces>/.control`. Listener failure occurs before registry creation or
+worker startup. Shutdown joins upkeep/reconciliation and the HTTP server before
+closing the owned registry; injected registries retain caller ownership.
+
+Read routes use the control service bearer: `POST /v1/identity/resolve`,
+`GET /v1/identity/principals/<id>`, `GET /v1/identity/bindings/<id>` and
+`POST /v1/identity/template`. Binding results contain verified links only;
+OIDC provenance is specific to the resolved channel.
+
+`POST /v1/identity/links/oidc` and `/v1/identity/links/revoke` require the
+separate `HUB_IDENTITY_LINK_AUTH`, which must differ from service-control.
+Browser-origin requests refuse. Only edge ingress after the existing
+nonce/PKCE/code/ID-token verification may assert OIDC proof; these routes are
+not agent tools. Subjects match exactly; account names/email never match.
+An already mapped channel can acquire provenance for the same owner only.
+Issuer and subject are each limited to 256 bytes, matching the request
+envelope's provenance fields.
+
+`hubctl user disable` installs an ingress hold, then calls
+`POST /v1/admin/identity/deactivate` on supervisor. The route requires
+`HUB_SUPERVISOR_ADMIN_AUTH` distinct from both service-control and verified
+ingress credentials and refuses browser origins. Deactivation is global
+within the selected environment and is safe to retry. Subsequent revocation
+stages clean up the selected context. ToolHub pauses schedules by their
+enrolled owner/context binding, so retired channel links do not block cleanup.
+
+Supervised gateways use their control URL/bearer for reads by default. Explicit
+`HUB_IDENTITY_URL`/`HUB_IDENTITY_AUTH` support other topology selections; missing
+authority refuses startup. OIDC additionally requires the separate ingress
+credential. Telegram, Slack, group ACLs, reverse lookups, owner notices and
+ToolHub automation routing consult the registry. Registry outage/revocation
+never falls back to old channel arrays or the automation routing file.
 
 ## Lifecycle tables
 
@@ -68,6 +118,7 @@ signed policy publication are not yet wired into the running services.
 | Channel link | pending | proof rejected/expired | gone |
 | Channel link | verified | owner revokes | revoked |
 | Channel link | verified | human deleted | gone |
+| Channel link | verified | same-owner OIDC proof | verified, provenance attached |
 | Admin grant | active | administrator revokes | revoked |
 | Admin grant | active | expiry reached | expired |
 
@@ -81,9 +132,9 @@ Channel challenges last at most ten minutes, store only a SHA-256 proof hash
 and are consumed once. Verification binds both proof and the account observed
 by verified channel ingress; a caller-supplied display name is never proof.
 Only verified links to enabled humans resolve. The unique verified-channel
-index prevents concurrent owners claiming one account. Proof expiry is
-currently materialized when verification is attempted; the control upkeep
-sweep and edge proof transport remain part of the cutover.
+index prevents concurrent owners claiming one account. Proof expiry
+materializes on verification and in bounded control upkeep batches. Reproof
+does not resurrect a terminal link; a fresh verified flow creates a new row.
 
 ## Legacy migration matrix
 
@@ -94,10 +145,32 @@ sweep and edge proof transport remain part of the cutover.
 | Telegram / Slack account | exact verified channel binding | No name/email matching |
 | Disabled user | inactive human and owned agent | Channel resolution denies |
 | Organization `<org>` | org membership `member`, shared space `<org>` | No administrator or tool grant added |
+| Dedicated group space | Shared resource with exact existing members | No invented human owner |
+| Explicit group-only account | Opaque channel-only human and owned agent | No private home or org membership |
+| Group with no explicit members | Snapshot of enabled legacy Telegram users | Later links/users do not widen membership implicitly |
+| Disabled/retired account referenced as a new group guest | Import refuses atomically | No resurrection through a guest alias |
+| Provisioned OIDC subject / verified legacy link | Exact issuer+subject ownership; per-link provenance | No fuzzy merge or new IdP federation |
+| Verified legacy OIDC link targeting a disabled user | Entire import refuses atomically | Operator must exclude the stale link from the selected migration input before retrying |
 | State/workspace paths, configured environment, features | Excluded from registry import/digest | Existing runtime/passport owners remain authoritative |
 
 Imports sort and hash only their allowlisted identity inputs. An identical
 re-import is idempotent; changed identity inputs or duplicate account ownership
-refuse without partial writes. Verified OIDC subjects/provenance and operator
-CLI migration are still pending. No live user files were read or migrated to
-produce the local synthetic verification receipts.
+refuse without partial writes. Disabled users' legacy channel arrays grant no
+link ownership. Shared membership changes require scoped administration and
+take effect at the next authorization check.
+
+Run the explicit local operator command before starting consumers:
+
+```text
+hubctl identity migrate --config <legacy-communication.yaml> --control-dir <control-state> --env dev --import-id <receipt-id> [--oidc-links <legacy-iam-links.json>] [--apply]
+```
+
+Without `--apply`, it parses selected inputs and prints source counts only;
+it does not open the registry or promise a conflict-free import. Apply checks
+the current registry transactionally. `--legacy-env-user <id>` explicitly
+imports only `TELEGRAM_ALLOWED_USERS`/`SLACK_ALLOWED_USERS` for a configured
+private user whose channel arrays are empty. No auth/secret file is opened.
+Sources are bounded regular files; symlinks refuse. Old OIDC JSON is read
+without opening its writer/audit journal. Output is fixed counts, never IDs,
+subjects, paths or credential dictionary keys. Source files and session IDs
+are not rewritten. No live user files were read or migrated for local receipts.

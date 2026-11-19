@@ -78,7 +78,7 @@ func TestAttachArtifactsStagesBlobsAndMarksFailures(t *testing.T) {
 
 func TestDeliverySendsArtifactsAfterText(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestDeliverySendsArtifactsAfterText(t *testing.T) {
 
 func TestArtifactFailureKeepsSentBoundaryUncertain(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestArtifactFailureKeepsSentBoundaryUncertain(t *testing.T) {
 
 func TestPhotoArtifactFallsBackToDocument(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestPhotoArtifactFallsBackToDocument(t *testing.T) {
 
 func TestVideoArtifactSendsVideoAndFallsBackToDocument(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestSlackArtifactPostsExplicitNotice(t *testing.T) {
 	}))
 	defer server.Close()
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestSlackArtifactPostsExplicitNotice(t *testing.T) {
 
 func TestFailedFetchArtifactSendsExplicitNotice(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

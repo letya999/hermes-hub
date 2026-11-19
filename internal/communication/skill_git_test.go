@@ -89,7 +89,7 @@ func TestSkillGitInstallProducesDraft(t *testing.T) {
 	stub := &skillGitStub{store: c.SkillsStore, commit: commit,
 		tar: skillGitTar(t, map[string]string{"skills/pdf/SKILL.md": testSkillMD})}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSkillGitInstallPerPrincipalStore(t *testing.T) {
 	stub := &skillGitStub{stores: map[string]string{"alice": aliceDir, "bob": bobDir},
 		commit: commit, tar: skillGitTar(t, map[string]string{"skills/pdf/SKILL.md": testSkillMD})}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestSkillGitInstallFailureLogged(t *testing.T) {
 	// A stub whose ls-remote fails drives Install into the error branch.
 	stub := &skillGitStub{store: c.SkillsStore, codes: map[string]int{"ls-remote": 128}}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestSkillGitInstallSiblingWithoutRootRefused(t *testing.T) {
 	c.ControlAuth = "control-token"
 	c.SkillsStore = t.TempDir()
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestSkillGitUpdateProducesDraft(t *testing.T) {
 		tar: skillGitTar(t, map[string]string{"skills/pdf/SKILL.md": testSkillMD + "v2\n"})}
 	stub.codes = map[string]int{"merge-base": 1}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestSkillGitCheckUpdates(t *testing.T) {
 	}
 	stub := &skillGitStub{store: c.SkillsStore, commit: commit}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestSkillGitSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.CLIExec = (&skillGitStub{}).run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestSkillGitRemoveSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.CLIExec = (&skillGitStub{}).run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestSkillGitInstallCandidates(t *testing.T) {
 	stub := &skillGitStub{store: c.SkillsStore, commit: commit,
 		names: "skills/pdf/SKILL.md\nskills/xlsx/SKILL.md\nREADME.md\n"}
 	c.CLIExec = stub.run
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

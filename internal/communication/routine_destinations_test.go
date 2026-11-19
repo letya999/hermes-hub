@@ -434,9 +434,8 @@ func TestRoutineDestinationMoveRetainsPriorAudienceHistory(t *testing.T) {
 	g, host, root, env, a, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
-	g.users[11] = user
-	g.users[12] = user
 	g.config.Users[0] = user
+	fixtureLinkChannel(t, g, user.ID, telegramIdentity(12))
 	b.ChatID = 12
 	b.TopicID = 0
 	if err := atomicJSON(g.spool.taskPath("alice", b.TaskID), b); err != nil {
@@ -512,7 +511,8 @@ func TestRoutineDestinationCardRetainsLastOccurrenceAfterOwnedChatMove(t *testin
 	g, host, root, env, a, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
-	g.users[11], g.users[12], g.config.Users[0] = user, user, user
+	g.config.Users[0] = user
+	fixtureLinkChannel(t, g, user.ID, telegramIdentity(12))
 	b.ChatID, b.TopicID = 12, 0
 	if err := atomicJSON(g.spool.taskPath("alice", b.TaskID), b); err != nil {
 		t.Fatal(err)
@@ -612,7 +612,8 @@ func TestRoutineExplicitDefaultMatchesDiscoveredRootAcrossChats(t *testing.T) {
 	g, host, _, env, _, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
-	g.users[11], g.users[12], g.config.Users[0] = user, user, user
+	g.config.Users[0] = user
+	fixtureLinkChannel(t, g, user.ID, telegramIdentity(12))
 	b.ChatID, b.TopicID = 12, 0
 	if err := atomicJSON(g.spool.taskPath("alice", b.TaskID), b); err != nil {
 		t.Fatal(err)
@@ -637,7 +638,8 @@ func TestRoutineDestinationCardMarksRevokedChatUnavailable(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	g.config.Users[0].TelegramIDs = []int64{12}
+	fixtureLinkChannel(t, g, "alice", telegramIdentity(12))
+	fixtureRevokeChannel(t, g, 11)
 	w = destinationRequest(g, http.MethodGet, "/v1/routines/revoked-chat", "")
 	var card RoutineCard
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &card) != nil || card.Destination == nil || card.Destination.State != "unavailable" {

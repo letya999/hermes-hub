@@ -3,6 +3,10 @@ package toolhub
 import (
 	"context"
 	"errors"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identityhub"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,6 +46,18 @@ func TestAutomationStartupPreflightBeforeOwnerWrites(t *testing.T) {
 	t.Setenv("HUB_AUTOMATION_JOB_URL", "http://127.0.0.1:1")
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", "http://127.0.0.1:1")
 	t.Setenv("HUB_COMMUNICATION_AUTH", "control")
+	registry, err := identityhub.Open(filepath.Join(t.TempDir(), "identity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.ImportLegacy(context.Background(), "fixture", "personal", []commodel.User{{ID: "alice", Enabled: true}, {ID: "bob", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	identityServer := httptest.NewServer(contract.Handler(registry, "identity-token"))
+	defer identityServer.Close()
+	t.Setenv("HUB_IDENTITY_URL", identityServer.URL)
+	t.Setenv("HUB_IDENTITY_AUTH", "identity-token")
 	projection := automationProjectionFixture{principals: []string{"alice", "bob"}}
 	store := NewStore()
 	if _, err := NewAutomationHost(context.Background(), projection, store, nil); err == nil {

@@ -39,7 +39,7 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 			plan = append(plan, PlanMount{Source: filepath.Join(wsBase, filepath.FromSlash(p)), Target: p, ReadOnly: true})
 		}
 	}
-	plan = append(plan, PlanMount{Source: GeneratedEffectiveSkillsDir(dir), Target: "/skills", ReadOnly: true})
+	plan = append(plan, PlanMount{Source: EffectiveSkillsDir(dir, s), Target: "/skills", ReadOnly: true})
 	targets := make([]string, 0, len(ws.Mounts))
 	for t := range ws.Mounts {
 		targets = append(targets, t)

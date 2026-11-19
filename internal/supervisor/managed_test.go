@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -625,6 +626,7 @@ func TestManagedRunArgsMountsViewRebuildContract(t *testing.T) {
 // R5.2: managed org-bound spawns mount the writable org store identically.
 func TestManagedRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	testSetIdentity(t, m, "acme", commodel.User{ID: "alice", Enabled: true})
 	writeManagedFixtures(t, root)
 	orgDir := filepath.Join(filepath.Dir(root), "organizations", "acme")
 	for _, name := range []string{"docs", "skills"} {

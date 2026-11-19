@@ -11,7 +11,7 @@ import (
 func TestTaskControlAPIIsOwnerScopedAndDoesNotSwitchCurrent(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "synthetic"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

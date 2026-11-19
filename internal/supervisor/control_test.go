@@ -231,7 +231,7 @@ func TestUncertainDecisionClosesWithoutClaimingApprovalApplied(t *testing.T) {
 	if err := m.finishJobGeneration(request, response, response.Status, response.RuntimeGeneration); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +576,7 @@ func TestUncertainCancellationReadsOriginalRunBeforeRetryingStop(t *testing.T) {
 	if mutations != 1 || reads != 0 {
 		t.Fatal("expiry did not preserve lost stop outcome")
 	}
-	m, err = New(m.cfg)
+	m, err = newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

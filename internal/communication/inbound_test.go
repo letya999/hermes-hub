@@ -47,7 +47,7 @@ func TestInboundStaging(t *testing.T) {
 
 func TestDocumentUpdateStagesInboundFile(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestInboundEndpointAuthAndConsume(t *testing.T) {
 	_ = os.MkdirAll(bobState, 0700)
 	_ = os.MkdirAll(bobWs, 0700)
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: bobState, WorkspaceDir: bobWs})
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

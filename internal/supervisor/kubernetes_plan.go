@@ -164,6 +164,11 @@ func (k *kubernetesBackend) secretMatches(current, wanted *core.Secret, rt Runti
 
 func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret, error) {
 	binding, settings, rt := request.Binding, request.Settings, request.Runtime
+	var identityErr error
+	settings, identityErr = k.m.applyIdentityTemplate(binding, settings)
+	if identityErr != nil {
+		return nil, nil, identityErr
+	}
 	// shortcut: one gateway per space keeps relay state single-writer; extend with shared relays before adding modes.
 	if binding.RuntimeMode != "gateway" {
 		return nil, nil, errors.New("kubernetes supports the gateway runtime mode")

@@ -71,7 +71,7 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	if _, err := s.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestProgressTickShowsUnadmittedWait(t *testing.T) {
 	if _, err := s.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestProgressTickSkipsUncertainUnadmittedJob(t *testing.T) {
 	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain", LastEvent: "run.unknown"}); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestProgressTickSkipsUncertainUnadmittedJob(t *testing.T) {
 
 func TestTelegramJobQueuesStatusBeforeRuntimeAdmission(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestTelegramJobQueuesStatusBeforeRuntimeAdmission(t *testing.T) {
 // The gateway's run loop schedules the periodic progress tick: a non-terminal
 // telegram job gets its typing action re-armed while Run is alive.
 func TestProgressLoopRunsDuringGatewayRun(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestProgressDeliveryPreservesUsefulTextAndDropsEmptyToolNoise(t *testing.T)
 // later events edit the same Telegram message instead of flooding the chat.
 func TestProgressUsesSingleEditedMessage(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestStatusSurvivesGatewayRestart(t *testing.T) {
 	if _, err := s.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestStatusSurvivesGatewayRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g2, err := New(testConfig(t))
+	g2, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestStatusSurvivesGatewayRestart(t *testing.T) {
 // staircase of stale edits.
 func TestProgressEditRateLimited(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestProgressEditRateLimited(t *testing.T) {
 // resurrect it.
 func TestStatusMessageFinalizedOnResponse(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestStatusMessageFinalizedOnResponse(t *testing.T) {
 // chat never gains a duplicate.
 func TestEditFailureFallsBackWithoutDuplicates(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestEditFailureFallsBackWithoutDuplicates(t *testing.T) {
 // never be duplicated, only abandoned.
 func TestUncertainStatusSendIsNotResent(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestEnqueueWakesWorkerWithoutPoll(t *testing.T) {
 // one-second fallback tick.
 func TestWorkerDrainsEnqueuedJobOnNotify(t *testing.T) {
 	s, job := streamJob(t)
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestWorkerIdlesBetweenSignals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestDeliveryLoopDrainsOnNotify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +712,7 @@ func TestControlLoopWakesOnCancelRequest(t *testing.T) {
 	s, job := streamJob(t)
 	config := testConfig(t)
 	config.RuntimeURL, config.RuntimeAuth = rt.URL, "token"
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestControlLoopCompactsAgedTerminal(t *testing.T) {
 	_ = os.Chtimes(s.mappingPath("aged-job"), old, old)
 	config := testConfig(t)
 	config.SpoolRetention = time.Hour
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1642,7 +1642,7 @@ func TestApprovalRequestDeliversInlineButtons(t *testing.T) {
 // A delivery carrying buttons goes out as an inline keyboard, not plain text.
 func TestDeliverOneSendsApprovalKeyboard(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1666,7 +1666,7 @@ func TestDeliverOneSendsApprovalKeyboard(t *testing.T) {
 // the approval exactly like /approve — verified sender, job-bound, idempotent.
 func TestApprovalCallbackQueryAppliesChoice(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1756,7 +1756,7 @@ func TestApprovalIdentityAndDeadlineSurviveRestart(t *testing.T) {
 // "confirm action" forces a blind decision on a two-minute clock.
 func TestApprovalRequestDeliveryShowsSummaryAndDeadline(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1784,7 +1784,7 @@ func TestApprovalRequestDeliveryShowsSummaryAndDeadline(t *testing.T) {
 // confirmation expired — instead of a bare "cancelled".
 func TestExpiredApprovalCancelReportsReason(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1827,7 +1827,7 @@ func TestExpiredApprovalCancelReportsReason(t *testing.T) {
 // not that the task failed on its own.
 func TestDeniedApprovalCancelReportsReason(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 // outcome route (observed: gitlab form landed in the marketplace topic).
 func TestPrepareOriginFollowsInitiatingJobNotNewest(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestPrepareOriginFollowsInitiatingJobNotNewest(t *testing.T) {
 // initiator exists.
 func TestPrepareOriginIgnoresLegacyRouteRecords(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestPrepareOriginIgnoresLegacyRouteRecords(t *testing.T) {
 
 func TestPrepareOriginIgnoresOldUncertainMockJob(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

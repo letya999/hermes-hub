@@ -99,10 +99,10 @@ func runUserDisable(ctx context.Context, out io.Writer, opts userDisableOptions)
 		return fmt.Errorf("%s", locale.T(lang, "hubctl.user-disable-scope"))
 	}
 	if opts.SupervisorAuth == "" {
-		opts.SupervisorAuth = resolveStatusToken(dir)
+		opts.SupervisorAuth = strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH"))
 	}
 	if opts.GatewayAuth == "" {
-		opts.GatewayAuth = resolveGatewayToken(dir, opts.Environment, opts.SupervisorAuth)
+		opts.GatewayAuth = resolveGatewayToken(dir, opts.Environment, resolveStatusToken(dir))
 	}
 	if opts.ToolHubAuth == "" {
 		opts.ToolHubAuth = opts.GatewayAuth
@@ -121,11 +121,12 @@ func runUserDisable(ctx context.Context, out io.Writer, opts userDisableOptions)
 	operationID := audit.NewEvent("principal-revocation", principal, "started").EventID
 	calls := []revocationCall{
 		{Stage: "ingress", URL: opts.SupervisorURL + "/v1/admin/holds", Token: opts.SupervisorAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "reason": "manual", "defer_containment": true}},
+		{Stage: "identity", URL: opts.SupervisorURL + "/v1/admin/identity/deactivate", Token: opts.SupervisorAuth, Body: map[string]any{"principal_id": principal, "environment": opts.Environment}},
 		{Stage: "jobs", URL: opts.GatewayURL + "/v1/admin/revocations", Token: opts.GatewayAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "jobs"}},
 		{Stage: "runs", URL: opts.SupervisorURL + "/v1/admin/holds", Token: opts.SupervisorAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "reason": "manual", "defer_containment": false}},
 		{Stage: "toolhub", URL: opts.ToolHubURL + "/v1/admin/revocations", Token: opts.ToolHubAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "toolhub"}},
 		{Stage: "connectors", URL: opts.ToolHubURL + "/v1/admin/revocations", Token: opts.ToolHubAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "connectors"}},
-		{Stage: "cron", URL: opts.GatewayURL + "/v1/admin/revocations", Token: opts.GatewayAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "cron"}},
+		{Stage: "cron", URL: opts.ToolHubURL + "/v1/admin/revocations", Token: opts.ToolHubAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "cron"}},
 		{Stage: "oauth", URL: opts.ToolHubURL + "/v1/admin/revocations", Token: opts.ToolHubAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "oauth"}},
 		{Stage: "delivery", URL: opts.GatewayURL + "/v1/admin/revocations", Token: opts.GatewayAuth, Body: map[string]any{"principal_id": principal, "context_id": contextID, "stage": "delivery"}},
 	}

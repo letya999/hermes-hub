@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"errors"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"os"
 
 	"github.com/letya999/hermes-hub/internal/channel"
@@ -44,7 +45,17 @@ func NewAutomationHost(ctx context.Context, projection AutomationProjection, sto
 		return nil, errors.New("automation: unsupported runtime topology")
 	}
 	client := &automation.HTTPCommunicationClient{URL: communicationURL, Token: token}
-	policy := automation.ChannelPolicy{RoutingFile: os.Getenv("HUB_AUTOMATION_ROUTING"), LegacyRoot: os.Getenv("HUB_AUTOMATION_LEGACY_SPOOL")}
+	identityURL, identityAuth := os.Getenv("HUB_IDENTITY_URL"), os.Getenv("HUB_IDENTITY_AUTH")
+	if identityURL == "" && jobPath != "/v1/execute" {
+		identityURL = jobURL
+	}
+	if identityAuth == "" {
+		identityAuth = token
+	}
+	if identityURL == "" || identityAuth == "" {
+		return nil, errors.New("automation: identity authority unavailable")
+	}
+	policy := automation.ChannelPolicy{Identity: contract.NewHTTPClient(identityURL, identityAuth, nil), RoutingFile: os.Getenv("HUB_AUTOMATION_ROUTING"), LegacyRoot: os.Getenv("HUB_AUTOMATION_LEGACY_SPOOL")}
 	if err := policy.Validate(principals); err != nil {
 		return nil, err
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/devcheck"
+	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -198,6 +199,11 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	toolPort := listener.Addr().(*net.TCPAddr).Port
 	h.toolURL = fmt.Sprintf("http://127.0.0.1:%d", toolPort)
 	m32Require(t, listener.Close())
+	registryPath, err := identityhub.StorePath(filepath.Join(f.Root, ".control"), environment)
+	m32Require(t, err)
+	registry, err := identityhub.Open(registryPath)
+	m32Require(t, err)
+	t.Cleanup(func() { m32Require(t, registry.Close()) })
 	// Register cleanup before the first resource; each successful create is owned explicitly.
 	t.Cleanup(func() {
 		if image == "" {
@@ -266,7 +272,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	if runtimeImage == "" {
 		runtimeImage = "m32-unspawned"
 	}
-	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command})
+	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command, Identity: registry})
 	m32Require(t, err)
 	h.supervisor = httptest.NewServer(h.manager.Handler())
 	t.Cleanup(h.supervisor.Close)
@@ -274,6 +280,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	vaultRoot := filepath.Join(f.Root, "vaults")
 	owners := filepath.Join(f.Root, "owners")
 	users := []commodel.User{}
+	var shared []identityhub.LegacySharedSpace
 	for i, user := range f.Users {
 		dir := filepath.Join(f.Root, "spaces", user)
 		auth, err := stack.ReadSecrets(filepath.Join(dir, "runtime.auth"))
@@ -285,7 +292,12 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		m32Require(t, vault.Ensure(v))
 		m32Require(t, os.WriteFile(filepath.Join(v, "memory", "CORE.md"), []byte("M32-private-marker-"+user+"\n"), 0600))
 		m32Require(t, os.WriteFile(filepath.Join(v, "memory", "cards", "notes", "m32-owner.md"), []byte("M32-private-marker-"+user+"\n"), 0600))
-		users = append(users, commodel.User{ID: user, RuntimeID: user, PolicyVersion: f.Auth[user].PolicyVersion, Enabled: true, TelegramIDs: []int64{int64(11 + i)}, Features: []string{"workspace", "telegram"}})
+		routingUser := commodel.User{ID: user, RuntimeID: user, PolicyVersion: f.Auth[user].PolicyVersion, Enabled: true, TelegramIDs: []int64{int64(11 + i)}, Features: []string{"workspace", "telegram"}}
+		if user == f.GroupSpace {
+			shared = append(shared, identityhub.LegacySharedSpace{ID: user, Members: routingUser.TelegramIDs})
+			routingUser.TelegramIDs = nil
+		}
+		users = append(users, routingUser)
 		if image == "" {
 			continue
 		}
@@ -324,6 +336,8 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 			h.docker(t, ctx, "network", "connect", "--alias", service, agentNet, name)
 		}
 	}
+	_, err = registry.ImportLegacyConfiguration(ctx, identityhub.LegacyConfiguration{Name: "m32", Organization: "personal", Users: users, SharedSpaces: shared})
+	m32Require(t, err)
 	routing := filepath.Join(f.Root, "routing.json")
 	body, err := json.Marshal(map[string]any{"organization_id": "personal", "users": users})
 	m32Require(t, err)
@@ -331,6 +345,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	channelURL, sends := m32ChannelFixture(t)
 	h.channelSends = sends
 	h.gatewayConfig = communication.Config{Supervised: true, Environment: environment, OrganizationID: "personal", Users: users, SpoolDir: filepath.Join(f.Root, "communication"), TelegramToken: "synthetic-m32-bot", APIBaseURL: channelURL, PollTimeout: time.Second, ControlAuth: h.tokens[f.Users[0]], ControlPrincipal: f.Users[0], AutomationAuth: h.control, ControlTokensFile: filepath.Join(f.Infra, "toolhub-tokens.json"), RuntimeURL: h.supervisor.URL, RuntimeAuth: h.control, ToolHubURL: h.toolURL}
+	h.gatewayConfig.Identity = registry
 	gateway, err := communication.New(h.gatewayConfig)
 	m32Require(t, err)
 	h.gateway = gateway
@@ -360,6 +375,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		"HUB_COMMUNICATION_AUTH": h.control, "HUB_SUPERVISOR_AUTH": h.control, "HUB_RUNTIME_SUPERVISOR_URL": h.supervisor.URL, "HUB_TOOLHUB_URL_PATTERN": h.toolURL,
 		"HUB_AUTOMATION_ROOT": filepath.Join(f.Root, "automation"), "HUB_AUTOMATION_OWNERS": owners, "HUB_AUTOMATION_LEGACY_SPOOL": filepath.Join(f.Root, "communication"), "HUB_AUTOMATION_ROUTING": routing,
 		"HUB_AUTOMATION_ENVIRONMENT": environment, "HUB_AUTOMATION_JOB_URL": h.supervisor.URL, "HUB_COMMUNICATION_CONTROL_URL": comm.URL,
+		"HUB_IDENTITY_URL": h.supervisor.URL, "HUB_IDENTITY_AUTH": h.control,
 	} {
 		t.Setenv(key, value)
 	}

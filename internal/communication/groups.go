@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -162,24 +163,14 @@ func (g *Gateway) groupFor(chatID int64) *Group {
 
 func (g *Gateway) telegramUserFor(chatID, sender int64) (User, bool) {
 	if chatID >= 0 {
-		user, ok := g.users[sender]
-		if !ok {
-			return g.iamResolveTransport("telegram-" + strconv.FormatInt(sender, 10))
-		}
-		user = g.user(user.ID)
-		return user, user.Enabled
+		return g.identityUser(context.Background(), telegramIdentity(sender))
 	}
 	group := g.groupFor(chatID)
 	if group == nil {
 		return User{}, false
 	}
 	if group.Mode == "topics" {
-		user, ok := g.users[sender]
-		if !ok {
-			return g.iamResolveTransport("telegram-" + strconv.FormatInt(sender, 10))
-		}
-		user = g.user(user.ID)
-		return user, user.Enabled
+		return g.identityUser(context.Background(), telegramIdentity(sender))
 	}
 	if !g.groupMember(*group, sender) {
 		return User{}, false
@@ -201,18 +192,18 @@ func (g *Gateway) botUsername(ctx context.Context) string {
 	return g.botName
 }
 
-// groupMember resolves group membership: an explicit members list wins, while
-// an empty list admits every configured Telegram user — they are trusted in
-// their own DMs already, and execution still lands in the dedicated space.
+// Group.Members is migration input; the current registry ACL is the authority.
 func (g *Gateway) groupMember(group Group, sender int64) bool {
-	if slices.Contains(group.Members, sender) {
-		return true
+	principal, _, ok := g.identityChannel(context.Background(), telegramIdentity(sender))
+	if !ok {
+		return false
 	}
-	if len(group.Members) == 0 {
-		_, ok := g.users[sender]
-		return ok
+	value, err := g.config.Identity.Template(context.Background(), identitycontract.TemplateRequest{Subject: principal.ID, Actor: "agent:" + principal.ID + ":default", Space: group.Space})
+	org := g.config.OrganizationID
+	if org == "personal" {
+		org = ""
 	}
-	return false
+	return err == nil && value.SpaceKind == "shared" && value.OrganizationID == org
 }
 
 func (g *Gateway) handleGroupUpdate(ctx context.Context, update Update, message *Message) error {

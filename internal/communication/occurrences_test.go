@@ -27,9 +27,9 @@ import (
 // The replay/dedup assertions that used to hang off the old ref format are
 // covered by the automation suite (internal/toolhub/automation).
 
-func occurrenceFixture(t *testing.T) (*testOwner, RoutineOccurrence, *Gateway) {
+func occurrenceFixture(t *testing.T, additionalUsers ...User) (*testOwner, RoutineOccurrence, *Gateway) {
 	t.Helper()
-	s := ownerFixture(t)
+	s := ownerFixture(t, additionalUsers...)
 	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}
 	o := RoutineOccurrence{ScheduleID: "schedule-one", Revision: 1, DueAt: time.Unix(100, 0), Job: job}
 	g := s.g
@@ -709,7 +709,7 @@ func TestOccurrenceRejectsWrongOwnerSecretsRevocationAndExpiredCatchup(t *testin
 			case "secret":
 				o.Job.Text = "GITHUB_TOKEN=secret"
 			case "revoked":
-				delete(g.users, 11)
+				fixtureRevokeChannel(t, g, 11)
 				authorize = func(Job) error { return errors.New("revoked") }
 			case "policy":
 				t.Setenv("HUB_POLICY_VERSION", "policy-new")

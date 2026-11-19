@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,5 +121,34 @@ func TestPrincipalRevocationHTTPContract(t *testing.T) {
 	}
 	if got := store.capabilityProfiles[profile.ProfileID]; got.Status != api.RevokedStatus {
 		t.Fatalf("profile after HTTP revoke=%+v", got)
+	}
+}
+
+func TestCronRevocationUsesEnrolledScopeAfterChannelRetirement(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	g := &Gateway{Store: store, ControlToken: "control", Tokens: map[string]identity.Envelope{"principal-token": auth}}
+	calls := 0
+	g.pauseSchedules = func(_ context.Context, got identity.Envelope) (int, error) {
+		calls++
+		if got.PrincipalID != auth.PrincipalID || got.ContextID != auth.ContextID {
+			t.Error("cron revocation used an unenrolled scope")
+		}
+		return 1, nil
+	}
+	for _, tc := range []struct {
+		contextID string
+		want      int
+	}{{"foreign", http.StatusUnauthorized}, {"alice", http.StatusOK}} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/revocations", strings.NewReader(`{"principal_id":"alice","context_id":"`+tc.contextID+`","stage":"cron"}`))
+		req.Header.Set("Authorization", "Bearer control")
+		req.Header.Set("X-Hub-Principal", "alice")
+		w := httptest.NewRecorder()
+		g.servePrincipalRevocation(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("cron revocation of %s returned %d", tc.contextID, w.Code)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("cron revocation calls: %d", calls)
 	}
 }

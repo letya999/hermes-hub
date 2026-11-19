@@ -84,7 +84,7 @@ func kubeManager(t *testing.T) (*Manager, string, *fake.Clientset) {
 	m.cfg.Kubernetes = KubernetesConfig{Namespace: "runtime-prod", Client: client, RuntimeClassName: "sandbox-test"}
 	m.cfg.Stats = nil
 	var err error
-	m, err = New(m.cfg)
+	m, err = newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestKubernetesBackendSwitchRequiresFencedCompute(t *testing.T) {
 	}
 	cfg := m.cfg
 	cfg.ExecutionBackend = "docker"
-	if _, err := New(cfg); err == nil {
+	if _, err := newTestManager(t, cfg); err == nil {
 		t.Fatal("live Kubernetes compute was adopted by Docker")
 	}
 	if err := m.ReleaseBinding(binding(root)); err != nil {
@@ -447,7 +447,7 @@ func TestKubernetesBackendSwitchRequiresFencedCompute(t *testing.T) {
 	if err := m.Reap(t.Context(), m.cfg.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(cfg); err != nil {
+	if _, err := newTestManager(t, cfg); err != nil {
 		t.Fatalf("stopped backend switch: %v", err)
 	}
 }

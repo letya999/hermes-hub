@@ -16,7 +16,7 @@ import (
 // into silent direct egress outside the reviewed perimeter.
 func TestConfigRejectsMalformedEgressProxy(t *testing.T) {
 	t.Setenv("HUB_EGRESS_PROXY", "http://")
-	if _, err := New(testConfig(t)); err == nil || !strings.Contains(err.Error(), "HUB_EGRESS_PROXY") {
+	if _, err := newTestGateway(t, testConfig(t)); err == nil || !strings.Contains(err.Error(), "HUB_EGRESS_PROXY") {
 		t.Fatalf("malformed proxy must fail startup closed: %v", err)
 	}
 }

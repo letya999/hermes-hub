@@ -13,7 +13,7 @@ func TestRevokedGroupMemberCannotDispatchOrReceiveQueuedWork(t *testing.T) {
 	for _, stage := range []string{"dispatch", "delivery"} {
 		t.Run(stage, func(t *testing.T) {
 			c := groupConfig(t)
-			g, err := New(c)
+			g, err := newTestGateway(t, c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +32,7 @@ func TestRevokedGroupMemberCannotDispatchOrReceiveQueuedWork(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			g.config.Groups[0].Members = []int64{22}
+			fixtureSetSharedMembers(t, g, g.config.Groups[0].Space)
 			if stage == "dispatch" {
 				var logs bytes.Buffer
 				previous := log.Writer()

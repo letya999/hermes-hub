@@ -190,6 +190,12 @@ type EffectiveIndex struct {
 // .archive/.state/.sources) are invisible to loadTree, so they cannot
 // leak into the view. The mount is what enforces read-only at runtime.
 func Build(dest string, sources []Source) (*EffectiveIndex, error) {
+	return BuildWithSkillCeiling(dest, sources, nil)
+}
+
+// BuildWithSkillCeiling applies the identity profile before copying any tree.
+// Nil inherits the published surface; an empty list exposes no skills.
+func BuildWithSkillCeiling(dest string, sources []Source, allowed []string) (*EffectiveIndex, error) {
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		return nil, err
 	}
@@ -209,6 +215,9 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 			return nil, fmt.Errorf("source %s: %w", src.Name, err)
 		}
 		for _, name := range names {
+			if allowed != nil && !slices.Contains(allowed, name) {
+				continue
+			}
 			if src.Name != "platform" && ReservedName(name) {
 				idx.Notices = append(idx.Notices, Notice{
 					Kind: "reserved", Name: name, HiddenBySource: src.Name,
@@ -309,6 +318,7 @@ func ReadIndex(dest string) (*EffectiveIndex, error) {
 type ViewMeta struct {
 	Capabilities Capabilities `json:"capabilities"`
 	Pins         []PinnedRef  `json:"pins,omitempty"`
+	SkillCeiling []string     `json:"skill_ceiling"`
 }
 
 const viewMetaFile = "viewmeta.json"
@@ -341,13 +351,13 @@ func LoadViewMeta(metaDir string) (ViewMeta, error) {
 // the persisted capability snapshot, reapply pins, rewrite index.json.
 // The destination is updated in place so running bind mounts see it.
 func RebuildEffective(dest string, sources []Source, metaDir string) (*EffectiveIndex, error) {
-	idx, err := Build(dest, sources)
-	if err != nil {
-		return nil, err
-	}
 	meta, err := LoadViewMeta(metaDir)
 	if err != nil {
 		return nil, fmt.Errorf("view meta: %w", err)
+	}
+	idx, err := BuildWithSkillCeiling(dest, sources, meta.SkillCeiling)
+	if err != nil {
+		return nil, err
 	}
 	idx.ApplyReadiness(meta.Capabilities)
 	if err := idx.Pin(meta.Pins); err != nil {

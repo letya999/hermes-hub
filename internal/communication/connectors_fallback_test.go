@@ -33,7 +33,10 @@ func TestConnectionsFallsBackToToolHubHTTP(t *testing.T) {
 		}})
 	}))
 	defer api.Close()
-	g := &Gateway{config: Config{ToolHubURL: api.URL, RuntimeAuth: "supervisor-bearer", Supervised: true}, users: map[int64]User{11: user}, now: time.Now}
+	g := &Gateway{config: Config{ToolHubURL: api.URL, RuntimeAuth: "supervisor-bearer", Supervised: true}, now: time.Now}
+	g.config.Users = []User{user}
+	provisionTestIdentity(t, &g.config)
+
 	got := g.connectionsCommand(user, 11)
 	if gotAuth != "Bearer supervisor-bearer" || gotPrincipal != "alice" {
 		t.Fatalf("toolhub call auth=%q principal=%q", gotAuth, gotPrincipal)
@@ -154,7 +157,10 @@ func TestConnectorLineCompactsProjectedNames(t *testing.T) {
 // registry as unavailable instead of failing open.
 func TestConnectionsWithoutToolHubStillReportsUnavailable(t *testing.T) {
 	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
-	g := &Gateway{config: Config{}, users: map[int64]User{11: user}, now: time.Now}
+	g := &Gateway{config: Config{}, now: time.Now}
+	g.config.Users = []User{user}
+	provisionTestIdentity(t, &g.config)
+
 	if got := g.connectionsCommand(user, 11); !strings.Contains(got, "реестр недоступен") {
 		t.Fatalf("missing fallback path must stay honest: %q", got)
 	}

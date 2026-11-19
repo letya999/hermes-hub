@@ -116,7 +116,7 @@ func TestLoadRepairsLegacyInterruptedReplay(t *testing.T) {
 			if err := os.WriteFile(path, body, 0600); err != nil {
 				t.Fatal(err)
 			}
-			m, err := New(Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"})
+			m, err := newTestManager(t, Config{SpacesRoot: root, StateDir: root, RuntimeAuth: "control", Image: "hermes:test"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestSupervisorRestartMapsLegacyJobPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", StateDir: stateDir, Command: func(context.Context, ...string) ([]byte, error) { return nil, os.ErrNotExist }, Probe: func(context.Context, string, string) error { return nil }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestLegacyEmptyStatusMarkedUnconfirmed(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", StateDir: stateDir, Command: func(context.Context, ...string) ([]byte, error) { return nil, os.ErrNotExist }, Probe: func(context.Context, string, string) error { return nil }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestJobPhaseWakingWhileRuntimeStarts(t *testing.T) {
 		return []byte("running"), nil
 	}
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }}
-	m, err := New(cfg)
+	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

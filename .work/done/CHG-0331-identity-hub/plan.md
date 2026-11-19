@@ -49,6 +49,14 @@ allowlisted inputs; drift requires an explicit migration. Route channel
 lookups through identity/v1; no static fallback after registry refusal.
 Mount the registry in the control process and document the migration matrix.
 
+Owner delegated the legacy-group policy on 2026-11-19. A dedicated group
+space remains a shared resource with its existing Group.Members ACL, not an
+invented human owner. Empty member lists freeze the existing enabled Telegram
+membership. Explicit channel-only guests receive no private home or org role.
+The verified human and owned agent stay separate from the shared resource;
+CHG-0332 binds that distinction into signed run claims. Existing session IDs
+and the shared-space passport/credential namespace remain unchanged.
+
 ## Tests and acceptance
 
 Red first: TestLegacySpaceMapsToOwnedAgent,

@@ -23,7 +23,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 // names or sensitive URLs, even when they contain credential-shaped text.
 func TestMessageLogsCarryNoContentByDefault(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestMessageLogsCarryNoContentByDefault(t *testing.T) {
 // logged but still secret-redacted; after expiry logs revert to lengths.
 func TestContentCaptureWindowIsBoundedAndRedacted(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestContentCaptureWindowIsBoundedAndRedacted(t *testing.T) {
 func TestContentCaptureEnvBounded(t *testing.T) {
 	c := testConfig(t)
 	t.Setenv("HUB_LOG_CONTENT_UNTIL", "not-a-time")
-	if _, err := New(c); err == nil {
+	if _, err := newTestGateway(t, c); err == nil {
 		t.Fatal("malformed HUB_LOG_CONTENT_UNTIL accepted")
 	}
 	t.Setenv("HUB_LOG_CONTENT_UNTIL", time.Now().Add(30*24*time.Hour).Format(time.RFC3339))
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

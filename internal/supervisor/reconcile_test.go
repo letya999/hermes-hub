@@ -150,7 +150,7 @@ func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
 		t.Fatal("backoff bypassed")
 	}
 	var err error
-	m, err = New(m.cfg)
+	m, err = newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 		}
 		return command(ctx, args...)
 	}
-	m, err = New(cfg)
+	m, err = newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

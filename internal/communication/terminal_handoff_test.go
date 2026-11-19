@@ -26,7 +26,7 @@ func (titleFailureRunner) SessionUsage(context.Context, hubruntime.ExecuteReques
 }
 
 func TestTitleFailureKeepsCompletedResult(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ type terminalRecorder interface {
 }
 
 func TestFailedOutcomeSaveDoesNotReportSuccess(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestVoiceOnlyStreamHandoffKeepsSingleCanonicalReceipt(t *testing.T) {
 func TestWorkerRequiresMatchingAdmissionBeforeRunner(t *testing.T) {
 	for _, mismatch := range []bool{false, true} {
 		t.Run(map[bool]string{false: "missing", true: "foreign_context"}[mismatch], func(t *testing.T) {
-			g, err := New(testConfig(t))
+			g, err := newTestGateway(t, testConfig(t))
 			if err != nil {
 				t.Fatal(err)
 			}

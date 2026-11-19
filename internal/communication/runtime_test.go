@@ -274,7 +274,7 @@ func TestRemoteGatewayConfigDoesNotNeedUserMounts(t *testing.T) {
 	if err != nil || config.RuntimeURL == "" || config.RuntimeAuth == "" {
 		t.Fatal(config, err)
 	}
-	if _, err := New(config); err != nil {
+	if _, err := newTestGateway(t, config); err != nil {
 		t.Fatal(err)
 	}
 	for _, invalid := range []Config{{OrganizationID: "personal", SpoolDir: "spool", RuntimeURL: "ftp://runtime", RuntimeAuth: "secret"}, {OrganizationID: "personal", SpoolDir: "spool", RuntimeURL: "http://runtime"}} {

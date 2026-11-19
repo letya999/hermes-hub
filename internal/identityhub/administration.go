@@ -293,7 +293,7 @@ func (r *Registry) RevokeAdministration(ctx context.Context, actor, id string) e
 }
 
 func (r *Registry) Diagnostics(ctx context.Context) (Diagnostic, error) {
-	d := Diagnostic{Schema: 1}
+	d := Diagnostic{Schema: schema}
 	err := r.db.QueryRowContext(ctx, `SELECT
  (SELECT count(*) FROM principals WHERE kind='human' AND enabled=1),
  (SELECT count(*) FROM principals WHERE kind='agent' AND enabled=1),

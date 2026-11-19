@@ -338,7 +338,7 @@ func TestContextParallelCapSkips(t *testing.T) {
 func TestWorkerPoolRunsContextsInParallel(t *testing.T) {
 	c := testConfig(t)
 	c.Workers = 2
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

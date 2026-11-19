@@ -65,7 +65,7 @@ func TestCompactArgsParse(t *testing.T) {
 // POST /v1/compact — the slash text never becomes a model run.
 func TestCompactCommandRoutesToRuntimeNotRuns(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestCompactCommandRoutesToRuntimeNotRuns(t *testing.T) {
 // Malformed args answer usage and never reach the runtime.
 func TestCompactCommandBadArgs(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestCompactCommandBadArgs(t *testing.T) {
 // /compress is the upstream alias — same grammar, same endpoint.
 func TestCompressAliasRoutesPreview(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,10 +15,34 @@ import (
 
 const linkTTL = 10 * time.Minute
 
+func (r *Registry) Bindings(ctx context.Context, owner string) ([]contract.ChannelBinding, error) {
+	principal, err := r.Principal(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	if principal.Kind != contract.Human {
+		return nil, contract.ErrForbidden
+	}
+	rows, err := r.db.QueryContext(ctx, "SELECT id,channel,external_id,issuer,subject FROM links WHERE principal_id=? AND state='verified' ORDER BY channel,external_id", owner)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	defer rows.Close()
+	result := []contract.ChannelBinding{}
+	for rows.Next() {
+		value := contract.ChannelBinding{PrincipalID: owner}
+		if err := rows.Scan(&value.ID, &value.Channel.Channel, &value.Channel.ID, &value.Issuer, &value.Subject); err != nil {
+			return nil, storeError(err)
+		}
+		result = append(result, value)
+	}
+	return result, storeError(rows.Err())
+}
+
 // Every lifecycle write goes through this table, including operator import.
 var linkTransitions = map[string]map[string]string{
 	"pending":  {"verify": "verified", "reject": "gone", "expire": "gone"},
-	"verified": {"revoke": "revoked", "delete": "gone"},
+	"verified": {"revoke": "revoked", "delete": "gone", "prove_oidc": "verified"},
 }
 
 func transitionLink(ctx context.Context, tx *sql.Tx, id, event string) error {
@@ -167,6 +191,45 @@ func (r *Registry) RevokeLink(ctx context.Context, id, actor string) error {
 	}
 	if err := audit(ctx, tx, r.now(), "link_revoke", actor, owner, "owner_revoked"); err != nil {
 		return storeError(err)
+	}
+	return storeError(tx.Commit())
+}
+
+// ExpirePendingLinks bounds one control upkeep pass; unresolved proofs never
+// authorize resolution while older expired rows await the next pass.
+func (r *Registry) ExpirePendingLinks(ctx context.Context, now time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storeError(err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT id,principal_id FROM links WHERE state='pending' AND expires_at<=? ORDER BY expires_at,id LIMIT 128", now.UnixNano())
+	if err != nil {
+		return storeError(err)
+	}
+	var links [][2]string
+	for rows.Next() {
+		var pair [2]string
+		if err := rows.Scan(&pair[0], &pair[1]); err != nil {
+			_ = rows.Close()
+			return storeError(err)
+		}
+		links = append(links, pair)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return storeError(err)
+	}
+	if err := rows.Close(); err != nil {
+		return storeError(err)
+	}
+	for _, link := range links {
+		if err := transitionLink(ctx, tx, link[0], "expire"); err != nil {
+			return err
+		}
+		if err := audit(ctx, tx, now, "link_expire", "system:identity-hub", link[1], "challenge_expired"); err != nil {
+			return storeError(err)
+		}
 	}
 	return storeError(tx.Commit())
 }

@@ -50,6 +50,7 @@ cmd/communication internal/storagebudget
 cmd/communication internal/systemguide
 cmd/communication internal/toolhub/api
 cmd/communication internal/vault
+cmd/devcheck contracts/identity/v1
 cmd/devcheck contracts/internal/wire
 cmd/devcheck contracts/task/v1
 cmd/devcheck contracts/toolsurface/v1
@@ -72,6 +73,7 @@ cmd/devcheck internal/exposure
 cmd/devcheck internal/hosting
 cmd/devcheck internal/iam
 cmd/devcheck internal/identity
+cmd/devcheck internal/identityhub
 cmd/devcheck internal/inboundfile
 cmd/devcheck internal/locale
 cmd/devcheck internal/media
@@ -173,6 +175,7 @@ cmd/hub internal/exposure
 cmd/hub internal/hosting
 cmd/hub internal/iam
 cmd/hub internal/identity
+cmd/hub internal/identityhub
 cmd/hub internal/inboundfile
 cmd/hub internal/locale
 cmd/hub internal/media
@@ -235,6 +238,7 @@ cmd/hubctl internal/exposure
 cmd/hubctl internal/hosting
 cmd/hubctl internal/iam
 cmd/hubctl internal/identity
+cmd/hubctl internal/identityhub
 cmd/hubctl internal/inboundfile
 cmd/hubctl internal/locale
 cmd/hubctl internal/media
@@ -275,6 +279,7 @@ cmd/hubctl internal/uno
 cmd/hubctl internal/vault
 cmd/mini-uno internal/firecracker
 cmd/package internal/locale
+cmd/runtime contracts/identity/v1
 cmd/runtime contracts/internal/wire
 cmd/runtime contracts/task/v1
 cmd/runtime contracts/toolsurface/v1
@@ -309,11 +314,13 @@ cmd/runtime internal/stack
 cmd/runtime internal/systemguide
 cmd/runtime internal/toolhub/api
 cmd/runtime internal/vault
+cmd/supervisor contracts/identity/v1
 cmd/supervisor contracts/internal/wire
 cmd/supervisor contracts/task/v1
 cmd/supervisor contracts/toolsurface/v1
 cmd/supervisor internal/agenttools
 cmd/supervisor internal/audit
+cmd/supervisor internal/commodel
 cmd/supervisor internal/compaction
 cmd/supervisor internal/companion
 cmd/supervisor internal/contextlife
@@ -326,6 +333,7 @@ cmd/supervisor internal/exposure
 cmd/supervisor internal/hosting
 cmd/supervisor internal/iam
 cmd/supervisor internal/identity
+cmd/supervisor internal/identityhub
 cmd/supervisor internal/inboundfile
 cmd/supervisor internal/locale
 cmd/supervisor internal/media
@@ -339,6 +347,7 @@ cmd/supervisor internal/selfsettings
 cmd/supervisor internal/serviceauth
 cmd/supervisor internal/skillstore
 cmd/supervisor internal/skillstore/scan
+cmd/supervisor internal/sqlitedb
 cmd/supervisor internal/sshcap
 cmd/supervisor internal/stack
 cmd/supervisor internal/supervisor
@@ -346,6 +355,7 @@ cmd/supervisor internal/systemguide
 cmd/supervisor internal/toolhub/api
 cmd/supervisor internal/uno
 cmd/supervisor internal/vault
+cmd/toolhub contracts/identity/v1
 cmd/toolhub contracts/internal/wire
 cmd/toolhub contracts/task/v1
 cmd/toolhub contracts/toolsurface/v1

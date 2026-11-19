@@ -94,7 +94,7 @@ func TestIdentityDiagnosticUsesOnlySafeCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema":1,"humans":1,"agents":1,"systems":0,"organizations":0,"verified_links":1,"pending_links":1,"audit_events":2}`
+	want := `{"schema":2,"humans":1,"agents":1,"systems":0,"organizations":0,"verified_links":1,"pending_links":1,"audit_events":2}`
 	if string(raw) != want {
 		t.Fatalf("diagnostic schema: %s", raw)
 	}

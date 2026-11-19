@@ -32,7 +32,7 @@ func TestHumanConfirmationCallbackVerifiesSenderChatExpiryAndRestart(t *testing.
 	}))
 	defer server.Close()
 	cfg.ToolHubURL = server.URL
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestHumanConfirmationCallbackVerifiesSenderChatExpiryAndRestart(t *testing.
 	if !strings.HasPrefix(data, "h:") || strings.Contains(data, proof.Nonce) {
 		t.Fatal("callback must be opaque and bounded")
 	}
-	g, err = New(cfg)
+	g, err = newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestHumanConfirmationCallbackVerifiesSenderChatExpiryAndRestart(t *testing.
 
 func TestHumanConfirmationNoticeRefusesChannelWithoutCallback(t *testing.T) {
 	cfg := testConfig(t)
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestHumanConfirmationExpiredCallbackIsSwept(t *testing.T) {
 	cfg := testConfig(t)
 	actor := cfg.Users[0].Envelope(11)
 	proof := api.HumanConfirmation{OnboardingID: "onboard-human", Actor: actor, Nonce: "opaque-human-link", Revision: 3, ActionDigest: "sha256:" + strings.Repeat("a", 64), ExpiresAt: time.Now().Add(time.Minute)}
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestHumanConfirmationCallbackReadIsBounded(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg.ToolHubURL = server.URL
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestHumanConfirmationNoticeReissueDeliversFreshProof(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "synthetic-service-confirmation-bearer"
 	actor := cfg.Users[0].Envelope(11)
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestHumanConfirmationNoticeRequiresServiceAndExactScope(t *testing.T) {
 			case "origin":
 				origin = "https://untrusted.example"
 			}
-			g, err := New(cfg)
+			g, err := newTestGateway(t, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -276,7 +276,7 @@ func TestHumanConfirmationMemoryProposalNotice(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "synthetic-service-confirmation-bearer"
 	actor := cfg.Users[0].Envelope(11)
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -354,7 +354,7 @@ func TestMockCaptureUsesConfiguredDir(t *testing.T) {
 	mockDir := filepath.Join(t.TempDir(), "mock")
 	config := testConfig(t)
 	config.MockDir = mockDir
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +863,7 @@ func TestSpoolDurabilityAndSecretIsolation(t *testing.T) {
 // job's chat and topic on the wire.
 func TestAcceptedUpdateSendsTypingBeforeRun(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,7 +900,7 @@ func TestAcceptedUpdateSendsTypingBeforeRun(t *testing.T) {
 // sender only gets the access notice, never a chat action.
 func TestUnknownSenderGetsNoChatAction(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -938,7 +938,7 @@ func TestAcceptedJobWakesSupervisedRuntime(t *testing.T) {
 	}))
 	defer server.Close()
 	c.Supervised, c.RuntimeURL, c.RuntimeAuth = true, server.URL, "secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +963,7 @@ func TestAcceptedJobWakesSupervisedRuntime(t *testing.T) {
 
 func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1293,7 +1293,7 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 	}
 	config := testConfig(t)
 	config.TelegramToken = ""
-	if _, err := New(config); err == nil {
+	if _, err := newTestGateway(t, config); err == nil {
 		t.Fatal("missing Telegram token accepted")
 	}
 }
@@ -1301,7 +1301,7 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
 	c := testConfig(t)
 	c.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1340,7 +1340,7 @@ func TestCredentialFormStoresOnlyAfterProtectedSubmit(t *testing.T) {
 	c.ControlAuth = "control-token"
 	c.Users[0].ConfiguredEnv = map[string]bool{"GOOGLE_OAUTH_CLIENT_ID": true, "GOOGLE_OAUTH_CLIENT_SECRET": true}
 	relayed := acceptingRuntime(t, &c)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1389,7 +1389,7 @@ func TestCredentialFormRejectsReplayAndNonLoopbackRequests(t *testing.T) {
 	c := testConfig(t)
 	c.FormOrigin = "http://127.0.0.1:8081"
 	acceptingRuntime(t, &c)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1464,7 +1464,7 @@ func TestCredentialFormUsesAuthenticatedRuntimeControl(t *testing.T) {
 	c := testConfig(t)
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1550,7 +1550,7 @@ func TestCredentialFormRequestRejectsInvalidControlInput(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	c.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1682,7 +1682,7 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	if err := registry.Save(toolHubPath); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1732,7 +1732,7 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 }
 
 func TestGatewayRejectsNonPrivateAndUnknownMessages(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1756,7 +1756,7 @@ func TestGatewayRejectsNonPrivateAndUnknownMessages(t *testing.T) {
 }
 
 func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1809,7 +1809,7 @@ func TestTelegramDiagnosticsLogsOnlyAcceptedOrdinaryMessage(t *testing.T) {
 
 func TestTelegramDiagnosticsCanBeDisabled(t *testing.T) {
 	t.Setenv("HUB_DIAGNOSTICS_ENABLED", "false")
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1828,7 +1828,7 @@ func TestTelegramDiagnosticsCanBeDisabled(t *testing.T) {
 
 func TestGatewayRunPersistsOffset(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1899,7 +1899,7 @@ func (r *runAPI) DeleteForumTopic(context.Context, int64, int64) error       { r
 
 func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1965,7 +1965,7 @@ func TestGatewayRefusesWithoutRuntimeEndpoint(t *testing.T) {
 		config := testConfig(t)
 		config.RuntimeURL = url
 		state := config.Users[0].StateDir
-		if g, err := New(config); err == nil || g != nil || err.Error() != want {
+		if g, err := newTestGateway(t, config); err == nil || g != nil || err.Error() != want {
 			t.Fatalf("runtime URL %q: gateway=%v err=%v", url, g, err)
 		}
 		if entries, err := os.ReadDir(state); err != nil || len(entries) != 0 {
@@ -1981,7 +1981,7 @@ func TestGatewayRefusesWithoutRuntimeEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(config); err == nil || err.Error() != want {
+	if _, err := newTestGateway(t, config); err == nil || err.Error() != want {
 		t.Fatalf("env without runtime endpoint started: %v", err)
 	}
 }

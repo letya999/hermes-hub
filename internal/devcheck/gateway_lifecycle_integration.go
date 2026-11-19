@@ -77,6 +77,12 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	// window and verifies the extension+reap mechanics at that value.
 	const warmWindow = 5 * time.Minute
 	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, PortBase: 32000, WarmTTL: warmWindow}
+	registry, err := integrationIdentity(ctx, root, nil)
+	if err != nil {
+		return err
+	}
+	defer registry.Close()
+	cfg.Identity = registry
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
 		if len(args) != 0 && args[0] == "network" {
 			for i, arg := range args {
@@ -296,6 +302,9 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 
 	}
 	config := communication.Config{Supervised: true, OrganizationID: "personal", Users: users, TelegramToken: "synthetic-bot", APIBaseURL: api.URL, SpoolDir: spoolDir, RuntimeURL: endpoint, RuntimeAuth: control, PollTimeout: time.Second}
+	if _, err := registry.ImportLegacy(ctx, "integration", "personal", users); err != nil {
+		return err
+	}
 	gateway, err := communication.New(config)
 	if err != nil {
 		return err

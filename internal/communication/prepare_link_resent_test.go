@@ -20,7 +20,7 @@ import (
 func TestLinkResentPostsFreshMessage(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestLinkResentPostsFreshMessage(t *testing.T) {
 func TestPrepareContinuationSurvivesPayloadDrift(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

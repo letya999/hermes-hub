@@ -17,9 +17,11 @@ type TemplateRequest struct {
 }
 
 type AgentTemplate struct {
-	Subject      Principal    `json:"subject"`
-	Actor        Principal    `json:"actor"`
-	Space        string       `json:"space"`
-	SharedSpace  string       `json:"shared_space,omitempty"`
-	Restrictions Restrictions `json:"restrictions"`
+	SpaceKind      string       `json:"space_kind"`
+	OrganizationID string       `json:"organization_id,omitempty"`
+	Subject        Principal    `json:"subject"`
+	Actor          Principal    `json:"actor"`
+	Space          string       `json:"space"`
+	SharedSpace    string       `json:"shared_space,omitempty"`
+	Restrictions   Restrictions `json:"restrictions"`
 }

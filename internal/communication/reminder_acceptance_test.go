@@ -276,7 +276,7 @@ func TestReminderGatewayWithoutRuntimeAndLostTransportAnswer(t *testing.T) {
 					t.Fatalf("saved text or audience changed: %+v", body)
 				}
 			}
-			restarted, err := New(c)
+			restarted, err := newTestGateway(t, c)
 			if err != nil {
 				t.Fatal(err)
 			}

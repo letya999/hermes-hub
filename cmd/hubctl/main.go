@@ -46,6 +46,9 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	}
 	op := args[0]
+	if op == "identity" {
+		return runIdentity(ctx, os.Stdout, args[1:])
+	}
 	if op == "dev-rebuild" {
 		return runDevRebuild(ctx, args[1:])
 	}

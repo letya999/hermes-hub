@@ -287,6 +287,10 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	if err != nil {
 		return "", err
 	}
+	settings, err = m.applyIdentityTemplate(binding, settings)
+	if err != nil {
+		return "", err
+	}
 	source := filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
 	envName := "managed-runtime." + env + ".env"

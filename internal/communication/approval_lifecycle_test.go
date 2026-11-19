@@ -16,7 +16,7 @@ import (
 )
 
 func TestClosedApprovalNeverDelivered(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestClosedApprovalNeverDelivered(t *testing.T) {
 }
 
 func TestApprovalMessageRemovedAfterDecisionAndRestart(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestApprovalMessageRemovedAfterDecisionAndRestart(t *testing.T) {
 func TestQueuedApprovalIsCurrentAndActionable(t *testing.T) {
 	for _, scenario := range []string{"superseded", "decision-saved", "expired", "cancel-requested", "corrupt", "run-changed", "generation-changed", "audience-changed", "policy-changed"} {
 		t.Run(scenario, func(t *testing.T) {
-			g, err := New(testConfig(t))
+			g, err := newTestGateway(t, testConfig(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +192,7 @@ func TestListingRequestCarriesCurrentRequestAndReadOnlyGuidance(t *testing.T) {
 }
 
 func TestTerminalApprovalMessageRemoved(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestFailJobPreservesCompletedResult(t *testing.T) {
 }
 
 func TestOldClosedApprovalTapRemovesOnlyOwnersMessage(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestOldClosedApprovalTapRemovesOnlyOwnersMessage(t *testing.T) {
 }
 
 func TestLegacyKeyboardWithoutProvenanceNotActionable(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestLegacyKeyboardWithoutProvenanceNotActionable(t *testing.T) {
 }
 
 func TestApprovalKeyboardSentWithoutReceiptStaysUncertain(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestApprovalKeyboardSentWithoutReceiptStaysUncertain(t *testing.T) {
 }
 
 func TestApprovalCleanupRejectsReceiptOutsideSpool(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

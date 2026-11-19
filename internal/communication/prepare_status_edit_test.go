@@ -14,7 +14,7 @@ import (
 // links have their own fresh-message regression test.
 func TestPrepareNoticeEditsExistingStatusMessage(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestPrepareNoticeEditsExistingStatusMessage(t *testing.T) {
 // message carrying the same URL.
 func TestPrepareNoticeWizardLinkEditsExistingMessage(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestPrepareNoticeWizardLinkEditsExistingMessage(t *testing.T) {
 
 func TestPrepareConfirmationPostsKeyboardInsteadOfEditingStatus(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

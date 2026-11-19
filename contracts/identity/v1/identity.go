@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/contracts/internal/wire"
+	primitive "github.com/letya999/hermes-hub/internal/identity"
 )
 
 var (
@@ -44,6 +45,8 @@ type ChannelIdentity struct {
 type Client interface {
 	Resolve(context.Context, ChannelIdentity) (Principal, error)
 	Principal(context.Context, string) (Principal, error)
+	Template(context.Context, TemplateRequest) (AgentTemplate, error)
+	Bindings(context.Context, string) ([]ChannelBinding, error)
 }
 
 func validID(id string) bool { return id != "" && len(id) <= 256 && !strings.ContainsAny(id, "/\r\n") }
@@ -74,6 +77,34 @@ func (c inProc) Principal(ctx context.Context, id string) (Principal, error) {
 	return wire.Copy(principal)
 }
 
+func (c inProc) Template(ctx context.Context, query TemplateRequest) (AgentTemplate, error) {
+	if !validID(query.Subject) || !validID(query.Actor) || !primitive.ValidID(query.Space) {
+		return AgentTemplate{}, ErrInvalid
+	}
+	value, err := c.server.Template(ctx, query)
+	if err != nil {
+		return AgentTemplate{}, wire.Normalize(err)
+	}
+	if !validTemplate(query, value) {
+		return AgentTemplate{}, ErrUnavailable
+	}
+	return wire.Copy(value)
+}
+
+func validTemplate(query TemplateRequest, value AgentTemplate) bool {
+	if (value.SpaceKind != "private" && value.SpaceKind != "shared" && value.SpaceKind != "organization") || (value.OrganizationID != "" && !primitive.ValidID(value.OrganizationID)) {
+		return false
+	}
+	if value.Subject.ID != query.Subject || value.Subject.Kind != Human || value.Subject.OwnerID != "" || value.Actor.ID != query.Actor || value.Actor.Kind != Agent || value.Actor.OwnerID != query.Subject || value.Actor.OrganizationID != value.Subject.OrganizationID || value.Space != query.Space {
+		return false
+	}
+	switch value.Restrictions.Mode {
+	case "read-only", "plan", "ask", "ask-critical", "full-access":
+		return true
+	}
+	return false
+}
+
 type httpClient struct{ wire.Client }
 
 func NewHTTPClient(baseURL, token string, hc *http.Client) Client {
@@ -95,6 +126,15 @@ func (c httpClient) Principal(ctx context.Context, id string) (Principal, error)
 	return principal, err
 }
 
+func (c httpClient) Template(ctx context.Context, query TemplateRequest) (AgentTemplate, error) {
+	var value AgentTemplate
+	err := c.Do(ctx, http.MethodPost, "/v1/identity/template", query, &value)
+	if err == nil && !validTemplate(query, value) {
+		return AgentTemplate{}, ErrUnavailable
+	}
+	return value, err
+}
+
 func Handler(server Client, token string) http.Handler {
 	return wire.Handle(token, func(r *http.Request) (any, error) {
 		client := NewInProc(server)
@@ -105,6 +145,14 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.Resolve(r.Context(), channel)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/identity/template":
+			var query TemplateRequest
+			if err := wire.Decode(r, &query); err != nil {
+				return nil, err
+			}
+			return client.Template(r.Context(), query)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/identity/bindings/"):
+			return client.Bindings(r.Context(), strings.TrimPrefix(r.URL.Path, "/v1/identity/bindings/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/identity/principals/"):
 			return client.Principal(r.Context(), strings.TrimPrefix(r.URL.Path, "/v1/identity/principals/"))
 		default:

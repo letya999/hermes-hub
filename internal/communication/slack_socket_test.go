@@ -24,19 +24,19 @@ func socketConfig(t *testing.T) Config {
 
 func TestSlackTransportValidation(t *testing.T) {
 	c := testConfig(t)
-	if _, err := New(c); err != nil {
+	if _, err := newTestGateway(t, c); err != nil {
 		t.Fatalf("default must stay events: %v", err)
 	}
 	c.SlackTransport = "carrier-pigeon"
-	if _, err := New(c); err == nil || !strings.Contains(err.Error(), "SLACK_TRANSPORT") {
+	if _, err := newTestGateway(t, c); err == nil || !strings.Contains(err.Error(), "SLACK_TRANSPORT") {
 		t.Fatalf("unsupported transport must fail: %v", err)
 	}
 	c = socketConfig(t)
 	c.SlackAppToken = ""
-	if _, err := New(c); err == nil || !strings.Contains(err.Error(), "SLACK_APP_TOKEN") {
+	if _, err := newTestGateway(t, c); err == nil || !strings.Contains(err.Error(), "SLACK_APP_TOKEN") {
 		t.Fatalf("socket without app token must fail: %v", err)
 	}
-	if _, err := New(socketConfig(t)); err != nil {
+	if _, err := newTestGateway(t, socketConfig(t)); err != nil {
 		t.Fatalf("socket with app+bot token must start: %v", err)
 	}
 }
@@ -44,7 +44,7 @@ func TestSlackTransportValidation(t *testing.T) {
 // Socket Mode mounts no webhook: the events route answers 404 while the rest
 // of the control-plane mux is untouched.
 func TestSlackSocketModeDropsEventsRoute(t *testing.T) {
-	g, err := New(socketConfig(t))
+	g, err := newTestGateway(t, socketConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestSlackSocketDialRidesEgressProxy(t *testing.T) {
 // URL, an events_api envelope lands as a durable job, a slash_commands
 // envelope runs the command path — each acked after durable ingest.
 func TestSlackSocketSessionDeliversAndAcks(t *testing.T) {
-	g, err := New(socketConfig(t))
+	g, err := newTestGateway(t, socketConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestSlackSocketSessionDeliversAndAcks(t *testing.T) {
 // Replayed envelopes are deduped before ingest: the durable marker, not the
 // retry, decides whether the payload is new.
 func TestSlackSocketDedupesReplayedEnvelope(t *testing.T) {
-	g, err := New(socketConfig(t))
+	g, err := newTestGateway(t, socketConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

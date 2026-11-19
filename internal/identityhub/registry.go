@@ -20,6 +20,14 @@ type Registry struct {
 }
 
 const applicationID = 0x48494431 // HID1; a schema version alone cannot identify an owner.
+const schema = 2
+
+func StorePath(controlDir, environment string) (string, error) {
+	if controlDir == "" || (environment != "dev" && environment != "prod") {
+		return "", contract.ErrInvalid
+	}
+	return filepath.Join(controlDir, "identity."+environment+".sqlite"), nil
+}
 
 type Mapping struct {
 	Space string `json:"space"`
@@ -34,12 +42,15 @@ type Challenge struct {
 }
 
 func Open(path string) (*Registry, error) {
+	version := schema
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return nil, contract.ErrInvalid
 		}
-		if err := verifyStoreOwner(path); err != nil {
-			return nil, err
+		var probeErr error
+		version, probeErr = verifyStoreOwner(path)
+		if probeErr != nil {
+			return nil, probeErr
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, contract.ErrUnavailable
@@ -47,7 +58,7 @@ func Open(path string) (*Registry, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, contract.ErrUnavailable
 	}
-	db, err := sqlitedb.Open(path, 1, migrate)
+	db, err := sqlitedb.Open(path, version, migrate)
 	if err != nil {
 		return nil, contract.ErrUnavailable
 	}
@@ -56,14 +67,32 @@ func Open(path string) (*Registry, error) {
 		_ = db.Close()
 		return nil, contract.ErrUnavailable
 	}
+	if version < schema {
+		tx, err := db.Begin()
+		if err == nil {
+			err = extendSchema(tx)
+			if err == nil {
+				_, err = tx.Exec("PRAGMA user_version=2")
+			}
+			if err == nil {
+				err = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+		}
+		if err != nil {
+			_ = db.Close()
+			return nil, contract.ErrUnavailable
+		}
+	}
 	return &Registry{db: db, now: time.Now}, nil
 }
 
 // Probe only fixed schema metadata in read-only mode before enabling WAL.
-func verifyStoreOwner(path string) error {
+func verifyStoreOwner(path string) (int, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return contract.ErrInvalid
+		return 0, contract.ErrInvalid
 	}
 	uriPath := filepath.ToSlash(abs)
 	if filepath.VolumeName(abs) != "" {
@@ -72,17 +101,17 @@ func verifyStoreOwner(path string) error {
 	u := url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro&_pragma=query_only(1)"}
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
-		return contract.ErrInvalid
+		return 0, contract.ErrInvalid
 	}
 	defer db.Close()
 	var owner, version int
 	if err := db.QueryRow("PRAGMA application_id").Scan(&owner); err != nil || owner != applicationID {
-		return contract.ErrInvalid
+		return 0, contract.ErrInvalid
 	}
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
-		return contract.ErrInvalid
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || (version != 1 && version != schema) {
+		return 0, contract.ErrInvalid
 	}
-	return nil
+	return version, nil
 }
 
 func (r *Registry) Close() error { return r.db.Close() }
@@ -111,6 +140,18 @@ CREATE TABLE grants (id TEXT PRIMARY KEY, principal_id TEXT NOT NULL REFERENCES 
 CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, action TEXT NOT NULL,
  actor TEXT NOT NULL, subject TEXT NOT NULL, reason TEXT NOT NULL);
 `)
+	if err != nil {
+		return err
+	}
+	return extendSchema(tx)
+}
+
+func extendSchema(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+CREATE TABLE IF NOT EXISTS shared_spaces (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));
+CREATE TABLE IF NOT EXISTS space_members (space TEXT NOT NULL REFERENCES shared_spaces(id), human TEXT NOT NULL REFERENCES principals(id), PRIMARY KEY(space,human));
+CREATE TABLE IF NOT EXISTS subjects (issuer TEXT NOT NULL, subject TEXT NOT NULL, principal_id TEXT NOT NULL REFERENCES principals(id), PRIMARY KEY(issuer,subject));
+`)
 	return err
 }
 
@@ -131,15 +172,17 @@ func (r *Registry) Principal(ctx context.Context, id string) (contract.Principal
 }
 
 const actingProfileFrom = ` FROM principals h JOIN principals a ON a.owner_id=h.id
- JOIN profiles p ON p.id=a.id JOIN spaces s ON s.id=p.space AND s.human=h.id
+ JOIN profiles p ON p.id=a.id LEFT JOIN spaces s ON s.id=p.space AND s.human=h.id
  LEFT JOIN organizations o ON o.id=h.org_id
  WHERE h.id=? AND h.kind='human' AND h.enabled=1 AND a.id=? AND a.kind='agent' AND a.enabled=1
- AND a.org_id=h.org_id AND p.space=? AND (h.org_id='' OR
- (o.id IS NOT NULL AND EXISTS (SELECT 1 FROM memberships m WHERE m.principal_id=h.id AND m.scope='org:'||h.org_id AND m.role IN ('member','org-admin'))))`
+ AND a.org_id=h.org_id AND ((s.id=? AND (h.org_id='' OR
+ (o.id IS NOT NULL AND EXISTS (SELECT 1 FROM memberships m WHERE m.principal_id=h.id AND m.scope='org:'||h.org_id AND m.role IN ('member','org-admin')))))
+ OR (o.shared_space=? AND EXISTS (SELECT 1 FROM memberships m WHERE m.principal_id=h.id AND m.scope='org:'||h.org_id AND m.role IN ('member','org-admin')))
+ OR EXISTS (SELECT 1 FROM shared_spaces ss JOIN space_members sm ON sm.space=ss.id WHERE ss.id=? AND ss.enabled=1 AND sm.human=h.id))`
 
 func (r *Registry) CanAct(ctx context.Context, subject, actor, space string) error {
 	var exists int
-	err := r.db.QueryRowContext(ctx, "SELECT 1"+actingProfileFrom, subject, actor, space).Scan(&exists)
+	err := r.db.QueryRowContext(ctx, "SELECT 1"+actingProfileFrom, subject, actor, space, space, space).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contract.ErrForbidden
 	}

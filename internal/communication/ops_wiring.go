@@ -49,6 +49,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		SpoolRoot: g.spool.root,
 		Owner: func() (commops.Owner, bool) {
 			for _, u := range g.config.Users {
+				u = g.user(u.ID)
 				if u.Enabled {
 					return commops.Owner{ID: u.ID, TelegramIDs: u.TelegramIDs, Lang: locale.LangOf(u.WorkspaceDir)}, true
 				}

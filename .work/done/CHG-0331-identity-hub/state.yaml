@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0331
 title: Extract the control-zone identity registry
-status: in_progress
+status: done
 branch: feat/m40-v1-platform
 updated: 2026-11-19
-phase: implementation
+phase: done
 adr: ADR-0106
 spec: SPEC-0100
 requirements: [R4.3, R6.4, R6.5]
@@ -12,17 +12,19 @@ depends_on: [CHG-0330]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 575
 design_status: accepted
-implementation_status: in_progress
+implementation_status: complete
 slices:
   S3.1-principals: green
   S3.2-profiles-and-administration: green
-  S3.3-layers: red
-  S3.4-channel-proofs: red
-  S3.5-migration-and-wiring: red
+  S3.3-layers: green
+  S3.4-channel-proofs: green
+  S3.5-migration-and-wiring: green
 validation:
   documents: passed
   just_check: passed
   affected_packages: passed
+  integration_build: passed
+  targeted_race: passed
   red_team: local_regressions_passed
   live_acceptance: not_run
 evidence:
@@ -39,10 +41,18 @@ evidence:
   - "Issuer-role revocation and expired-grant transitions exposed stale administrative authority; both regressions were red, then green with live issuer-role checks and terminal grant states."
   - "Scoped go vet passed. Targeted race regression TestConcurrentChannelProofNeverSharesAnAccount passed."
   - "Foundation checkpoint: just check passed; just test ./internal/identityhub ./contracts/identity/v1/... passed. No control/edge cutover or live migration claimed."
-remaining:
-  - "Connect registry lifetime/read handler to hub-control and migrate legacy inputs through an explicit operator command."
-  - "Move all gateway channel lookups and verified OIDC link lifecycle/provenance into identity-hub; retain exact session and audience binding."
-  - "Expose copying template transport, consume narrowing constraints at spawn, and add control upkeep for expired pending proofs."
-  - "Final check, affected-package verification and complete local migration matrix before acceptance."
+  - "Control now owns dev/prod registry lifetime, typed read routes and separate verified-ingress mutations. Bind failure, ownership, shutdown and credential-separation regressions passed."
+  - "Gateway channel caches and the edge IAM link writer are removed. Ingress, reverse lookup, notifications and automation channel policy use the registry without a static fallback. OIDC fixture flows and revoked-account regressions passed."
+  - "Shared-space policy delegated by owner: preserve explicit ACLs without a human owner, freeze empty-list membership, keep channel-only guests out of private/org spaces, and refuse disabled-identity resurrection. Named SQLite regressions passed."
+  - "Explicit operator migration: count-only preview, --apply transaction, source preservation, symlink refusal, exact OIDC provenance, idempotency and dev/prod isolation regressions passed on synthetic files."
+  - "Spawn template digest binds subject/owned actor/resource kind and org; mixed snapshots refuse. Narrowed skill trees/meta/SOUL paths are separate per identity, passport and environment. Parallel-profile and rebuild regressions passed; no Docker execution claimed."
+  - "Reviewed and regenerated ten dependency closure additions after the hard-rule gate. Runtime reaches identity DTOs through stack settings; gateway and ToolHub use the contract. Control owns registry/SQLite access."
+  - "CLI disable installs the ingress hold and deactivates the human through control with the separate admin credential and environment check. Scoped schedule cleanup uses ToolHub enrollment after the registry has retired channel links."
+  - "Legacy env import, atomic rollback for a verified OIDC link to an inactive human, envelope-aligned provenance length and admin credential/Origin isolation passed named regressions."
+  - "Final just check and affected package tests passed on the local source snapshot. Final gateway rerun passed after migrating the remaining three stale fixtures."
+  - "Integration-tagged devcheck and ToolHub binaries compiled without Docker. The isolated TestM32ToolHubStartupAndRecovery passed. Targeted race cases passed for parallel skill views and concurrent channel proof acquisition."
+remaining: []
 limitations:
   - "Live spaces, auth files, ZITADEL and Docker stacks are untouched."
+  - "Live migration, remote CI and owner acceptance are pending. No published SHA or run URL."
+  - "Signed policy and run-scoped revocation, including assignment descendants, are tracked by CHG-0332."

@@ -22,7 +22,7 @@ func (a photoInputAPI) DownloadFile(_ context.Context, _ string, w io.Writer) er
 }
 
 func TestTelegramPhotoStagesTypedSafeNameAndExactBytes(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestTelegramPhotoStagesTypedSafeNameAndExactBytes(t *testing.T) {
 }
 
 func TestDocumentJobPinsTrustedInboundID(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestDocumentJobPinsTrustedInboundID(t *testing.T) {
 }
 
 func TestDocumentDownloadFailureDoesNotStartFilelessRun(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

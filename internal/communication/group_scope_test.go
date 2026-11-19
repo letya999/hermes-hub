@@ -6,7 +6,7 @@ import (
 )
 
 func TestUnconfiguredGroupCannotUsePersonalRuntime(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

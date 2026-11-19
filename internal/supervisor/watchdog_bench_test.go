@@ -12,7 +12,7 @@ import (
 // ceiling — must stay cheap: one bounded stats call, bounded lock holds, no
 // per-container docker chatter beyond the health probe.
 func BenchmarkWatchdogSweep20(b *testing.B) {
-	m, err := New(Config{
+	m, err := newTestManager(b, Config{
 		SpacesRoot:  b.TempDir(),
 		RuntimeAuth: "secret",
 		Image:       "hermes:test",

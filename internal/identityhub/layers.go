@@ -255,7 +255,7 @@ func (r *Registry) Template(ctx context.Context, query contract.TemplateRequest)
 	defer tx.Rollback()
 	var result contract.AgentTemplate
 	var profileRaw []byte
-	err = tx.QueryRowContext(ctx, "SELECT h.id,h.org_id,a.id,a.owner_id,a.org_id,p.space,p.restrictions,coalesce(o.shared_space,'')"+actingProfileFrom, query.Subject, query.Actor, query.Space).Scan(
+	err = tx.QueryRowContext(ctx, "SELECT h.id,h.org_id,a.id,a.owner_id,a.org_id,?,p.restrictions,coalesce(o.shared_space,'')"+actingProfileFrom, query.Space, query.Subject, query.Actor, query.Space, query.Space, query.Space).Scan(
 		&result.Subject.ID, &result.Subject.OrganizationID, &result.Actor.ID, &result.Actor.OwnerID, &result.Actor.OrganizationID, &result.Space, &profileRaw, &result.SharedSpace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, contract.ErrForbidden
@@ -265,9 +265,30 @@ func (r *Registry) Template(ctx context.Context, query contract.TemplateRequest)
 	}
 	result.Subject.Kind = contract.Human
 	result.Actor.Kind = contract.Agent
+	result.OrganizationID = result.Subject.OrganizationID
+	result.SpaceKind = "private"
+	if result.SharedSpace != "" && result.SharedSpace == query.Space {
+		result.SpaceKind = "organization"
+	}
 	constraints, err := inheritedLayers(ctx, tx, "platform", orgScope(result.Subject.OrganizationID), "user:"+result.Subject.ID)
 	if err != nil {
 		return result, err
+	}
+	var targetOrg string
+	err = tx.QueryRowContext(ctx, "SELECT org_id FROM shared_spaces WHERE id=?", query.Space).Scan(&targetOrg)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, storeError(err)
+	}
+	if err == nil {
+		result.OrganizationID = targetOrg
+		result.SpaceKind = "shared"
+	}
+	if targetOrg != "" && targetOrg != result.Subject.OrganizationID {
+		ceiling, err := inheritedLayers(ctx, tx, orgScope(targetOrg))
+		if err != nil {
+			return result, err
+		}
+		constraints = compose(constraints, ceiling)
 	}
 	var profile contract.Restrictions
 	if json.Unmarshal(profileRaw, &profile) != nil {

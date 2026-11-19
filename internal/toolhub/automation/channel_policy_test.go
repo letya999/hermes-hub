@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/routines"
 )
 
@@ -25,7 +27,8 @@ func TestLocalChannelPolicySurvivesCommunicationOutageAndRejectsRebind(t *testin
 		}
 	}
 	write(`{"organization_id":"personal","users":[{"id":"alice","enabled":true,"runtime_id":"rt-alice","policy_version":"policy-1","telegram_ids":[11]}]}`)
-	policy := ChannelPolicy{RoutingFile: routing, LegacyRoot: legacy}
+	registry := policyIdentityFixture(t, commodel.User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}})
+	policy := ChannelPolicy{Identity: registry, RoutingFile: routing, LegacyRoot: legacy}
 	if err := policy.Validate([]string{"alice"}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +79,7 @@ func TestLocalChannelPolicyRejectsSlackRebind(t *testing.T) {
 		}
 	}
 	write("alice")
-	policy := ChannelPolicy{RoutingFile: routing, LegacyRoot: root}
+	policy := ChannelPolicy{Identity: policyIdentityFixture(t, commodel.User{ID: "alice", Enabled: true, SlackIDs: []commodel.SlackLink{{TeamID: "TEAM", UserID: "USER"}}}), RoutingFile: routing, LegacyRoot: root}
 	user := commodel.User{ID: "alice", Enabled: true}
 	job := commodel.Job{Envelope: user.SlackEnvelope("TEAM", "USER"), ID: "routine-slack", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "slack_app", Trigger: "cron"}
 	job.ConversationID = routines.RoutineConversation("rt-slack")
@@ -96,7 +99,7 @@ func TestDisabledRoutingOwnerCannotBlockEnabledOwner(t *testing.T) {
 	if err := os.WriteFile(routing, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	policy := ChannelPolicy{RoutingFile: routing, LegacyRoot: root}
+	policy := ChannelPolicy{Identity: policyIdentityFixture(t, commodel.User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, commodel.User{ID: "bob", Enabled: false, TelegramIDs: []int64{11}}), RoutingFile: routing, LegacyRoot: root}
 	if err := policy.Validate([]string{"alice", "bob"}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,5 +110,42 @@ func TestDisabledRoutingOwnerCannotBlockEnabledOwner(t *testing.T) {
 	job.UserID, job.ActorID, job.PrincipalID, job.ScopeID = "bob", "bob", "bob", "user:bob"
 	if err := policy.Authorize(context.Background(), "rt-enabled", job); err == nil {
 		t.Fatal("disabled owner authorized")
+	}
+}
+
+func policyIdentityFixture(t *testing.T, users ...commodel.User) *identityhub.Registry {
+	t.Helper()
+	r, err := identityhub.Open(filepath.Join(t.TempDir(), "identity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	if _, err := r.ImportLegacy(context.Background(), "fixture", "personal", users); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestAutomationRejectsRevokedChannelDespiteStaleRouting(t *testing.T) {
+	root := t.TempDir()
+	routing := filepath.Join(root, "routing.json")
+	if err := os.WriteFile(routing, []byte(`{"organization_id":"personal","users":[{"id":"alice","enabled":true,"telegram_ids":[11]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry := policyIdentityFixture(t, commodel.User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}})
+	policy := ChannelPolicy{Identity: registry, RoutingFile: routing, LegacyRoot: root}
+	job := commodel.Job{Envelope: (commodel.User{ID: "alice"}).Envelope(11), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "cron", ChatID: 11}
+	if err := policy.Authorize(context.Background(), "rt-test", job); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Unlink(context.Background(), contract.UnlinkRequest{Channel: contract.ChannelIdentity{Channel: contract.Telegram, ID: "11"}, PrincipalID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.Authorize(context.Background(), "rt-test", job); err == nil {
+		t.Fatal("stale routing file resurrected revoked account")
+	}
+	policy.Identity = nil
+	if err := policy.Authorize(context.Background(), "rt-test", job); err == nil {
+		t.Fatal("missing identity authority fell back to routing file")
 	}
 }

@@ -100,6 +100,28 @@ func TestCompanyBrainCannotAliasHumanSpace(t *testing.T) {
 	}
 }
 
+func TestCompanyBrainRequiresCurrentOrganizationMembership(t *testing.T) {
+	r, _ := fixture(t, commodel.User{ID: "outsider", Enabled: true})
+	ctx := context.Background()
+	if _, err := r.ImportLegacy(ctx, "company", "acme", []commodel.User{{ID: "alice", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	query := contract.TemplateRequest{Subject: "alice", Actor: "agent:alice:default", Space: "acme"}
+	template, err := r.Template(ctx, query)
+	if err != nil || template.SpaceKind != "organization" || template.OrganizationID != "acme" {
+		t.Fatalf("company template: %+v %v", template, err)
+	}
+	if err := r.CanAct(ctx, "outsider", "agent:outsider:default", "acme"); !errors.Is(err, contract.ErrForbidden) {
+		t.Fatal("outsider entered company brain")
+	}
+	if _, err := r.db.Exec("DELETE FROM memberships WHERE principal_id='alice'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Template(ctx, query); !errors.Is(err, contract.ErrForbidden) {
+		t.Fatal("retired member retained company brain")
+	}
+}
+
 func TestTemplateNeedsCurrentOrganizationMembership(t *testing.T) {
 	r, _ := fixture(t, commodel.User{ID: "admin", Enabled: true})
 	ctx := context.Background()

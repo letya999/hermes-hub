@@ -72,7 +72,7 @@ func TestSkillDraftCardFlow(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,14 +176,14 @@ func TestSkillDraftCardsSurviveRestart(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	c.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	formURL := mintSkillDraft(t, g)
 
 	// A new Gateway over the same spool is a restart — the card must resolve.
-	restarted, err := New(c)
+	restarted, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestSkillDraftPublishStateSurvivesRestart(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestSkillDraftPublishStateSurvivesRestart(t *testing.T) {
 		t.Fatalf("publish status=%d body=%s", result.Code, result.Body.String())
 	}
 
-	restarted, err := New(c)
+	restarted, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestSkillDraftCardLifetimeCoversDays(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	c.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestSkillDraftPublishSurfacesRuntimeError(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestSkillDraftUndoSurfacesRuntimeError(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestSkillApplyTimeoutCoversSpawn(t *testing.T) {
 	c := testConfig(t)
 	c.RuntimeURL = slow.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestSkillDraftCardLocalizes(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.RuntimeURL = runtimeAPI.URL
 	c.RuntimeAuth = "runtime-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestSkillDraftRejectConsumesAttempt(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
 	c.FormOrigin = "http://127.0.0.1:8081"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

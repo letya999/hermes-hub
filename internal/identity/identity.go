@@ -13,6 +13,7 @@ import (
 )
 
 const Schema = 1
+const MaxProvenanceBytes = 256
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var scopePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -119,7 +120,7 @@ func (e Envelope) Validate(principal, context, runtime, policy string) error {
 	// Provenance is audit metadata, not a routing key: bounded length
 	// only, no id pattern. A subject without its issuer (or the reverse)
 	// is a half-claim — rejected.
-	if len(e.Issuer) > 256 || len(e.Subject) > 256 || (e.Issuer == "") != (e.Subject == "") {
+	if len(e.Issuer) > MaxProvenanceBytes || len(e.Subject) > MaxProvenanceBytes || (e.Issuer == "") != (e.Subject == "") {
 		return errors.New("invalid identity provenance")
 	}
 	return nil

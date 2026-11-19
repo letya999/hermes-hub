@@ -51,7 +51,7 @@ func TestPrepareOutcomeLinkPaths(t *testing.T) {
 func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 func TestPrepareOutcomeStaleOnboardingFallsBackToTelegram(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestPrepareOutcomePublicOriginLink(t *testing.T) {
 
 func TestPrepareNoticeWaitsForTelegramLogin(t *testing.T) {
 	cfg := testConfig(t)
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Users = append(cfg.Users, User{ID: "carol", Enabled: true, SlackIDs: []SlackLink{{TeamID: "TTEAM", UserID: "UUSER"}}, StateDir: slackState, WorkspaceDir: slackWS})
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 func TestPrepareOutcomeActionLinks(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestPrepareOutcomeActionLinks(t *testing.T) {
 func TestPrepareOutcomeViewerLink(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestPrepareOutcomeViewerLink(t *testing.T) {
 func TestPrepareOutcomeProgressEvents(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +706,7 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 func TestPrepareOutcomeWizardConfirmKeepsLink(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +760,7 @@ func TestPrepareContinuationWizardConfirm(t *testing.T) {
 func TestPrepareOutcomeRemoveOnDisabledDeliversLink(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

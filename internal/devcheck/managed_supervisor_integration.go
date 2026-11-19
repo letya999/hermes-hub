@@ -21,6 +21,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
@@ -182,6 +183,12 @@ sys.exit(1)`
 		return err
 	}
 	cfg := supervisor.Config{SpacesRoot: root, Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600, ContainerRuntime: containerRuntime}
+	registry, err := integrationIdentity(ctx, root, []commodel.User{{ID: userID, Enabled: true, TelegramIDs: []int64{11}}})
+	if err != nil {
+		return err
+	}
+	defer registry.Close()
+	cfg.Identity = registry
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
 		// Namespace the fixed control bridge inside this fixture, preserving real Docker operations.
 		if len(args) != 0 && args[0] == "network" {

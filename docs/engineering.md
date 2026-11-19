@@ -78,11 +78,12 @@ suite. Each owning module runs that suite against its real implementation:
 | Contract | Owner | Current consumer |
 |---|---|---|
 | `task/v1` | Supervisor job ledger | ToolHub run authority |
-| `identity/v1` | Communication's enabled user and verified SSO mapping | Reference adapter, replaced by identity-hub in CHG-0331 |
+| `identity/v1` | Control-zone identity registry | Gateway channel authority, supervisor templates and automation routing |
 | `toolsurface/v1` | ToolHub owner-scoped store catalog | Reference adapter; callers must authenticate the envelope |
 
-The latter two adapters do not publish additional HTTP routes in the running
-services. A contract handler's service bearer authenticates its caller; it
+The identity read handler runs in control; verified-ingress link mutations have
+a separate credential. The toolsurface adapter does not publish an additional
+HTTP route. A contract handler's service bearer authenticates its caller; it
 does not prove that an arbitrary envelope in the body belongs to that caller.
 `RunContext` and `CatalogEntry` compatibility aliases preserve current callers
 while the wire DTOs belong to contracts. Remaining `toolhub/api` logic stays on

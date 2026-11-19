@@ -21,6 +21,7 @@ type PrincipalRevocation struct {
 	Grants      int `json:"grants,omitempty"`
 	Bindings    int `json:"bindings,omitempty"`
 	Connections int `json:"connections,omitempty"`
+	Schedules   int `json:"schedules,omitempty"`
 }
 
 // RevokePrincipalAuthority revokes capability profiles and tool grants owned by
@@ -186,7 +187,7 @@ func (g *Gateway) servePrincipalRevocation(w http.ResponseWriter, r *http.Reques
 	}
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	d.DisallowUnknownFields()
-	if err := d.Decode(&body); err != nil || d.Decode(new(any)) != io.EOF || body.PrincipalID != principal || !identity.ValidID(body.ContextID) || body.Stage != "toolhub" && body.Stage != "connectors" && body.Stage != "oauth" {
+	if err := d.Decode(&body); err != nil || d.Decode(new(any)) != io.EOF || body.PrincipalID != principal || !identity.ValidID(body.ContextID) || body.Stage != "toolhub" && body.Stage != "connectors" && body.Stage != "oauth" && body.Stage != "cron" {
 		http.Error(w, "invalid revocation request", http.StatusBadRequest)
 		return
 	}
@@ -213,6 +214,10 @@ func (g *Gateway) servePrincipalRevocation(w http.ResponseWriter, r *http.Reques
 		report, err = g.Store.RevokePrincipalConnectors(body.PrincipalID, body.ContextID)
 	case "oauth":
 		report, err = g.revokePrincipalOAuth(r, auth)
+	case "cron":
+		if g.pauseSchedules != nil {
+			report.Schedules, err = g.pauseSchedules(r.Context(), auth)
+		}
 	}
 	if err != nil {
 		http.Error(w, "revocation failed", http.StatusInternalServerError)
@@ -234,7 +239,7 @@ func (g *Gateway) servePrincipalRevocation(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
-	if body.Stage != "oauth" {
+	if body.Stage == "toolhub" || body.Stage == "connectors" {
 		if err := g.RefreshProjection(); err != nil {
 			http.Error(w, "revocation failed", http.StatusInternalServerError)
 			return

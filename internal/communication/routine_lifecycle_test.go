@@ -600,7 +600,7 @@ func TestRoutineHistoryPagesNewestFirst(t *testing.T) {
 func TestRoutineHistoryRejectsInvalidPageSize(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ func TestRoutineSummaryPaginationDoesNotLoseLargeInputs(t *testing.T) {
 func TestRoutinePageRejectsInvalidLimit(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1005,7 +1005,7 @@ func TestRoutineSnoozeRejectsDeadlineBeforeNextRun(t *testing.T) {
 func TestRoutinePreviewRejectsUnboundedCount(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

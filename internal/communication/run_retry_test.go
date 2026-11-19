@@ -33,7 +33,7 @@ func (r *alwaysFailRunner) RunOutcome(_ context.Context, job Job) (RunOutcome, e
 // logical operation and notify once instead of creating fresh authorization.
 func TestFailedRunAfterToolIsNotResubmitted(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

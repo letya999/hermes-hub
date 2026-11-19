@@ -247,7 +247,7 @@ func TestConfigFromEnvIgnoresLegacyCredentialStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := New(c); err != nil {
+	if _, err := newTestGateway(t, c); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{storePath, filepath.Join(dir, "credentials", "audit.jsonl")} {
@@ -273,7 +273,7 @@ func TestConfigFromEnvIgnoresLegacyCredentialStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(c); err != nil {
+	if _, err := newTestGateway(t, c); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{storePath, filepath.Join(dir, "credentials", "audit.jsonl")} {
@@ -289,7 +289,7 @@ func TestConfigFromEnvIgnoresLegacyCredentialStore(t *testing.T) {
 func TestSlackEventMarkedOnlyAfterDurableIngest(t *testing.T) {
 	c := testConfig(t)
 	c.SlackSigningSecret = "slack-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestSlackEventMarkedOnlyAfterDurableIngest(t *testing.T) {
 		t.Fatalf("unmapped sender: %d", rec.Code)
 	}
 	// The mapping arrives later; the retry must ingest, not dedupe away.
-	g.slackUsers[SlackLink{TeamID: "tteam", UserID: "uuser"}.Key()] = c.Users[0]
+	fixtureLinkSlack(t, g, c.Users[0].ID, "tteam", "uuser")
 	if rec := post(); rec.Code != http.StatusOK {
 		t.Fatalf("retry after failed ingest was deduped: %d", rec.Code)
 	}
@@ -612,7 +612,7 @@ func TestRoutineFailureNoticeRetriesAfterUndeliveredNotice(t *testing.T) {
 // `status="completed"` to confirm work landed.
 func TestFailedJobLogsFailed(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

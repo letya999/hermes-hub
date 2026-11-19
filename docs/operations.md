@@ -747,7 +747,8 @@ flow + PKCE, `openid` scope; no client secret is stored).
    ZITADEL's opaque user id, not the login name) goes into
    `communication.users.yaml` → `oidc_subject:` for enrolment.
 4. Backup scope grows: `hub-postgres-data` volume (the IdP's store) in
-   addition to `<spool>/iam/`; `identity-hub.auth` alongside the other
+   addition to the control registry `identity.<env>.sqlite` under
+   `<spaces>/.control`; `identity-hub.auth` alongside the other
    auth files. Removal: `/unlink` every linked account, drop the `iam:`
    block plus the two stack services, re-apply — the postgres volume
    stays behind for manual deletion, it is never dropped silently.
@@ -760,16 +761,20 @@ Two flows, both one-time and 10-minute TTL:
   nonce, then binds that channel account to the user's principal.
 - **Enrol** — an unmapped Telegram user messages the bot; instead of a
   bare denial it gets the same link. After SSO the subject must match a
-  user's provisioned `oidc_subject` in `communication.users.yaml`;
-  zero or ambiguous matches deny. Slack accounts enrol through the same
+  exact issuer/subject provisioned in the control registry by the explicit
+  legacy migration; unknown subjects deny. Slack accounts enrol through the same
   link minted for their `slack-<team>-<user>` transport.
 
-`/unlink` drops the channel account's binding. Links persist under
-`<spool>/iam/` (`iam-links.json` + hashed-subject audit journal) — back
-them up with the spool. A linked channel account resolves to its
+`/unlink` revokes the channel account's binding in the control registry.
+The old `<spool>/iam/iam-links.json` is an explicit migration source only;
+the gateway does not open its writer. Back up the control registry using the
+SQLite-aware procedure, including WAL state while running. A linked account resolves to its
 principal at ingress and its envelopes carry `Issuer`/`Subject`
 provenance; unlinked transports deny. One subject cannot bind two
-principals — conflicts answer 409 and are audited.
+principals — conflicts answer 409 and are audited. Proof/unlink transport
+requires separate `HUB_IDENTITY_LINK_AUTH` on control and edge; ordinary
+service/runtime credentials cannot assert proof. See
+[registry migration](services/identity-hub.md#legacy-migration-matrix).
 
 Limitations: provider verification is fixture-tested against the OIDC
 contract, not yet against a live ZITADEL tenant; enrol links are offered

@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-18
+last_verified: 2026-11-19
 ---
 
 # supervisor
@@ -42,9 +42,23 @@ the shared space network.
   `http://supervisor:8876` — `s.SupervisorURL`)
 - `--supervisor-allow-wildcard-listen` (explicit opt-in to bind 0.0.0.0)
 - `--warm-ttl` (`supervisor.DefaultWarmTTL` — idle runtime retention)
-- `--watch` (space config watching)
+- `--watch` (restart a crashed supervisor child)
 - Auth: `HUB_SUPERVISOR_AUTH` env or `--auth-file` (spaces can carry a
   `supervisor.auth`-provisioned token; compose injects the env reference)
+
+The control process owns `identity.<env>.sqlite` under its state directory
+(default `<spaces>/.control`), including bounded pending-proof upkeep. Read
+contracts use the service bearer; OIDC proof/unlink routes require distinct
+`HUB_IDENTITY_LINK_AUTH` and reject browser origins. Registry readiness is
+required for admission/spawn. Templates bind the real human/owned agent to
+private, group or organization resources; profile changes rotate the runtime
+generation. Narrowed skill views and their rebuild metadata are separate per
+identity/passport/environment snapshot. See [identity-hub](identity-hub.md).
+
+`POST /v1/admin/identity/deactivate` uses the separate admin bearer
+`HUB_SUPERVISOR_ADMIN_AUTH` and rejects browser origins. It retires a human's
+registry authority in this environment; the CLI coordinates cleanup across
+services using the existing per-context revocation stages.
 
 ## Mounts
 

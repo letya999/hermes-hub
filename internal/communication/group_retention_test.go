@@ -13,7 +13,7 @@ func TestPassiveGroupTranscriptIsBoundedAndSurvivesRestart(t *testing.T) {
 	c := testConfig(t)
 	c.Users = append(c.Users, User{ID: "team", Enabled: true, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
 	c.Groups = []Group{{ChatID: -100123, Space: "team", Members: []int64{11}, Mention: "@helper"}}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestPassiveGroupTranscriptIsBoundedAndSurvivesRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g, err = New(c)
+	g, err = newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

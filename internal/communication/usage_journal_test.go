@@ -219,7 +219,7 @@ func TestRunOutcomeMetersTerminalJob(t *testing.T) {
 
 func TestUsageCommandShowsJournalTotals(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

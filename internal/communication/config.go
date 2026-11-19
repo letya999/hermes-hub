@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"io"
 	"net/url"
@@ -35,20 +36,25 @@ var gatewayOwnedEnv = map[string]bool{
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised         bool   `yaml:"-"`
-	Environment        string `yaml:"-"`
-	OrganizationID     string `yaml:"organization_id"`
-	Users              []User `yaml:"users"`
-	Groups             Groups `yaml:"groups,omitempty"`
-	TelegramToken      string `yaml:"-"`
-	APIBaseURL         string `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string `yaml:"-"`
-	SlackBotToken      string `yaml:"-"`
-	SlackAppToken      string `yaml:"-"`
-	SlackTransport     string `yaml:"-"`
-	ControlAuth        string `yaml:"-"`
-	ControlPrincipal   string `yaml:"-"`
-	AutomationAuth     string `yaml:"-"`
+	Identity           identitycontract.Client     `yaml:"-" json:"-"`
+	IdentityLinks      identitycontract.LinkClient `yaml:"-" json:"-"`
+	IdentityURL        string                      `yaml:"-" json:"-"`
+	IdentityAuth       string                      `yaml:"-" json:"-"`
+	IdentityLinkAuth   string                      `yaml:"-" json:"-"`
+	Supervised         bool                        `yaml:"-"`
+	Environment        string                      `yaml:"-"`
+	OrganizationID     string                      `yaml:"organization_id"`
+	Users              []User                      `yaml:"users"`
+	Groups             Groups                      `yaml:"groups,omitempty"`
+	TelegramToken      string                      `yaml:"-"`
+	APIBaseURL         string                      `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret string                      `yaml:"-"`
+	SlackBotToken      string                      `yaml:"-"`
+	SlackAppToken      string                      `yaml:"-"`
+	SlackTransport     string                      `yaml:"-"`
+	ControlAuth        string                      `yaml:"-"`
+	ControlPrincipal   string                      `yaml:"-"`
+	AutomationAuth     string                      `yaml:"-"`
 	// ControlTokensFile optionally points at the infra owner's
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// admitted only as their enrolled principal. ControlPrincipal similarly
@@ -269,7 +275,14 @@ func parseYAML(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	d := yaml.NewDecoder(bytes.NewReader(b))
+	return DecodeYAML(bytes.NewReader(b))
+}
+
+// DecodeYAML parses one strict document. Callers validate after adding their
+// deployment-owned runtime/channel settings, as ConfigFromEnv does.
+func DecodeYAML(reader io.Reader) (Config, error) {
+	var c Config
+	d := yaml.NewDecoder(reader)
 	d.KnownFields(true)
 	if err := d.Decode(&c); err != nil {
 		return c, err
@@ -475,6 +488,9 @@ func workersFromEnv() int {
 }
 
 func fillChannelSecrets(config *Config) {
+	config.IdentityURL = strings.TrimSpace(os.Getenv("HUB_IDENTITY_URL"))
+	config.IdentityAuth = strings.TrimSpace(os.Getenv("HUB_IDENTITY_AUTH"))
+	config.IdentityLinkAuth = strings.TrimSpace(os.Getenv("HUB_IDENTITY_LINK_AUTH"))
 	if config.SlackSigningSecret == "" {
 		config.SlackSigningSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	}

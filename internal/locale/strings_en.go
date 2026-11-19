@@ -2,6 +2,23 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"hubctl.identity-usage":       "Usage: hubctl identity migrate --config <legacy YAML> --control-dir <control state> --env dev|prod --import-id <id> [--oidc-links <legacy JSON>] [--legacy-env-user <id>] [--apply]",
+		"hubctl.identity-source":      "Legacy communication configuration path",
+		"hubctl.identity-control-dir": "Control state directory",
+		"hubctl.identity-environment": "Environment: dev or prod",
+		"hubctl.identity-import-id":   "Unique migration receipt ID",
+		"hubctl.identity-links":       "Explicit legacy verified OIDC link file",
+		"hubctl.identity-env-user":    "User whose channel IDs come from TELEGRAM_ALLOWED_USERS and SLACK_ALLOWED_USERS",
+		"hubctl.identity-apply":       "Apply migration; otherwise show source counts",
+		"hubctl.identity-invalid":     "Identity migration input is invalid or unavailable",
+		"hubctl.identity-failed":      "Identity migration failed; no identity changes were committed",
+
+		"communication.identity-endpoint-required":       "An authenticated identity-hub endpoint is required",
+		"communication.identity-link-authority-required": "OIDC linking requires a separate identity-hub ingress credential",
+		"supervisor.identity-link-auth-distinct":         "Identity ingress and service-control credentials must differ",
+		"supervisor.identity-unavailable":                "Identity registry is unavailable",
+		"supervisor.identity-upkeep-pending":             "Identity upkeep is pending",
+
 		"package.sources-unavailable":              "Package sources are unavailable",
 		"package.source-invalid":                   "Package sources must be regular files without symlinks",
 		"hub.usage":                                "Usage: hub serve --zone control|agent|edge [zone arguments]",
@@ -47,10 +64,10 @@ func init() {
 		"hubctl.user-disable-usage":                "Usage: hubctl user disable --dir <space> [--env dev|prod] [--context <id>] [--supervisor-url <url>] [--gateway-url <url>] [--toolhub-url <url>]",
 		"hubctl.user-disable-env":                  "user disable requires --env dev or --env prod",
 		"hubctl.user-disable-scope":                "invalid principal or context id",
-		"hubctl.user-disable-auth":                 "service-control bearer unavailable; pass --supervisor-auth/--gateway-auth/--toolhub-auth or configure the space auth files",
+		"hubctl.user-disable-auth":                 "Revocation credentials are unavailable. Set HUB_SUPERVISOR_ADMIN_AUTH or pass --supervisor-auth, and configure the gateway and ToolHub control credentials.",
 		"hubctl.user-disable-stage-failed":         "principal revocation %s failed",
 		"hubctl.user-disable-stage":                "revoked %-10s %s",
-		"hubctl.user-disable-complete":             "principal %s:%s disabled; propagation order ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.user-disable-complete":             "principal %s:%s disabled; propagation order ingress→identity→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
 		// Language picker and /language.
 		"lang.choose":   "Choose your language:",
 		"lang.saved":    "Language set: %s.",

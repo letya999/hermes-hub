@@ -21,7 +21,9 @@ func TestAutomationDeliveryHandoffBindsOwnerAndRequestID(t *testing.T) {
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
-	g := &Gateway{config: Config{ControlAuth: "service", AutomationAuth: "automation-service", Users: []User{alice, bob}}, spool: spool, users: map[int64]User{11: alice, 22: bob}, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", AutomationAuth: "automation-service", Users: []User{alice, bob}}, spool: spool, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
 	client := automation.HTTPCommunicationClient{URL: srv.URL, Token: "automation-service"}
@@ -89,7 +91,9 @@ func TestAutomationDeliveryUsesLiveSendRight(t *testing.T) {
 		_, _ = w.Write([]byte(`{"allow":true}`))
 	}))
 	defer decisions.Close()
-	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: decisions.URL, Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: decisions.URL, Users: []User{alice}}, spool: spool, api: api, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	client := automation.HTTPCommunicationClient{URL: server.URL, Token: "service"}
@@ -116,7 +120,9 @@ func TestDeliveryWithBareOccurrenceRefFailsClosed(t *testing.T) {
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	api := &fakeAPI{}
-	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, api: api, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	// A delivery that references an occurrence without an owner principal is a
 	// legacy communication-owner record: post-cutover nothing may send it.
 	if err := spool.EnqueueDelivery(Delivery{ID: "legacy-watch", OccurrenceID: "occ-1", Channel: "telegram_bot", ChatID: 11, Text: "stale"}); err != nil {
@@ -167,7 +173,9 @@ func TestOccurrenceDeliveryFenceRechecksOwner(t *testing.T) {
 		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
 	}))
 	defer control.Close()
-	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: control.URL, AutomationAuth: "automation-test", Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: control.URL, AutomationAuth: "automation-test", Users: []User{alice}}, spool: spool, api: api, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	put := func(id, occ string) {
 		if err := spool.EnqueueDelivery(Delivery{ID: id, OccurrenceID: occ, OwnerPrincipalID: "alice", OwnerContextID: "alice", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "note"}); err != nil {
 			t.Fatal(err)
@@ -234,7 +242,9 @@ func TestAutomationDeliveryRechecksOwnerBeforeSend(t *testing.T) {
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	api := &fakeAPI{}
-	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, api: api, now: time.Now}
+	provisionTestIdentity(t, &g.config)
+
 	if err := spool.EnqueueDelivery(Delivery{ID: "automation-revoked", OwnerPrincipalID: "alice", OwnerContextID: "alice", Automation: true, Channel: "telegram_bot", ChatID: 11, Text: "private"}); err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,7 @@ func TestGetUpdatesConflictNotifiesOwnerOnce(t *testing.T) {
 	telegramConflictBackoff = 20 * time.Millisecond
 	defer func() { telegramConflictBackoff = prev }()
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

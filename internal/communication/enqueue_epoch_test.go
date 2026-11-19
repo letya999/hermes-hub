@@ -45,7 +45,7 @@ func TestEnqueueStampsHoldEpoch(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestEnqueueKeepsBakedPolicy(t *testing.T) {
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
 	c.Users[0].PolicyVersion = "policy-current"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestEnqueueSuppressedByActiveHold(t *testing.T) {
 	c.Supervised = true
 	c.RuntimeURL = srv.URL
 	c.RuntimeAuth = "synthetic-service"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

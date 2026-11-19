@@ -13,7 +13,7 @@ import (
 func TestSessionControlReportsNextTurnBoundary(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func sessionGateway(t *testing.T, sessionRead map[string]any) *Gateway {
 	}))
 	t.Cleanup(upstream.Close)
 	c.RuntimeURL = upstream.URL
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

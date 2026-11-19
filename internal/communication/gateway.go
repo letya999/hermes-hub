@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"io"
 	"log"
 	"net/http"
@@ -42,8 +43,6 @@ type Gateway struct {
 		last     time.Time
 	}
 	config       Config
-	users        map[int64]User
-	slackUsers   map[string]User
 	slackSocket  *slackSocketClient
 	iam          *iamState // nil → channel-mapped local mode (ADR-0100)
 	spool        *Spool
@@ -124,6 +123,18 @@ func New(config Config) (*Gateway, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	if config.IdentityURL == "" && config.Supervised {
+		config.IdentityURL = config.RuntimeURL
+	}
+	if config.IdentityAuth == "" && config.Supervised {
+		config.IdentityAuth = config.RuntimeAuth
+	}
+	if config.Identity == nil && config.IdentityURL != "" && config.IdentityAuth != "" {
+		config.Identity = identitycontract.NewHTTPClient(config.IdentityURL, config.IdentityAuth, nil)
+	}
+	if config.Identity == nil {
+		return nil, errors.New(locale.T(locale.Operator(), "communication.identity-endpoint-required"))
+	}
 	if config.TelegramToken == "" {
 		return nil, errors.New("TELEGRAM_BOT_TOKEN is required")
 	}
@@ -152,23 +163,10 @@ func New(config Config) (*Gateway, error) {
 			}
 		}
 	}
-	users := map[int64]User{}
-	slackUsers := map[string]User{}
-	for _, user := range config.Users {
-		if !user.Enabled {
-			continue
-		}
-		for _, id := range user.TelegramIDs {
-			users[id] = user
-		}
-		for _, link := range user.SlackIDs {
-			slackUsers[link.Key()] = user
-		}
-	}
 	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices)
 	runner := Runner(HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil})
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	g := &Gateway{config: config, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	// Draft approval cards persist beside the spool so a restart does not
 	// murder pending links (nonce hashes only — the link stays the secret).
 	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
@@ -233,11 +231,13 @@ func New(config Config) (*Gateway, error) {
 		if _, err := iam.NewProvider(config.OIDCIssuer, config.OIDCClientID, "https://placeholder.invalid/iam/oidc/callback"); err != nil {
 			return nil, fmt.Errorf("oidc provider: %w", err)
 		}
-		links, err := iam.OpenLinkStore(filepath.Join(config.SpoolDir, "iam"))
-		if err != nil {
-			return nil, fmt.Errorf("iam link store: %w", err)
+		if config.IdentityLinks == nil && config.IdentityURL != "" && config.IdentityLinkAuth != "" && config.IdentityLinkAuth != config.IdentityAuth {
+			g.config.IdentityLinks = identitycontract.NewLinkHTTPClient(config.IdentityURL, config.IdentityLinkAuth, nil)
 		}
-		g.iam = &iamState{links: links, nonces: map[string]linkNonce{}, pending: map[string]oidcPending{}}
+		if g.config.IdentityLinks == nil {
+			return nil, errors.New(locale.T(locale.Operator(), "communication.identity-link-authority-required"))
+		}
+		g.iam = &iamState{nonces: map[string]linkNonce{}, pending: map[string]oidcPending{}}
 	}
 	return g, nil
 }
@@ -583,6 +583,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 // conversation ids come from the verified sender envelope — never the
 // command text.
 type commandRoute struct {
+	verifiedChannel  identitycontract.ChannelIdentity
 	channel          string
 	chatID           int64
 	topic            int64
@@ -1027,6 +1028,7 @@ func (g *Gateway) noteEgress(channel string, err error) {
 // telegram-conflict makes a flapping second poller notify exactly once.
 func (g *Gateway) notifyTelegramConflict() {
 	for _, u := range g.config.Users {
+		u = g.user(u.ID)
 		if u.Enabled && len(u.TelegramIDs) > 0 {
 			_ = g.queueDelivery(context.Background(), u.ID, u.ID, "telegram-conflict", u.TelegramIDs[0], 0, locale.T(locale.LangOf(u.WorkspaceDir), "chat.bot-conflict"))
 			return
@@ -1042,12 +1044,12 @@ func (g *Gateway) user(id string) User {
 				owner = g.config.Users[0].ID
 			}
 			if !g.config.Supervised || g.config.ControlTokensFile == "" || user.ID == owner {
-				return user
+				return g.projectIdentityChannels(user)
 			}
 			entries, err := serviceauth.ReadTokenEnvelopes(g.config.ControlTokensFile)
 			if err != nil {
 				user.Enabled = false
-				return user
+				return g.projectIdentityChannels(user)
 			}
 			runtimeID := user.RuntimeID
 			if runtimeID == "" {
@@ -1056,24 +1058,18 @@ func (g *Gateway) user(id string) User {
 			policy, ok := serviceauth.EnrolledPolicy(entries, user.ID, runtimeID)
 			if !ok {
 				user.Enabled = false
-				return user
+				return g.projectIdentityChannels(user)
 			}
 			user.PolicyVersion = policy
-			return user
+			return g.projectIdentityChannels(user)
 		}
 	}
 	return User{}
 }
 
 func (g *Gateway) userByChatID(chatID int64) User {
-	for _, user := range g.config.Users {
-		for _, telegramID := range user.TelegramIDs {
-			if telegramID == chatID {
-				return g.user(user.ID)
-			}
-		}
-	}
-	return User{}
+	user, _ := g.identityUser(context.Background(), telegramIdentity(chatID))
+	return user
 }
 
 // restartRequest builds the restart call for the runtime that actually ran

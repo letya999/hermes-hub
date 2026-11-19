@@ -60,11 +60,7 @@ func (g *Gateway) telegramDeps() channel.TelegramDeps {
 		SendVoice:        func(ctx context.Context, d Delivery, text string) error { return g.sendVoiceReply(ctx, d, text) },
 		SendMarkdown:     func(ctx context.Context, d *Delivery) error { return g.sendTelegramMarkdown(ctx, d) },
 		UserByChat: func(chatID int64) (User, bool) {
-			u, ok := g.users[chatID]
-			if !ok {
-				return User{}, false
-			}
-			u = g.user(u.ID)
+			u := g.userByChatID(chatID)
 			return u, u.Enabled
 		},
 		UserByPrincipal: func(id string) User {

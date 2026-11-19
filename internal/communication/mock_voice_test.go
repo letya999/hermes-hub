@@ -33,7 +33,7 @@ func TestMockVoiceAdmissionIsBoundedOwnedAndTranscribed(t *testing.T) {
 		t.Run(variant, func(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.ControlAuth = "synthetic-control"
-			g, err := New(cfg)
+			g, err := newTestGateway(t, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

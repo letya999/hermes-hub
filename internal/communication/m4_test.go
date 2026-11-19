@@ -57,7 +57,7 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: bobState, WorkspaceDir: bobWS})
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 
 func TestEmptyVoiceUpdateIsTranscribedNotDropped(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestEmptyVoiceUpdateIsTranscribedNotDropped(t *testing.T) {
 
 func TestVoiceLimitsAndSTTErrorStayText(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestVoiceLimitsAndSTTErrorStayText(t *testing.T) {
 
 func TestVoiceMarkerDeliveryAndFallback(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestSlackEventsSignatureMappingDedupAndAudience(t *testing.T) {
 	c.SlackBotToken = "xoxb-test"
 	c.ControlAuth = "control-token"
 	c.Users[0].SlackIDs = []SlackLink{{TeamID: "TTEAM", UserID: "UUSER"}}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,8 +325,7 @@ func TestSlackEventsSignatureMappingDedupAndAudience(t *testing.T) {
 }
 
 func TestRoutineCRUDOwnershipAndCatchup(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.users = map[int64]User{11: {ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	due := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	created, err := s.CreateSchedule(Schedule{ScheduleID: "morning-brief", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "brief me"}, caller, "")
@@ -377,8 +376,7 @@ func TestRoutineCRUDOwnershipAndCatchup(t *testing.T) {
 }
 
 func TestCatchupEnqueuesAtMostOneMissedOccurrence(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.users = map[int64]User{11: {ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	created, err := s.CreateSchedule(Schedule{ScheduleID: "catch-up", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "catch"}, caller, "")
 	if err != nil {
@@ -402,8 +400,7 @@ func TestCatchupEnqueuesAtMostOneMissedOccurrence(t *testing.T) {
 }
 
 func TestOnceScheduleDisablesAfterFire(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.users = map[int64]User{11: {ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	due := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "once-brief", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "once"}, caller, ""); err != nil {
@@ -468,7 +465,7 @@ func TestRoutineHTTPControlAndTelegramCommand(t *testing.T) {
 func TestVerifySlackChallenge(t *testing.T) {
 	c := testConfig(t)
 	c.SlackSigningSecret = "slack-secret"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +591,7 @@ func TestServiceURLBeatsCommandSelection(t *testing.T) {
 	c := testConfig(t)
 	c.STTURL = "http://hub-stt:8090"
 	c.TTSURL = "http://hub-tts:8090"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +640,7 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	// unavailable until a TTS URL exists.
 	c := testConfig(t)
 	c.STTURL = "http://127.0.0.1:1"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +654,7 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	// TTS URL configured: outgoing selects the service client.
 	c = testConfig(t)
 	c.TTSURL = "http://127.0.0.1:1"
-	g, err = New(c)
+	g, err = newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +663,7 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	}
 	// A parked upload URL keeps the synthesizer out of the send path.
 	c.TTSUploadURL = "https://example.invalid/upload"
-	g, err = New(c)
+	g, err = newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +675,7 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	}
 
 	// Unconfigured STT replies "not configured" without consuming a job.
-	g, err = New(testConfig(t))
+	g, err = newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +716,7 @@ func TestVoiceUnavailableStatus(t *testing.T) {
 	config.SpoolDir = t.TempDir()
 	config.Users[0].StateDir = t.TempDir()
 	config.Users[0].WorkspaceDir = t.TempDir()
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}

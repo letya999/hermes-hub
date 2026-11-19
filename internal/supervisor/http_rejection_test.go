@@ -61,7 +61,7 @@ func TestUntypedRuntimeHTTPFailureHasDurableOutcome(t *testing.T) {
 			if response.Code != tc.code || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Status != tc.status || result.JobID != request.JobID || result.RuntimeGeneration != runtime.Generation || strings.Contains(response.Body.String(), "private runtime detail") {
 				t.Fatalf("response=%d %s", response.Code, response.Body.String())
 			}
-			restored, err := New(m.cfg)
+			restored, err := newTestManager(t, m.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

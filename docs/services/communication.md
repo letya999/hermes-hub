@@ -11,6 +11,15 @@ everything entering or leaving the human conversation. Listens
 `127.0.0.1:<host-port>` — 8081 normally, the Slack events port when
 `slack_app` is enabled (docs/channels/slack.md).
 
+Channel authority is `contracts/identity/v1` in control. `HUB_IDENTITY_URL` and
+`HUB_IDENTITY_AUTH` select it; supervised stacks default to the supervisor
+URL/bearer. Legacy channel lists are explicit migration inputs, while user
+paths/passport metadata remain routing ceilings. Unknown, revoked or unavailable
+registry identities deny without a static fallback, including delayed delivery
+and owner notices. OIDC proof/unlink calls require separate
+`HUB_IDENTITY_LINK_AUTH`; the gateway retains only transient one-time login
+challenges, not the old IAM link writer. See [identity-hub](identity-hub.md).
+
 ## Responsibilities
 
 - **Channel adapters** (`internal/channel`): Telegram and Slack — registry +

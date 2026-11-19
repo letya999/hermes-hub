@@ -16,10 +16,15 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
-| [CHG-0331](in-progress/CHG-0331-identity-hub/plan.md) | M40.3 (#575): control-zone SQLite identity registry, owned agents, scoped roles, narrowing layers and proven channel links |
 | [CHG-0330](in-progress/CHG-0330-module-boundaries/plan.md) | M40.2 (#574): contract pattern (identity, task, toolsurface), per-binary dependency gate, no in-process ToolHub store, one `hub` binary |
 | [CHG-0329](in-progress/CHG-0329-security-baseline/plan.md) | M40.1 (#573): fail-closed baseline — no HermesRunner, no unmanaged mode, supervisor env errors, path-bug dirs, T01-T22 claims |
 | [CHG-0328](in-progress/CHG-0328-v1-architecture/plan.md) | M40.0 (#572): ADR-0105..0109, SPEC-0100..0102, v1 architecture/boundaries/glossary reset, supersession rows |
+
+## Done — M40 v1 platform
+
+| Change | State |
+|---|---|
+| [CHG-0331](done/CHG-0331-identity-hub/plan.md) | M40.3 (#575): registry cutover, migration and operator deactivation verified locally. Live deployment and remote acceptance are pending. |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 

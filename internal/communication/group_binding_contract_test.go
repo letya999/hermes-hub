@@ -6,7 +6,7 @@ import (
 )
 
 func TestQueuedGroupBindingMustStillMatchItsAuthority(t *testing.T) {
-	g, err := New(groupConfig(t))
+	g, err := newTestGateway(t, groupConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

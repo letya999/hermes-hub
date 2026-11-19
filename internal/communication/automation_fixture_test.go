@@ -65,7 +65,7 @@ func automationGatewayFixtureIO(t *testing.T, cfg Config, extra map[string]routi
 	if cfg.RuntimeURL == "" {
 		cfg.RuntimeURL, cfg.RuntimeAuth = "http://127.0.0.1:1", "runtime-test"
 	}
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func automationGatewayFixtureIO(t *testing.T, cfg Config, extra map[string]routi
 	} else if err := os.WriteFile(routingPath, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	policy := automation.ChannelPolicy{RoutingFile: routingPath, LegacyRoot: cfg.SpoolDir}
+	policy := automation.ChannelPolicy{Identity: g.config.Identity, RoutingFile: routingPath, LegacyRoot: cfg.SpoolDir}
 	// The owner posts deliveries/results back through the gateway's real
 	// service intake — the same path the production host takes.
 	commServer := httptest.NewServer(g.Handler())

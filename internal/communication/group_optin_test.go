@@ -28,7 +28,7 @@ func TestGroupUsesDedicatedSpaceAndMentionGate(t *testing.T) {
 	}
 	loaded.TelegramToken = c.TelegramToken
 	loaded.RuntimeURL, loaded.RuntimeAuth = c.RuntimeURL, c.RuntimeAuth
-	g, err := New(loaded)
+	g, err := newTestGateway(t, loaded)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -197,7 +197,7 @@ func (f *captureFixture) serveToolHub(t *testing.T, envelopes map[string]identit
 // producer over its durable spool.
 func (f *captureFixture) gateway(t *testing.T, config Config) *Gateway {
 	t.Helper()
-	g, err := New(config)
+	g, err := newTestGateway(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}

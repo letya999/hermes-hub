@@ -119,7 +119,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(EffectiveSoulPath(dir, s)), "target": "/state/hermes/SOUL.md", "read_only": true},
 	}
 	if s.PassportWorkspace == nil {
 		stateVolumes = append(stateVolumes,
@@ -282,7 +282,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// entirely when the feature is off. A published workspace passport
 	// already carries /skills through the MountPlan.
 	if s.PassportWorkspace == nil {
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(EffectiveSkillsDir(dir, s)), "target": "/skills", "read_only": true})
 	}
 	// R5.1: the owner store is writable beside the read-only view; env tells
 	// the executor which path is which. Drafts never touch /skills.
@@ -294,8 +294,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// the view itself a second writable bind beside the agent's ro /skills.
 	stateVolumes = append(stateVolumes,
 		M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/skills-platform", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective-rw"},
-		M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsMetaDir(dir)), "target": "/skills-meta", "read_only": true})
+		M{"type": "bind", "source": filepath.ToSlash(EffectiveSkillsDir(dir, s)), "target": "/skills-effective-rw"},
+		M{"type": "bind", "source": filepath.ToSlash(EffectiveSkillsMetaDir(dir, s)), "target": "/skills-meta", "read_only": true})
 	runtimeEnv["HUB_SKILLS_PLATFORM"] = "/skills-platform"
 	runtimeEnv["HUB_SKILLS_EFFECTIVE_RW"] = "/skills-effective-rw"
 	runtimeEnv["HUB_SKILLS_META"] = "/skills-meta"
@@ -515,6 +515,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// them: admin holds need a separate authority token; the personal
 			// supervisor needs a managed model endpoint + model name.
 			"HUB_SUPERVISOR_ADMIN_AUTH": "${HUB_SUPERVISOR_ADMIN_AUTH:-}",
+			"HUB_IDENTITY_LINK_AUTH":    "${HUB_IDENTITY_LINK_AUTH:-}",
 			"HUB_PERSONAL_MODEL":        "${HUB_PERSONAL_MODEL:-}",
 			"HUB_MANAGED_MODEL_URL":     "${HUB_MANAGED_MODEL_URL:-}",
 			"OPENAI_API_KEY":            "${OPENAI_API_KEY:-}",
@@ -615,6 +616,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 
 		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment, "HUB_EGRESS_PROXY": "${HUB_EGRESS_PROXY:-}"}
 		toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
+		toolhubEnv["HUB_IDENTITY_URL"] = "${HUB_IDENTITY_URL:-}"
+		toolhubEnv["HUB_IDENTITY_AUTH"] = "${HUB_IDENTITY_AUTH:-}"
 		toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 		toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
 		if s.ExecutionMode == "supervisor" {
@@ -985,6 +988,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayRuntimeURL = supervisorURL
 		}
 		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled()), "HUB_EGRESS_PROXY": "${HUB_EGRESS_PROXY:-}", "SLACK_TRANSPORT": "${SLACK_TRANSPORT:-events}"}
+		gatewayEnvironment["HUB_IDENTITY_URL"] = "${HUB_IDENTITY_URL:-}"
+		gatewayEnvironment["HUB_IDENTITY_AUTH"] = "${HUB_IDENTITY_AUTH:-}"
+		gatewayEnvironment["HUB_IDENTITY_LINK_AUTH"] = "${HUB_IDENTITY_LINK_AUTH:-}"
 		if cfg := s.PassportConfig; cfg != nil {
 			if cfg.Runtime.Locale != "" {
 				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale

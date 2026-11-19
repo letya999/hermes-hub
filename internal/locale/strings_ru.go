@@ -2,6 +2,23 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"hubctl.identity-usage":       "Использование: hubctl identity migrate --config <старый YAML> --control-dir <каталог control> --env dev|prod --import-id <id> [--oidc-links <старый JSON>] [--legacy-env-user <id>] [--apply]",
+		"hubctl.identity-source":      "Путь к старой конфигурации каналов",
+		"hubctl.identity-control-dir": "Каталог состояния control",
+		"hubctl.identity-environment": "Окружение: dev или prod",
+		"hubctl.identity-import-id":   "Уникальный ID квитанции миграции",
+		"hubctl.identity-links":       "Явно выбранный файл подтверждённых связей OIDC",
+		"hubctl.identity-env-user":    "Пользователь, чьи ID каналов берутся из TELEGRAM_ALLOWED_USERS и SLACK_ALLOWED_USERS",
+		"hubctl.identity-apply":       "Применить миграцию; без флага показать количество записей источника",
+		"hubctl.identity-invalid":     "Входные данные миграции идентификации недоступны или некорректны",
+		"hubctl.identity-failed":      "Миграция идентификации завершилась ошибкой; изменения идентификации не сохранены",
+
+		"communication.identity-endpoint-required":       "Требуется адрес identity-hub с аутентификацией",
+		"communication.identity-link-authority-required": "Для привязки через OIDC требуется отдельный ключ входного канала identity-hub",
+		"supervisor.identity-link-auth-distinct":         "Ключ входного канала identity-hub должен отличаться от ключа service-control",
+		"supervisor.identity-unavailable":                "Реестр идентификации недоступен",
+		"supervisor.identity-upkeep-pending":             "Обслуживание реестра идентификации ожидает повтора",
+
 		"package.sources-unavailable":              "Исходники для архива недоступны",
 		"package.source-invalid":                   "Архив может содержать только обычные файлы без символических ссылок",
 		"hub.usage":                                "Использование: hub serve --zone control|agent|edge [аргументы зоны]",
@@ -47,10 +64,10 @@ func init() {
 		"hubctl.user-disable-usage":                "Использование: hubctl user disable --dir <space> [--env dev|prod] [--context <id>] [--supervisor-url <url>] [--gateway-url <url>] [--toolhub-url <url>]",
 		"hubctl.user-disable-env":                  "user disable требует --env dev или --env prod",
 		"hubctl.user-disable-scope":                "Некорректный principal или context id",
-		"hubctl.user-disable-auth":                 "Bearer service-control недоступен; передайте --supervisor-auth/--gateway-auth/--toolhub-auth или настройте auth-файлы пространства",
+		"hubctl.user-disable-auth":                 "Учётные данные для отзыва недоступны. Задайте HUB_SUPERVISOR_ADMIN_AUTH или передайте --supervisor-auth, затем настройте учётные данные управления шлюзом и ToolHub.",
 		"hubctl.user-disable-stage-failed":         "Отзыв principal на этапе %s не выполнен",
 		"hubctl.user-disable-stage":                "Отозвано %-10s %s",
-		"hubctl.user-disable-complete":             "Principal %s:%s отключён; порядок распространения ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.user-disable-complete":             "Principal %s:%s отключён; порядок распространения ingress→identity→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
 		// Language picker and /language.
 		"lang.choose":   "Выберите язык для взаимодействия:",
 		"lang.saved":    "Язык установлен: %s.",

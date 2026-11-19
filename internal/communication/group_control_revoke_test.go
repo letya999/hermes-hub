@@ -10,7 +10,7 @@ import (
 )
 
 func TestGroupRevocationCancelsQueuedApproval(t *testing.T) {
-	g, err := New(groupConfig(t))
+	g, err := newTestGateway(t, groupConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestGroupRevocationCancelsQueuedApproval(t *testing.T) {
 	}))
 	defer api.Close()
 	g.config.RuntimeURL = api.URL
-	g.config.Groups[0].Members = []int64{22}
+	fixtureSetSharedMembers(t, g, g.config.Groups[0].Space)
 	g.controlOne(context.Background())
 	mapping, _, err := g.spool.Mapping(job.ID)
 	if err != nil {

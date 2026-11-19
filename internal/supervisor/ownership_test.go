@@ -125,7 +125,7 @@ func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) 
 	if err = m.DetectOrphans(context.Background()); err == nil || len(m.Orphans()) != 1 {
 		t.Fatal("failed scan lost previous inventory")
 	}
-	restored, err := New(m.cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil || len(restored.Orphans()) != 1 {
 		t.Fatalf("inventory not durable: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestRestoreRejectsReplacementWithoutDiscardingOriginalLeases(t *testing.T) 
 		}
 		return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": "replacement"})
 	}
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestRestoredReadinessFailurePreservesRunAndLease(t *testing.T) {
 		return command(ctx, args...)
 	}
 	cfg.Probe = func(context.Context, string, string) error { return errors.New("API temporarily unavailable") }
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestRestoredStartingGenerationAdoptsWithoutDuplicate(t *testing.T) {
 		}
 		return command(ctx, args...)
 	}
-	restored, err := New(cfg)
+	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

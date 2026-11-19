@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,13 +34,28 @@ type ownerAlertLedger struct {
 // ownerHome resolves the user's private notice address: the first
 // verified telegram id still mapped to that user, else their slack DM.
 func (g *Gateway) ownerHome(user User) (chatID int64, slackChannel string, ok bool) {
-	for _, candidate := range user.TelegramIDs {
-		if mapped, found := g.users[candidate]; found && mapped.ID == user.ID {
-			return candidate, "", true
+	if g.config.Identity == nil || !user.Enabled {
+		return 0, "", false
+	}
+	bindings, err := g.config.Identity.Bindings(context.Background(), user.ID)
+	if err != nil {
+		return 0, "", false
+	}
+	for _, binding := range bindings {
+		if binding.PrincipalID == user.ID && binding.Channel.Channel == identitycontract.Telegram {
+			id, err := strconv.ParseInt(binding.Channel.ID, 10, 64)
+			if err == nil && id > 0 {
+				return id, "", true
+			}
 		}
 	}
-	if len(user.SlackIDs) > 0 {
-		return 0, user.SlackIDs[0].UserID, true
+	for _, binding := range bindings {
+		if binding.PrincipalID == user.ID && binding.Channel.Channel == identitycontract.Slack {
+			_, id, found := strings.Cut(binding.Channel.ID, "/")
+			if found && id != "" {
+				return 0, strings.ToUpper(id), true
+			}
+		}
 	}
 	return 0, "", false
 }

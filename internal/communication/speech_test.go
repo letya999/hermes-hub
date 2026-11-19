@@ -15,7 +15,7 @@ import (
 )
 
 func TestSpeechDeliveryBindsJobOwnerAndIsIdempotent(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestSpeechDeliveryBindsJobOwnerAndIsIdempotent(t *testing.T) {
 }
 
 func TestMockSpeechRequiresOwnedChatAndCapturesAudio(t *testing.T) {
-	g, err := New(testConfig(t))
+	g, err := newTestGateway(t, testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
@@ -220,6 +221,12 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		return err
 	}
 	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000}
+	registry, err := integrationIdentity(ctx, root, []commodel.User{{ID: userID, Enabled: true, TelegramIDs: []int64{11}}})
+	if err != nil {
+		return err
+	}
+	defer registry.Close()
+	cfg.Identity = registry
 	var starts atomic.Int32
 	cfg.Command = func(callCtx context.Context, args ...string) ([]byte, error) {
 		if len(args) != 0 && args[0] == "network" {

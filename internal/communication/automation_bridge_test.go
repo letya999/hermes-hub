@@ -44,7 +44,7 @@ func TestAssignmentGatewayWritesOnlyToolHubOwner(t *testing.T) {
 	server := httptest.NewServer(host.ControlHandler("control-token"))
 	defer server.Close()
 	cfg.ToolHubURL = server.URL
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestRoutineGatewayWritesOnlyToolHubOwner(t *testing.T) {
 	server := httptest.NewServer(host.ControlHandler("control-token"))
 	defer server.Close()
 	cfg.ToolHubURL = server.URL
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestGatewayRefusesLegacyAutomationBeforeSpoolRecovery(t *testing.T) {
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(cfg); err == nil {
+	if _, err := newTestGateway(t, cfg); err == nil {
 		t.Fatal("gateway accepted a populated old automation layout")
 	}
 	got, err := os.ReadFile(path)

@@ -52,7 +52,7 @@ func TestTelegramAuthDegradesWithoutBroker(t *testing.T) {
 	// invite hook stays inert.
 	cfg := testConfig(t)
 	cfg.TelegramAuthEnabled = true
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatalf("gateway refused to start without broker config: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
 	cfg.FormOrigin = "http://localhost:8081"
 	cfg.BrokerApprove = credentialbroker.Config{URL: "https://broker.example"}
 	cfg.TelegramAuthEnabled = true
-	gateway, err := New(cfg)
+	gateway, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

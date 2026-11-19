@@ -17,12 +17,13 @@ func alertTestGateway(t *testing.T) (*Gateway, User) {
 		t.Fatal(err)
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
-	return &Gateway{
+	g := &Gateway{
 		config: Config{Users: []User{alice}},
 		spool:  spool,
-		users:  map[int64]User{11: alice},
 		now:    time.Now,
-	}, alice
+	}
+	provisionTestIdentity(t, &g.config)
+	return g, alice
 }
 
 func pendingAlerts(t *testing.T, g *Gateway) []string {

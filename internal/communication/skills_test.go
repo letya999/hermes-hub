@@ -110,7 +110,7 @@ func TestSkillCredentialFormFlow(t *testing.T) {
 	c.SkillsDir = skillsDir
 	c.SkillsStore = t.TempDir()
 	relayed := acceptingRuntime(t, &c)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestSkillCredentialFormReadsCallerView(t *testing.T) {
 	}
 	c.SkillsByPrincipalDir = byRoot
 	c.SkillsStore = t.TempDir()
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
 	c.SkillsDir = skillsDir
 	c.SkillsStore = t.TempDir()
 	relayed := acceptingRuntime(t, &c)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestSlashSkillExpandsIntoJob(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "deploy-app", "deploys", "Deploy $0 to $1. All args: $ARGUMENTS\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestSlashSkillHiddenAndIneligibleGetVisibleError(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "needy", "dep", "body\n", "")
 	sealEffectiveIndex(t, skillsDir, map[string]bool{"needy": true})
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestDollarSkillRefsExpandOnceAndStopAtNonSkill(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "beta", "second", "BETA BODY\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestSessionPinnedCatalogNotesChangeOnce(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "alpha", "first", "ALPHA BODY\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestSlashSkillDedupesWithinSession(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "alpha", "first", "ALPHA BODY\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestDollarSkillRefsCapAtFive(t *testing.T) {
 	}
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,7 @@ func TestDollarSkillRefsFlagUnavailable(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "quiet", "hidden", "body\n", "disable-model-invocation: true\n")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestDollarSkillRefsDoubleDollarStaysLiteral(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "alpha", "first", "ALPHA BODY\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestSlashSkillResolvesSiblingPrincipalView(t *testing.T) {
 	writeEffectiveSkill(t, sibDir, "shared-name", "d", "BOB VERSION\n", "")
 	sealEffectiveIndex(t, sibDir, nil)
 	c.SkillsByPrincipalDir = byRoot
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func TestSlashSkillLegacyMountIsOwnerOnly(t *testing.T) {
 	writeEffectiveSkill(t, skillsDir, "owner-skill", "d", "OWNER BODY\n", "")
 	sealEffectiveIndex(t, skillsDir, nil)
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func TestDollarSkillRefsResolveSiblingPrincipalView(t *testing.T) {
 	writeEffectiveSkill(t, sibDir, "shared-name", "d", "BOB VERSION\n", "")
 	sealEffectiveIndex(t, sibDir, nil)
 	c.SkillsByPrincipalDir = byRoot
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,7 +707,7 @@ func TestSlashSkillRepliesLocalized(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.SkillsDir = skillsDir
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +759,7 @@ func TestSkillCredentialFormManagedRelay(t *testing.T) {
 	c.RuntimeURL = upstream.URL
 	c.RuntimeAuth = "runtime-secret"
 	c.SkillsStore = t.TempDir()
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,7 +787,7 @@ func TestSkillCredentialFormManagedRelayFailure(t *testing.T) {
 	c.RuntimeURL = upstream.URL
 	c.RuntimeAuth = "runtime-secret"
 	c.SkillsStore = t.TempDir()
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

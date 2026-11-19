@@ -18,7 +18,6 @@ import (
 // never deleted evidence.
 type PrincipalRevocation struct {
 	Jobs       int `json:"jobs,omitempty"`
-	Schedules  int `json:"schedules,omitempty"`
 	Deliveries int `json:"deliveries,omitempty"`
 }
 
@@ -180,7 +179,7 @@ func (g *Gateway) servePrincipalRevocation(w http.ResponseWriter, r *http.Reques
 	}
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	d.DisallowUnknownFields()
-	if err := d.Decode(&body); err != nil || d.Decode(new(any)) != io.EOF || !identity.ValidID(body.PrincipalID) || !identity.ValidID(body.ContextID) || body.Stage != "jobs" && body.Stage != "cron" && body.Stage != "delivery" {
+	if err := d.Decode(&body); err != nil || d.Decode(new(any)) != io.EOF || !identity.ValidID(body.PrincipalID) || !identity.ValidID(body.ContextID) || body.Stage != "jobs" && body.Stage != "delivery" {
 		http.Error(w, "invalid revocation request", http.StatusBadRequest)
 		return
 	}
@@ -189,17 +188,6 @@ func (g *Gateway) servePrincipalRevocation(w http.ResponseWriter, r *http.Reques
 	switch body.Stage {
 	case "jobs":
 		result.Jobs, err = g.spool.RevokePrincipalJobs(body.PrincipalID, body.ContextID)
-	case "cron":
-		caller, ok := g.controlCaller(body.PrincipalID)
-		if !ok || caller.ContextID != body.ContextID {
-			err = errors.New("principal context unavailable")
-			break
-		}
-		var out struct {
-			Schedules int `json:"schedules"`
-		}
-		err = g.automationCall(r.Context(), caller, "schedule.pause", map[string]string{"id": "*"}, &out)
-		result.Schedules = out.Schedules
 	case "delivery":
 		result.Deliveries, err = g.spool.RevokePrincipalDeliveries(body.PrincipalID, body.ContextID)
 	}

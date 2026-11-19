@@ -12,7 +12,7 @@ func TestGatewayUsersDoNotInheritAnotherRuntimeIdentity(t *testing.T) {
 	c.RuntimeURL, c.RuntimeAuth = "http://localhost:1", "synthetic"
 	c.Users[0].RuntimeID, c.Users[0].PolicyVersion = "alice-runtime", "alice-policy"
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, RuntimeID: "bob-runtime", PolicyVersion: "bob-policy"})
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

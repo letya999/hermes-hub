@@ -57,7 +57,7 @@ last_verified: 2026-11-19
 | [services/hosting.md](services/hosting.md) | Per-user static sites, fragment shares and isolated stateless applications |
 | [services/communication.md](services/communication.md) | Channel gateway — adapters, spool, `?t=` links |
 | [services/supervisor.md](services/supervisor.md) | Scale-to-zero spawner — warm pools, control routing |
-| [services/identity-hub.md](services/identity-hub.md) | SQLite identity registry foundation — principals, profiles, layers, channel proofs; cutover in CHG-0331 |
+| [services/identity-hub.md](services/identity-hub.md) | Control-zone identity registry — principals, profiles, layers, verified channels and explicit legacy migration |
 | [services/credential-broker/](services/credential-broker/index.md) | Copied MIT credential-authority module — русскоязычный под-дерево: architecture, engineering, operations, product, documentation |
 | [services/media.md](services/media.md) | hub-stt/hub-tts/hub-media sidecars |
 | [services/cell-proxy.md](services/cell-proxy.md) | Disposable workload cells and loopback relays |

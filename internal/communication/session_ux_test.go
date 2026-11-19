@@ -19,7 +19,7 @@ import (
 
 func TestUnknownCommandGetsHelpNotModel(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestUnknownCommandGetsHelpNotModel(t *testing.T) {
 
 func TestNewAndSessionsAliasesCreateAndList(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestNewAndSessionsAliasesCreateAndList(t *testing.T) {
 
 func TestTaskDeleteAndArchivedList(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestTaskDeleteAndArchivedList(t *testing.T) {
 
 func TestForumTopicResolvesAndReplies(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func forumOpCalled(ops []forumOp, method string, chat, topic int64, name string)
 // posts in that topic route to the session.
 func TestNewInForumGroupCreatesTopic(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestNewInForumGroupCreatesTopic(t *testing.T) {
 // adopted Hermes title later renames the topic.
 func TestNewForumTopicFollowsAutoTitle(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestNewForumTopicFollowsAutoTitle(t *testing.T) {
 // historical behavior — the task binds to the topic it was typed in.
 func TestNewForumFallbackBindsInboundTopic(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestNewForumFallbackBindsInboundTopic(t *testing.T) {
 // typed inside the deleted topic is delivered to the group root instead.
 func TestDeleteInForumGroupDeletesTopic(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestDeleteInForumGroupDeletesTopic(t *testing.T) {
 // binding to a fresh forum topic.
 func TestRebindTaskTopicCollision(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestRebindTaskTopicCollision(t *testing.T) {
 
 func TestAutoTitleAdoptsSessionTitleOnce(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
 	defer server.Close()
 
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestQuotaLinesResolvesSharedGatewayRelayPerPrincipal(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
 
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestQuotaLinesCacheIsIsolatedPerPrincipal(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(bobRoot, "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(bobRoot, "workspace"), 0700)
 	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(bobRoot, "state"), WorkspaceDir: filepath.Join(bobRoot, "workspace")})
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestQuotaLinesCacheIsIsolatedPerPrincipal(t *testing.T) {
 
 func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
 // named exactly like it — no /new needed and no "topic-<id>" label.
 func TestUserCreatedTopicBindsNamedSession(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestUserCreatedTopicBindsNamedSession(t *testing.T) {
 // session list always shows the same name the topic carries.
 func TestTopicRenameRenamesBoundSession(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +693,7 @@ func TestTopicRenameRenamesBoundSession(t *testing.T) {
 // placeholder — while a deliberately named bound session keeps its name.
 func TestLateTopicCreatedFixesPlaceholder(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ func TestLateTopicCreatedFixesPlaceholder(t *testing.T) {
 // /stop cancels the running job of the session resolved in this chat.
 func TestStopCancelsCurrentTaskJob(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +772,7 @@ func TestStopCancelsCurrentTaskJob(t *testing.T) {
 // bot-managed topic is closed so the archive state mirrors in the UI.
 func TestArchiveCommandClosesForumTopic(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +819,7 @@ func TestArchiveCommandClosesForumTopic(t *testing.T) {
 // same listing inside the archive namespace.
 func TestArchivedListsArchivedSessions(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +859,7 @@ func TestArchivedListsArchivedSessions(t *testing.T) {
 // topic is reopened so its UI mirror matches the live state again.
 func TestUseRestoresArchivedSession(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -905,7 +905,7 @@ func TestUseRestoresArchivedSession(t *testing.T) {
 // touching the current one.
 func TestArchiveCommandBySelector(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -947,7 +947,7 @@ func TestArchiveCommandBySelector(t *testing.T) {
 // stealing the binding — and no foreign topic is reopened.
 func TestUseArchivedByNameAndTopicCollision(t *testing.T) {
 	c := groupConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1000,7 @@ func TestUseArchivedByNameAndTopicCollision(t *testing.T) {
 // whatever its outcome (missing args, archived target, no active job).
 func TestAllCommandsStayDeterministic(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1033,7 +1033,7 @@ func TestStopCancelInCommandInventory(t *testing.T) {
 // reference this command, so it must exist.
 func TestCancelByJobID(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1078,7 +1078,7 @@ func TestCancelByJobID(t *testing.T) {
 // A forum service message from a non-configured user must not mint sessions.
 func TestForeignForumServiceIgnored(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

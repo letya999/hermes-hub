@@ -32,6 +32,11 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+	_, identityRevision, err := m.identityTemplate(ctx, binding)
+	if err != nil {
+		return Runtime{}, err
+	}
+	binding.IdentityRevision = identityRevision
 	selection, selected, selectionErr := stack.ReadExecution(binding.ContextRoot, m.environment(), binding.UserID)
 	if selectionErr != nil {
 		return Runtime{}, selectionErr
@@ -65,7 +70,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			}
 		}
 	}
-	if current != nil && current.PolicyVersion != "" && binding.PolicyVersion != "" && current.PolicyVersion != binding.PolicyVersion && (current.State == Ready || current.State == Idle || current.State == Busy || current.restored) {
+	if current != nil && ((current.PolicyVersion != "" && binding.PolicyVersion != "" && current.PolicyVersion != binding.PolicyVersion) || current.IdentityRevision != binding.IdentityRevision) && (current.State == Ready || current.State == Idle || current.State == Busy || current.restored) {
 		snapshot := current.Runtime
 		m.mu.Unlock()
 		log.Printf("runtime %s policy rotated: replacing stale generation", snapshot.Container)
@@ -245,7 +250,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{IdentityRevision: binding.IdentityRevision, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
@@ -513,8 +518,14 @@ func appendConnectionRuntimeMounts(args []string, root string, settings stack.Se
 // roots and the agent network only. No published port (internal network), no
 // broker secrets, no shared mounts, no host gateway.
 func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, container string, generation string) ([]string, error) {
+	var err error
+	settings, err = m.applyIdentityTemplate(binding, settings)
+	if err != nil {
+		return nil, err
+	}
 	env := m.environment()
 	m.prepareSpawnFiles(binding, env)
+	settings.Environment = env
 	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
 	runtimeDir := filepath.Join(managedDir, "runtime")
 	if binding.RuntimeMode != "gateway" {
@@ -569,14 +580,14 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	}
 	// A published workspace passport carries /skills through the MountPlan.
 	if settings.PassportWorkspace == nil {
-		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+		args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsDir(binding.ContextRoot, settings)+",dst=/skills,readonly")
 	}
 	// Post-publish rebuild contract: the platform tier and the render
 	// snapshot mount read-only; the view gets a second writable bind so
 	// /v1/skill-apply can recompose it in place without a respawn.
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsDir(binding.ContextRoot, settings)+",dst=/skills-effective-rw")
+	args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsMetaDir(binding.ContextRoot, settings)+",dst=/skills-meta,readonly")
 	// R5.1: the owner store (not a private managed copy) is writable at
 	// /skills-store so drafts, publishes and the effective view all see the
 	// same store.
@@ -604,7 +615,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		return nil, err
 	}
 	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
-	if soul := filepath.Join(binding.ContextRoot, "generated", "soul-effective."+env+".md"); fileExists(soul) {
+	if soul := stack.EffectiveSoulPath(binding.ContextRoot, settings); fileExists(soul) {
 		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
 	}
 	if settings.Environment == "" {

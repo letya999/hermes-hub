@@ -40,7 +40,7 @@ func TestMasterHoldSurvivesRestart(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil || receipt.PrincipalID != "alice" || receipt.ContextID != "alice" || receipt.Reason != "manual" || !receipt.Active || receipt.Epoch != 1 || !receipt.UpdatedAt.Equal(time.Unix(100, 0)) {
 		t.Fatalf("hold has no safe versioned incident receipt: %+v %v", receipt, err)
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestMasterResumeRequiresCurrentEpoch(t *testing.T) {
 	if code := call("DELETE", `{"principal_id":"alice","context_id":"alice","reason":"manual","expected_epoch":1}`); code != 409 {
 		t.Errorf("replayed resume: %d, want 409", code)
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestMasterHoldReportsIncompleteContainment(t *testing.T) {
 			if rw.Code != 409 {
 				t.Errorf("resume bypassed unfinished containment: %d", rw.Code)
 			}
-			restarted, err := New(m.cfg)
+			restarted, err := newTestManager(t, m.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -456,7 +456,7 @@ func TestMasterContainmentRetriesAfterRestart(t *testing.T) {
 	if w.Code != 202 {
 		t.Fatalf("failed initial stop: %d", w.Code)
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestMasterNoticeWithoutRuntime(t *testing.T) {
 			t.Fatalf("hold: %d", w.Code)
 		}
 	}
-	restarted, err := New(m.cfg)
+	restarted, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestMasterNoticeWithoutRuntime(t *testing.T) {
 	if w.Code != 200 {
 		t.Errorf("queued notice ack: %d", w.Code)
 	}
-	reloaded, err := New(m.cfg)
+	reloaded, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

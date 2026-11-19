@@ -32,7 +32,7 @@ func rawTask(user User, taskID string, chatID int64) Task {
 
 func TestTaskStoreRejectsCorruptAndForeignRecords(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestTaskStoreRejectsCorruptAndForeignRecords(t *testing.T) {
 
 func TestTaskStoreDuplicateAmbiguousAndBoundRules(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestTaskStoreDuplicateAmbiguousAndBoundRules(t *testing.T) {
 
 func TestTaskListSkipsInvalidRows(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestTaskListSkipsInvalidRows(t *testing.T) {
 
 func TestStyleForRunErrorBranches(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestStyleForRunErrorBranches(t *testing.T) {
 
 func TestTaskCommandEdgeBranches(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestTaskCommandEdgeBranches(t *testing.T) {
 // surfacing a bare code.
 func TestUsageCommandStoppedRuntimeMessage(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

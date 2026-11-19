@@ -66,7 +66,7 @@ func TestJobErrorMessagesOmitInternalID(t *testing.T) {
 // /language <code> persists a chosen preference in the user's workspace and
 // replies in the newly selected language.
 func TestLanguageCommandSetsWorkspacePref(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestLanguageCommandSetsWorkspacePref(t *testing.T) {
 // Bare /language re-opens the picker: on an Actions-capable channel the
 // delivery carries one button per supported language.
 func TestLanguageCommandBareShowsPicker(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestLanguageCommandBareShowsPicker(t *testing.T) {
 // A picker tap persists a chosen preference and answers the callback in the
 // newly selected language.
 func TestLanguageCallbackPersistsChoice(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestLanguageCallbackPersistsChoice(t *testing.T) {
 // A first-contact message carrying a strong channel locale hint adopts the
 // language, persists it as detected, and acknowledges in that language.
 func TestFirstContactDetectsTelegramLocale(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestFirstContactDetectsTelegramLocale(t *testing.T) {
 // Without any hint a first-contact message gets the picker once, the default
 // is persisted, and later messages are not re-asked.
 func TestFirstContactShowsPickerOnce(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestFirstContactShowsPickerOnce(t *testing.T) {
 func TestDeliveryCarriesOwnerLang(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangKK)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestDeliveryCarriesOwnerLang(t *testing.T) {
 func TestJobDeliveryCarriesOwnerLang(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestGroupJobDeliveryResolvesLangFromMapping(t *testing.T) {
 	c := baseTestConfig(t)
 	c.Groups = Groups{{ChatID: -100, Mode: "topics"}}
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestGroupJobDeliveryResolvesLangFromMapping(t *testing.T) {
 func TestDirectDeliveryResolvesLangFromChat(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestDirectDeliveryResolvesLangFromChat(t *testing.T) {
 func TestHelpAndUnknownCommandLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestHelpAndUnknownCommandLocalized(t *testing.T) {
 func TestLanguageCommandRejectsUnknownTag(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestLanguageCommandRejectsUnknownTag(t *testing.T) {
 func TestCommandRepliesLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestCommandRepliesLocalized(t *testing.T) {
 func TestApprovalAndCancelErrorsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestGatewayEdgeRepliesLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	c.Groups = []Group{{ChatID: -55, Mode: "topics"}, {ChatID: -77, Mode: "topics"}}
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +669,7 @@ func TestGatewayEdgeRepliesLocalized(t *testing.T) {
 func TestProgressStatusLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +723,7 @@ func TestProgressStatusLocalized(t *testing.T) {
 func TestSecretInterceptAndConflictLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +764,7 @@ func TestSecretInterceptAndConflictLocalized(t *testing.T) {
 func TestSecretDeniedOnlyLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestSecretDeniedOnlyLocalized(t *testing.T) {
 func TestStopCommandEdgeCasesLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +841,7 @@ func TestStopCommandEdgeCasesLocalized(t *testing.T) {
 func TestAutoTitleNoticeLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +877,7 @@ func TestStreamEventTextsLocalized(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.langOf = func(string) locale.Lang { return locale.LangES }
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,7 +977,7 @@ func TestStreamEventTextsLocalized(t *testing.T) {
 func TestCompactCommandLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1082,7 @@ func (c *compactStubRunner) Compact(_ context.Context, _ hubruntime.CompactReque
 func TestGoalCommandLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1183,7 +1183,7 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
 	c.RuntimeURL = "http://runtime.test"
 	c.RuntimeAuth = "token"
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1369,7 +1369,7 @@ func TestToolHubTextsLocalized(t *testing.T) {
 	pinLang(t, c2.Users[0].WorkspaceDir, locale.LangES)
 	c2.ToolHubURL, c2.Supervised, c2.RuntimeURL = srv.URL, true, srv.URL
 	c2.RuntimeAuth = "bearer-token-0123456789abcdef0123456789ab"
-	g2, err := New(c2)
+	g2, err := newTestGateway(t, c2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1397,7 +1397,7 @@ func (failTranscriber) Transcribe(context.Context, string, string) (string, erro
 func TestMediaAndNoticeRepliesLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1490,7 +1490,7 @@ func TestMediaAndNoticeRepliesLocalized(t *testing.T) {
 	}
 
 	// Slack secret interception replies in the mapped user's language.
-	g.slackUsers["t1/u1"] = user
+	fixtureLinkSlack(t, g, user.ID, "t1", "u1")
 	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-loc", "message", "", "U1", "OPENAI_API_KEY=zzz", "D001", "im", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1519,7 +1519,7 @@ func TestMediaAndNoticeRepliesLocalized(t *testing.T) {
 	c2 := baseTestConfig(t)
 	pinLang(t, c2.Users[0].WorkspaceDir, locale.LangES)
 	c2.Supervised, c2.RuntimeURL, c2.RuntimeAuth = true, srv.URL, "token"
-	g2, err := New(c2)
+	g2, err := newTestGateway(t, c2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1581,7 +1581,7 @@ func TestPrepareOutcomeNoticesLocalized(t *testing.T) {
 	// The browser-viewer notice is enqueued through deliverPrepareNotice.
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1612,12 +1612,12 @@ func TestPrepareOutcomeNoticesLocalized(t *testing.T) {
 // the choice and answers on the same Slack thread in the stored language.
 func TestSlackLanguageCommand(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	user := c.Users[0]
-	g.slackUsers["t1/u1"] = user
+	fixtureLinkSlack(t, g, user.ID, "t1", "u1")
 	slackText := func(t *testing.T, eventID, suffix string) string {
 		t.Helper()
 		body, err := os.ReadFile(filepath.Join(c.SpoolDir, "outbox", "pending", commodel.FileID("slack-"+eventID+"-"+suffix)+".json"))
@@ -1662,12 +1662,12 @@ func TestSlackLanguageCommand(t *testing.T) {
 // the async /usage result both land on the Slack thread, not telegram.
 func TestSlackCommandRepliesRoute(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	user := c.Users[0]
-	g.slackUsers["t1/u1"] = user
+	fixtureLinkSlack(t, g, user.ID, "t1", "u1")
 	slackFile := func(t *testing.T, name string) Delivery {
 		t.Helper()
 		body, err := os.ReadFile(filepath.Join(c.SpoolDir, "outbox", "pending", commodel.FileID(name)+".json"))
@@ -1743,7 +1743,7 @@ func TestBrokerApproveLocalized(t *testing.T) {
 	defer broker.Close()
 	c.BrokerApprove = credentialbroker.Config{URL: broker.URL, KeyFile: keyFile, KeyID: "hub", Issuer: "hermes-hub"}
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1772,7 +1772,7 @@ func TestBrokerApproveLocalized(t *testing.T) {
 func TestTaskCommandsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1805,7 +1805,7 @@ func TestTaskCommandsLocalized(t *testing.T) {
 func TestTaskLifecycleCommandsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1857,7 +1857,7 @@ func TestTaskLifecycleCommandsLocalized(t *testing.T) {
 func TestStopCancelApproveLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1911,7 +1911,7 @@ func TestStopCancelApproveLocalized(t *testing.T) {
 func TestSessionStatusTailsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1945,7 +1945,7 @@ func TestSessionStatusTailsLocalized(t *testing.T) {
 func TestSurfaceLinesLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1976,7 +1976,7 @@ func TestUsageCommandsLocalized(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(c.SpoolDir, "usage.jsonl"), append(body, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2015,7 +2015,7 @@ func TestUsageCommandsLocalized(t *testing.T) {
 func TestUsageCommandVariantsLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2166,7 +2166,7 @@ func TestModelCommandLocalized(t *testing.T) {
 // /language is itself the picker surface: on a fresh workspace the
 // first-contact nudge defers to it instead of stacking a second keyboard.
 func TestLanguageCommandSendsOnePicker(t *testing.T) {
-	g, err := New(baseTestConfig(t))
+	g, err := newTestGateway(t, baseTestConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2188,7 +2188,7 @@ func TestLanguageCommandSendsOnePicker(t *testing.T) {
 func TestOpsWiringUsesWorkspaceLang(t *testing.T) {
 	c := baseTestConfig(t)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2256,7 +2256,7 @@ func TestCredentialFormPageLocalized(t *testing.T) {
 	c := baseTestConfig(t)
 	acceptingRuntime(t, &c)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2306,7 +2306,7 @@ func TestTelegramAuthPageLocalized(t *testing.T) {
 	c.FormOrigin = "http://localhost:8081"
 	c.BrokerApprove = credentialbroker.Config{URL: "https://broker.example"}
 	c.TelegramAuthEnabled = true
-	g, err := New(c)
+	g, err := newTestGateway(t, c)
 	if err != nil {
 		t.Fatal(err)
 	}

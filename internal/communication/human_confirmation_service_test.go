@@ -21,7 +21,7 @@ func TestHumanConfirmationNoticeRequiresServiceBearer(t *testing.T) {
 	cfg.RuntimeAuth = cfg.ControlAuth
 	cfg.ControlPrincipal = cfg.Users[0].ID
 	cfg.AutomationAuth = "synthetic-confirmation-service-bearer"
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestHumanConfirmationNoticeAcceptsCurrentSiblingPolicy(t *testing.T) {
 	cfg.ControlAuth = "synthetic-owner-runtime-bearer"
 	cfg.RuntimeAuth = cfg.ControlAuth
 	cfg.AutomationAuth = "synthetic-confirmation-service-bearer"
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func testHumanConfirmationBinding(t *testing.T, service bool) {
 	}))
 	t.Cleanup(server.Close)
 	cfg.ToolHubURL = server.URL
-	g, err := New(cfg)
+	g, err := newTestGateway(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

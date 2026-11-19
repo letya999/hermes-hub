@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identityhub"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +58,15 @@ func TestSupervisorGroupBindingRequiresDedicatedGroupHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishScopeKind(t, root, "group")
+	registry, err := identityhub.Open(filepath.Join(t.TempDir(), "identity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if _, err := registry.ImportLegacyConfiguration(context.Background(), identityhub.LegacyConfiguration{Name: "group", Organization: "personal", Users: []commodel.User{{ID: "alice", Enabled: true}}, SharedSpaces: []identityhub.LegacySharedSpace{{ID: "alice", Members: []int64{11}}}}); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Identity = registry
 	r := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "group:alice", OrganizationID: "personal"}
 	bound, err := m.bindingFor(r)
 	if err != nil || bound.ContextRoot != root || bound.PrincipalID != "alice" {
