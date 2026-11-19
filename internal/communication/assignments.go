@@ -10,8 +10,8 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // handleAssignments serves POST (create, optional apply) and GET (owner

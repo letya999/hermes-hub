@@ -3,6 +3,7 @@
 !go.sum
 !cmd/**
 !contracts/**
+!shared/**
 !internal/**
 internal/.local/
 !services/

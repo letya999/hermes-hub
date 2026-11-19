@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Interval reads HUB_CANARY_INTERVAL ("5m" or bare seconds); 0 =

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // TestAssignmentAPIRoundTrip (SPEC-0080 R2.1/R2.2): create→apply→get→pause→

@@ -2,7 +2,7 @@ package communication
 
 import (
 	"context"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 	"strconv"
 	"strings"
 	"time"

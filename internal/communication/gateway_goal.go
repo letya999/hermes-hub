@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // goalRunner is the runtime surface the command needs; HTTPRunner implements

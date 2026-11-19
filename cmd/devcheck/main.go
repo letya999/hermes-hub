@@ -93,7 +93,7 @@ func run(args []string) error {
 		for _, scan := range []struct {
 			dir  string
 			pkgs []string
-		}{{".", []string{"./cmd/...", "./internal/..."}}, {"services/credential-broker", []string{"./..."}}} {
+		}{{".", []string{"./cmd/...", "./internal/...", "./shared/..."}}, {"services/credential-broker", []string{"./..."}}} {
 			argv := append([]string{"run", "github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20261022115301-1cbfd7e6488c", "-quiet", "-exclude-generated", "-exclude=G101,G204,G301,G302,G304,G306"}, scan.pkgs...)
 			cmd := exec.Command("go", argv...)
 			cmd.Env = append(os.Environ(), "GOWORK=off")

@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/communication"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func main() {

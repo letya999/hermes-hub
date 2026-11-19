@@ -2,7 +2,7 @@ package e2e
 
 import (
 	"context"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 	"os"
 	"regexp"
 	"strings"

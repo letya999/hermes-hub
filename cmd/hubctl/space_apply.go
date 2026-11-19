@@ -17,12 +17,12 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // passportEditRight maps each of the six passports to the distinct current

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func testJob(id, scope string) Job {

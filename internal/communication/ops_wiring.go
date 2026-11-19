@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commops"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // canaryJobTimeout bounds a single verification round; a run that has not

@@ -441,7 +441,7 @@ func Project(root string) error {
 
 func Format(root string) error {
 	var bad []string
-	for _, folder := range []string{"cmd", "internal"} {
+	for _, folder := range []string{"cmd", "internal", "contracts", "shared"} {
 		err := filepath.WalkDir(filepath.Join(root, folder), func(name string, entry fs.DirEntry, err error) error {
 			if err != nil || entry.IsDir() || filepath.Ext(name) != ".go" {
 				return err

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // layoutNode is one typed workspace.layout entry (SPEC-0092 R5.1): the

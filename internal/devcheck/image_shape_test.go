@@ -91,7 +91,7 @@ func TestSignedRunImageContainsContractsAndHermesPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"contracts", plugin} {
+	for _, path := range []string{"contracts", "shared", plugin} {
 		if !strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n!"+path+"/**\n") {
 			t.Errorf("Docker build context excludes %s", path)
 		}

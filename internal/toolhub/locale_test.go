@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // S3: every loopback page resolves its language from ?lang=, then

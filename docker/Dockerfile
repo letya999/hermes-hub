@@ -10,6 +10,7 @@ RUN go mod download && cd services/credential-broker && go mod download
 COPY services/credential-broker ./services/credential-broker
 COPY cmd ./cmd
 COPY contracts ./contracts
+COPY shared ./shared
 COPY internal ./internal
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime

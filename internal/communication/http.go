@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func (g *Gateway) Handler() http.Handler {

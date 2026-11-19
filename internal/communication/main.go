@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Main runs the edge zone or its bounded script subprocess helper.

@@ -16,7 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Task is a durable owner/context-scoped conversation unit. The binding is

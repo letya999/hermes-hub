@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // editThrottle bounds status-message edits to one per interval per chat

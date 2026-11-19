@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 var removalRetryInterval = 30 * time.Second

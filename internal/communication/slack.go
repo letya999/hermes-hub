@@ -19,8 +19,8 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/netguard"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a

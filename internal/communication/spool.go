@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/storagebudget"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // approvalButtonsLocked persists one durable callback record per choice and

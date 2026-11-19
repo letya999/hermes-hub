@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 type settingsEditRequest struct {

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/envstore"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // envUpdateNextStep reads the user language from the mounted workspace

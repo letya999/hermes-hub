@@ -12,10 +12,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
-var sourcePaths = []string{".github", ".work", "cmd", "config", "contracts", "docker", "docs", "internal", "platform", "services/credential-broker", "specs", ".dockerignore", ".gitignore", "AGENTS.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "LICENSE", "NOTICE", "README.md", "SECURITY.md", "SETUP.md", "START_HERE.ru.md", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "go.mod", "go.sum", "go.work", "go.work.sum", "justfile"}
+var sourcePaths = []string{".github", ".work", "cmd", "config", "contracts", "docker", "docs", "internal", "platform", "services/credential-broker", "shared", "specs", ".dockerignore", ".gitignore", "AGENTS.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "LICENSE", "NOTICE", "README.md", "SECURITY.md", "SETUP.md", "START_HERE.ru.md", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "go.mod", "go.sum", "go.work", "go.work.sum", "justfile"}
 var buildBinary = build
 
 func main() {
