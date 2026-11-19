@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0335
+title: v1 skeleton - shared packages, service descriptor, process mode, test base
+status: in_progress
+branch: feat/m40-2-skeleton
+updated: 2026-11-20
+phase: implementation
+adr: ADR-0105
+spec: SPEC-0100
+depends_on: [CHG-0330]
+github_milestone: M40 - v1 Service Split
+github_issue: 600
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-store: planned
+  S2-fsm: planned
+  S3-httpapi: planned
+  S4-auth-locale-log: planned
+  S5-descriptor: planned
+  S6-process-mode: planned
+  S7-test-base: planned
+  S8-deletions: planned
+  S9-contracts-on-httpapi: planned
+evidence: []
+remaining: []
+limitations: []

@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0335](in-progress/CHG-0335-v1-skeleton/plan.md) | M40.2 (#600): v1 skeleton - shared store/fsm/httpapi/auth/locale/log, service descriptor and profiles, `hubctl run --mode process`, test base; deletes cmd/hub, deps gate, contracts/toolsurface |
 | [CHG-0332](in-progress/CHG-0332-run-tokens/plan.md) | M40.4 (#576): signed run identity and immutable policy bundles, live run authority and revocation before backend calls |
 | [CHG-0330](in-progress/CHG-0330-module-boundaries/plan.md) | M40.2 (#574): contract pattern (identity, task, toolsurface), per-binary dependency gate, no in-process ToolHub store, one `hub` binary |
 | [CHG-0329](in-progress/CHG-0329-security-baseline/plan.md) | M40.1 (#573): fail-closed baseline — no HermesRunner, no unmanaged mode, supervisor env errors, path-bug dirs, T01-T22 claims |
