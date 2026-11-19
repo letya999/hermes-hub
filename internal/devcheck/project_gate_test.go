@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -161,5 +162,26 @@ func TestProjectGateFreshness(t *testing.T) {
 		if strings.Contains(err.Error(), exempt) {
 			t.Fatalf("%s required freshness bump: %v", exempt, err)
 		}
+	}
+}
+
+// TestPathBugDirectoriesRejected: Git Bash rewrites `a:/b` volume arguments
+// into `a;C:\b` and unquoted Windows paths lose their separators; the
+// resulting `x;C` and `C:Users...` directories must fail the project gate.
+func TestPathBugDirectoriesRejected(t *testing.T) {
+	colon := ":"
+	if runtime.GOOS == "windows" {
+		colon = "\uf03a" // MSYS stores ':' in NTFS names as U+F03A
+	}
+	for _, rel := range []string{"services/broker;C", "spaces/local/runtime;C", "C" + colon + "UsersUserAppDataLocalTempfcstub"} {
+		t.Run(rel, func(t *testing.T) {
+			root := gateRoot(t)
+			if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(rel)), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := Project(root); err == nil || !strings.Contains(err.Error(), "path-bug directory") {
+				t.Fatalf("want path-bug rejection, got %v", err)
+			}
+		})
 	}
 }

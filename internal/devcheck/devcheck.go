@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -176,6 +177,28 @@ func Project(root string) error {
 			problems = append(problems, "missing "+name)
 		}
 	}
+	// SPEC-0100 R5.4: Git Bash turns `a:/b` volume flags into `a;C:\b` and
+	// strips separators from unquoted Windows paths; MSYS stores ':' in NTFS
+	// names as U+F03A. Such directories are never legitimate project paths.
+	// Depth 3 covers every observed case (spaces/local/runtime;C) without
+	// walking multi-GB space and cache trees.
+	pathBug := regexp.MustCompile(`;[A-Za-z]$|^[A-Za-z][:\x{f03a}][^\\/]`)
+	var scanPathBugs func(rel string, depth int)
+	scanPathBugs = func(rel string, depth int) {
+		entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(rel)))
+		for _, e := range entries {
+			if !e.IsDir() || e.Name() == ".git" || e.Name() == "node_modules" {
+				continue
+			}
+			child := path.Join(rel, e.Name())
+			if pathBug.MatchString(e.Name()) {
+				problems = append(problems, "path-bug directory: "+child)
+			} else if depth < 3 {
+				scanPathBugs(child, depth+1)
+			}
+		}
+	}
+	scanPathBugs(".", 1)
 	link := regexp.MustCompile(`\[[^]]*\]\(([^)]+)\)`)
 	for _, folder := range []string{"docs", "specs", ".work"} {
 		err := filepath.WalkDir(filepath.Join(root, folder), func(name string, entry fs.DirEntry, err error) error {

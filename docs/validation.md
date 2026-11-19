@@ -85,10 +85,11 @@ Things a reader must NOT assume work until separately proven live:
 - **vMCP session continuity** — ToolHive v0.48/0.49 vMCP returned
   `404 Session terminated` on session-header reuse; recorded unavailable,
   not claimed.
-- **ADR-0031/32** — default-deny capability boundary is accepted; all
-  T01–T22 rows evidenced in CHG-0065 pending owner acceptance. The
-  per-guarantee enforced-vs-target delta lives in
-  `.work/in-progress/CHG-0065-capability-enforcement/acceptance-matrix.md`.
+- **ADR-0031/32** — default-deny capability boundary is enforced in code;
+  certification is pending owner sign-off of T01–T22 (re-run receipts in
+  CHG-0329; canary and pinned-probe rows re-run at the M40 release gate).
+  The per-guarantee enforced-vs-target delta lives in
+  [the acceptance matrix](../.work/done/CHG-0065-capability-enforcement/acceptance-matrix.md).
 
 ## Per-change evidence
 

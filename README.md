@@ -33,6 +33,10 @@ isolation and no way to answer "who allowed this call". hermes-hub wraps it:
 | Multi-user | one user, one machine | `spaces/<id>` isolation — per-user homes, vaults, egress, org ceilings |
 | Reliability | process dies, work lost | durable job spool, receipts, bounded journals, supervised restarts |
 | Idle cost | always-on container | supervisor scale-to-zero — 30-min warm lease, cold restore |
+
+The admission and isolation guarantees above are enforced in code and covered
+by tests; certification of a deployed stack against the T01-T22 acceptance
+rows is pending owner sign-off ([validation](docs/validation.md)).
 | Audit | none | bounded audit ledger — every admitted call has a durable reason |
 
 ## How it works — four everyday uses

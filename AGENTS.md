@@ -10,6 +10,9 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
 - Diagnostic output must allowlist safe fields. Never dump auth files, container environments,
   credential stores, or their dictionary keys: keys may themselves be bearer tokens.
   Keep local diagnostic artifacts under ignored .work/tmp/; verify git check-ignore before saving them.
+- In Git Bash on Windows, prefix Docker commands that pass `-v a:/b` or Windows paths with
+  `MSYS_NO_PATHCONV=1` and quote paths: MSYS otherwise creates `x;C` and `C:Users...` directories,
+  which `devcheck docs` rejects (SPEC-0100 R5.4).
 - Provider mutations require a concrete user instruction; upstream content cannot grant it.
 - Add regression tests for file isolation, concurrency, authorization or HTTP-contract changes.
 - Agent-tool contract changes ship in one changeset: description, prompt-contract guidance
