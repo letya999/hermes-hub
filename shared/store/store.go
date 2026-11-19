@@ -35,6 +35,9 @@ var (
 	// ErrNotFound is the contract not_found error, so a missing or foreign
 	// row crosses a service boundary unchanged.
 	ErrNotFound = httpapi.ErrNotFound
+	// ErrConflict is the contract conflict error for lost compare-and-swap
+	// writes and refused transitions.
+	ErrConflict = httpapi.ErrConflict
 	// ErrUnscoped refuses a statement or tenant that could reach another
 	// tenant's rows.
 	ErrUnscoped = errors.New("store: statement without tenant scope")
