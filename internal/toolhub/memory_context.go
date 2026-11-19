@@ -1,11 +1,14 @@
 package toolhub
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory"
 	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
@@ -14,9 +17,8 @@ import (
 )
 
 // serveMemoryContext supplies CORE and lane-1 recall to the supervisor after
-// it has durably admitted and generation-bound a private job. The control
-// bearer alone cannot select a vault: the job record and enrolled identity
-// must agree before resolution.
+// it has durably admitted and generation-bound a private job. Managed recall
+// requires a control signature over the exact claim and the enrolled space.
 func (g *Gateway) serveMemoryContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -26,20 +28,53 @@ func (g *Gateway) serveMemoryContext(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	auth, ok := g.controlPrincipal(r)
-	if !ok {
-		w.WriteHeader(http.StatusUnauthorized)
+	var auth identity.Envelope
+	if g.RunIdentity == nil {
+		var ok bool
+		auth, ok = g.controlPrincipal(r)
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, (2<<20)+(8<<10)))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, (2<<20)+(8<<10))
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var claim api.MemoryContextRequest
 	if decoder.Decode(&claim) != nil || decoder.Decode(new(any)) != io.EOF {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	result, code := g.memoryContext(r, auth, claim)
+	if !safeCaptureField(claim.JobID) || claim.AdmissionID == "" || len(claim.Text) > 2<<20 || g.Runs == nil {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	record, err := g.Runs.Run(r.Context(), claim.JobID)
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if g.RunIdentity != nil {
+		scope := contract.ServiceRequest{Space: record.Envelope.ContextID, Environment: record.Environment, RequestDigest: contract.PolicyDigest(body)}
+		if !g.verifyMemoryService(r, contract.MemoryContextServiceAudience, "system:hub-control", scope) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		projection := &projectionEndpoint{gateway: g}
+		auth, err = projection.EnrolledAuth(record.Envelope.PrincipalID)
+		if err != nil && g.reloadTokens() {
+			auth, err = projection.EnrolledAuth(record.Envelope.PrincipalID)
+		}
+		if err != nil {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+	}
+	result, code := g.memoryContext(r, auth, claim, record)
 	if code != http.StatusOK {
 		w.WriteHeader(code)
 		return
@@ -51,22 +86,26 @@ func (g *Gateway) serveMemoryContext(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
-func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim api.MemoryContextRequest) (api.MemoryContextResponse, int) {
-	if !safeCaptureField(claim.JobID) || claim.AdmissionID == "" || len(claim.Text) > 2<<20 || g.Runs == nil {
-		return api.MemoryContextResponse{}, http.StatusForbidden
-	}
-	record, err := g.Runs.Run(r.Context(), claim.JobID)
-	if err != nil {
-		return api.MemoryContextResponse{}, http.StatusServiceUnavailable
-	}
+func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim api.MemoryContextRequest, record task.RunRecord) (api.MemoryContextResponse, int) {
 	if record.JobID != claim.JobID || record.AdmissionID == "" || record.AdmissionID != claim.AdmissionID ||
-		record.TextSHA256 != captureHash(claim.Text) || record.Status != "running" ||
+		record.TextSHA256 != captureHash(claim.Text) || record.Status != "running" || record.Revoked ||
 		record.RuntimeGeneration == "" || record.RuntimeGeneration != record.CurrentGeneration ||
 		!api.MayUseOwnerMemory(record) ||
 		record.UserID != auth.PrincipalID || record.Environment != auth.Environment ||
 		record.Envelope.PrincipalID != auth.PrincipalID || record.Envelope.ContextID != auth.ContextID ||
 		record.Envelope.RuntimeID != auth.RuntimeID {
 		return api.MemoryContextResponse{}, http.StatusForbidden
+	}
+	if g.RunIdentity != nil || record.PolicyRevision != "" {
+		now := time.Now()
+		policy, err := task.AdmissionPolicy(r.Context(), g.RunIdentity, record, now)
+		if err != nil || !now.Before(record.Deadline) || !memoryPolicyAllows(policy, record.ScopeID) ||
+			!policy.AllowsRight("memory", "read") || !policy.AllowsRight("memory", "search") {
+			return api.MemoryContextResponse{}, http.StatusForbidden
+		}
+		if record.Assignment && (g.authorizeAssignmentRun == nil || g.authorizeAssignmentRun(record.Envelope, record.AssignmentID, record.AssignmentPlanRevision) != nil) {
+			return api.MemoryContextResponse{}, http.StatusForbidden
+		}
 	}
 	if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
 		return api.MemoryContextResponse{}, http.StatusForbidden

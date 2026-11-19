@@ -3,9 +3,11 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"io"
 	"log"
@@ -19,6 +21,24 @@ import (
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == identitycontract.MemoryCaptureServiceAssertionPath {
+		signer, ok := m.identityClient().(identitycontract.MemoryCaptureServiceSigner)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return
+		}
+		identitycontract.MemoryCaptureServiceHandler(signer, identitycontract.MemoryCaptureServiceCredential(m.cfg.RuntimeAuth), m.environment()).ServeHTTP(w, r)
+		return
+	}
+	if r.URL.Path == identitycontract.AutomationServiceAssertionPath {
+		signer, ok := m.identityClient().(identitycontract.AutomationServiceSigner)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return
+		}
+		identitycontract.AutomationServiceHandler(signer, identitycontract.AutomationServiceCredential(m.cfg.RuntimeAuth), m.environment()).ServeHTTP(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/identity/links/") {
 		client, ok := m.identityClient().(identitycontract.LinkClient)
 		if !ok || m.cfg.IdentityLinkAuth == "" || m.cfg.IdentityLinkAuth == m.cfg.RuntimeAuth {
@@ -34,6 +54,17 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/v1/admin/identity/deactivate" {
 		m.deactivateIdentity(w, r)
+		return
+	}
+	if r.URL.Path == "/v1/admin/identity/keys/rotate" {
+		m.rotateIdentityKeys(w, r)
+		return
+	}
+	if r.URL.Path == identitycontract.PassportPublicationPath {
+		m.publishIdentityPassports(w, r)
+		return
+	}
+	if m.serveRunVerification(w, r) {
 		return
 	}
 	if !m.authorized(r) {
@@ -136,6 +167,31 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (m *Manager) serveRunVerification(w http.ResponseWriter, r *http.Request) bool {
+	secret := task.VerificationCredential(m.cfg.RuntimeAuth)
+	if secret == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+secret)) != 1 {
+		return false
+	}
+	if r.Method != http.MethodGet || r.Header.Get("Origin") != "" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": task.ErrForbidden.Error()})
+		return true
+	}
+	switch {
+	case r.URL.Path == "/v1/identity/keys" || strings.HasPrefix(r.URL.Path, "/v1/identity/policies/"):
+		client := m.identityClient()
+		if client == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return true
+		}
+		identitycontract.Handler(client, secret).ServeHTTP(w, r)
+	case strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
+		task.Handler(m, secret).ServeHTTP(w, r)
+	default:
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": task.ErrForbidden.Error()})
+	}
+	return true
 }
 
 // wake warms the request's runtime without a lease or job record (SPEC-0053

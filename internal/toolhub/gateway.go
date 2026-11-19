@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -73,7 +74,9 @@ type Gateway struct {
 	proposalAfterWrite func(int) error // fault seam for interrupted multi-file commits
 	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
 	// the exact-run gate for model-facing memory calls. Nil fails closed.
-	Runs task.Client
+	Runs                   task.Client
+	RunIdentity            contract.Client
+	authorizeAssignmentRun func(identity.Envelope, string, uint64) error
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error
@@ -390,7 +393,7 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tool call", http.StatusBadRequest)
 		return
 	}
-	corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
+	corr := api.RequestCorrelation(r.Header)
 	result, err := g.callReadTool(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
 	if err != nil {
 		if errors.Is(err, errProbeNotProjected) {
@@ -547,15 +550,17 @@ func (g *Gateway) protect(path string) http.Handler {
 			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
+		corr := api.RequestCorrelation(r.Header)
 		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
-		if path == RunEndpointPath {
-			// The endpoint — never the client — asserts run scope; the marker
-			// reaches the detached tool context through RequestExtra.Header.
+		r.Header.Del(api.HeaderRunEndpoint)
+		if path == RunEndpointPath || g.RunIdentity != nil {
+			// The marker survives the SDK's detached tool context. Production
+			// requires run authority on both transports to prevent bypass.
 			r.Header.Set(api.HeaderRunEndpoint, "1")
+		}
+		if path == RunEndpointPath {
 			projection.runHandler.ServeHTTP(w, r)
 		} else {
-			r.Header.Del(api.HeaderRunEndpoint)
 			projection.handler.ServeHTTP(w, r)
 		}
 	})

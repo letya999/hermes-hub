@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"io"
 	"net/url"
@@ -36,25 +37,27 @@ var gatewayOwnedEnv = map[string]bool{
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Identity           identitycontract.Client     `yaml:"-" json:"-"`
-	IdentityLinks      identitycontract.LinkClient `yaml:"-" json:"-"`
-	IdentityURL        string                      `yaml:"-" json:"-"`
-	IdentityAuth       string                      `yaml:"-" json:"-"`
-	IdentityLinkAuth   string                      `yaml:"-" json:"-"`
-	Supervised         bool                        `yaml:"-"`
-	Environment        string                      `yaml:"-"`
-	OrganizationID     string                      `yaml:"organization_id"`
-	Users              []User                      `yaml:"users"`
-	Groups             Groups                      `yaml:"groups,omitempty"`
-	TelegramToken      string                      `yaml:"-"`
-	APIBaseURL         string                      `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string                      `yaml:"-"`
-	SlackBotToken      string                      `yaml:"-"`
-	SlackAppToken      string                      `yaml:"-"`
-	SlackTransport     string                      `yaml:"-"`
-	ControlAuth        string                      `yaml:"-"`
-	ControlPrincipal   string                      `yaml:"-"`
-	AutomationAuth     string                      `yaml:"-"`
+	Identity            identitycontract.Client          `yaml:"-" json:"-"`
+	Runs                taskcontract.Client              `yaml:"-" json:"-"`
+	AssignmentAuthority taskcontract.AssignmentAuthority `yaml:"-" json:"-"`
+	IdentityLinks       identitycontract.LinkClient      `yaml:"-" json:"-"`
+	IdentityURL         string                           `yaml:"-" json:"-"`
+	IdentityAuth        string                           `yaml:"-" json:"-"`
+	IdentityLinkAuth    string                           `yaml:"-" json:"-"`
+	Supervised          bool                             `yaml:"-"`
+	Environment         string                           `yaml:"-"`
+	OrganizationID      string                           `yaml:"organization_id"`
+	Users               []User                           `yaml:"users"`
+	Groups              Groups                           `yaml:"groups,omitempty"`
+	TelegramToken       string                           `yaml:"-"`
+	APIBaseURL          string                           `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret  string                           `yaml:"-"`
+	SlackBotToken       string                           `yaml:"-"`
+	SlackAppToken       string                           `yaml:"-"`
+	SlackTransport      string                           `yaml:"-"`
+	ControlAuth         string                           `yaml:"-"`
+	ControlPrincipal    string                           `yaml:"-"`
+	AutomationAuth      string                           `yaml:"-"`
 	// ControlTokensFile optionally points at the infra owner's
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// admitted only as their enrolled principal. ControlPrincipal similarly
@@ -489,6 +492,16 @@ func workersFromEnv() int {
 
 func fillChannelSecrets(config *Config) {
 	config.IdentityURL = strings.TrimSpace(os.Getenv("HUB_IDENTITY_URL"))
+	if origin := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_URL")); origin != "" {
+		key := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_AUTH"))
+		if key == "" {
+			key = taskcontract.VerificationCredential(config.RuntimeAuth)
+		}
+		config.Runs = taskcontract.NewHTTPClient(origin, key, nil)
+		if toolhub := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")); toolhub != "" {
+			config.AssignmentAuthority = taskcontract.NewAssignmentHTTPClient(toolhub, key, nil)
+		}
+	}
 	config.IdentityAuth = strings.TrimSpace(os.Getenv("HUB_IDENTITY_AUTH"))
 	config.IdentityLinkAuth = strings.TrimSpace(os.Getenv("HUB_IDENTITY_LINK_AUTH"))
 	if config.SlackSigningSecret == "" {

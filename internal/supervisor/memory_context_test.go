@@ -3,12 +3,15 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -89,6 +92,36 @@ func TestMemoryInstructionsBoundary(t *testing.T) {
 	out = mNoAdm.memoryInstructions(context.Background(), memoryInstructionsRequest())
 	if !strings.Contains(out, memoryUnavailable) || calls.Load() != before {
 		t.Fatalf("missing admission did not mark unavailable: %q calls=%d", out, calls.Load())
+	}
+}
+
+func TestMemoryInstructionsSignsTheAdmittedClaim(t *testing.T) {
+	registry, _ := fixtureIdentity(t)
+	if err := registry.EnsureSigningKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := registry.SigningKeys(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := memoryInstructionsRequest()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		scope := contract.ServiceRequest{Space: request.ContextID, Environment: "dev", RequestDigest: contract.PolicyDigest(body)}
+		token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if err != nil || !bearer || r.Header.Get("X-Hub-Principal") != "" ||
+			contract.VerifyServiceToken(token, contract.MemoryContextServiceAudience, "system:hub-control", scope, keys, time.Now()) != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "recall": "signed recall"})
+	}))
+	defer server.Close()
+	t.Setenv("HUB_TOOLHUB_URL_PATTERN", server.URL+"/%s")
+	m := &Manager{cfg: Config{Identity: registry, Environment: "dev", RuntimeAuth: "legacy-control"},
+		jobs: map[string]jobRecord{request.JobID: {AdmissionID: "adm-1", PolicyRevision: contract.PolicyDigest([]byte("fixture-policy"))}}}
+	if out := m.memoryInstructions(t.Context(), request); !strings.Contains(out, "signed recall") {
+		t.Fatal("admitted recall did not carry a service signature")
 	}
 }
 

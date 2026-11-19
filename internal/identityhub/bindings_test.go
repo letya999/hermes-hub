@@ -16,6 +16,17 @@ func TestChannelBindingsExcludePendingAndRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys, err := r.SigningKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := contract.VerifyLinkToken(challenge.Proof, keys, time.Now())
+	if err != nil || link.Challenge != challenge.ID || link.Subject != "alice" {
+		t.Fatalf("link challenge lacks signed channel scope: %v", err)
+	}
+	if _, err := contract.VerifyRunToken(challenge.Proof, contract.ToolHubAudience, keys, time.Now()); err == nil {
+		t.Fatal("link token authorized a run")
+	}
 	bindings, err := r.Bindings(ctx, "alice")
 	if err != nil || len(bindings) != 1 || bindings[0].Channel.ID != "7" {
 		t.Fatalf("pending binding leaked: %+v %v", bindings, err)

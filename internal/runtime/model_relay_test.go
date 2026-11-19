@@ -1212,7 +1212,7 @@ func TestModelRelayRecoversOneTransportTimeoutAfterCooldown(t *testing.T) {
 	defer upstream.Close()
 	hops := oneHop(t, "one="+upstream.URL)
 	client := &http.Client{}
-	_, _, err := modelCall(context.Background(), client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 10*time.Millisecond)
+	_, _, err := modelCall(context.Background(), client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 10*time.Millisecond, nil)
 	if err == nil {
 		t.Fatal("first slow attempt unexpectedly succeeded")
 	}
@@ -1221,7 +1221,7 @@ func TestModelRelayRecoversOneTransportTimeoutAfterCooldown(t *testing.T) {
 	hops[0].mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, resp, err := modelCall(ctx, client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 100*time.Millisecond)
+	_, resp, err := modelCall(ctx, client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 100*time.Millisecond, nil)
 	if err != nil || resp == nil || resp.StatusCode != http.StatusOK || calls.Load() != 2 {
 		t.Fatalf("recovery failed: calls=%d response=%v error=%v", calls.Load(), resp, err)
 	}
@@ -1246,7 +1246,7 @@ func TestModelRelayOnlyOneRecoveryProbe(t *testing.T) {
 	hops[0].mu.Unlock()
 	firstDone := make(chan error, 1)
 	go func() {
-		_, resp, err := modelCall(context.Background(), &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second)
+		_, resp, err := modelCall(context.Background(), &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second, nil)
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
@@ -1255,7 +1255,7 @@ func TestModelRelayOnlyOneRecoveryProbe(t *testing.T) {
 	<-entered
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	_, resp, _ := modelCall(ctx, &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second)
+	_, resp, _ := modelCall(ctx, &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second, nil)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}

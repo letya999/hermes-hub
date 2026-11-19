@@ -369,6 +369,9 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", hubruntime.RunStreamContentType)
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+	if proof := m.runDeliveryProof(fresh); proof != "" {
+		req.Header.Set(hubruntime.RunDeliveryHeader, proof)
+	}
 	response, err := m.cfg.StreamHTTP.Do(req)
 	if err != nil {
 		return
@@ -385,7 +388,7 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 		}
 		return
 	}
-	m.consumeJobStream(record.Request, runtime, response.Body, nil)
+	m.consumeJobStream(ctx, record.Request, runtime, binding.runtimeAuth, response.Body, nil)
 }
 
 func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {

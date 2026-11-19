@@ -87,7 +87,7 @@ func TestRelayRunStreamIdleDeadlineCancels(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.relayRunStream(rec, request, runtime, reader)
+		m.relayRunStream(t.Context(), rec, request, runtime, "", reader)
 	}()
 	select {
 	case <-done:
@@ -135,7 +135,7 @@ func TestHeartbeatNotPersistedOrDelivered(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	m.relayRunStream(rec, request, runtime, strings.NewReader(stream.String()))
+	m.relayRunStream(t.Context(), rec, request, runtime, "", strings.NewReader(stream.String()))
 	m.mu.Lock()
 	record := m.jobs[request.JobID]
 	m.mu.Unlock()

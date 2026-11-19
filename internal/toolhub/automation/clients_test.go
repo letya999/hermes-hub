@@ -53,6 +53,7 @@ func TestSupervisorAdmissionPreservesAssignmentProvenance(t *testing.T) {
 		var request hubruntime.ExecuteRequest
 		if r.URL.Path != "/v1/jobs" || json.NewDecoder(r.Body).Decode(&request) != nil ||
 			!request.Assignment || !request.Probe || !request.Untrusted || request.Sensitive ||
+			request.TaskID != "task-one" || request.AssignmentID != "asg-one" || request.AssignmentPlanRevision != 1 ||
 			r.Header.Get("Accept") != hubruntime.RunStreamContentType {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -62,7 +63,7 @@ func TestSupervisorAdmissionPreservesAssignmentProvenance(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: request.JobID, RunID: "run-1", Status: "completed", Text: "done"})
 	}))
 	defer server.Close()
-	job := commodel.Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "event-one",
+	job := commodel.Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "event-one", TaskID: "task-one",
 		AssignmentID: "asg-one", AssignmentPlanRevision: 1, Probe: true, Untrusted: true, Text: "event"}
 	result, err := (&HTTPSupervisorClient{URL: server.URL, Token: "control"}).RunJob(context.Background(), "stable-key", job)
 	if err != nil || result.Status != "completed" {

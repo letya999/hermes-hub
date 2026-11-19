@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,6 +29,7 @@ func (t proxyBearerTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set(api.HeaderJobID, "forged-job")
 	r.Header.Set(api.HeaderRunID, "forged-run")
+	r.Header.Set(contract.RunTokenHeader, "caller-supplied")
 	return t.RoundTripper.RoundTrip(r)
 }
 
@@ -99,22 +102,49 @@ func TestConcurrentRunBindings(t *testing.T) {
 
 func TestManagedMCPProxyRoutesEachCallToItsAdmittedRun(t *testing.T) {
 	var mu sync.Mutex
-	var pairs [][2]string
+	var pairs [][3]string
 	tools := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	tools.AddTool(&mcp.Tool{Name: "probe", InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mu.Lock()
-		pairs = append(pairs, [2]string{r.GetExtra().Header.Get(api.HeaderJobID), r.GetExtra().Header.Get(api.HeaderRunID)})
+		pairs = append(pairs, [3]string{r.GetExtra().Header.Get(api.HeaderJobID), r.GetExtra().Header.Get(api.HeaderRunID), r.GetExtra().Header.Get(contract.RunTokenHeader)})
 		mu.Unlock()
 		return &mcp.CallToolResult{}, nil
 	})
 	upstream := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return tools }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	defer upstream.Close()
 	t.Setenv("HUB_RUNTIME_AUTH", "synthetic")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-1")
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", upstream.URL+"/mcp")
 	handler := runtimeHandler().(*runtimeHTTP)
 	for _, pair := range [][2]string{{"job-one", "run-one"}, {"job-two", "run-two"}} {
-		if err := handler.bindRun(pair[0], pair[1]); err != nil {
+		proof := strings.Repeat("1", 64)
+		if pair[0] == "job-two" {
+			proof = strings.Repeat("2", 64)
+		}
+		if err := handler.bindAuthorizedRun(pair[0], pair[1], proof); err != nil {
 			t.Fatal(err)
+		}
+		grant := RunAuthorization{JobID: pair[0], RunID: pair[1], Generation: "gen-1",
+			Tokens: map[string]string{contract.ToolHubAudience: "synthetic-" + pair[1]}}
+		raw, err := json.Marshal(grant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			proof string
+			want  int
+		}{
+			{strings.Repeat("3", 64), http.StatusUnauthorized},
+			{proof, http.StatusNoContent},
+		} {
+			req := httptest.NewRequest(http.MethodPut, RunAuthorizationPath, strings.NewReader(string(raw)))
+			req.Header.Set("Authorization", "Bearer synthetic")
+			req.Header.Set(RunDeliveryHeader, tc.proof)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != tc.want {
+				t.Fatalf("credential delivery status=%d, want %d", response.Code, tc.want)
+			}
 		}
 	}
 	proxy := httptest.NewServer(handler)
@@ -131,10 +161,10 @@ func TestManagedMCPProxyRoutesEachCallToItsAdmittedRun(t *testing.T) {
 		}
 	}
 	mu.Lock()
-	got := append([][2]string(nil), pairs...)
+	got := append([][3]string(nil), pairs...)
 	mu.Unlock()
-	if len(got) != 2 || got[0] != [2]string{"job-one", "run-one"} || got[1] != [2]string{"job-two", "run-two"} {
-		t.Fatalf("cross-run MCP attribution: %v", got)
+	if len(got) != 2 || got[0] != [3]string{"job-one", "run-one", "synthetic-run-one"} || got[1] != [3]string{"job-two", "run-two", "synthetic-run-two"} {
+		t.Fatalf("MCP calls lost their run-specific authority: count=%d", len(got))
 	}
 	for _, meta := range []mcp.Meta{nil, {"x-hermes-hub-run-id": "run-foreign"}} {
 		if _, err := session.CallTool(t.Context(), &mcp.CallToolParams{Meta: meta, Name: "probe", Arguments: map[string]any{}}); err == nil {

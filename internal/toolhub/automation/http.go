@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/routines"
@@ -18,6 +20,14 @@ import (
 // supplies its verified channel envelope; the control bearer pins the
 // asserted principal, while Host uses ToolHub's enrolled identity for PDP.
 func (h *Host) ControlHandler(token string) http.Handler {
+	return h.controlHandler(token, nil)
+}
+
+func (h *Host) SignedControlHandler(verifier contract.Client) http.Handler {
+	return h.controlHandler("", verifier)
+}
+
+func (h *Host) controlHandler(token string, verifier contract.Client) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/automation/operations" {
 			http.NotFound(w, r)
@@ -31,10 +41,15 @@ func (h *Host) ControlHandler(token string) http.Handler {
 			http.Error(w, "browser origin forbidden", http.StatusForbidden)
 			return
 		}
-		value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		value, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		principal := r.Header.Get("X-Hub-Principal")
-		if token == "" || subtle.ConstantTimeCompare([]byte(value), []byte(token)) != 1 || !identity.ValidID(principal) {
+		if !bearer || value == "" || (verifier == nil && (token == "" || !identity.ValidID(principal) || subtle.ConstantTimeCompare([]byte(value), []byte(token)) != 1)) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		request, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "invalid automation request", http.StatusBadRequest)
 			return
 		}
 		var body struct {
@@ -42,14 +57,26 @@ func (h *Host) ControlHandler(token string) http.Handler {
 			Caller    identity.Envelope `json:"caller"`
 			Payload   json.RawMessage   `json:"payload"`
 		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder := json.NewDecoder(bytes.NewReader(request))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || body.Caller.PrincipalID != principal || body.Caller.Validate(principal, body.Caller.ContextID, body.Caller.RuntimeID, body.Caller.PolicyVersion) != nil {
+		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF ||
+			body.Caller.Validate(body.Caller.PrincipalID, body.Caller.ContextID, body.Caller.RuntimeID, body.Caller.PolicyVersion) != nil {
+			http.Error(w, "invalid automation request", http.StatusBadRequest)
+			return
+		}
+		if verifier != nil {
+			keys, err := verifier.SigningKeys(r.Context())
+			scope := contract.ServiceRequest{Space: body.Caller.ContextID, Environment: h.cfg.Environment, RequestDigest: contract.PolicyDigest(request)}
+			if err != nil || (principal != "" && principal != body.Caller.PrincipalID) ||
+				contract.VerifyServiceToken(value, contract.AutomationServiceAudience, "system:communication-hub", scope, keys, h.now()) != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		} else if principal != body.Caller.PrincipalID {
 			http.Error(w, "invalid automation request", http.StatusBadRequest)
 			return
 		}
 		var result any
-		var err error
 		switch body.Operation {
 		case "schedule.replay":
 			var args struct {

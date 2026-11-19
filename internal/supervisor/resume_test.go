@@ -208,7 +208,7 @@ func TestRelayRejectsOldGenerationAndKeepsUncertain(t *testing.T) {
 	event := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: "stale", RunID: "r", SessionID: "s", Status: "completed", Text: "stale answer"}
 	body, _ := json.Marshal(event)
 	rec := httptest.NewRecorder()
-	m.relayRunStream(rec, request, runtime, strings.NewReader(string(body)+"\n"))
+	m.relayRunStream(t.Context(), rec, request, runtime, "", strings.NewReader(string(body)+"\n"))
 	m.mu.Lock()
 	record := m.jobs[request.JobID]
 	m.mu.Unlock()
@@ -270,7 +270,7 @@ func TestTerminalRelayRequiresDurableSupervisorWrite(t *testing.T) {
 	path := m.statePath
 	m.statePath = filepath.Join(t.TempDir(), "missing", "state.json")
 	rec := httptest.NewRecorder()
-	m.relayRunStream(rec, request, runtime, strings.NewReader(string(body)+"\n"))
+	m.relayRunStream(t.Context(), rec, request, runtime, "", strings.NewReader(string(body)+"\n"))
 	m.mu.Lock()
 	record := m.jobs[request.JobID]
 	m.mu.Unlock()
@@ -279,7 +279,7 @@ func TestTerminalRelayRequiresDurableSupervisorWrite(t *testing.T) {
 	}
 	m.statePath = path
 	rec = httptest.NewRecorder()
-	m.relayRunStream(rec, request, runtime, strings.NewReader(string(body)+"\n"))
+	m.relayRunStream(t.Context(), rec, request, runtime, "", strings.NewReader(string(body)+"\n"))
 	if !strings.Contains(rec.Body.String(), "answer") {
 		t.Fatalf("durable result not published: %s", rec.Body.String())
 	}

@@ -68,24 +68,24 @@ and before service effects complete.
   under a per-user lock so one user's blocked operation never serializes
   another's. A caller-supplied path is never consulted.
 - **Per-principal usage sources** (`platform_usage.go`): relay meter + models.yaml resolve under read-only `HUB_MODEL_USAGE_BY`/`HUB_MODEL_REGISTRY_BY` per-principal roots; an absent meter file is an honest zero.
-- **Exact-run memory admission** (`memory_run.go`, `api/run_status.go`):
-  a `memory.*` call is admitted only when the published passport gate passes
-  AND the claimed job/run pair verifies against the supervisor lifecycle
-  record (`Gateway.Runs`, `GET /v1/jobs/<id>` over the existing
-  `HUB_RUNTIME_SUPERVISOR_URL` + `HUB_COMMUNICATION_AUTH` control channel).
-  `X-Hub-Job-ID`/`X-Hub-Run-ID` select the record; the record's own fields
-  must prove a `running` private run bound to the caller's principal,
-  context, runtime, environment and current generation. Group and
-  background/system records are explicit `RunKind`s that never admit; a
-  correlation ID is bounded to 256 bytes so hashed mock-channel job IDs
-  survive the MCP hop. The managed runtime stamps the pair on its local
-  MCP proxy after Hermes admission; caller-supplied headers are discarded.
-  Managed MCP calls use the stateless `/mcp-run` route so an earlier
-  connection cannot retain stale run headers; the ordinary `/mcp` route
-  keeps its session behavior for other clients.
-  An unconfigured or erroring authority denies. The gate sits inside
-  `AuthorizeProjectedCall` so direct, CLI and nested calls share it and
-  every denial lands before the backend.
+- **Run authorization** (`memory_run.go`, `contracts/task/v1`): a managed
+  MCP call verifies the ToolHub-audience token against the current
+  supervisor job, generation, revocation and signed policy. The passport
+  and acting agent's grant ceilings apply before backend admission.
+  `read-only`, `plan`, `ask` and configured guardrails deny unattended
+  writes. Operation-specific approval checks still apply in other modes.
+  `/mcp-run` is stateless, and `/mcp` keeps its session behavior. Both
+  require signed authority for tool dispatch when the verification peer is
+  configured. The runtime supplies the actual Hermes correlation.
+  Memory additionally verifies its own audience token and the private
+  owner/assignment scope, including the signed memory configuration.
+  Supervisor recall checks the signed admission, private memory scope, read
+  and search grants and live assignment before Hermes returns a run ID.
+  Recall and Communication capture use distinct service audiences bound to
+  the space, environment and exact HTTP body, backed by the durable job.
+  An active assignment also has to pass the current plan and
+  `tasks.delegate` checks. The read-only assignment verification route
+  lets model, egress and communication enforce that same check.
 - **ToolHub-owned memory search** (`memory_search.go`): `memory_search`
   executes inside ToolHub (`runtime:toolhub` executor) — the verified
   envelope's principal/environment resolves the vault through the #513

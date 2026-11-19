@@ -2,6 +2,11 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"hubctl.routine-token-issuer": "URL del supervisor para la credencial de servicio firmada",
+		"run.policy-unavailable":      "La política de ejecución no está disponible",
+		"run.authorization-denied":    "Autorización de ejecución denegada",
+		"run.authorization-invalid":   "Autorización de ejecución no válida",
+		"hubctl.policy-publication":   "No se pudo publicar la política firmada",
 		"hubctl.identity-usage":       "Uso: hubctl identity migrate --config <YAML anterior> --control-dir <estado de control> --env dev|prod --import-id <id> [--oidc-links <JSON anterior>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":      "Ruta de la configuración de canales anterior",
 		"hubctl.identity-control-dir": "Directorio de estado de control",

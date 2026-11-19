@@ -158,6 +158,9 @@ func managedAgentSection(s Settings) M {
 	}
 }
 
+const ManagedModelRelayURL = "http://model-relay:8318/v1"
+const ManagedModelProxyAddress = "127.0.0.1:9917"
+
 func managedHermesConfig(s Settings) M {
 	inventory, err := ManagedCapabilityInventory()
 	if err != nil {

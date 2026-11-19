@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
@@ -62,9 +63,26 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	if corr.Scoped && (corr.JobID == "" || corr.HermesRunID == "") {
 		return nil, fmt.Errorf("%w: run correlation required", api.ErrUnauthorized)
 	}
-	if corr.JobID != "" || corr.HermesRunID != "" {
-		if _, err := g.lookupLiveRun(ctx, auth, corr); err != nil {
-			return nil, err
+	runScoped := corr.Scoped || corr.JobID != "" || corr.HermesRunID != "" || corr.RunToken != "" || corr.MemoryToken != "" || corr.Delegation != nil
+	var runPolicy *contract.PolicyBundle
+	if runScoped {
+		record, policy, err := g.checkedRun(ctx, auth, corr)
+		if err != nil {
+			return nil, errors.Join(err, g.audit("deny", map[string]string{
+				"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "environment": auth.Environment,
+				"reason": "run-authorization", "outcome": "deny",
+			}))
+		}
+		if policy != nil && activation.revision != "" && policy.PassportRevision != activation.revision {
+			return nil, api.ErrUnauthorized
+		}
+		runPolicy = policy
+		// The assignment owner gate consults the live PDP outside the tool
+		// registry's admission lock.
+		if record.Assignment && (record.AssignmentID == "" || record.AssignmentPlanRevision == 0 ||
+			record.UserID != auth.PrincipalID || g.authorizeAssignmentRun == nil ||
+			g.authorizeAssignmentRun(auth, record.AssignmentID, record.AssignmentPlanRevision) != nil) {
+			return nil, fmt.Errorf("%w: assignment run authority", api.ErrUnauthorized)
 		}
 	}
 	if err := g.chargeRunCall(corr); err != nil {
@@ -82,6 +100,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			return err
 		}
 		authorized = true
+		if runPolicy != nil {
+			if err := authorizeToolPolicy(runPolicy, projected.Tool); err != nil {
+				return err
+			}
+		}
 		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
 			if err := g.requireMemoryAdmission(ctx, auth, corr); err != nil {
 				return err
@@ -179,6 +202,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				outcome = "preflight-error"
 				return err
 			}
+		} else if runScoped {
+			if _, err := g.lookupLiveRun(callCtx, auth, corr); err != nil {
+				outcome = "preflight-error"
+				return err
+			}
 		}
 		if err := g.checkActivePassport(auth, activation.revision); err != nil {
 			outcome = "preflight-error"
@@ -213,6 +241,12 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				}
 				if fresh.Cleanup != nil {
 					defer fresh.Cleanup()
+				}
+				if runScoped {
+					if _, err := g.lookupLiveRun(callCtx, auth, corr); err != nil {
+						outcome = "preflight-error"
+						return err
+					}
 				}
 				effectStarted = true
 				result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, fresh.Environment)
@@ -478,6 +512,23 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return nil, &uncertainCallError{operationID: toolOperationID(auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.ToolCallID)}
 	}
 	return out, err
+}
+
+func authorizeToolPolicy(policy *contract.PolicyBundle, tool api.ToolSpec) error {
+	rules := policy.Identity.Restrictions
+	if tool.Effect != api.ReadEffect && !rules.AllowsUnattendedWrite() {
+		return api.ErrUnauthorized
+	}
+	if rules.Grants != nil && len(tool.Requires) == 0 {
+		return api.ErrUnauthorized
+	}
+	for _, right := range tool.Requires {
+		domain, operation, ok := strings.Cut(right, ".")
+		if !ok || !policy.AllowsRight(domain, operation) {
+			return api.ErrUnauthorized
+		}
+	}
+	return nil
 }
 
 // The agent sees /workspace while ToolHub scopes every path to that root.

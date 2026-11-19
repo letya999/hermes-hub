@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -33,21 +34,40 @@ type RunRecord struct {
 	// RuntimeGeneration is the generation the job was dispatched to;
 	// CurrentGeneration is the binding's live one. A superseded generation
 	// means the run is no longer live.
-	RuntimeGeneration string            `json:"runtime_generation"`
-	CurrentGeneration string            `json:"current_generation"`
-	Environment       string            `json:"environment"`
-	Status            string            `json:"status"`
-	ScopeID           string            `json:"scope_id"`
-	Trigger           string            `json:"trigger"`
-	Channel           string            `json:"channel"`
-	UserID            string            `json:"user_id"`
-	TextSHA256        string            `json:"text_sha256"`
-	ResponseSHA256    string            `json:"response_sha256"`
-	Sensitive         bool              `json:"sensitive"`
-	Untrusted         bool              `json:"untrusted"`
-	Assignment        bool              `json:"assignment"`
-	Probe             bool              `json:"probe"`
-	Envelope          identity.Envelope `json:"identity"`
+	RuntimeGeneration      string            `json:"runtime_generation"`
+	CurrentGeneration      string            `json:"current_generation"`
+	Environment            string            `json:"environment"`
+	Status                 string            `json:"status"`
+	ScopeID                string            `json:"scope_id"`
+	Trigger                string            `json:"trigger"`
+	Channel                string            `json:"channel"`
+	UserID                 string            `json:"user_id"`
+	TextSHA256             string            `json:"text_sha256"`
+	ResponseSHA256         string            `json:"response_sha256"`
+	Sensitive              bool              `json:"sensitive"`
+	Untrusted              bool              `json:"untrusted"`
+	Assignment             bool              `json:"assignment"`
+	TaskID                 string            `json:"task_id,omitempty"`
+	AssignmentID           string            `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64            `json:"assignment_plan_revision,omitempty"`
+	ActingIdentity         ActingIdentity    `json:"acting_identity,omitzero"`
+	PolicyRevision         string            `json:"policy_revision,omitempty"`
+	PassportDigest         string            `json:"passport_digest,omitempty"`
+	Initiator              string            `json:"initiator,omitempty"`
+	Deadline               time.Time         `json:"deadline,omitzero"`
+	Revoked                bool              `json:"revoked,omitempty"`
+	Probe                  bool              `json:"probe"`
+	Envelope               identity.Envelope `json:"identity"`
+}
+
+// ActingIdentity is bound by the supervisor from the registry at dispatch.
+// A group resource keeps its existing storage envelope and a separate human
+// and agent for the run.
+type ActingIdentity struct {
+	Subject          string `json:"sub"`
+	Actor            string `json:"act"`
+	Organization     string `json:"org"`
+	TemplateRevision string `json:"template_revision"`
 }
 
 // Client reads run records.

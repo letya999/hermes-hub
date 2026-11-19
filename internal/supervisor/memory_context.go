@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -29,13 +30,13 @@ func (m *Manager) memoryInstructions(ctx context.Context, request hubruntime.Exe
 		return request.Instructions
 	}
 	m.mu.Lock()
-	admission := m.jobs[executeJobKey(request)].AdmissionID
+	job := m.jobs[executeJobKey(request)]
 	m.mu.Unlock()
-	if admission == "" {
+	if job.AdmissionID == "" {
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
 	}
 	base := strings.TrimRight(strings.ReplaceAll(pattern, "%s", request.PrincipalID), "/")
-	claim := api.MemoryContextRequest{JobID: request.JobID, AdmissionID: admission, Text: request.Text}
+	claim := api.MemoryContextRequest{JobID: request.JobID, AdmissionID: job.AdmissionID, Text: request.Text}
 	body, err := json.Marshal(claim)
 	if err != nil {
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
@@ -47,13 +48,30 @@ func (m *Manager) memoryInstructions(ctx context.Context, request hubruntime.Exe
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.cfg.RuntimeAuth)
-	req.Header.Set("X-Hub-Principal", request.PrincipalID)
+	if job.PolicyRevision != "" {
+		signer, ok := m.identityClient().(interface {
+			IssueMemoryContextService(context.Context, contract.ServiceRequest) (string, error)
+		})
+		if !ok {
+			return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
+		}
+		scope := contract.ServiceRequest{Space: request.ContextID, Environment: m.environment(), RequestDigest: contract.PolicyDigest(body)}
+		token, err := signer.IssueMemoryContextService(callCtx, scope)
+		if err != nil {
+			return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+m.cfg.RuntimeAuth)
+		req.Header.Set("X-Hub-Principal", request.PrincipalID)
+	}
 	client := m.cfg.HTTP
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req) // #nosec G704 -- request target comes from the operator-rendered ToolHub pattern
+	direct := *client
+	direct.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := direct.Do(req) // #nosec G704 -- request target comes from the operator-rendered ToolHub pattern
 	if err != nil {
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
 	}

@@ -2,6 +2,11 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"hubctl.routine-token-issuer": "Адрес supervisor для получения подписанного сервисного разрешения",
+		"run.policy-unavailable":      "Политика запуска недоступна",
+		"run.authorization-denied":    "Запуску отказано в доступе",
+		"run.authorization-invalid":   "Некорректное разрешение запуска",
+		"hubctl.policy-publication":   "Не удалось опубликовать подписанную политику",
 		"hubctl.identity-usage":       "Использование: hubctl identity migrate --config <старый YAML> --control-dir <каталог control> --env dev|prod --import-id <id> [--oidc-links <старый JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":      "Путь к старой конфигурации каналов",
 		"hubctl.identity-control-dir": "Каталог состояния control",

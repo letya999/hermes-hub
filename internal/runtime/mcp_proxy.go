@@ -11,6 +11,8 @@ import (
 	"os"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -39,6 +41,11 @@ func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/mcp-run"
 	r.Header.Del(api.HeaderJobID)
 	r.Header.Del(api.HeaderRunID)
+	r.Header.Del(contract.RunTokenHeader)
+	r.Header.Del(contract.MemoryRunTokenHeader)
+	r.Header.Del(contract.CommunicationRunTokenHeader)
+	r.Header.Del(contract.EgressRunTokenHeader)
+	r.Header.Del(RunDeliveryHeader)
 	if r.Method == http.MethodPost {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMCPBodyBytes))
 		if err != nil {
@@ -67,6 +74,25 @@ func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
 				writeRuntimeError(w, http.StatusUnauthorized, "run identity unavailable")
 				return
 			}
+			token, err := s.runTokenFor(r.Context(), call.Params.Meta.RunID, contract.ToolHubAudience)
+			if err != nil {
+				lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
+				writeRuntimeError(w, http.StatusUnauthorized, locale.T(lang, "run.authorization-denied"))
+				return
+			}
+			if token != "" {
+				r.Header.Set(contract.RunTokenHeader, token)
+				for header, audience := range map[string]string{
+					contract.MemoryRunTokenHeader:        contract.MemoryAudience,
+					contract.CommunicationRunTokenHeader: contract.CommunicationAudience,
+					contract.EgressRunTokenHeader:        contract.EgressAudience,
+				} {
+					delegated, err := s.runTokenFor(r.Context(), call.Params.Meta.RunID, audience)
+					if err == nil && delegated != "" {
+						r.Header.Set(header, delegated)
+					}
+				}
+			}
 			r.Header.Set(api.HeaderJobID, jobID)
 			r.Header.Set(api.HeaderRunID, call.Params.Meta.RunID)
 		}
@@ -79,6 +105,10 @@ func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *runtimeHTTP) bindRun(jobID, runID string) error {
+	return s.bindAuthorizedRun(jobID, runID, "")
+}
+
+func (s *runtimeHTTP) bindAuthorizedRun(jobID, runID, proof string) error {
 	if jobID == "" || !validHermesRunID(runID) {
 		return errors.New("invalid run binding")
 	}
@@ -93,6 +123,17 @@ func (s *runtimeHTTP) bindRun(jobID, runID string) error {
 	}
 	if existing := s.jobRuns[jobID]; existing != "" && existing != runID {
 		return errors.New("hermes run changed during readmission")
+	}
+	if proof != "" {
+		if s.runAccess == nil {
+			s.runAccess = make(map[string]runAccess)
+		}
+		access := s.runAccess[runID]
+		if access.proof != "" && access.proof != proof {
+			return errors.New("run delivery changed during readmission")
+		}
+		access.proof = proof
+		s.runAccess[runID] = access
 	}
 	s.runJobs[runID], s.jobRuns[jobID] = jobID, runID
 	s.signalRunChangeLocked()
@@ -151,6 +192,7 @@ func (s *runtimeHTTP) releaseRun(jobID, runID, status string) {
 	if s.runJobs[runID] == jobID && s.jobRuns[jobID] == runID {
 		delete(s.runJobs, runID)
 		delete(s.jobRuns, jobID)
+		delete(s.runAccess, runID)
 		s.signalRunChangeLocked()
 	}
 	s.runMu.Unlock()

@@ -567,8 +567,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// this space's toolhub through the control-plane bearer. A
 		// secondary space shares the infra toolhub — its own
 		// toolhub-<user> alias never exists there.
-		"HUB_TOOLHUB_URL":     toolhubDecideURL(infra, s.User),
-		"HUB_TOOLHUB_CONTROL": "${HUB_SUPERVISOR_AUTH:-}",
+		"HUB_TOOLHUB_URL": toolhubDecideURL(infra, s.User),
+	}
+	if s.SupervisorURL != "" {
+		modelRelay["environment"].(M)["HUB_RUN_VERIFY_URL"] = s.SupervisorURL
+		modelRelay["environment"].(M)["HUB_RUN_VERIFY_AUTH"] = "${HUB_RUN_VERIFY_AUTH:-}"
 	}
 	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
 		modelRelay["environment"].(M)[key] = value
@@ -601,6 +604,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		egressRelay := cloneMap(coreCommon)
 		egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 		egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": exposureRelay}
+		if s.SupervisorURL != "" {
+			egressRelay["environment"].(M)["HUB_EGRESS_RELAY_OWNER"] = s.User
+			egressRelay["environment"].(M)["HUB_ENVIRONMENT"] = s.Environment
+			egressRelay["environment"].(M)["HUB_RUN_VERIFY_URL"] = s.SupervisorURL
+			egressRelay["environment"].(M)["HUB_RUN_VERIFY_AUTH"] = "${HUB_RUN_VERIFY_AUTH:-}"
+			egressRelay["environment"].(M)["HUB_TOOLHUB_URL"] = toolhubDecideURL(infra, s.User)
+		}
 		egressRelay["extra_hosts"] = M{}
 		egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
 		services["egress-relay"] = egressRelay
@@ -633,6 +643,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		if supervisorURL != "" {
 			toolhubEnv["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
+			toolhubEnv["HUB_RUN_VERIFY_URL"] = supervisorURL
+			toolhubEnv["HUB_RUN_VERIFY_AUTH"] = "${HUB_RUN_VERIFY_AUTH:-}"
 			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = supervisorURL
 		} else {
@@ -1053,6 +1065,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_AUTOMATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
+			gatewayEnvironment["HUB_RUN_VERIFY_URL"] = supervisorURL
+			gatewayEnvironment["HUB_RUN_VERIFY_AUTH"] = "${HUB_RUN_VERIFY_AUTH:-}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
 		// The skillgit ExecCell posts to the controller /cli-exec derived

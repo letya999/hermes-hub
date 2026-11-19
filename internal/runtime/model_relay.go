@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/netguard"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -213,7 +215,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}}
 
 	call := func(ctx context.Context, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
-		return modelCall(ctx, client, hops, method, path, auth, ctype, body, hopTimeout)
+		return modelCall(ctx, client, hops, method, path, auth, ctype, body, hopTimeout, nil)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +374,7 @@ func requestsSelectedModel(body []byte, selected string) bool {
 type relayRegistryFile = stack.ModelRegistry
 type relayModel = stack.ModelEntry
 
-func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte, hopTimeout time.Duration) (*modelHop, *http.Response, error) {
+func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte, hopTimeout time.Duration, authorize func() error) (*modelHop, *http.Response, error) {
 	bounded := *client
 	recovering, releaseRecovery := waitForModelRecovery(ctx, hops)
 	defer releaseRecovery()
@@ -390,6 +392,11 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			hop.failWith("quota", "local model limit spent")
 			log.Printf("model-relay hop=%s path=%s skipped (quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
+		}
+		if authorize != nil && (len(hop.quota) > 0 || hop.keyFor != nil) {
+			if err := authorize(); err != nil {
+				return nil, nil, err
+			}
 		}
 		if len(hop.quota) > 0 {
 			exhausted, err := hop.providerQuotaExhausted(ctx)
@@ -470,6 +477,11 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			if bounded.Timeout <= 0 {
 				hop.fail()
 				break
+			}
+			if authorize != nil {
+				if err := authorize(); err != nil {
+					return nil, nil, err
+				}
 			}
 			// The budget gate is atomic and durable: no provider attempt leaves
 			// without a persisted reservation, and a refused attempt parks the
@@ -701,6 +713,7 @@ type relayRegistry struct {
 	admin     string
 	auth      string
 	decider   api.DecideClient
+	runs      *relayRunAuthority
 	mu        sync.Mutex
 	mtime     time.Time
 	reg       *relayRegistryFile
@@ -715,7 +728,8 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		return nil, err
 	}
 	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{},
-		decider: api.DecideClient{URL: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), Token: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_CONTROL")), Principal: owner, Environment: strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))}}
+		decider: api.DecideClient{URL: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), Token: strings.TrimSpace(env("HUB_TOOLHUB_CONTROL", os.Getenv("HUB_RUNTIME_AUTH"))), Principal: owner, Environment: strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))},
+		runs:    relayRunAuthorityFromEnv()}
 	brokerConfig, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_MODEL_")
 	if err != nil {
 		return nil, err
@@ -741,6 +755,23 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
 			return
+		}
+		chat := req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions"
+		var authorize func() error
+		if chat && (r.runs != nil || req.Header.Get(identitycontract.RunTokenHeader) != "") {
+			authorize = func() error {
+				policy, err := r.runs.authorize(req, identitycontract.ModelAudience, r.owner)
+				if err != nil || !policy.AllowsRight("models", "use") {
+					return identitycontract.ErrForbidden
+				}
+				return nil
+			}
+			if err := authorize(); err != nil {
+				log.Printf("model-relay owner=%s outcome=deny reason=run-authorization", r.owner)
+				lang, _ := locale.Negotiate(req.Header.Get("Accept-Language"))
+				http.Error(w, locale.T(lang, "run.authorization-denied"), http.StatusForbidden)
+				return
+			}
 		}
 		if r.auth != "" && req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops") {
 			authorized := subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) == 1
@@ -786,7 +817,6 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": names})
 			return
 		}
-		chat := req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions"
 		if chat && r.auth != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) != 1 {
 			log.Printf("model-relay owner=%s outcome=deny reason=caller", r.owner)
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -846,7 +876,12 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if r.auth != "" {
 			providerAuth = ""
 		}
-		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
+		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout, authorize)
+		if errors.Is(err, identitycontract.ErrForbidden) {
+			lang, _ := locale.Negotiate(req.Header.Get("Accept-Language"))
+			http.Error(w, locale.T(lang, "run.authorization-denied"), http.StatusForbidden)
+			return
+		}
 		if err != nil {
 			writeModelFailure(w, err)
 			return

@@ -79,6 +79,25 @@ func TestHermesRevFileVerified(t *testing.T) {
 	}
 }
 
+func TestSignedRunImageContainsContractsAndHermesPlugin(t *testing.T) {
+	if !strings.Contains(dockerfileStage(t, "go_build"), "COPY contracts ./contracts\n") {
+		t.Fatal("Go image build omits the shared service contracts")
+	}
+	const plugin = "config/plugins/hub-run-auth"
+	if !strings.Contains(dockerfileStage(t, "runtime"), "COPY "+plugin+" /opt/hermes/plugins/hub-run-auth\n") {
+		t.Fatal("runtime image must provide the Hermes correlation plugin without a host mount")
+	}
+	data, err := os.ReadFile("../../.dockerignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"contracts", plugin} {
+		if !strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n!"+path+"/**\n") {
+			t.Errorf("Docker build context excludes %s", path)
+		}
+	}
+}
+
 func TestImageHasBytecode(t *testing.T) {
 	build := dockerfileStage(t, "python_build")
 	if !strings.Contains(build, "UV_COMPILE_BYTECODE=1") {

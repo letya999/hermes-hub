@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	core "k8s.io/api/core/v1"
@@ -108,7 +109,14 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	modelState := persistPath(false, "managed/"+k.m.environment()+"/model-relay") + "/model-select.json"
 	// The private relay keeps its existing PDP and registry contracts. No
 	// control bearer or provider credential is projected into the runtime.
-	for key, value := range map[string]string{"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml", "HUB_MODEL_RELAY_STATE": modelState, "HUB_MODEL_RELAY_OWNER": request.Binding.UserID, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL, "HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": k.m.cfg.RuntimeAuth, "HUB_ENVIRONMENT": k.m.environment()} {
+	release := k.cfg.ControlRelease + "-hermes-hub"
+	verificationURL := "http://" + strings.TrimSuffix(release[:min(len(release), 45)], "-") + "-supervisor." + k.cfg.ControlNamespace + ".svc:8876"
+	for key, value := range map[string]string{
+		"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml", "HUB_MODEL_RELAY_STATE": modelState,
+		"HUB_MODEL_RELAY_OWNER": request.Binding.UserID, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL,
+		"HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": request.Binding.runtimeAuth, "HUB_ENVIRONMENT": k.m.environment(),
+		"HUB_RUN_VERIFY_URL": verificationURL, "HUB_RUN_VERIFY_AUTH": taskcontract.VerificationCredential(k.m.cfg.RuntimeAuth),
+	} {
 		values[key] = value
 	}
 	modelEnv, err := relayEnvironment(secret, values, "r")
@@ -158,6 +166,11 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	settings := request.Settings
 	settings.Environment = k.m.environment()
 	if environment := stack.RuntimeEgressEnvironment(settings, request.Binding.ContextRoot); environment != nil {
+		environment["HUB_EGRESS_RELAY_OWNER"] = request.Binding.UserID
+		environment["HUB_ENVIRONMENT"] = k.m.environment()
+		environment["HUB_RUN_VERIFY_URL"] = verificationURL
+		environment["HUB_RUN_VERIFY_AUTH"] = taskcontract.VerificationCredential(k.m.cfg.RuntimeAuth)
+		environment["HUB_TOOLHUB_URL"] = k.cfg.ToolHubURL
 		env, err := relayEnvironment(secret, environment, "x")
 		if err != nil {
 			return nil, nil, err
@@ -284,7 +297,7 @@ func (k *kubernetesBackend) relayPolicy(rt Runtime) *networking.NetworkPolicy {
 	for _, target := range []struct {
 		name string
 		port int32
-	}{{"toolhub", 8090}, {"cliproxy", 8317}, {"credential-broker", 8787}} {
+	}{{"toolhub", 8090}, {"cliproxy", 8317}, {"credential-broker", 8787}, {"supervisor", 8876}} {
 		policy.Spec.Egress = append(policy.Spec.Egress, networking.NetworkPolicyEgressRule{To: []networking.NetworkPolicyPeer{k.peer(target.name)}, Ports: []networking.NetworkPolicyPort{kubePort(target.port, core.ProtocolTCP)}})
 	}
 	return policy

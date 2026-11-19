@@ -26,6 +26,15 @@ type AgentExecRequest struct {
 	Scopes         []CapabilityScope `json:"scopes,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 	ConversationID string            `json:"conversation_id,omitempty"`
+	Delegation     *RunDelegation    `json:"delegation,omitempty"`
+}
+
+// RunDelegation carries audience-specific authority on the private executor
+// channel. It is independent of all model tool arguments.
+type RunDelegation struct {
+	RunID         string `json:"run_id"`
+	Communication string `json:"communication,omitempty"`
+	Egress        string `json:"egress,omitempty"`
 }
 
 type agentConversationKey struct{}
@@ -118,6 +127,7 @@ func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBindin
 			Scopes:         effective.CapabilityScopes,
 			TimeoutSeconds: effective.Definition.Execution.TimeoutSeconds,
 			ConversationID: AgentConversationFrom(ctx),
+			Delegation:     CallCorrelationFrom(ctx).Delegation,
 		})
 	}
 	if err != nil {

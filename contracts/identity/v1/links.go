@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/contracts/internal/wire"
+	primitive "github.com/letya999/hermes-hub/internal/identity"
 )
 
 // OIDCLink is accepted only from authenticated channel ingress after its
@@ -28,7 +29,7 @@ type LinkClient interface {
 }
 
 func validLink(value OIDCLink) bool {
-	return (value.Channel.Channel == Telegram || value.Channel.Channel == Slack) && value.Channel.ID != "" && len(value.Channel.ID) <= 256 && !strings.ContainsAny(value.Channel.ID, "\r\n\t ") && (value.PrincipalID == "" || validID(value.PrincipalID)) && value.Issuer != "" && len(value.Issuer) <= 2048 && value.Subject != "" && len(value.Subject) <= 256 && !strings.ContainsAny(value.Issuer+value.Subject, "\r\n")
+	return (value.Channel.Channel == Telegram || value.Channel.Channel == Slack) && value.Channel.ID != "" && len(value.Channel.ID) <= 256 && !strings.ContainsAny(value.Channel.ID, "\r\n\t ") && (value.PrincipalID == "" || validID(value.PrincipalID)) && value.Issuer != "" && len(value.Issuer) <= primitive.MaxProvenanceBytes && value.Subject != "" && len(value.Subject) <= primitive.MaxProvenanceBytes && !strings.ContainsAny(value.Issuer+value.Subject, "\r\n")
 }
 
 type linkHTTPClient struct{ wire.Client }

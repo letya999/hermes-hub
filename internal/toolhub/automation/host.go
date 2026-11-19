@@ -918,6 +918,24 @@ func (h *Host) LoadAssignment(ctx context.Context, auth identity.Envelope, id st
 	return e.LoadAssignment(id, auth)
 }
 
+// AuthorizeAssignmentRun checks the live owner grant and the exact applied
+// plan whose wake was admitted by supervisor.
+func (h *Host) AuthorizeAssignmentRun(auth identity.Envelope, id string, planRev uint64) error {
+	if len(id) > 256 || !commodel.IDPattern.MatchString(id) || planRev == 0 {
+		return errUnauthorized
+	}
+	e, err := h.authorize(auth, "delegate")
+	if err != nil {
+		return err
+	}
+	item, ok := e.AssignmentForWake(id, planRev)
+	if !ok || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID ||
+		item.Envelope.RuntimeID != auth.RuntimeID {
+		return errUnauthorized
+	}
+	return nil
+}
+
 func (h *Host) RecordAssignmentProgress(ctx context.Context, auth identity.Envelope, id string, expected uint64, jobID, summary, finding, nextStep string, complete bool) (commodel.Assignment, error) {
 	e, err := h.authorize(auth, "delegate")
 	if err != nil {

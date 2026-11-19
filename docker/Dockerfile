@@ -9,6 +9,7 @@ COPY services/credential-broker/go.mod ./services/credential-broker/
 RUN go mod download && cd services/credential-broker && go mod download
 COPY services/credential-broker ./services/credential-broker
 COPY cmd ./cmd
+COPY contracts ./contracts
 COPY internal ./internal
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hubctl ./cmd/hubctl
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-runtime ./cmd/runtime
@@ -132,6 +133,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY --from=python_build /opt/hermes /opt/hermes
+COPY config/plugins/hub-run-auth /opt/hermes/plugins/hub-run-auth
 # Runtime services exec only these Go entrypoints; the daemons live in core.
 COPY --from=go_build /hubctl /hub-runtime /usr/local/bin/
 COPY docker/hub-sidecar /usr/local/bin/hub-sidecar

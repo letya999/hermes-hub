@@ -201,7 +201,7 @@ func (s *runtimeHTTP) observe(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusConflict, "run binding mismatch")
 		return
 	}
-	if err := s.bindRun(ref.JobID, ref.RunID); err != nil {
+	if err := s.bindAuthorizedRun(ref.JobID, ref.RunID, runDeliveryFrom(r)); err != nil {
 		writeRuntimeError(w, http.StatusConflict, "another Hermes run is still unconfirmed")
 		return
 	}

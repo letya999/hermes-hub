@@ -232,6 +232,11 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return report, err
 	}
+	publisher, err := stageApplyPolicy(ctx, abs, rev, &record)
+	policyFailure := locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.policy-publication")
+	if err != nil {
+		return report, fmt.Errorf("%s: %w", policyFailure, err)
+	}
 	if err := writeApplyJournal(abs, record); err != nil {
 		return report, fmt.Errorf("space apply: recovery journal: %w", err)
 	}
@@ -240,7 +245,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		return writeApplyJournal(abs, record)
 	}
 	rollback := func() error {
-		return retryApplyRestore(func() error { return restoreApplyState(abs, rootAbs, record) })
+		return retryApplyRestore(func() error { return restoreApplyState(context.WithoutCancel(ctx), abs, rootAbs, record) })
 	}
 	fail := func(stage string, cause error) (reconcile.Report, error) {
 		restored := rollback()
@@ -254,6 +259,11 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	}
 	if err := rev.Prepare(abs, applyStep); err != nil {
 		return fail("prepare", err)
+	}
+	if record.PolicyDigest != "" {
+		if err := rev.LinkPolicyDigest(abs, record.PolicyDigest); err != nil {
+			return fail(policyFailure, err)
+		}
 	}
 	if err := advance("prepared"); err != nil {
 		return fail("journal", err)
@@ -286,6 +296,12 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		return fail("journal", err)
 	}
 	applyStep("rights")
+	if publisher != nil {
+		if err := publisher.ActivatePassports(ctx, filepath.Base(abs), env, record.PreviousPolicyDigest, record.PolicyDigest); err != nil {
+			return fail(policyFailure, err)
+		}
+		applyStep("policy")
+	}
 	if err := rev.Activate(abs); err != nil {
 		return fail("activation", err)
 	}

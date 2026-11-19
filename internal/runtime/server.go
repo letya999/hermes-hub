@@ -28,21 +28,24 @@ const maxPromptBytes = 2 * 1024 * 1024
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
 	identity.Envelope
-	OperationalEpoch uint64 `json:"operational_epoch,omitempty"`
-	JobID            string `json:"job_id"`
-	OrganizationID   string `json:"organization_id"`
-	UserID           string `json:"user_id"`
-	ActorID          string `json:"actor_id"`
-	ScopeID          string `json:"scope_id"`
-	Channel          string `json:"channel"`
-	Trigger          string `json:"trigger"`
-	IdempotencyKey   string `json:"idempotency_key"`
-	Text             string `json:"text"`
-	InboundID        string `json:"inbound_id,omitempty"`
-	Sensitive        bool   `json:"sensitive,omitempty"`
-	Untrusted        bool   `json:"untrusted,omitempty"`
-	Assignment       bool   `json:"assignment,omitempty"`
-	Probe            bool   `json:"probe,omitempty"`
+	OperationalEpoch       uint64 `json:"operational_epoch,omitempty"`
+	JobID                  string `json:"job_id"`
+	OrganizationID         string `json:"organization_id"`
+	UserID                 string `json:"user_id"`
+	ActorID                string `json:"actor_id"`
+	ScopeID                string `json:"scope_id"`
+	Channel                string `json:"channel"`
+	Trigger                string `json:"trigger"`
+	IdempotencyKey         string `json:"idempotency_key"`
+	Text                   string `json:"text"`
+	InboundID              string `json:"inbound_id,omitempty"`
+	Sensitive              bool   `json:"sensitive,omitempty"`
+	Untrusted              bool   `json:"untrusted,omitempty"`
+	Assignment             bool   `json:"assignment,omitempty"`
+	TaskID                 string `json:"task_id,omitempty"`
+	AssignmentID           string `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64 `json:"assignment_plan_revision,omitempty"`
+	Probe                  bool   `json:"probe,omitempty"`
 	// Instructions is the hub-pinned presentation guidance for this admitted
 	// run (ephemeral system prompt upstream). It is never a synthetic user
 	// message and never carries authorization.
@@ -118,6 +121,7 @@ type runtimeHTTP struct {
 	runMu     sync.Mutex
 	runJobs   map[string]string
 	jobRuns   map[string]string
+	runAccess map[string]runAccess
 	pending   int
 	counters  *runtimeMetrics
 	runChange chan struct{}
@@ -168,6 +172,8 @@ func (s *runtimeHTTP) route(w http.ResponseWriter, r *http.Request) {
 		s.ready(w, r)
 	case "/v1/execute":
 		s.execute(w, r)
+	case RunAuthorizationPath:
+		s.installRunAuthorization(w, r)
 	case "/v1/readmit":
 		s.readmit(w, r)
 	case "/v1/observe":
@@ -274,6 +280,7 @@ func (s *runtimeHTTP) execute(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	r = r.WithContext(withRunDelivery(r))
 
 	if r.Header.Get("Accept") == RunStreamContentType {
 		s.executeStream(w, r, request)
@@ -312,6 +319,7 @@ func (s *runtimeHTTP) readmit(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	r = r.WithContext(withRunDelivery(r))
 	payload, err := admissionPayload(request, nil)
 	if err != nil {
 		writeRuntimeError(w, http.StatusConflict, "original admission unavailable")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commops"
 	"io"
 	"net/http"
@@ -608,6 +609,74 @@ func TestAssignmentWatchTransitionsOwnedByToolHub(t *testing.T) {
 	}
 	if list, err := host.ListSchedules(ctx, bob); err != nil || len(list) != 0 {
 		t.Fatalf("cross-user schedule list leaked: %d err=%v", len(list), err)
+	}
+}
+
+type assignmentAuthorityFixture struct{ record taskcontract.RunRecord }
+
+func (f assignmentAuthorityFixture) Run(_ context.Context, jobID string) (taskcontract.RunRecord, error) {
+	if jobID != f.record.JobID {
+		return taskcontract.RunRecord{}, taskcontract.ErrNotFound
+	}
+	return f.record, nil
+}
+
+func TestAssignmentRunChecksActivePlanOwnerAndLiveDelegateGrant(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grantRight(t, "alice", "delegate")
+	host := h.host(t)
+	engine, err := host.engineFor("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(engine.AssignmentPath("asg-one")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	item := commodel.Assignment{AssignmentID: "asg-one", Envelope: alice, State: "active", AppliedRev: 3,
+		Plan: &commodel.AssignmentPlan{Revision: 3}}
+	persist := func() {
+		t.Helper()
+		if err := writeJSONAtomic(engine.AssignmentPath(item.AssignmentID), item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	persist()
+	if err := host.AuthorizeAssignmentRun(alice, item.AssignmentID, 3); err != nil {
+		t.Fatalf("active owner assignment refused: %v", err)
+	}
+	const job = "job-one"
+	run := taskcontract.RunRecord{JobID: job, RunID: "run-one", RuntimeGeneration: "gen-one", CurrentGeneration: "gen-one",
+		Status: "running", Deadline: host.now().Add(time.Minute), Environment: host.cfg.Environment,
+		UserID: alice.PrincipalID, Envelope: alice, Assignment: true, AssignmentID: item.AssignmentID, AssignmentPlanRevision: 3}
+	const readKey = "synthetic-verifier"
+	server := httptest.NewServer(host.AssignmentRunHandler(assignmentAuthorityFixture{record: run}, readKey))
+	defer server.Close()
+	relays := taskcontract.NewAssignmentHTTPClient(server.URL, readKey, server.Client())
+	if err := relays.AuthorizeAssignmentJob(t.Context(), job); err != nil {
+		t.Fatalf("relay could not verify the authorized child run: %v", err)
+	}
+	if err := host.AuthorizeAssignmentRun(alice, item.AssignmentID, 2); err == nil {
+		t.Fatal("superseded plan kept authorization")
+	}
+	foreignContext := alice
+	foreignContext.ContextID = "other"
+	if err := host.AuthorizeAssignmentRun(foreignContext, item.AssignmentID, 3); err == nil {
+		t.Fatal("foreign context borrowed an active assignment")
+	}
+	item.State = "paused"
+	persist()
+	if err := host.AuthorizeAssignmentRun(alice, item.AssignmentID, 3); err == nil {
+		t.Fatal("paused assignment kept authorization")
+	}
+	item.State = "active"
+	persist()
+	h.revokeRight(t, "alice", "delegate")
+	if err := host.AuthorizeAssignmentRun(alice, item.AssignmentID, 3); err == nil {
+		t.Fatal("active plan bypassed live grant revocation")
+	}
+	if err := relays.AuthorizeAssignmentJob(t.Context(), job); !errors.Is(err, taskcontract.ErrForbidden) {
+		t.Fatalf("relay allowed a child after live grant revocation: %v", err)
 	}
 }
 

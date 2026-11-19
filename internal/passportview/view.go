@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/media"
 )
 
@@ -34,11 +35,19 @@ func Current(spaceDir string) (string, error) {
 // currentGenerated reads the current pointer inside a generated/ dir and
 // rejects ids that could escape the passports tree.
 func currentGenerated(genDir string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(genDir, "passports", "current"))
+	root := filepath.Join(genDir, "passports")
+	b, err := os.ReadFile(filepath.Join(root, "current"))
 	if err != nil {
 		return "", err
 	}
 	rev := strings.TrimSpace(string(b))
+	if contract.ValidPolicyDigest(rev) {
+		b, err := os.ReadFile(filepath.Join(root, ".policy", strings.TrimPrefix(rev, "sha256:")))
+		if err != nil {
+			return "", fmt.Errorf("current policy cache: %w", err)
+		}
+		rev = strings.TrimSpace(string(b))
+	}
 	if rev == "pending" {
 		return "", fmt.Errorf("current revision is pending activation")
 	}

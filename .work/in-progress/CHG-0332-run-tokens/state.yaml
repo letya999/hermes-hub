@@ -1,0 +1,59 @@
+schema: 1
+change: CHG-0332
+title: Signed run tokens and policy bundles
+status: in_progress
+branch: feat/m40-v1-platform
+updated: 2026-11-19
+phase: implementation
+adr: ADR-0106
+spec: SPEC-0100
+requirements: [R6.1, R6.2, R6.3]
+depends_on: [CHG-0331]
+github_milestone: M40 - v1.0 Proactive Agent Platform
+github_issue: 576
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S4.1-control-signing: green
+  S4.2-verification: green
+  S4.3-policy-publication: red
+  S4.4-live-authorization: red
+  S4.5-agent-service-delegation: red
+  S4.6-runtime-binding: red
+validation:
+  documents: passed
+  just_check: passed
+  affected_packages: passed
+  integration_build: passed
+  targeted_race: passed
+  helm_render: passed
+  compose_render: passed
+  red_team: partial
+  live_acceptance: not_run
+evidence:
+  - "Read issue 576, ADR-0106 D4-D7 and SPEC-0100 R6.1-R6.3. Reviewed existing runtime admission, supervisor job authority and exact-run ToolHub memory fence."
+  - "Source prerequisite: 75b71b6d (CHG-0331). No published SHA or CI run URL."
+  - "Control initializes four purpose-specific Ed25519 key pairs in its private schema-4 registry. The identity contract exposes a typed public-only key set. The issuer validates owner, agent, current publication and mode, and clamps expiry to the run deadline and budget."
+  - "Named regressions went from missing implementation to green. Compact run signatures reject wrong purpose, foreign actor, wrong audience, invalid signature and expired token/key. A SQLite restart and HTTP public-key read preserve verification; rotation retains previous public keys for the overlap."
+  - "The control-only rotation route requires distinct admin authority and the selected environment, rejects browser origins and records an audit event in the rotation transaction."
+  - "Control stores immutable signed passport content by digest and activates it using compare-and-swap for each space and environment. The issuer derives a run policy from the active bundle and current registry template. Named regressions cover unsigned and mixed revisions, stale publication, key retirement and a supplied widened mode."
+  - "The HTTP verifier joins signed claims to the durable task record, including assignment plan revision, exact Hermes run, current generation, actor, deadline and policy. The live fence denies on cancellation, deactivation, identity drift or superseded policy."
+  - "The ToolHub assignment gate consults the active assignment plan and live tasks.delegate right. A backend-spy regression confirms that revoking the right denies both child runs while the independent interactive run remains eligible."
+  - "Space apply stages a compiled bundle with distinct operator authority, journals both digests and activates the control record and generated pointer. The synthetic process-stop regression restores the prior digest after a stop between those writes."
+  - "The supervisor persists the exact Hermes admission before issuing audience-specific credentials. Control delivery uses a per-job proof, and the runtime replaces incoming authority headers using its live run map. Runtime and control tests exercise the stream, private handoff and MCP correlation."
+  - "The pinned /v1/runs executor binds the actual Hermes run ID in its approval context. A bundled request middleware carries that correlation to the Go loopback model proxy. It handles overlapping runs without process-global authority. Local HTTP tests use synthetic upstreams and do not verify a live Hermes deployment."
+  - "ToolHub verifies signed run correlation on both MCP endpoints when configured with identity authority. Backend-spy regressions cover valid dispatch, missing and forged proof, conflicting run and job IDs, and stale generation."
+  - "The communication automation service token binds the signed service identity, operation request bytes, workspace and environment. Its negative tests reject the shared legacy bearer and forged or substituted requests. The channel proof uses the separate link signing key and remains single use."
+  - "ToolHub memory bootstrap checks the live admission and signed memory policy before any vault read. The regression covers a legacy unsigned admission, accepted signed recall, live revocation and an empty memory scope. Run-scoped memory also refuses a missing token or a ToolHub-audience token presented as memory proof."
+  - "Managed memory recall and capture accept distinct service audiences. The signed body, space, environment and durable job establish authority. Recall is issued in-process by hub-control. Capture issuance accepts only its own scoped Communication credential."
+  - "Synthetic HTTP tests check model and egress audience isolation, exact Hermes correlation, proxy header stripping and backend refusal. A model request that loses authority after contacting its first provider is denied before fallback."
+  - "The Docker build context includes Go contracts and the runtime image includes the Hermes correlation plugin, including deployments without a Docker host plugin mount. The image shape regression passed. A built image receipt remains pending."
+  - "Final local just check and just test passed across the 17 affected packages. Two earlier shutdown regressions exposed a canceled context reaching SQLite signing-key initialization and passed after correction."
+  - "Integration-tagged compilation passed for internal/devcheck, cmd/toolhub and internal/stack. Helm lint, chart renders, Compose config validation and targeted races passed. Race coverage includes channel proofs, runtime bindings, agent skill isolation, assignment revocation and the signed memory endpoints."
+remaining:
+  - "Close direct browser and mcp-raw tool routes. The existing pinned Hermes MCP patch stamps correlation only on ToolHub calls. Select an approved upstream-patch or managed-adapter path and finish the endpoint-specific negative receipts."
+  - "Native clients that only use the process-wide forward proxy cannot present per-run proof. Model users outside an admitted Hermes turn require scoped service authority. Finish these paths, define named guardrail behavior and complete the A6.1-A6.3 receipts."
+  - "Isolate service issuance from the remaining shared control credential. The issuance proofs resist purpose substitution on the wire, but a service holding the parent credential can derive both proofs."
+  - "Repeat the local gates after the remaining implementation and record the exact published CI receipt once authorized."
+limitations:
+  - "Live deployment, external login, Docker acceptance and remote CI are pending. Live space changes, workflow dispatch and publication require owner authorization."

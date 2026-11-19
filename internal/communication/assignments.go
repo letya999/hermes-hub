@@ -18,9 +18,9 @@ import (
 // list) on /v1/assignments (SPEC-0080 R2.1). Owner scoping comes from the
 // verified caller envelope вЂ” the engine refuses foreign ids outright.
 func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	caller, policy, ok := g.authorizeAgentControl(r)
+	if !ok || !agentOperationAllowed(policy, "tasks", "delegate", r.Method != http.MethodGet) {
+		denyAgentOperation(w, r)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -83,9 +83,10 @@ func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
 // handleAssignmentItem serves GET card on /v1/assignments/<id>
 // (SPEC-0080 R2.1). Foreign ids collapse to 404 — no existence leak.
 func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	caller, policy, ok := g.authorizeAgentControl(r)
+	dryRun := r.Method == http.MethodPost && r.URL.Path == "/v1/assignments/plan"
+	if !ok || !agentOperationAllowed(policy, "tasks", "delegate", r.Method != http.MethodGet && !dryRun) {
+		denyAgentOperation(w, r)
 		return
 	}
 	id, action, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/assignments/"), "/")

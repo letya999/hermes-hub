@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
@@ -105,7 +106,13 @@ func (r *Registry) BeginLink(ctx context.Context, owner string, c contract.Chann
 	if err != nil {
 		return Challenge{}, contract.ErrUnavailable
 	}
-	proof, err := randomID()
+	if err := ensureSigningKey(ctx, tx, contract.SignLink); err != nil {
+		return Challenge{}, err
+	}
+	proof, err := sign(ctx, tx, contract.SignLink, contract.LinkClaims{
+		Issuer: contract.RunTokenIssuer, Audience: contract.ChannelLinkAudience, Subject: owner,
+		Challenge: id, ChannelDigest: linkChannelDigest(c), Expires: expires.Unix(),
+	})
 	if err != nil {
 		return Challenge{}, contract.ErrUnavailable
 	}
@@ -150,6 +157,17 @@ func (r *Registry) VerifyLink(ctx context.Context, id, proof string, observed co
 	} else if enabled != 1 || channel != observed || subtle.ConstantTimeCompare(hash, got[:]) != 1 {
 		event, refused = "reject", contract.ErrForbidden
 	}
+	if refused == nil && strings.Contains(proof, ".") {
+		keys, err := signingKeys(ctx, tx, r.now())
+		if err != nil {
+			return err
+		}
+		claims, err := contract.VerifyLinkToken(proof, keys, r.now())
+		if err != nil || claims.Challenge != id || claims.Subject != owner ||
+			claims.ChannelDigest != linkChannelDigest(observed) || claims.Expires != time.Unix(0, expires).Unix() {
+			event, refused = "reject", contract.ErrForbidden
+		}
+	}
 	if refused == nil {
 		var count int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM links WHERE channel=? AND external_id=? AND state='verified'", channel.Channel, channel.ID).Scan(&count); err != nil {
@@ -169,6 +187,10 @@ func (r *Registry) VerifyLink(ctx context.Context, id, proof string, observed co
 		return storeError(err)
 	}
 	return refused
+}
+
+func linkChannelDigest(c contract.ChannelIdentity) string {
+	return contract.PolicyDigest([]byte(c.Channel + "\x00" + c.ID))
 }
 
 func (r *Registry) RevokeLink(ctx context.Context, id, actor string) error {

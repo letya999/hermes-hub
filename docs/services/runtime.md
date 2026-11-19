@@ -1,14 +1,14 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-11-09
+last_verified: 2026-11-19
 ---
 
 # hub-runtime
 
 One managed owner now has one Hermes process and one local MCP proxy for up to
 five concurrent conversations. The pinned Hermes client carries its run ID in
-the `tools/call` `_meta` field; the runtime resolves it to the admitted job and
-ToolHub verifies the pair against supervisor. A sixth job waits, and one
+the `tools/call` `_meta` field. The runtime resolves it to the admitted job
+and attaches control-issued credentials for the destination services. A sixth job waits, and one
 conversation remains FIFO. Older `gateway-2` through `gateway-5` job records
 remain routable during recovery, but new work uses `gateway`.
 
@@ -57,12 +57,23 @@ For managed runs the pinned Hermes MCP URL is the runtime's local `/mcp`
 route. The runtime forwards it to ToolHub's stateless `/mcp-run` route through
 the existing per-space relay. For each `tools/call`, it reads the client run ID
 from `_meta`, looks up the admitted job in its concurrent run map, and stamps
-the corresponding headers. It discards caller-supplied job/run headers;
-missing, foreign and terminal run IDs fail closed. ToolHub verifies the pair
-against supervisor before admitting private memory. An uncertain run retains
-its binding until observation reports a terminal state.
+the corresponding headers and audience tokens. It replaces incoming
+job/run/authority headers with the values in its own binding. Supervisor
+persists `run.admitted` before sending tokens via its private `/v1/jobs/authorization`
+route. The authenticated delivery is bound to one job and generation, and
+the credentials live in memory. Missing, foreign and terminal runs fail
+closed at the enforcement points. An uncertain run retains its local binding
+for observation while consumers recheck durable authorization.
 The relay defaults to `http://toolhub-control:8090`; isolated fixtures may set
 `HUB_TOOLHUB_RELAY_UPSTREAM` to their own fixed HTTP origin.
+
+The bundled `hub-run-auth` Hermes middleware uses the pinned run context
+for calls to the model proxy at `127.0.0.1:9917`. The Go proxy adds the
+model-audience token. The model and egress relays check live authority as
+well as signature and audience. The managed Go executor attaches its egress
+token to requests sent through its configured proxy. Clients with no run
+correlation fail at that relay, including native callers that still need a
+run-scoped transport.
 
 The private tools-daemon executes admitted `web_search` calls through the
 pinned Hermes web sidecar and `browser_*` through the owner's Playwright

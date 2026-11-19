@@ -13,7 +13,7 @@ spec:
       {{- include "hub.selector" (dict "root" $root "name" $name) | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
-    {{- if and (eq $root.Values.execution.backend "kubernetes") (has $name (list "toolhub" "cliproxy" "credential-broker")) }}
+    {{- if and (eq $root.Values.execution.backend "kubernetes") (has $name (list "toolhub" "cliproxy" "credential-broker" "supervisor")) }}
     - from:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ include "hub.runtimeNamespace" $root | quote }}}

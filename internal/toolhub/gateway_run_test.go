@@ -5,13 +5,74 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestRevocationCascadesToAssignmentRuns(t *testing.T) {
+	store, auth, binding := seededStore(t)
+	store.RightsDoc = rightsVocabulary()
+	store.RightsDoc.Capabilities["tasks"] = api.RightCapability{Operations: map[string]api.RightOperation{
+		"delegate": {Subject: "self", Scope: "none", Issuers: []string{"platform"}, PEP: []string{"test"}, Effect: "write", Description: "fixture"},
+	}}
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	const grantID = "rightgrant-assignment-delegate"
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant(grantID, auth.PrincipalID, "tasks", "delegate", "", "fixture", "platform", time.Now().Add(time.Hour)))
+	calls := 0
+	g := &Gateway{Store: store,
+		Runs: runAuthorityFunc(func(_ context.Context, id string) (api.RunContext, error) {
+			r := privateRunRecord(auth, id, "run-"+id)
+			if id != "interactive" {
+				r.Assignment, r.AssignmentID, r.AssignmentPlanRevision, r.UserID = true, "asg-owner", 2, auth.PrincipalID
+			}
+			return r, nil
+		}),
+		authorizeAssignmentRun: func(owner identity.Envelope, id string, rev uint64) error {
+			decision, err := store.Decide(owner, "tasks", "delegate", "", time.Now())
+			if err != nil || !decision.Allow || id != "asg-owner" || rev != 2 {
+				return api.ErrUnauthorized
+			}
+			return nil
+		},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			calls++
+			return api.BackendResult{Text: "ok"}, nil
+		}),
+	}
+	attachGatewayAudit(t, g)
+	call := func(id string) error {
+		ctx := api.WithCallCorrelation(t.Context(), api.HeaderCorrelation(id, "run-"+id))
+		name := api.ProjectedToolName(binding.DefinitionID, binding.DefinitionVersion, "search")
+		_, err := g.CallAuthorized(ctx, auth, name, map[string]any{"query": "fixture"})
+		return err
+	}
+	for _, id := range []string{"child-one", "child-two"} {
+		if err := call(id); err != nil {
+			t.Fatalf("active child refused: %v", err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("active children reached backend %d times", calls)
+	}
+	if err := gov.RevokeRight(grantID, "platform", "fixture revoke", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"child-one", "child-two"} {
+		if err := call(id); !errors.Is(err, api.ErrUnauthorized) || calls != 2 {
+			t.Fatalf("revoked child reached backend or returned wrong error: calls=%d err=%v", calls, err)
+		}
+	}
+	if err := call("interactive"); err != nil || calls != 3 {
+		t.Fatalf("assignment revocation affected an independent interactive run: calls=%d err=%v", calls, err)
+	}
+}
 
 func TestRunMCPRouteUsesRequestCorrelationWithoutSession(t *testing.T) {
 	store, auth, binding := seededStore(t)

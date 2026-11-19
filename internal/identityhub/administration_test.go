@@ -82,6 +82,9 @@ func TestBreakGlassIsScopedExpiringAndAudited(t *testing.T) {
 func TestIdentityDiagnosticUsesOnlySafeCounts(t *testing.T) {
 	r, _ := fixture(t, commodel.User{ID: "alice", Enabled: true, TelegramIDs: []int64{7}, ConfiguredEnv: map[string]bool{"credential-key-marker": true}})
 	ctx := context.Background()
+	if err := r.EnsureSigningKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
 	challenge, err := r.BeginLink(ctx, "alice", contract.ChannelIdentity{Channel: contract.Telegram, ID: "8"}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +97,7 @@ func TestIdentityDiagnosticUsesOnlySafeCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema":2,"humans":1,"agents":1,"systems":0,"organizations":0,"verified_links":1,"pending_links":1,"audit_events":2}`
+	want := `{"schema":4,"humans":1,"agents":1,"systems":0,"organizations":0,"verified_links":1,"pending_links":1,"audit_events":2}`
 	if string(raw) != want {
 		t.Fatalf("diagnostic schema: %s", raw)
 	}

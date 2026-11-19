@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
@@ -27,6 +28,8 @@ type applyJournal struct {
 	Environment          string             `json:"environment"`
 	Previous             string             `json:"previous"`
 	Revision             string             `json:"revision"`
+	PreviousPolicyDigest string             `json:"previous_policy_digest,omitempty"`
+	PolicyDigest         string             `json:"policy_digest,omitempty"`
 	PreviousProfile      string             `json:"previous_profile"`
 	NextProfile          string             `json:"next_profile"`
 	Phase                string             `json:"phase"`
@@ -99,6 +102,8 @@ func readApplyJournal(dir string) (applyJournal, error) {
 	if dec.Decode(new(any)) != io.EOF || (record.Environment != "dev" && record.Environment != "prod") ||
 		!filepath.IsLocal(record.Revision) || record.Revision == "pending" ||
 		(record.Previous != "" && (!filepath.IsLocal(record.Previous) || record.Previous == "pending")) ||
+		(record.PreviousPolicyDigest != "" && (!contract.ValidPolicyDigest(record.PreviousPolicyDigest) || record.PolicyDigest == "")) ||
+		(record.PolicyDigest != "" && !contract.ValidPolicyDigest(record.PolicyDigest)) ||
 		!identity.ValidID(record.NextProfile) ||
 		(record.Previous != "" && !identity.ValidID(record.PreviousProfile)) ||
 		!slices.Contains([]string{"preparing", "prepared", "rendered", "rights", "activated", "binding", "effects"}, record.Phase) ||
@@ -148,7 +153,10 @@ func previousApplyAuthority(dir, revisionID string) (string, map[string][]string
 	return profile, allow, tools, nil
 }
 
-func restoreApplyState(dir, root string, record applyJournal) error {
+func restoreApplyState(ctx context.Context, dir, root string, record applyJournal) error {
+	if err := restoreApplyPolicy(ctx, dir, record); err != nil {
+		return err
+	}
 	if len(record.AuthoredConfigBefore) != 0 {
 		if err := writeAuthoredConfig(dir, record.AuthoredConfigAfter, record.AuthoredConfigBefore); err != nil {
 			return err
@@ -247,7 +255,7 @@ func recoverApply(ctx context.Context, dir, root, environment string, handlers r
 
 // recoverApplyWithRebuiltImage requires an explicit operator assertion that
 // the selected image tag was verified after an interrupted rebuild.
-func recoverApplyWithRebuiltImage(_ context.Context, dir, root, environment string, handlers reconcile.Handlers, rebuiltImageVerified bool) error {
+func recoverApplyWithRebuiltImage(ctx context.Context, dir, root, environment string, handlers reconcile.Handlers, rebuiltImageVerified bool) error {
 	record, err := readApplyJournal(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -263,10 +271,18 @@ func recoverApplyWithRebuiltImage(_ context.Context, dir, root, environment stri
 		return fmt.Errorf("apply recovery: current pointer: %w", err)
 	}
 	current := strings.TrimSpace(string(body))
-	if current != "pending" && current != record.Previous && current != record.Revision {
+	previous := record.Previous
+	if record.PreviousPolicyDigest != "" {
+		previous = record.PreviousPolicyDigest
+	}
+	next := record.Revision
+	if record.PolicyDigest != "" {
+		next = record.PolicyDigest
+	}
+	if current != "pending" && current != previous && current != next {
 		return errors.New("apply recovery: current pointer diverged")
 	}
-	if err := retryApplyRestore(func() error { return restoreApplyState(dir, root, record) }); err != nil {
+	if err := retryApplyRestore(func() error { return restoreApplyState(context.WithoutCancel(ctx), dir, root, record) }); err != nil {
 		_ = passport.PointCurrent(dir, "pending")
 		return fmt.Errorf("apply recovery: restore: %w", err)
 	}

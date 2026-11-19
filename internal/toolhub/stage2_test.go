@@ -164,10 +164,11 @@ func TestGatewayCallBoundsBackendResult(t *testing.T) {
 }
 
 type testBearerTransport struct {
-	base  http.RoundTripper
-	token string
-	jobID string
-	runID string
+	base     http.RoundTripper
+	token    string
+	jobID    string
+	runID    string
+	runToken string
 }
 
 func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -178,6 +179,10 @@ func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, e
 	}
 	if t.runID != "" {
 		copyRequest.Header.Set(api.HeaderRunID, t.runID)
+	}
+	if t.runToken != "" {
+		copyRequest.Header.Set("X-Hub-Run-Token", t.runToken)
+		copyRequest.Header.Set("X-Hub-Principal", "unrelated-fixture")
 	}
 	return t.base.RoundTrip(copyRequest)
 }

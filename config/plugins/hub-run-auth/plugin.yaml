@@ -1,0 +1,5 @@
+name: hub-run-auth
+version: 1.0.0
+description: "Carries Hermes run correlation to the Hub's local model proxy."
+author: hermes-hub
+kind: backend

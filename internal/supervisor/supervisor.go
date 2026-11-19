@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/locale"
@@ -323,24 +324,29 @@ type persistedRuntime struct {
 }
 
 type jobRecord struct {
-	CaptureContext    api.RunContext             `json:"capture_context,omitempty"`
-	AdmissionID       string                     `json:"admission_id,omitempty"`
-	RequestTextSHA256 string                     `json:"request_text_sha256,omitempty"`
-	OperationalEpoch  uint64                     `json:"operational_epoch,omitempty"`
-	Dispatching       bool                       `json:"dispatching,omitempty"`
-	CancelRequested   bool                       `json:"cancel_requested,omitempty"`
-	Controls          map[string]controlRecord   `json:"controls,omitempty"`
-	ApprovalDeadline  time.Time                  `json:"approval_deadline,omitempty"`
-	Request           hubruntime.ExecuteRequest  `json:"request"`
-	Fingerprint       string                     `json:"fingerprint"`
-	Response          hubruntime.ExecuteResponse `json:"response"`
-	Status            string                     `json:"status"`
-	Phase             string                     `json:"phase,omitempty"`
-	Unconfirmed       bool                       `json:"unconfirmed,omitempty"`
-	UnconfirmedSince  time.Time                  `json:"unconfirmed_since,omitempty"`
-	Generation        string                     `json:"generation,omitempty"`
-	RuntimeMode       string                     `json:"runtime_mode,omitempty"`
-	UpdatedAt         time.Time                  `json:"updated_at"`
+	CaptureContext    api.RunContext              `json:"capture_context,omitempty"`
+	AdmissionID       string                      `json:"admission_id,omitempty"`
+	RequestTextSHA256 string                      `json:"request_text_sha256,omitempty"`
+	OperationalEpoch  uint64                      `json:"operational_epoch,omitempty"`
+	Dispatching       bool                        `json:"dispatching,omitempty"`
+	CancelRequested   bool                        `json:"cancel_requested,omitempty"`
+	Controls          map[string]controlRecord    `json:"controls,omitempty"`
+	ApprovalDeadline  time.Time                   `json:"approval_deadline,omitempty"`
+	Request           hubruntime.ExecuteRequest   `json:"request"`
+	Fingerprint       string                      `json:"fingerprint"`
+	Response          hubruntime.ExecuteResponse  `json:"response"`
+	Status            string                      `json:"status"`
+	Phase             string                      `json:"phase,omitempty"`
+	Unconfirmed       bool                        `json:"unconfirmed,omitempty"`
+	UnconfirmedSince  time.Time                   `json:"unconfirmed_since,omitempty"`
+	Generation        string                      `json:"generation,omitempty"`
+	ActingIdentity    taskcontract.ActingIdentity `json:"acting_identity,omitzero"`
+	PolicyRevision    string                      `json:"policy_revision,omitempty"`
+	PassportDigest    string                      `json:"passport_digest,omitempty"`
+	Initiator         string                      `json:"initiator,omitempty"`
+	RunDeadline       time.Time                   `json:"run_deadline,omitzero"`
+	RuntimeMode       string                      `json:"runtime_mode,omitempty"`
+	UpdatedAt         time.Time                   `json:"updated_at"`
 }
 
 // Serve runs the always-on control-plane endpoint. It never mounts or exposes
@@ -360,6 +366,9 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 		return err
 	}
 	defer listener.Close()
+	if ctx.Err() != nil {
+		return nil
+	}
 	identityClient := manager.cfg.Identity
 	if identityClient == nil {
 		path, err := identityhub.StorePath(manager.cfg.StateDir, manager.environment())
@@ -368,6 +377,13 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 		}
 		registry, err := identityhub.Open(path)
 		if err != nil {
+			return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "supervisor.identity-unavailable"), err)
+		}
+		if err := registry.EnsureSigningKeys(ctx); err != nil {
+			_ = registry.Close()
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "supervisor.identity-unavailable"), err)
 		}
 		identityClient = registry

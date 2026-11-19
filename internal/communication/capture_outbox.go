@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -352,6 +353,15 @@ func (g *Gateway) postCapture(ctx context.Context, base, token, header string, e
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if g.config.Runs != nil {
+		signer := contract.NewMemoryCaptureServiceSigner(g.config.RuntimeURL, contract.MemoryCaptureServiceCredential(token))
+		scope := contract.ServiceRequest{Space: ev.UserID, Environment: g.config.Environment, RequestDigest: contract.PolicyDigest(body)}
+		token, err = signer.IssueMemoryCaptureService(reqCtx, scope)
+		if err != nil {
+			return 0, err
+		}
+		header = ""
+	}
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+"/v1/memory-capture", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -365,7 +375,9 @@ func (g *Gateway) postCapture(ctx context.Context, base, token, header string, e
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	direct := *client
+	direct.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := direct.Do(req)
 	if err != nil {
 		return 0, err
 	}

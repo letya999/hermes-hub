@@ -2,6 +2,11 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"hubctl.routine-token-issuer": "Supervisor URL for the signed service credential",
+		"run.policy-unavailable":      "Run policy is unavailable",
+		"run.authorization-denied":    "Run authorization denied",
+		"run.authorization-invalid":   "Invalid run authorization",
+		"hubctl.policy-publication":   "Signed policy publication failed",
 		"hubctl.identity-usage":       "Usage: hubctl identity migrate --config <legacy YAML> --control-dir <control state> --env dev|prod --import-id <id> [--oidc-links <legacy JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":      "Legacy communication configuration path",
 		"hubctl.identity-control-dir": "Control state directory",

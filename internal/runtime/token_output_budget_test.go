@@ -13,7 +13,7 @@ func TestModelBudgetIncludesRequestedOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(200) }))
 	defer server.Close()
 	for _, body := range []string{`{"model":"m","messages":[],"max_tokens":400000}`, `{"model":"m","messages":[],"max_completion_tokens":400000}`} {
-		_, response, err := modelCall(context.Background(), server.Client(), []*modelHop{{modelHealth: &modelHealth{}, name: "test", base: server.URL}}, "POST", "/v1/chat/completions", "", "application/json", []byte(body), time.Minute)
+		_, response, err := modelCall(context.Background(), server.Client(), []*modelHop{{modelHealth: &modelHealth{}, name: "test", base: server.URL}}, "POST", "/v1/chat/completions", "", "application/json", []byte(body), time.Minute, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

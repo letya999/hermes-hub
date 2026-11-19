@@ -122,9 +122,9 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 }
 
 func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	caller, policy, ok := g.authorizeAgentControl(r)
+	if !ok || !agentOperationAllowed(policy, "tasks", "schedule", r.Method != http.MethodGet) {
+		denyAgentOperation(w, r)
 		return
 	}
 	switch r.Method {
@@ -271,9 +271,9 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	caller, policy, ok := g.authorizeAgentControl(r)
+	if !ok || !agentOperationAllowed(policy, "tasks", "schedule", r.Method != http.MethodGet) {
+		denyAgentOperation(w, r)
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/routines/")

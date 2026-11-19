@@ -82,6 +82,9 @@ func TestControlOwnsRegistryUntilShutdown(t *testing.T) {
 	if _, err := client.Principal(ctx, "absent"); !errors.Is(err, contract.ErrNotFound) {
 		t.Fatalf("open registry: %v", err)
 	}
+	if keys, err := client.SigningKeys(ctx); err != nil || len(keys) != 4 {
+		t.Fatalf("control did not initialize all signing purposes: count=%d err=%v", len(keys), err)
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -184,5 +187,37 @@ func TestControlDeactivatesHumanOnlyWithDistinctAdminCredential(t *testing.T) {
 	}
 	if _, err := registry.Template(ctx, contract.TemplateRequest{Subject: "alice", Actor: mappings[0].Agent, Space: "alice"}); !errors.Is(err, contract.ErrForbidden) {
 		t.Fatalf("retired agent still acts: %v", err)
+	}
+}
+
+func TestControlSigningKeyRotationRequiresDistinctAdminCredential(t *testing.T) {
+	r, _ := fixtureIdentity(t)
+	if err := r.EnsureSigningKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{cfg: Config{RuntimeAuth: "read", IdentityLinkAuth: "ingress", AdminAuth: "admin", Environment: "dev", Identity: r}}
+	handler := m.Handler()
+	for _, tc := range []struct {
+		token, origin, environment string
+		status                     int
+	}{
+		{"read", "", "dev", http.StatusForbidden},
+		{"ingress", "", "dev", http.StatusForbidden},
+		{"admin", "https://browser.example", "dev", http.StatusForbidden},
+		{"admin", "", "prod", http.StatusBadRequest},
+		{"admin", "", "dev", http.StatusNoContent},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/identity/keys/rotate", strings.NewReader(`{"environment":"`+tc.environment+`"}`))
+		req.Header.Set("Authorization", "Bearer "+tc.token)
+		req.Header.Set("Origin", tc.origin)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != tc.status {
+			t.Fatalf("rotation status=%d want=%d", w.Code, tc.status)
+		}
+	}
+	keys, err := r.SigningKeys(t.Context())
+	if err != nil || len(keys) != 8 {
+		t.Fatalf("expected one successful rotation: count=%d err=%v", len(keys), err)
 	}
 }

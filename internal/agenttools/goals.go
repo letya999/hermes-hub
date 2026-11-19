@@ -49,8 +49,7 @@ func (t *Tools) Goal(ctx context.Context, op string, r Input) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	req.Header.Set("X-Hub-Principal", principal)
+	t.communicationAuthority(req, principal)
 	req.Header.Set("Content-Type", "application/json")
 	client := t.HTTP
 	if client == nil {

@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -18,8 +20,8 @@ import (
 )
 
 // serveMemoryCapture is the single accepted-turn/completed-run fact writer
-// (SPEC-0098 M4). Only the communication control-plane bearer plus
-// X-Hub-Principal may select an enrolled identity.
+// (SPEC-0098 M4). Managed submissions bind the exact event to the
+// enrolled principal and environment with a communication signature.
 func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -29,14 +31,21 @@ func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "browser origins forbidden", http.StatusForbidden)
 		return
 	}
-	// A model bearer cannot mint a transport fact.
-	auth, ok := g.controlPrincipal(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	var auth identity.Envelope
+	if g.RunIdentity == nil {
+		var ok bool
+		auth, ok = g.controlPrincipal(r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, (2<<20)+(8<<10)))
+	if err != nil {
+		http.Error(w, "invalid capture event", http.StatusBadRequest)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, (2<<20)+(8<<10))
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var ev api.CaptureEvent
 	if err := decoder.Decode(&ev); err != nil {
@@ -47,6 +56,18 @@ func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		http.Error(w, "invalid capture event", http.StatusBadRequest)
 		return
+	}
+	if g.RunIdentity != nil {
+		projection := &projectionEndpoint{gateway: g}
+		auth, err = projection.EnrolledAuth(ev.UserID)
+		if err != nil && g.reloadTokens() {
+			auth, err = projection.EnrolledAuth(ev.UserID)
+		}
+		scope := contract.ServiceRequest{Space: ev.UserID, Environment: auth.Environment, RequestDigest: contract.PolicyDigest(body)}
+		if err != nil || !g.verifyMemoryService(r, contract.MemoryCaptureServiceAudience, "system:communication-hub", scope) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 	}
 	status, code := g.memoryCapture(r, auth, &ev)
 	if code != http.StatusOK {
@@ -60,6 +81,15 @@ func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+
+func (g *Gateway) verifyMemoryService(r *http.Request, audience, service string, scope contract.ServiceRequest) bool {
+	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer || len(token) > 4096 || len(r.Header.Values("Authorization")) != 1 || r.Header.Get("X-Hub-Principal") != "" {
+		return false
+	}
+	keys, err := g.RunIdentity.SigningKeys(r.Context())
+	return err == nil && contract.VerifyServiceToken(token, audience, service, scope, keys, time.Now()) == nil
 }
 
 // controlPrincipal authenticates a trusted in-stack service bearer and

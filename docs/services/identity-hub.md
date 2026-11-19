@@ -17,9 +17,9 @@ fallback after registry refusal.
 
 ## State and boundaries
 
-`Open(path)` uses `internal/sqlitedb`, schema 2, a private SQLite file and WAL.
+`Open(path)` uses `internal/sqlitedb`, schema 4, a private SQLite file and WAL.
 An existing file must carry the registry's `HID1` application ID and schema
-version. Schema-1 registry stores upgrade transactionally without rewriting
+version. Earlier registry schemas upgrade transactionally without rewriting
 identity/import receipts. A read-only probe checks fixed metadata before WAL is
 enabled; a foreign SQLite store or a symlink is refused. Registry tables hold
 principals, organizations, memberships, owned profiles, space mappings,
@@ -68,10 +68,9 @@ paths, including environment and passport revision; parallel profiles cannot
 replace each other's mounted skill view. Post-publish rebuild replays the same
 nullable skill ceiling: null inherits, empty denies all.
 
-Grants, guardrail references, memory scopes and action mode remain template
-constraints, not new rights. Cryptographic policy publication and enforcement
-at run-scoped calls belong to CHG-0332; this registry does not replace the
-published passport/PDP ceiling or claim deployed acceptance.
+Grants, guardrail references, memory scopes and action mode narrow the
+published passport/PDP ceiling. The registry uses the same effective template
+when deriving a signed policy for an acting agent.
 
 ## Control and edge wiring
 
@@ -84,6 +83,40 @@ Read routes use the control service bearer: `POST /v1/identity/resolve`,
 `GET /v1/identity/principals/<id>`, `GET /v1/identity/bindings/<id>` and
 `POST /v1/identity/template`. Binding results contain verified links only;
 OIDC provenance is specific to the resolved channel.
+
+Control initializes separate Ed25519 keys for run, link, service and policy
+signatures. `GET /v1/identity/keys` returns public keys, purpose, key ID and
+the verification cutoff for retired keys. The control-only
+`POST /v1/admin/identity/keys/rotate` requires the separate admin credential
+and the current environment. Rotation retains the old public keys for one
+maximum run budget and records an audit event. Run-token issuance caps expiry
+at the run deadline and the maximum run budget.
+
+The control registry stores immutable canonical policy JSON by digest. The
+six compiled passports must agree on space, environment and revision.
+Activation compares the previous digest before changing the active policy
+for a space and environment. A run policy derives from that publication and
+the acting agent's current registry template. `GET /v1/identity/policies/<digest>`
+returns the signed bytes for independent verification. Key rotation can renew
+the signature without changing the content or digest.
+
+An operator with `HUB_SUPERVISOR_ADMIN_AUTH` publishes through `space apply`.
+The publisher connects to the local control endpoint on port 8876.
+`HUB_PASSPORT_PUBLISHER_URL` can select another loopback port. The generated
+`passports/current` file carries the signed digest and the apply journal
+restores the control digest and generated view together. An unsigned offline
+apply can prepare a new space. A protected managed run needs a control
+publication before it can call the model or tools.
+
+The `task/v1` verifier compares the token with the supervisor's durable job
+record, current generation, deadline and revocation state. The supervisor
+revokes an already bound actor on registry drift, and revokes a signed
+admission if its base policy is replaced. After a durable Hermes admission
+the private runtime delivery route receives separate audience tokens. The
+read credential for relay verification exposes signing keys, policy bundles
+and job authorization records. It cannot dispatch jobs or change policy.
+The remaining service-token and deployment acceptance work is tracked in
+[CHG-0332](../../.work/in-progress/CHG-0332-run-tokens/plan.md).
 
 `POST /v1/identity/links/oidc` and `/v1/identity/links/revoke` require the
 separate `HUB_IDENTITY_LINK_AUTH`, which must differ from service-control.

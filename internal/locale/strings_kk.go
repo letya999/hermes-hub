@@ -2,6 +2,11 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"hubctl.routine-token-issuer": "Қол қойылған сервистік рұқсатты алу үшін supervisor мекенжайы",
+		"run.policy-unavailable":      "Іске қосу саясаты қолжетімсіз",
+		"run.authorization-denied":    "Іске қосуға рұқсат берілмеді",
+		"run.authorization-invalid":   "Іске қосу рұқсаты жарамсыз",
+		"hubctl.policy-publication":   "Қол қойылған саясатты жариялау мүмкін болмады",
 		"hubctl.identity-usage":       "Қолданылуы: hubctl identity migrate --config <ескі YAML> --control-dir <control каталогы> --env dev|prod --import-id <id> [--oidc-links <ескі JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":      "Ескі арна конфигурациясының жолы",
 		"hubctl.identity-control-dir": "Control күйінің каталогы",

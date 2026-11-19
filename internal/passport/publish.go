@@ -190,6 +190,13 @@ func PointCurrent(spaceDir, revisionID string) error {
 		}
 		return err
 	}
+	digest, err := RevisionPolicyDigest(spaceDir, revisionID)
+	if err != nil {
+		return err
+	}
+	if digest != "" {
+		revisionID = digest
+	}
 	return atomic(path, []byte(revisionID+"\n"))
 }
 

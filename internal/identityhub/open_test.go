@@ -50,7 +50,7 @@ func TestRegistrySchemaOneUpgradePreservesIdentityAndImportReceipt(t *testing.T)
 	if _, err := r.ImportLegacy(context.Background(), "original", "personal", users); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.db.Exec("DROP TABLE space_members; DROP TABLE shared_spaces; DROP TABLE subjects; PRAGMA user_version=1"); err != nil {
+	if _, err := r.db.Exec("DROP TABLE space_members; DROP TABLE shared_spaces; DROP TABLE subjects; DROP TABLE signing_keys; DROP TABLE active_passport_bundles; DROP TABLE policy_bundles; PRAGMA user_version=1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -70,6 +70,9 @@ func TestRegistrySchemaOneUpgradePreservesIdentityAndImportReceipt(t *testing.T)
 	var version int
 	if err := r.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schema {
 		t.Fatal("schema upgrade incomplete")
+	}
+	if err := r.EnsureSigningKeys(context.Background()); err != nil {
+		t.Fatalf("schema upgrade left signing unavailable: %v", err)
 	}
 }
 

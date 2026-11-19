@@ -73,6 +73,7 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 		Trigger: job.Trigger, IdempotencyKey: key, Text: job.Text,
 		InboundID: job.InboundID, Sensitive: job.Sensitive, Untrusted: job.Untrusted,
 		Assignment: job.AssignmentID != "", Probe: job.Probe,
+		TaskID: job.TaskID, AssignmentID: job.AssignmentID, AssignmentPlanRevision: job.AssignmentPlanRevision,
 	})
 	if err != nil {
 		return hubruntime.ExecuteResponse{}, err

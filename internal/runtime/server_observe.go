@@ -65,7 +65,8 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 	s.beginAdmission()
 	err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey)
 	if err == nil && admission.RunID != "" && request.JobID != "" {
-		err = s.bindRun(request.JobID, admission.RunID)
+		delivery, _ := ctx.Value(runDeliveryKey{}).(string)
+		err = s.bindAuthorizedRun(request.JobID, admission.RunID, delivery)
 	}
 	s.finishAdmission()
 	if err != nil {

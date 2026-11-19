@@ -121,7 +121,7 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if def := eff.Models.Default; def != "" {
 		s.Model = def
 	}
-	s.ModelURL = "http://model-relay:8318/v1"
+	s.ModelURL = ManagedModelRelayURL
 	// The workspace boundary is imperative too: the mount plan and file
 	// admission read the published writable/read_only/mounts verbatim.
 	s.PassportWorkspace = &eff.Workspace

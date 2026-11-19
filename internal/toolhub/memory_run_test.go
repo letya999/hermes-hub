@@ -159,7 +159,7 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 		"job-private": privateRunRecord(auth, "job-private", "run-private-1"),
 		"job-assignment": {JobID: "job-assignment", RunID: "run-assignment-1", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
 			Environment: auth.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true,
-			UserID: "alice", Envelope: ownerEnv},
+			UserID: "alice", Envelope: ownerEnv, AssignmentID: "asg-owner", AssignmentPlanRevision: 1},
 		"job-assignment-other-user": {JobID: "job-assignment-other-user", RunID: "run-assignment-2", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
 			Environment: auth.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true,
 			UserID: "bob", Envelope: ownerEnv},
@@ -211,6 +211,12 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 
 	calls := 0
 	g := &Gateway{Store: store, PassportRoot: passports,
+		authorizeAssignmentRun: func(bound identity.Envelope, id string, revision uint64) error {
+			if bound.PrincipalID != auth.PrincipalID || id != "asg-owner" || revision != 1 {
+				return api.ErrUnauthorized
+			}
+			return nil
+		},
 		AuditWrite: func(string, map[string]string) error { return nil },
 		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
 			record, ok := records[jobID]

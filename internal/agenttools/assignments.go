@@ -78,8 +78,6 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 }
 
 // assignmentCall performs one control-plane request and decodes the reply.
-// The verified principal travels as X-Hub-Principal — the assignment plane
-// authorizes the caller on it, exactly like the routine surface.
 func (t *Tools) assignmentCall(ctx context.Context, method, path string, payload any) (map[string]any, error) {
 	var body io.Reader
 	if payload != nil {
@@ -93,10 +91,7 @@ func (t *Tools) assignmentCall(ctx context.Context, method, path string, payload
 	if err != nil {
 		return nil, err
 	}
-	if t.CommunicationAuth != "" {
-		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	}
-	req.Header.Set("X-Hub-Principal", os.Getenv("HUB_PRINCIPAL_ID"))
+	t.communicationAuthority(req, os.Getenv("HUB_PRINCIPAL_ID"))
 	client := t.HTTP
 	if client == nil {
 		client = http.DefaultClient

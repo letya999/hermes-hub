@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory"
 	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
 	"github.com/letya999/hermes-hub/internal/memory/importer"
@@ -741,6 +743,7 @@ func runSkill(ctx context.Context, args []string) error {
 
 type routineOpts struct {
 	toolhubURL, token, profile, id, tz, expr, organization, runtimeID, policy, input string
+	issuerURL, environment                                                           string
 	chatID                                                                           int64
 }
 
@@ -753,6 +756,12 @@ func runRoutine(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("routine", flag.ContinueOnError)
 	f.StringVar(&opts.toolhubURL, "toolhub-url", os.Getenv("HUB_TOOLHUB_URL"), "ToolHub control URL")
 	f.StringVar(&opts.token, "token", os.Getenv("HUB_COMMUNICATION_AUTH"), "enrolled service bearer")
+	f.StringVar(&opts.issuerURL, "supervisor-url", os.Getenv("HUB_RUN_VERIFY_URL"), locale.T(locale.Operator(), "hubctl.routine-token-issuer"))
+	environment := os.Getenv("HUB_ENVIRONMENT")
+	if environment == "" {
+		environment = "prod"
+	}
+	f.StringVar(&opts.environment, "env", environment, locale.T(locale.Operator(), "hubctl.identity-environment"))
 	f.StringVar(&opts.profile, "user", "me", "person identifier")
 	f.StringVar(&opts.id, "id", "", "schedule id")
 	f.StringVar(&opts.tz, "tz", "UTC", "timezone")
@@ -775,7 +784,10 @@ func runRoutine(ctx context.Context, args []string) error {
 	// spool: the operator route is the same service-only control surface the
 	// gateway uses.
 	caller := identity.TelegramEnvelope(opts.profile, opts.chatID, opts.runtimeID, opts.policy)
-	client := commops.ControlClient{URL: opts.toolhubURL, Token: opts.token}
+	client := commops.ControlClient{URL: opts.toolhubURL, Token: opts.token, Environment: opts.environment}
+	if opts.issuerURL != "" {
+		client.Signer = identitycontract.NewAutomationServiceSigner(opts.issuerURL, identitycontract.AutomationServiceCredential(opts.token))
+	}
 	switch sub {
 	case "list":
 		var items []commodel.Schedule

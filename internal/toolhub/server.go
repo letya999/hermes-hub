@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -311,6 +312,13 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	// control channel the restart notifier uses; unconfigured leaves Runs nil
 	// and the memory run gate denies every claim — fail closed by absence.
 	gateway.Runs = runAuthorityFromEnv()
+	identityURL := strings.TrimSpace(os.Getenv("HUB_IDENTITY_URL"))
+	identityAuth := strings.TrimSpace(os.Getenv("HUB_IDENTITY_AUTH"))
+	if origin, key := runVerificationPeer(); origin != "" {
+		gateway.RunIdentity = contract.NewHTTPClient(origin, key, nil)
+	} else if identityURL != "" && identityAuth != "" {
+		gateway.RunIdentity = contract.NewHTTPClient(identityURL, identityAuth, nil)
+	}
 	var secrets credstore.Backend
 	var injector api.CredentialInjector
 	var err error

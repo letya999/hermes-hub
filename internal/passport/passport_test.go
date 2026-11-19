@@ -11,6 +11,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"gopkg.in/yaml.v3"
 )
 
@@ -140,6 +141,54 @@ func compileFixture(t *testing.T) passport.Revision {
 		t.Fatalf("compile: %v", err)
 	}
 	return rev
+}
+
+func TestCompiledPolicyCarriesOneSpaceAndRevision(t *testing.T) {
+	rev := compileFixture(t)
+	policy, err := rev.PolicyBundle()
+	if err != nil || policy.Space != "alice" || policy.Environment != "dev" || policy.PassportRevision != rev.ID || len(policy.Passports) != 6 {
+		t.Fatalf("compiled policy lost its scope or revision: %v", err)
+	}
+	rev.Docs["grants"] = bytes.Replace(rev.Docs["grants"], []byte(rev.ID), []byte("other-revision"), 1)
+	if _, err := rev.PolicyBundle(); err == nil {
+		t.Fatal("a mixed revision was eligible for policy signing")
+	}
+}
+
+func TestVerifiedPolicyProjectionRejectsChangedCache(t *testing.T) {
+	dir := t.TempDir()
+	rev := compileFixture(t)
+	bundle, err := rev.PolicyBundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, digest, err := bundle.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.Prepare(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.LinkPolicyDigest(dir, digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.Activate(dir); err != nil {
+		t.Fatal(err)
+	}
+	bundle.PassportDigest = digest
+	if err := passportview.VerifyPolicyProjection(dir, bundle); err != nil {
+		t.Fatalf("verified publication did not match the source projection: %v", err)
+	}
+	path := filepath.Join(dir, "generated", "passports", rev.ID, "grants.yaml")
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.ReplaceAll(rev.Docs["grants"], []byte("read"), []byte("unbound")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := passportview.VerifyPolicyProjection(dir, bundle); err == nil {
+		t.Fatal("modified cache matched a signed publication")
+	}
 }
 
 func TestPassportCompilerAtomicSixFileRevision(t *testing.T) {

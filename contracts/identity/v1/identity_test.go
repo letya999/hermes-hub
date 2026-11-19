@@ -13,6 +13,14 @@ import (
 
 type fixture struct{}
 
+func (fixture) SigningKeys(context.Context) ([]identity.PublicSigningKey, error) {
+	return nil, identity.ErrUnavailable
+}
+
+func (fixture) Policy(context.Context, string) (identity.SignedPolicy, error) {
+	return identity.SignedPolicy{}, identity.ErrNotFound
+}
+
 func (fixture) Bindings(_ context.Context, owner string) ([]identity.ChannelBinding, error) {
 	if owner != "alice" {
 		return nil, identity.ErrNotFound

@@ -15,6 +15,9 @@ import (
 	"os"
 	"time"
 
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
+	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -33,6 +36,23 @@ func executeFingerprint(request hubruntime.ExecuteRequest) string {
 	return hex.EncodeToString(h[:])
 }
 
+func hasRunLineage(request hubruntime.ExecuteRequest) bool {
+	return request.TaskID != "" || request.AssignmentID != "" || request.AssignmentPlanRevision != 0
+}
+
+func sameJobRequest(previous jobRecord, request hubruntime.ExecuteRequest, fingerprint string) bool {
+	if previous.Fingerprint == fingerprint {
+		return true
+	}
+	if hasRunLineage(previous.Request) || (!terminalRunStatus(previous.Status) && previous.Status != "uncertain") {
+		return false
+	}
+	// Older receipts can still replay the same outcome. They cannot authorize a
+	// new dispatch or confer lineage on an already admitted run.
+	request.TaskID, request.AssignmentID, request.AssignmentPlanRevision = "", "", 0
+	return previous.Fingerprint == executeFingerprint(request)
+}
+
 func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.ExecuteResponse, bool, error) {
 	key := executeJobKey(request)
 	if key == "" || request.IdempotencyKey == "" {
@@ -46,7 +66,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 		return hubruntime.ExecuteResponse{}, false, errors.New("administrative hold")
 	}
 	if previous, ok := m.jobs[key]; ok {
-		if previous.Fingerprint != fingerprint {
+		if !sameJobRequest(previous, request, fingerprint) {
 			return hubruntime.ExecuteResponse{}, false, errors.New("job identity already used with different payload")
 		}
 		if terminalRunStatus(previous.Status) {
@@ -56,6 +76,13 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 			return previous.Response, true, nil
 		}
 		return hubruntime.ExecuteResponse{}, false, errJobInProgress
+	}
+	if request.TaskID != "" && (len(request.TaskID) > 256 || !commodel.IDPattern.MatchString(request.TaskID)) {
+		return hubruntime.ExecuteResponse{}, false, errors.New("invalid task identity")
+	}
+	if request.Assignment != (request.AssignmentID != "") || (request.AssignmentID == "") != (request.AssignmentPlanRevision == 0) ||
+		(request.AssignmentID != "" && (len(request.AssignmentID) > 256 || !commodel.IDPattern.MatchString(request.AssignmentID))) {
+		return hubruntime.ExecuteResponse{}, false, errors.New("invalid assignment lineage")
 	}
 	metadata := request
 	metadata.Text = ""
@@ -162,6 +189,9 @@ func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generatio
 	previous := record
 	transitionJobPhase(key, &record, phaseAdmitted)
 	record.Generation, record.UpdatedAt = generation, time.Now().UTC()
+	if record.RunDeadline.IsZero() {
+		record.RunDeadline = record.UpdatedAt.Add(hubruntime.RunBudget())
+	}
 	if record.Status == "cancelled" {
 		record.Response.RuntimeGeneration = generation
 	}
@@ -356,6 +386,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, known)
 		return
 	}
+	policyRevision, passportDigest, err := m.runPolicy(r.Context(), binding)
+	if err != nil || (policyRevision != "" && request.JobID == "") {
+		m.abandonJob(request)
+		writeRunPolicyUnavailable(w, r)
+		return
+	}
 	mode, err := m.claimManagedLane(r.Context(), request, binding)
 	if err != nil {
 		m.abandonJob(request)
@@ -379,6 +415,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
+	if policyRevision != "" && runtime.IdentityRevision != binding.IdentityRevision {
+		_ = m.ReleaseLease(lease.ID)
+		m.abandonJob(request)
+		writeRunPolicyUnavailable(w, r)
+		return
+	}
 	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
 		_ = m.ReleaseLease(lease.ID)
 		writeJSON(w, 500, map[string]string{"error": "job generation state unavailable"})
@@ -398,6 +440,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	previous := latest
 	latest.Dispatching = true
+	latest.ActingIdentity = task.ActingIdentity{Subject: binding.SubjectID, Actor: binding.AgentID,
+		Organization: binding.OrganizationID, TemplateRevision: runtime.IdentityRevision}
+	latest.PolicyRevision, latest.PassportDigest = policyRevision, passportDigest
+	if request.Trigger == "cron" {
+		latest.Initiator = "system:tool-hub"
+	}
 	m.jobs[executeJobKey(request)] = latest
 	err = m.persistLocked()
 	if err != nil {
@@ -417,11 +465,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	callCtx := r.Context()
 	client := m.cfg.HTTP
 	streaming := r.Header.Get("Accept") == hubruntime.RunStreamContentType
+	streamHop := streaming || policyRevision != ""
 	var release context.CancelFunc = func() {}
-	if streaming {
+	if streamHop {
 		// No total timeout on the stream hop: the run budget bounds the whole
 		// job and an idle deadline abandons silent hops.
-		callCtx, release = context.WithTimeout(r.Context(), hubruntime.RunBudget())
+		callCtx, release = context.WithDeadline(r.Context(), latest.RunDeadline)
 		client = m.cfg.StreamHTTP
 	}
 	defer release()
@@ -435,6 +484,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	req.Header.Set("Accept", r.Header.Get("Accept"))
+	if streamHop {
+		req.Header.Set("Accept", hubruntime.RunStreamContentType)
+	}
+	if proof := m.runDeliveryProof(latest); proof != "" {
+		req.Header.Set(hubruntime.RunDeliveryHeader, proof)
+	}
 	if request.JobID != "" {
 		req.Header.Set("X-Hub-Job-ID", request.JobID)
 	}
@@ -447,7 +502,17 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
-		m.relayRunStream(w, request, runtime, hubruntime.IdleReader(response.Body, hubruntime.StreamIdleDeadline(), release))
+		reader := hubruntime.IdleReader(response.Body, hubruntime.StreamIdleDeadline(), release)
+		if streaming {
+			m.relayRunStream(callCtx, w, request, runtime, binding.runtimeAuth, reader)
+		} else {
+			result := m.consumeJobStream(callCtx, request, runtime, binding.runtimeAuth, reader, nil)
+			status := http.StatusOK
+			if result.Status == "uncertain" {
+				status = http.StatusBadGateway
+			}
+			writeJSON(w, status, result)
+		}
 		return
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
@@ -487,13 +552,19 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+func writeRunPolicyUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Hub-Admission", "not-dispatched")
+	lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": locale.T(lang, "run.policy-unavailable")})
+}
+
 func terminalRunStatus(status string) bool {
 	return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
 }
 
-func (m *Manager) relayRunStream(w http.ResponseWriter, request hubruntime.ExecuteRequest, runtime Runtime, reader io.Reader) {
+func (m *Manager) relayRunStream(ctx context.Context, w http.ResponseWriter, request hubruntime.ExecuteRequest, runtime Runtime, runtimeAuth string, reader io.Reader) {
 	w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
-	m.consumeJobStream(request, runtime, reader, func(event hubruntime.ExecuteResponse) error {
+	m.consumeJobStream(ctx, request, runtime, runtimeAuth, reader, func(event hubruntime.ExecuteResponse) error {
 		if err := json.NewEncoder(w).Encode(event); err != nil {
 			return err
 		}
@@ -504,7 +575,7 @@ func (m *Manager) relayRunStream(w http.ResponseWriter, request hubruntime.Execu
 // consumeJobStream records runtime stream events into the durable job record
 // and optionally forwards each event downstream. Identity and generation
 // fences apply identically to the live relay and the reconciler's re-observe.
-func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Runtime, reader io.Reader, forward func(hubruntime.ExecuteResponse) error) {
+func (m *Manager) consumeJobStream(ctx context.Context, request hubruntime.ExecuteRequest, runtime Runtime, runtimeAuth string, reader io.Reader, forward func(hubruntime.ExecuteResponse) error) hubruntime.ExecuteResponse {
 	known := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
 	err := hubruntime.ReadRunStream(reader, func(event hubruntime.ExecuteResponse) error {
 		if event.JobID != request.JobID || event.RuntimeGeneration != runtime.Generation {
@@ -532,6 +603,11 @@ func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Ru
 			return err
 		}
 		known = event
+		if event.LastEvent == "run.admitted" && event.Status == "running" {
+			if err := m.deliverRunAuthorization(ctx, event, runtime, runtimeAuth); err != nil {
+				return err
+			}
+		}
 		if forward == nil {
 			return nil
 		}
@@ -550,5 +626,5 @@ func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Ru
 		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
 		m.finishJobGeneration(request, known, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort after a terminal event was already recorded.
 	}
-	_ = err // A durably recorded terminal event remains authoritative after a later transport error.
+	return known
 }

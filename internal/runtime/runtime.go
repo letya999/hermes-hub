@@ -334,10 +334,14 @@ func superviseOnce(mode string) (bool, error) {
 
 	children := newChildSet()
 	var server *http.Server
-	serverErr := make(chan error, 1)
+	var modelProxy *http.Server
+	serverErr := make(chan error, 2)
 	start := children.start
 	startWithEnv := children.startWithEnv
 	defer func() {
+		if modelProxy != nil {
+			shutdownRuntimeServer(modelProxy)
+		}
 		if server != nil {
 			shutdownRuntimeServer(server)
 		}
@@ -365,10 +369,29 @@ func superviseOnce(mode string) (bool, error) {
 		if os.Getenv("HUB_RUNTIME_AUTH") == "" {
 			return false, errors.New("HUB_RUNTIME_AUTH is required")
 		}
+		handler := &runtimeHTTP{}
+		if os.Getenv("HUB_RUNTIME_GENERATION") != "" {
+			listener, err := net.Listen("tcp", stack.ManagedModelProxyAddress)
+			if err != nil {
+				return false, err
+			}
+			target, err := url.Parse(stack.ManagedModelRelayURL)
+			if err != nil {
+				_ = listener.Close()
+				return false, err
+			}
+			target.Path = ""
+			modelProxy = runtimeDiagnosticsServer(stack.ManagedModelProxyAddress, handler.modelRunProxy(target))
+			go func() {
+				if err := modelProxy.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					serverErr <- err
+				}
+			}()
+		}
 		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
 			return false, err
 		}
-		server = runtimeDiagnosticsServer(env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), diagnostics.HTTP("runtime", runtimeHandler()))
+		server = runtimeDiagnosticsServer(env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), diagnostics.HTTP("runtime", handler))
 		go func() {
 			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErr <- err

@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/gofrs/flock"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,10 +20,8 @@ import (
 const (
 	HeaderJobID = "X-Hub-Job-ID"
 	HeaderRunID = "X-Hub-Run-ID"
-	// HeaderRunEndpoint is an internal marker the gateway stamps itself on the
-	// run-scoped endpoint (/mcp-run) and strips on every other surface: the
-	// detached MCP tool context reads it through RequestExtra.Header, so a
-	// client can never assert run scope — only the endpoint can.
+	// HeaderRunEndpoint carries the gateway's scope decision through the
+	// detached MCP tool context. Clients cannot assert it.
 	HeaderRunEndpoint = "X-Hub-Run-Endpoint"
 )
 
@@ -31,6 +31,9 @@ type CallCorrelation struct {
 	JobID       string
 	HermesRunID string
 	ToolCallID  string
+	RunToken    string         `json:"-"`
+	MemoryToken string         `json:"-"`
+	Delegation  *RunDelegation `json:"-"`
 	// Scoped marks a call that arrived on the run-scoped endpoint: it must
 	// carry verifiable job/run correlation, and an empty claim denies.
 	Scoped bool
@@ -53,6 +56,18 @@ func CallCorrelationFrom(ctx context.Context) CallCorrelation {
 
 func HeaderCorrelation(jobID, runID string) CallCorrelation {
 	return CallCorrelation{JobID: sanitizeCorrelationID(jobID), HermesRunID: sanitizeCorrelationID(runID)}
+}
+
+func RequestCorrelation(headers http.Header) CallCorrelation {
+	corr := HeaderCorrelation(headers.Get(HeaderJobID), headers.Get(HeaderRunID))
+	corr.RunToken = headers.Get(contract.RunTokenHeader)
+	corr.MemoryToken = headers.Get(contract.MemoryRunTokenHeader)
+	corr.Scoped = headers.Get(HeaderRunEndpoint) != ""
+	communication, egress := headers.Get(contract.CommunicationRunTokenHeader), headers.Get(contract.EgressRunTokenHeader)
+	if communication != "" || egress != "" {
+		corr.Delegation = &RunDelegation{RunID: corr.HermesRunID, Communication: communication, Egress: egress}
+	}
+	return corr
 }
 
 func sanitizeCorrelationID(value string) string {

@@ -77,6 +77,9 @@ func (m *Manager) resume(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	req.Header.Set("Content-Type", "application/json")
+	if proof := m.runDeliveryProof(record); proof != "" {
+		req.Header.Set(hubruntime.RunDeliveryHeader, proof)
+	}
 	response, err := m.cfg.HTTP.Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "observation unavailable"})
@@ -87,7 +90,7 @@ func (m *Manager) resume(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "observation rejected"})
 		return
 	}
-	m.relayRunStream(w, request, runtime, response.Body)
+	m.relayRunStream(r.Context(), w, request, runtime, binding.runtimeAuth, response.Body)
 }
 
 func (m *Manager) rebindJobObservation(request hubruntime.ExecuteRequest, expected jobRecord, runtime Runtime) (jobRecord, error) {

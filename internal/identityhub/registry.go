@@ -20,7 +20,7 @@ type Registry struct {
 }
 
 const applicationID = 0x48494431 // HID1; a schema version alone cannot identify an owner.
-const schema = 2
+const schema = 4
 
 func StorePath(controlDir, environment string) (string, error) {
 	if controlDir == "" || (environment != "dev" && environment != "prod") {
@@ -72,7 +72,7 @@ func Open(path string) (*Registry, error) {
 		if err == nil {
 			err = extendSchema(tx)
 			if err == nil {
-				_, err = tx.Exec("PRAGMA user_version=2")
+				_, err = tx.Exec("PRAGMA user_version=4")
 			}
 			if err == nil {
 				err = tx.Commit()
@@ -108,7 +108,7 @@ func verifyStoreOwner(path string) (int, error) {
 	if err := db.QueryRow("PRAGMA application_id").Scan(&owner); err != nil || owner != applicationID {
 		return 0, contract.ErrInvalid
 	}
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || (version != 1 && version != schema) {
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version < 1 || version > schema {
 		return 0, contract.ErrInvalid
 	}
 	return version, nil
@@ -151,7 +151,7 @@ func extendSchema(tx *sql.Tx) error {
 CREATE TABLE IF NOT EXISTS shared_spaces (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));
 CREATE TABLE IF NOT EXISTS space_members (space TEXT NOT NULL REFERENCES shared_spaces(id), human TEXT NOT NULL REFERENCES principals(id), PRIMARY KEY(space,human));
 CREATE TABLE IF NOT EXISTS subjects (issuer TEXT NOT NULL, subject TEXT NOT NULL, principal_id TEXT NOT NULL REFERENCES principals(id), PRIMARY KEY(issuer,subject));
-`)
+` + signingSchema)
 	return err
 }
 

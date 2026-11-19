@@ -349,9 +349,9 @@ func goalFailureText(lang locale.Lang, class string) string {
 // conversation id, principal pinned by the control bearer — never by the
 // request body.
 func (g *Gateway) handleGoals(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, policy, ok := g.authorizeAgentControl(r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		denyAgentOperation(w, r)
 		return
 	}
 	var req struct {
@@ -362,6 +362,13 @@ func (g *Gateway) handleGoals(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(r, &req) != nil {
 		http.Error(w, "invalid goal request", http.StatusBadRequest)
 		return
+	}
+	if policy != nil {
+		right := map[string]string{"status": "read", "set": "edit", "pause": "edit", "resume": "edit", "clear": "remove"}[req.Op]
+		if req.ConversationID != caller.ConversationID || !agentOperationAllowed(policy, "goals", right, right != "read") {
+			denyAgentOperation(w, r)
+			return
+		}
 	}
 	user := g.user(caller.PrincipalID)
 	// Conversation ids embed their chat id (telegram-<chat>[-<task>]); the

@@ -73,6 +73,16 @@ provider credential. A foreign bearer or ungranted requested model is rejected
 before dispatch. The pinned Hermes model name is an alias for the owner's saved
 selection, so `/model` switching does not require editing Hermes.
 
+The managed chat route also requires the model-audience run token. The relay
+rechecks live authority before each provider attempt, including fallback. Hermes
+sends run correlation to the runtime's loopback model proxy, which attaches
+the token after supervisor has recorded admission. With `HUB_RUN_VERIFY_URL`
+and the scoped read credential, the relay verifies the current generation,
+revocation, space, signed `models.use` ceiling and any assignment ancestry
+before contacting a provider. The provider receives its own credential and
+the normal model payload. Background model calls outside a Hermes run still
+need their scoped service workflow.
+
 The retired layered files `spaces/models.yaml`,
 `spaces/<organization>/models.yaml` and `spaces/<owner>/models.yaml` are
 never consulted by runtime readers. The published `models.yaml`

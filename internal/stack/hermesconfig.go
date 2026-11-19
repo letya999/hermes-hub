@@ -279,6 +279,7 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	applyBrowserGrant(&s, opts.Browser)
 	applyManagedFeatureFlags(&s, opts)
 	expected := managedHermesConfig(s)
+	mergeManagedModelProxy(expected)
 	servers := expected["mcp_servers"].(M)
 	servers["toolhub"] = M{
 		"url": managedToolHubProxyEndpoint, "timeout": toolHubCallTimeoutSeconds,
@@ -391,6 +392,7 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	if err != nil {
 		return err
 	}
+	mergeManagedModelProxy(config)
 	servers, ok := config["mcp_servers"].(map[string]any)
 	if !ok {
 		servers = map[string]any{}
@@ -423,4 +425,12 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 		return fmt.Errorf("write Hermes config: %w", err)
 	}
 	return os.WriteFile(configPath, updated, 0660)
+}
+
+func mergeManagedModelProxy(config M) {
+	model, ok := config["model"].(M)
+	if ok && model["base_url"] == ManagedModelRelayURL {
+		model["base_url"] = "http://" + ManagedModelProxyAddress + "/v1"
+		config["plugins"] = M{"enabled": []string{"hub-run-auth"}}
+	}
 }

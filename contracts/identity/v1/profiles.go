@@ -1,5 +1,11 @@
 package identity
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
 // Restrictions narrow a published passport ceiling. Null lists inherit;
 // empty lists deny all. Guardrails accumulate and can never remove a parent.
 type Restrictions struct {
@@ -8,6 +14,12 @@ type Restrictions struct {
 	Guardrails   []string `json:"guardrails"`
 	MemoryScopes []string `json:"memory_scopes"`
 	Mode         string   `json:"mode"`
+}
+
+// AllowsUnattendedWrite is the ceiling before the operation's own effect and
+// approval checks. A configured guardrail requires an explicit policy decision.
+func (r Restrictions) AllowsUnattendedWrite() bool {
+	return len(r.Guardrails) == 0 && (r.Mode == "ask-critical" || r.Mode == "full-access")
 }
 
 type TemplateRequest struct {
@@ -24,4 +36,13 @@ type AgentTemplate struct {
 	Space          string       `json:"space"`
 	SharedSpace    string       `json:"shared_space,omitempty"`
 	Restrictions   Restrictions `json:"restrictions"`
+}
+
+func (t AgentTemplate) Revision() (string, error) {
+	body, err := json.Marshal(t)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	digest := sha256.Sum256(body)
+	return "identity-" + hex.EncodeToString(digest[:]), nil
 }

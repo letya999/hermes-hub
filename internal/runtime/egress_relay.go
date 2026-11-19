@@ -1,13 +1,19 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	identity "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // egressRelayHandler is the managed runtime's only reviewed path off the
@@ -23,11 +29,26 @@ import (
 var egressRelayResponseTimeout = 10 * time.Minute
 
 func egressRelayHandler(allow map[string]bool, connectTarget string) http.Handler {
+	return signedEgressRelayHandler(allow, connectTarget, "", nil)
+}
+
+func signedEgressRelayHandler(allow map[string]bool, connectTarget, owner string, authority *relayRunAuthority) http.Handler {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		ResponseHeaderTimeout: egressRelayResponseTimeout,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protected := authority != nil || r.Header.Get(identity.EgressRunTokenHeader) != ""
+		if protected {
+			policy, err := authority.authorize(r, identity.EgressAudience, owner)
+			read := r.Method == http.MethodGet || r.Method == http.MethodHead
+			if err != nil || (!read && !policy.Identity.Restrictions.AllowsUnattendedWrite()) {
+				log.Printf("egress-relay owner=%s outcome=deny reason=run-authorization", owner)
+				lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
+				http.Error(w, locale.T(lang, "run.authorization-denied"), http.StatusForbidden)
+				return
+			}
+		}
 		if r.Method == http.MethodConnect {
 			host, port, err := net.SplitHostPort(r.Host)
 			if err != nil {
@@ -63,11 +84,35 @@ func egressRelayHandler(allow map[string]bool, connectTarget string) http.Handle
 				_ = upstream.Close()
 				return
 			}
+			tunnel, closeTunnel := context.WithCancel(context.WithoutCancel(r.Context()))
+			if protected {
+				go func() {
+					ticker := time.NewTicker(2 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-tunnel.Done():
+							return
+						case <-ticker.C:
+							verification, cancel := context.WithTimeout(tunnel, 2*time.Second)
+							_, err := authority.authorize(r.WithContext(verification), identity.EgressAudience, owner)
+							cancel()
+							if err != nil {
+								_ = client.Close()
+								_ = upstream.Close()
+								return
+							}
+						}
+					}
+				}()
+			}
 			go func() {
+				defer closeTunnel()
 				_, _ = io.Copy(upstream, client)
 				_ = upstream.Close()
 			}()
 			go func() {
+				defer closeTunnel()
 				_, _ = io.Copy(client, upstream)
 				_ = client.Close()
 			}()
@@ -83,6 +128,15 @@ func egressRelayHandler(allow map[string]bool, connectTarget string) http.Handle
 		out.Header.Del("Proxy-Authorization")
 		out.Header.Del("Proxy-Connection")
 		out.Header.Del("Connection")
+		out.Header.Del(identity.EgressRunTokenHeader)
+		out.Header.Del(identity.MemoryRunTokenHeader)
+		out.Header.Del(identity.CommunicationRunTokenHeader)
+		out.Header.Del(RunDeliveryHeader)
+		out.Header.Del(api.HeaderJobID)
+		if r.URL.Host != "communication-hub:8081" {
+			out.Header.Del(identity.RunTokenHeader)
+			out.Header.Del(api.HeaderRunID)
+		}
 		resp, err := transport.RoundTrip(out)
 		if err != nil {
 			http.Error(w, "upstream unreachable", http.StatusBadGateway)
@@ -150,7 +204,8 @@ func runEgressRelay() error {
 	if listen == "" {
 		listen = ":8319"
 	}
-	server := &http.Server{Addr: listen, Handler: egressRelayHandler(allow, connectTarget), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	handler := signedEgressRelayHandler(allow, connectTarget, os.Getenv("HUB_EGRESS_RELAY_OWNER"), relayRunAuthorityFromEnv())
+	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	if err := server.ListenAndServe(); err != nil {
 		return fmt.Errorf("egress-relay: %w", err)
 	}

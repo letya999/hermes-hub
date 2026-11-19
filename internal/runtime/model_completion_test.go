@@ -155,7 +155,7 @@ func TestModelHopDeadlineIncludesCredentialResolution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	started := time.Now()
-	hop, response, err := modelCall(ctx, provider.Client(), hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"fixture"}`), 40*time.Millisecond)
+	hop, response, err := modelCall(ctx, provider.Client(), hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"fixture"}`), 40*time.Millisecond, nil)
 	if response != nil {
 		_ = response.Body.Close()
 	}

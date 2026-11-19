@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
@@ -1009,12 +1010,16 @@ func dockerCLIEnv() []string {
 // same control-plane sharing the governance read path uses.
 func supervisorComposeEnv(dir string) []string {
 	env := dockerCLIEnv()
-	if os.Getenv("HUB_SUPERVISOR_AUTH") == "" {
+	token := os.Getenv("HUB_SUPERVISOR_AUTH")
+	if token == "" {
 		if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(dir), "supervisor.auth")); err == nil {
-			if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
+			if token = strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
 				env = append(env, "HUB_SUPERVISOR_AUTH="+token)
 			}
 		}
+	}
+	if key := taskcontract.VerificationCredential(token); key != "" {
+		env = append(env, "HUB_RUN_VERIFY_AUTH="+key)
 	}
 	if os.Getenv("HUB_MEDIA_BROKER_GRANT") == "" {
 		// media.grant is not a secret: it is the grant ID provisioned for this

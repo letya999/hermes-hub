@@ -2,16 +2,17 @@ package supervisor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passportview"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -28,7 +29,7 @@ func (m *Manager) deactivateIdentity(w http.ResponseWriter, r *http.Request) {
 	fail := func(status int, err error) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 	}
-	if r.Header.Get("Origin") != "" || !m.adminAuthorized(r) || m.cfg.AdminAuth == m.cfg.IdentityLinkAuth {
+	if !m.identityAdminAuthorized(r) {
 		fail(http.StatusForbidden, contract.ErrForbidden)
 		return
 	}
@@ -62,6 +63,61 @@ func (m *Manager) deactivateIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "inactive"})
+}
+
+func (m *Manager) identityAdminAuthorized(r *http.Request) bool {
+	return r.Header.Get("Origin") == "" && m.adminAuthorized(r) && m.cfg.AdminAuth != m.cfg.IdentityLinkAuth
+}
+
+func (m *Manager) publishIdentityPassports(w http.ResponseWriter, r *http.Request) {
+	if !m.identityAdminAuthorized(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": contract.ErrForbidden.Error()})
+		return
+	}
+	publisher, ok := m.identityClient().(contract.PassportPublisher)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": contract.ErrUnavailable.Error()})
+		return
+	}
+	contract.PassportPublicationHandler(publisher, m.cfg.AdminAuth, m.environment(), func(bundle contract.PolicyBundle) error {
+		if _, _, err := bundle.Canonical(); err != nil {
+			return err
+		}
+		for _, name := range passportview.Names {
+			if _, err := passportview.Decode(name, bundle.Passports[name]); err != nil {
+				return contract.ErrInvalid
+			}
+		}
+		return nil
+	}).ServeHTTP(w, r)
+}
+
+func (m *Manager) rotateIdentityKeys(w http.ResponseWriter, r *http.Request) {
+	if !m.identityAdminAuthorized(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": contract.ErrForbidden.Error()})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": contract.ErrInvalid.Error()})
+		return
+	}
+	var request struct {
+		Environment string `json:"environment"`
+	}
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	d.DisallowUnknownFields()
+	if d.Decode(&request) != nil || d.Decode(new(any)) != io.EOF || request.Environment != m.environment() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": contract.ErrInvalid.Error()})
+		return
+	}
+	registry, ok := m.identityClient().(interface {
+		RotateSigningKeys(context.Context, time.Duration) error
+	})
+	if !ok || registry.RotateSigningKeys(r.Context(), hubruntime.RunBudget()) != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": contract.ErrUnavailable.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *Manager) identityTemplate(ctx context.Context, binding Binding) (contract.AgentTemplate, string, error) {
@@ -101,12 +157,11 @@ func (m *Manager) identityTemplate(ctx context.Context, binding Binding) (contra
 	if value.SpaceKind != wantKind {
 		return value, "", contract.ErrForbidden
 	}
-	body, err := json.Marshal(value)
+	revision, err := value.Revision()
 	if err != nil {
 		return value, "", contract.ErrUnavailable
 	}
-	digest := sha256.Sum256(body)
-	return value, "identity-" + hex.EncodeToString(digest[:]), nil
+	return value, revision, nil
 }
 
 func (m *Manager) applyIdentityTemplate(binding Binding, settings stack.Settings) (stack.Settings, error) {

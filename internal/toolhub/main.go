@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
@@ -107,10 +109,16 @@ func Serve(ctx context.Context) error {
 		}
 		defer host.Close()
 		handler.(*projectionEndpoint).gateway.pauseSchedules = host.PauseAllForPrincipal
+		handler.(*projectionEndpoint).gateway.authorizeAssignmentRun = host.AuthorizeAssignmentRun
 		automationTick = host.Tick
 		automationCompact = host.CompactOccurrences
 		mux := http.NewServeMux()
-		mux.Handle("/v1/automation/", host.ControlHandler(automationServiceToken()))
+		automationHandler := host.ControlHandler(automationServiceToken())
+		if origin, key := runVerificationPeer(); origin != "" {
+			automationHandler = host.SignedControlHandler(identitycontract.NewHTTPClient(origin, key, nil))
+			mux.Handle(taskcontract.AssignmentAuthorityPath, host.AssignmentRunHandler(runAuthorityFromEnv(), key))
+		}
+		mux.Handle("/v1/automation/", automationHandler)
 		mux.Handle("/", handler)
 		controlHandler = mux
 	}

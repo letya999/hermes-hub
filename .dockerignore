@@ -2,12 +2,14 @@
 !go.mod
 !go.sum
 !cmd/**
+!contracts/**
 !internal/**
 internal/.local/
 !services/
 !services/credential-broker/
 !services/credential-broker/**
 !docker/**
+!config/plugins/hub-run-auth/**
 !platform/catalogs/
 **/node_modules
 **/__pycache__

@@ -151,6 +151,12 @@ func memoryCardEnv(t *testing.T, store *Store, passports, vaults string, auths m
 	}
 	tripwire := &cardTripwire{t: t}
 	g := &Gateway{Store: store, PassportRoot: passports, Vaults: resolver,
+		authorizeAssignmentRun: func(auth identity.Envelope, id string, revision uint64) error {
+			if auth.PrincipalID != "alice" || id != "asg-owner" || revision != 1 {
+				return api.ErrUnauthorized
+			}
+			return nil
+		},
 		AuditWrite: func(string, map[string]string) error { return nil },
 		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
 			record, ok := records[jobID]
@@ -193,6 +199,7 @@ func TestAssignmentMemoryCardRememberAndRevoke(t *testing.T) {
 	assignment := api.RunContext{JobID: "job-assignment", RunID: "run-assignment-1", SessionID: "session-1",
 		RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3", Environment: "dev", Status: "running",
 		ScopeID: "user:alice", Trigger: "cron", Assignment: true, UserID: "alice",
+		AssignmentID: "asg-owner", AssignmentPlanRevision: 1,
 		Envelope: identity.Envelope{Schema: auth.Schema, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
 			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion}}
 	g, tripwire := memoryCardEnv(t, store, passports, vaults, auths, map[string]api.RunContext{assignment.JobID: assignment})
@@ -319,6 +326,7 @@ func TestAssignmentRememberUsesCurrentRight(t *testing.T) {
 	alice := auths["alice"]
 	record := api.RunContext{JobID: "job-assignment", RunID: "run-assignment", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
 		Environment: alice.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true, UserID: "alice",
+		AssignmentID: "asg-owner", AssignmentPlanRevision: 1,
 		Envelope: identity.Envelope{Schema: alice.Schema, PrincipalID: alice.PrincipalID, ContextID: alice.ContextID, RuntimeID: alice.RuntimeID, PolicyVersion: alice.PolicyVersion}}
 	g, _ := memoryCardEnv(t, store, passports, vaults, auths, map[string]api.RunContext{record.JobID: record})
 	args := map[string]any{"op": "remember", "text": "assignment found a blue token", "name": "Assignment Token"}

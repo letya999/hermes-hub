@@ -47,6 +47,8 @@ type Client interface {
 	Principal(context.Context, string) (Principal, error)
 	Template(context.Context, TemplateRequest) (AgentTemplate, error)
 	Bindings(context.Context, string) ([]ChannelBinding, error)
+	SigningKeys(context.Context) ([]PublicSigningKey, error)
+	Policy(context.Context, string) (SignedPolicy, error)
 }
 
 func validID(id string) bool { return id != "" && len(id) <= 256 && !strings.ContainsAny(id, "/\r\n") }
@@ -151,6 +153,10 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.Template(r.Context(), query)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/identity/keys":
+			return client.SigningKeys(r.Context())
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/identity/policies/"):
+			return client.Policy(r.Context(), strings.TrimPrefix(r.URL.Path, "/v1/identity/policies/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/identity/bindings/"):
 			return client.Bindings(r.Context(), strings.TrimPrefix(r.URL.Path, "/v1/identity/bindings/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/identity/principals/"):

@@ -100,7 +100,11 @@ type Gateway struct {
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
-	return (commops.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth}).Call(ctx, caller, operation, payload, out)
+	client := commops.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth, Environment: g.config.Environment}
+	if g.config.Runs != nil {
+		client.Signer = identitycontract.NewAutomationServiceSigner(g.config.RuntimeURL, identitycontract.AutomationServiceCredential(g.config.RuntimeAuth))
+	}
+	return client.Call(ctx, caller, operation, payload, out)
 }
 
 func automationStatus(err error) int {

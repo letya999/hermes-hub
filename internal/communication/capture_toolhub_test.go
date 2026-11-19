@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -555,6 +558,91 @@ func TestCaptureRejectsForeignForgedAndRevokedFacts(t *testing.T) {
 	}
 	if _, err := os.Stat(g.spool.capturePath("turn-" + sensitive.ID)); !os.IsNotExist(err) {
 		t.Fatalf("sensitive turn entered capture outbox: %v", err)
+	}
+}
+
+func TestManagedCaptureRequiresSignedCommunicationEvent(t *testing.T) {
+	f := newCaptureFixture(t)
+	auth := f.enroll("alice", true, true)
+	vaultRoot := f.mkVault("alice")
+	registry, err := identityhub.Open(filepath.Join(t.TempDir(), "identity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.EnsureSigningKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	const controlSecret, verifier = "comm-token", "synthetic-read-verifier"
+	mux := http.NewServeMux()
+	mux.Handle(contract.MemoryCaptureServiceAssertionPath, contract.MemoryCaptureServiceHandler(registry, contract.MemoryCaptureServiceCredential(controlSecret), "dev"))
+	mux.Handle("/v1/identity/", contract.Handler(registry, verifier))
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+verifier {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		record, ok := f.records[strings.TrimPrefix(r.URL.Path, "/v1/jobs/")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(record)
+	})
+	control := httptest.NewServer(mux)
+	defer control.Close()
+	f.toolhubEnv["HUB_RUN_VERIFY_URL"], f.toolhubEnv["HUB_RUN_VERIFY_AUTH"] = control.URL, verifier
+	f.serveToolHub(t, map[string]identity.Envelope{"alice": auth})
+	cfg := baseTestConfig(t)
+	cfg.ToolHubURL, cfg.Supervised, cfg.RuntimeURL, cfg.RuntimeAuth = f.server.URL, true, control.URL, controlSecret
+	cfg.Environment = "dev"
+	cfg.Runs = task.NewHTTPClient(control.URL, verifier, nil)
+	g := f.gateway(t, cfg)
+	job := captureJob(g, "alice", "job-signed-capture")
+	f.records[job.ID] = api.RunContext{JobID: job.ID, UserID: "alice", Environment: "dev", Status: "completed", RunID: "captured-run",
+		ScopeID: job.ScopeID, Trigger: job.Trigger, Channel: job.Channel, TextSHA256: captureTestHash(job.Text), Envelope: auth}
+	event := captureEventForTurn(job)
+	body, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := contract.ServiceRequest{Space: "alice", Environment: "dev", RequestDigest: contract.PolicyDigest(body)}
+	automationSigner := contract.NewMemoryCaptureServiceSigner(control.URL, contract.AutomationServiceCredential(controlSecret))
+	if _, err := automationSigner.IssueMemoryCaptureService(t.Context(), scope); err == nil {
+		t.Fatal("automation bootstrap minted a capture permission")
+	}
+	token, err := registry.IssueMemoryCaptureService(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ bearer, principal, body string }{
+		{controlSecret, "alice", string(body)},
+		{token, "bob", string(body)},
+		{token, "", string(body) + " "},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, f.server.URL+"/v1/memory-capture", strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tc.bearer)
+		req.Header.Set("X-Hub-Principal", tc.principal)
+		res, err := f.server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("invalid capture authority status=%d", res.StatusCode)
+		}
+	}
+	if blocks, rows := leafEntries(t, vaultRoot); blocks != 0 || rows != 0 {
+		t.Fatalf("invalid capture wrote a vault entry: blocks=%d rows=%d", blocks, rows)
+	}
+	if status, err := g.postCapture(t.Context(), f.server.URL, controlSecret, "alice", event); err != nil || status != http.StatusOK {
+		t.Fatalf("signed capture status=%d err=%v", status, err)
+	}
+	if blocks, rows := leafEntries(t, vaultRoot); blocks != 1 || rows != 1 {
+		t.Fatalf("signed capture did not commit: blocks=%d rows=%d", blocks, rows)
 	}
 }
 

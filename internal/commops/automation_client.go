@@ -11,13 +11,16 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // ControlClient is communication's service-only route to the ToolHub owner.
 type ControlClient struct {
-	URL   string
-	Token string
+	URL         string
+	Token       string
+	Environment string
+	Signer      contract.AutomationServiceSigner
 }
 
 type ControlError struct{ StatusCode int }
@@ -27,7 +30,7 @@ func (e ControlError) Error() string {
 }
 
 func (c ControlClient) Call(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
-	if c.URL == "" || c.Token == "" || !identity.ValidID(caller.PrincipalID) || operation == "" {
+	if c.URL == "" || (c.Signer == nil && c.Token == "") || !identity.ValidID(caller.PrincipalID) || operation == "" {
 		return errors.New("automation control is not configured")
 	}
 	body, err := json.Marshal(map[string]any{"operation": operation, "caller": caller, "payload": payload})
@@ -38,10 +41,20 @@ func (c ControlClient) Call(ctx context.Context, caller identity.Envelope, opera
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("X-Hub-Principal", caller.PrincipalID)
+	token := c.Token
+	if c.Signer != nil {
+		token, err = c.Signer.IssueAutomationService(ctx, contract.ServiceRequest{
+			Space: caller.ContextID, Environment: c.Environment, RequestDigest: contract.PolicyDigest(body),
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		req.Header.Set("X-Hub-Principal", caller.PrincipalID)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if err != nil {
 		return err
 	}

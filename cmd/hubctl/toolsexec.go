@@ -40,6 +40,9 @@ func execRequest(ctx context.Context, t *agenttools.Tools, request api.AgentExec
 	if request.ConversationID != "" {
 		ctx = agenttools.WithConversationID(ctx, request.ConversationID)
 	}
+	if request.Delegation != nil {
+		ctx = agenttools.WithRunDelegation(ctx, *request.Delegation)
+	}
 	if request.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)

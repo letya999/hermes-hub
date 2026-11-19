@@ -388,10 +388,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	if t.CommunicationAuth != "" {
-		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	}
-	req.Header.Set("X-Hub-Principal", principal)
+	t.communicationAuthority(req, principal)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -434,10 +431,7 @@ func (t *Tools) routineItems(ctx context.Context, principal string) ([]map[strin
 	if err != nil {
 		return nil, err
 	}
-	if t.CommunicationAuth != "" {
-		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	}
-	req.Header.Set("X-Hub-Principal", principal)
+	t.communicationAuthority(req, principal)
 	client := t.HTTP
 	if client == nil {
 		client = http.DefaultClient
