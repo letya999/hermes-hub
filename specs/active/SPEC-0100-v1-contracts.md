@@ -1,147 +1,153 @@
 ---
-description: Frozen v1 contracts - topology and zone crossings, contract pattern, dependency gate, single owners, fail-closed configuration, run tokens and policy bundles, security baseline; master trace from M40 exit criteria to requirements, acceptance IDs and CHGs.
-last_verified: "2026-11-19"
+description: Frozen v1 contract list - the contracts each v1 service exposes, the shared contract and call requirements, and acceptance IDs per M40 issue (M40.0..M40.16) traced to the milestone exit criteria.
+last_verified: "2026-11-20"
 ---
-# SPEC-0100: v1 contracts
+# SPEC-0100: v1 contracts and M40 acceptance
 
-Frozen: 2026-11-19. Implementation: CHG-0329, CHG-0330, CHG-0331, CHG-0332
-and the service CHGs in the trace table.
-Decisions: [ADR-0105](../../docs/adr/ADR-0105-v1-topology.md),
-[ADR-0106](../../docs/adr/ADR-0106-identity-layers-run-tokens.md).
-Siblings: [SPEC-0101](SPEC-0101-v1-execution-slos.md) (execution and
-provisioning), [SPEC-0102](SPEC-0102-v1-proactive-modes-eval.md)
-(proactive-engine, action modes, eval).
+Frozen: 2026-11-20 (rewritten by CHG-0334, M40.1 #599; the 2026-11-19
+version with five hub processes and a reserved CHG table was never merged
+to `dev`). Owner review pending.
+Decisions: [ADR-0105](../../docs/adr/ADR-0105-v1-topology.md) (service
+model), [ADR-0106](../../docs/adr/ADR-0106-identity-layers-run-tokens.md)
+(identity, run tokens), [ADR-0107](../../docs/adr/ADR-0107-execution-spawn-task-runtime.md)
+(execution), [ADR-0108](../../docs/adr/ADR-0108-proactive-engine.md),
+[ADR-0109](../../docs/adr/ADR-0109-action-modes-owner-decisions.md),
+[ADR-0110](../../docs/adr/ADR-0110-v1-storage.md),
+[ADR-0111](../../docs/adr/ADR-0111-v1-state-machines.md),
+[ADR-0112](../../docs/adr/ADR-0112-v1-secrets.md).
+Rules: [engineering.md](../../docs/engineering.md) (rule IDs S, V, D, F, X,
+T, Z below refer to it). Siblings: [SPEC-0101](SPEC-0101-v1-execution-slos.md)
+(SLOs), [SPEC-0102](SPEC-0102-v1-proactive-modes-eval.md) (proactive and
+eval, mostly M41).
 
-## M40 exit criteria trace
+CHG numbers are allocated when an issue starts; each issue's CHG records
+its evidence against the acceptance IDs below. There is no reserved table.
 
-Every exit criterion of milestone M40 maps to requirements and acceptance
-IDs. A criterion is met only when all its acceptance IDs pass with recorded
-evidence in the named CHG `state.yaml`.
+## M40 exit criteria
 
-| Exit criterion | Requirements | Acceptance | CHG |
-|---|---|---|---|
-| EC1 five hub processes plus on-demand runtimes; per-binary allowlist green; cmd/runtime does not link tool-hub | SPEC-0100 R1.1, R1.3, R3.1-R3.3 | A1.1, A1.3, A3.1-A3.3 | CHG-0330, CHG-0353 |
-| EC2 one job ledger, one secret authority, one registry owner; no unmanaged mode, no HermesRunner fallback; minimal stack works | SPEC-0100 R4.1-R4.3, R5.1, R5.2, R1.2 | A4.1-A4.3, A5.1, A5.2, A1.2 | CHG-0329, CHG-0335, CHG-0339, CHG-0337 |
-| EC3 every agent call carries a verified run token; forged, aliased and stale-generation calls refused before any backend | SPEC-0100 R6.1, R6.2 | A6.1, A6.2 | CHG-0332 |
-| EC4 new space from identity plus six template passports; creation renders only the runtime spec; first message within SLO | SPEC-0101 R2.1-R2.3, P1, P2 | SPEC-0101 A2.1-A2.3, AP1, AP2 | CHG-0334 |
-| EC5 Jira and Slack assignment scenarios live with receipts; proactivity eval meets thresholds in CI; p95 event-to-notice within SLO | SPEC-0102 R6.1-R6.3, R7.1-R7.3; SPEC-0101 P5 | SPEC-0102 A6.1-A6.3, A7.1-A7.3; SPEC-0101 AP5 | CHG-0346, CHG-0352 |
-| EC6 3 interactive sessions and 20 active assignments on one VPS without interactive p95 regression | SPEC-0101 P4, R7.1 | SPEC-0101 AP4, A7.1 | CHG-0353 |
-| EC7 CHG-0065 T01-T22 accepted by the owner | SPEC-0100 R7.1 | A7.1 | CHG-0329, CHG-0353 |
+| ID | Exit criterion (milestone 50) | Acceptance |
+|---|---|---|
+| EC1 | Every service is a separate binary with its own DB, contract, state machines, README and tests; workers and browser-runtime spawned by spawn-controller | A2.1-A2.4, A3.1..A13.x (per service "README, FSM, DB" rows) |
+| EC2 | No service imports another; no service state in `.json`/`.jsonl`; every row tenant-scoped | A2.1, A2.2, per-service "no file state" rows |
+| EC3 | The core (spawn-controller + harness-runtime) runs alone with Hermes native tools | A2.6, A4.1 |
+| EC4 | Profiles minimal, family and enterprise run on process and docker (kubernetes and firecracker in M40.15) | A2.6, A3.1, A15.1, A16.1 |
+| EC5 | Tool catalog snapshot unchanged; one run token per run; secrets only in credential-broker | A2.7, A14.1-A14.2, A13.1 |
 
-Reserved CHG numbers (one per M40 issue, created when the issue starts):
-M40.0 CHG-0328, M40.1 CHG-0329, M40.2 CHG-0330, M40.3 CHG-0331, M40.4
-CHG-0332, M40.5 CHG-0333, M40.6 CHG-0334, M40.7 CHG-0335, M40.8 CHG-0336,
-M40.9 CHG-0337, M40.10 CHG-0338, M40.11 CHG-0339, M40.12 CHG-0340, M40.13
-CHG-0341, M40.14 CHG-0342, M40.15 CHG-0343, M40.16 CHG-0344, M40.17
-CHG-0345, M40.18 CHG-0346, M40.19 CHG-0347, M40.20 CHG-0348, M40.21
-CHG-0349, M40.22 CHG-0350, M40.23 CHG-0351, M40.24 CHG-0352, M40.25
-CHG-0353.
+## Contract list
 
-## R1 Topology
+Each contract lives in `contracts/<name>/v1` and is created by the issue
+that extracts its owner. The name is fixed by that issue; the verbs below
+are the scope, not the final route list (the service README holds that).
 
-- R1.1 Production topology runs exactly five hub processes: `hub-control`,
-  `hub-agent`, `hub-edge` (one `hub` binary with `serve --zone`),
-  `credential-broker`, `egress-gateway`; space runtimes and workers are
-  spawned on demand.
-- R1.2 Minimal topology: one `hub` process serving `control` (optionally
-  `control,agent,edge`) plus one `harness-runtime` whose tools are all
-  `via: native` renders and answers a message.
-- R1.3 `cmd/runtime`, `cmd/supervisor` and `cmd/communication` do not link
-  `internal/toolhub` (the ToolHub server package and its subpackages other
-  than DTO packages scheduled in the baseline); after CHG-0337 they link no
-  `internal/toolhub/...` package at all.
-- R1.4 Zone crossings follow the ADR-0105 table; each refused crossing has a
-  test.
+| Contract | Owner | Scope | Main callers | Issue |
+|---|---|---|---|---|
+| `identity/v1` | identity-hub | resolve channel identity, principals, orgs, roles, link begin/verify/revoke, run token issue, public keys | channel-hub, task-engine, every token verifier | exists; M40.5 |
+| `task/v1` | task-engine | create job (idempotency key), job and run status, conversation queue, cancel, panic stop, run events with cursor, generation and revocation check | channel-hub, proactive-engine, tool-hub (`sessions`), token verifiers | exists; M40.6 |
+| `spawn/v1` | spawn-controller | spaces, layer passports and revisions, effective spec slice by digest, runtime and worker request, stop, inspect | task-engine, tool-hub (settings, workers), hubctl | M40.3 |
+| `runtime/v1` | harness-runtime | private job contract: start run in a slot, stream events, observe, cancel | task-engine through spawn-controller delivery | M40.4 |
+| `tool/v1` | tool-hub | tool list for a run, tool call, OwnerDecision create/approve/deny, connector lifecycle | harness-runtime, channel-hub (approvals), hubctl | M40.7 |
+| `channel/v1` | channel-hub | outbound message (`class reply\|notice`), delivery status | task-engine, proactive-engine, model-gateway (media delivery) | M40.8 |
+| `memory/v1` | memory-hub | remember, recall, search, forget, read/open, proposals | tool-hub | M40.9 |
+| `proactive/v1` | proactive-engine | routines, watches, assignments, goals, occurrences | tool-hub | M40.10 |
+| `hosting/v1` | hosting-hub | sites, exposure, DNS records, fleet budget | tool-hub, ingress-gateway | M40.11 |
+| `model/v1` | model-gateway | model routes and limits, completions relay, media jobs, STT, TTS, usage | harness-runtime, tool-hub | M40.12 |
+| broker contract | credential-broker | credential refs, leases, OAuth (the module's existing `contract` package) | egress-gateway, workers (cred-proxy), model-gateway | M40.13 |
 
-## R2 Contract pattern
+ingress-gateway and egress-gateway are pass-throughs: they expose routes
+and a proxy, not a domain contract.
 
-- R2.1 A contract lives in `contracts/<name>/v1` with: DTO types, one
-  `Client` interface, an in-process transport, an HTTP transport (client
-  and `http.Handler`), and a `conformance` package exporting `Run(t, client)`.
-- R2.2 The conformance suite runs against both transports in the same test;
-  results must be equal, including typed errors.
-- R2.3 A contract package imports only the standard library, other
-  `contracts/*` packages and `internal/identity` (a stdlib-only leaf holding
-  the envelope primitives, ADR-0105 D6). DTOs carry no secret values.
-- R2.4 The first contracts are `identity`, `task` and `toolsurface`
-  (CHG-0330). Each later service CHG adds its own contract.
-- R2.5 HTTP transport errors map to typed errors: `not_found`, `conflict`,
-  `forbidden`, `invalid`, `unavailable`; unknown status is `unavailable`,
-  never success.
+## Requirements
 
-## R3 Dependency gate
+### R1 Contract shape
 
-- R3.1 `devcheck` computes `go list -deps` per `cmd/*` binary and compares
-  each module edge with an allowlist.
-- R3.2 Shrink-only baseline: a baseline entry that no longer occurs must be
-  deleted from the baseline (stale entries fail); a new edge fails.
-- R3.3 The check uses the full transitive closure; a forbidden package
-  reached through a shared helper is reported with the path that reaches it.
+- R1.1 A contract has DTOs, one client interface, an in-process transport,
+  an HTTP transport (client and handler) and `contracts/<name>/v1/fake`.
+  A conformance suite runs the same cases against the real handler over
+  both transports and against the fake (rule V4).
+- R1.2 A contract imports only the standard library, `shared/httpapi` and
+  other contracts. DTOs carry no secret values (rule X4).
+- R1.3 HTTP errors map to typed errors `not_found`, `conflict`,
+  `forbidden`, `invalid`, `unavailable`; an unknown status is
+  `unavailable`, never success.
+- R1.4 A breaking change adds `v2` beside `v1` (rule V8).
 
-## R4 Single owners
+### R2 Calls
 
-- R4.1 One job ledger: task-engine (CHG-0335).
-- R4.2 One secret authority for user and connector credentials and OAuth:
-  credential-broker (CHG-0339).
-- R4.3 One owner per store: no process opens a store file that belongs to
-  another module (first removal: agenttools and stack open of the ToolHub
-  store, CHG-0330 S2.3).
+- R2.1 Every call carries a token: a run token from runtimes and workers,
+  a service token between services (rule V6, X5).
+- R2.2 Every call has a timeout; every write carries an idempotency key.
+- R2.3 A disabled peer (`HUB_<SVC>_URL` empty) gives the native fallback or
+  a localized "feature off" result, never a crash (rule V5).
 
-## R5 Fail-closed configuration
+### R3 Data and state
 
-- R5.1 No `CapabilityMode` and no unmanaged render path in production code;
-  a leftover `capability_mode` key cannot re-enable one.
-- R5.2 The channel gateway refuses to start without a runtime or supervisor
-  endpoint and exits non-zero with a localized message; it never runs Hermes
-  itself.
-- R5.3 An unreadable or corrupt runtime env or secret file fails the spawn;
-  only an absent optional file may be skipped, and only where the spec of
-  that file says it is optional.
+- R3.1 One database per service, SQLite or Postgres by connection string;
+  every row carries `org` and `owner`; unscoped queries are refused (rules
+  D1-D4).
+- R3.2 Every lifecycle is a table driven through `shared/fsm` with history,
+  deadlines and sweepers; `uncertain` is never retried automatically (rules
+  F1-F5).
+
+### R5 Fail-closed configuration (kept from the 2026-11-19 version)
+
+These IDs are delivered on this branch by CHG-0329 and keep their meaning.
+
+- R5.1 No `CapabilityMode` and no unmanaged render path; a leftover
+  `capability_mode` key cannot re-enable one.
+- R5.2 The channel gateway refuses to start without a runtime or
+  supervisor endpoint; it never runs Hermes itself.
+- R5.3 An unreadable or corrupt runtime env or secret file fails the spawn.
 - R5.4 No tool or script creates path-bug directories (`...;C`,
   `C:Users...`) in the repository tree; `devcheck` rejects them.
 
-## R6 Identity, run tokens, policy bundles
+### R7 Security baseline (kept)
 
-- R6.1 Every tool, memory, model and egress call from a runtime carries a
-  run token signed by identity-hub's token service. Run claims are `sub`,
-  `act`, `org`, `space`, `conversation` or `assignment`, `task`, `run`, `gen`,
-  `policy_rev`, `origin`, `mode`, `exp`. Token kinds are `run`, `link`,
-  `service`; verifiers check signature, audience and expiry locally, then
-  live generation and revocation through RunAuthority (`task/v1`).
-- R6.2 Missing, forged, expired, wrong-audience, cross-space, run-aliased
-  and stale-generation tokens are refused before any backend is contacted.
-- R6.3 Policy is loaded only from signed bundles by digest.
-- R6.4 Layers narrow only: platform -> org -> user -> agent profile.
-- R6.5 System principals hold no user credentials; work for a user records
-  its originating actor. Administrative roles are `platform-admin`,
-  `org-admin`, `member`; system rights require explicit grants and super-admin
-  is an audited break-glass grant. Org memory lives in its layer and shared space.
+- R7.1 CHG-0065 T01-T22 are re-run on v1 with receipts and signed off by
+  the owner (M40.16); until then README and architecture state "enforced
+  in code, certification pending".
 
-## R7 Security baseline
+Retired IDs of the 2026-11-19 version: R1.1-R1.4 (five hub processes),
+R2.1-R2.5 (contract pattern, now R1), R3.1-R3.3 (dependency gate, deleted
+in M40.2), R4.1-R4.3 (single owners, now ADR-0105 D7 and per-service
+acceptance), R6.1-R6.5 (tokens and bundles, now ADR-0106 and A14.x).
+CHG-0329..0332 records cite the retired IDs as history.
 
-- R7.1 CHG-0065 T01-T22 are re-run on current `dev` with receipts and signed
-  off by the owner; until then README and architecture state the claims as
-  "enforced in code, certification pending" instead of "certified".
+## Acceptance per issue
 
-## Acceptance
+An issue's CHG closes only when its rows pass with evidence, its service
+README follows the template, the tool snapshot (A2.7) and tenant invariants
+(A2.1) are green, `just check` is green, and a live non-destructive smoke
+is recorded with owner OK.
 
-| ID | Check |
-|---|---|
-| A1.1 | Deployment contract test lists exactly the five hub processes for the full topology |
-| A1.2 | `TestMinimalNativeStackStillRenders` plus a live minimal-stack message receipt |
-| A1.3 | `TestRuntimeDoesNotLinkToolHub` (go list closure of the three binaries) |
-| A1.4 | One refusal test per refused crossing in the ADR-0105 table, added by the CHG that builds the crossing |
-| A2.1 | `TestContractConformanceInProcAndHTTP` for identity, task, toolsurface |
-| A2.2 | A contract import of a non-contract package fails the gate |
-| A3.1 | `TestModuleImportAllowlist` |
-| A3.2 | Adding a forbidden import fails `just check`; a stale baseline entry fails |
-| A3.3 | A forbidden package reached transitively is reported with its path |
-| A4.1-A4.3 | Each owner CHG proves the old writers are gone (`rg` and gate evidence) |
-| A5.1 | `TestNoUnmanagedRenderPath` |
-| A5.2 | `TestGatewayRefusesWithoutRuntimeEndpoint` |
-| A5.3 | `TestSupervisorFailsClosedOnUnreadableRuntimeEnv` |
-| A5.4 | devcheck path-hygiene test |
-| A6.1 | Every agent-zone handler has a token-required test |
-| A6.2 | Forge, alias, stale-generation and cross-space tests reach no backend (backend spy records zero calls) |
-| A6.3 | Unsigned or mismatched bundle denies load |
-| A7.1 | Owner sign-off recorded in CHG-0353 or downgraded claims verified in README and docs/architecture.md |
+| ID | Issue | Check |
+|---|---|---|
+| A0.1 | M40.0 #598 | Ten named regressions red before, green after: `TestUncertainJobReleasesLaneAfterSupervisorSettles`, `TestLeaseCountDerivedFromLeaseRows`, `TestRunningJobPastDeadlineBecomesUncertain`, `TestScheduleEditDropsPendingBatchAndKeepsOtherStreams`, `TestCorruptMappingSettlesClaimedJob`, `TestGoalClearDuringEvaluationIsNotUndone`, `TestFailedDreamingNightDoesNotBlockNextNight`, `TestRenderMigratesBindingsOnSQLiteStore`, `TestFirstApplyCrashRecoversWithoutIntervention`, `TestApplyRefusesPausedAssignment` |
+| A1.1 | M40.1 #599 | `docs/engineering.md`, `docs/architecture.md`, `docs/state-machines.md`, `services/README.template.md` exist and the owner reviewed them |
+| A1.2 | M40.1 #599 | `TestServiceReadmeTemplateHeadings`; `go run ./cmd/devcheck docs` green |
+| A2.1 | M40.2 #600 | `TestStoreRefusesUnscopedQuery`; tenant invariant runner runs first in `just test` |
+| A2.2 | M40.2 #600 | `TestMigrationLockSerializesConcurrentStart`; store suite green on Postgres in CI |
+| A2.3 | M40.2 #600 | `TestTransitionRejectsForbiddenAndWritesNothing`, `TestSweepMovesExpiredState` |
+| A2.4 | M40.2 #600 | `cmd/hub`, the dependency gate and baseline, `contracts/toolsurface` deleted; nothing imports them; `shared/*` import rule in devcheck |
+| A2.5 | M40.2 #600 | `TestProcessModeRefusesUntrusted` |
+| A2.6 | M40.2 #600 | `TestMinimalProfileAnswersMessage` (process mode, fake model server) |
+| A2.7 | M40.2 #600 | `TestToolCatalogSnapshotUnchanged` |
+| A3.1 | M40.3 #601 | Create space and first message on process and docker; backend conformance (only own workspace mounted, no secret in env/argv, network edges applied) |
+| A3.2 | M40.3 #601 | `TestRevisionRollbackActivatesOlder`, `TestApplyCrashLeavesPreviousActive`, `TestWarmClaimBindsTenantAndDigest`, `TestRevokeDrainsOldDigest`, `TestUntrustedRefusesProcessBackend`; no `.json`/`.jsonl` state; old spawn code deleted; `settings_edit` end to end |
+| A4.1 | M40.4 #602 | Minimal profile answers with native tools; `TestParallelSessionsIsolated`, `TestRunIdentityNotTakenFromRequest`, `TestWorkspaceConfigIgnored`, `TestNarrowerRightsNeedSeparateRuntime` |
+| A5.1 | M40.5 #603 | `TestChannelLinkRequiresInChannelProof`, `TestOIDCCallbackCannotLinkForeignSender`, `TestSimilarNamesNeverMerge`, `TestAgentPrincipalCannotImpersonateHuman`, `TestGuestIdOpaque`, `TestLegacySpaceMapsToOwnedAgent`; no YAML or env user list left; live spaces migrated 1:1 after an owner-reviewed dry run |
+| A6.1 | M40.6 #604 | `TestUncertainNeverAutoRetried`, `TestDuplicateWakeCollapses`, `TestInterruptCancelsRunningJob`, `TestPanicStopCancelsAllJobsOfUser`, `TestRunEventsResumeFromCursor`; M40.0 wedge regressions as FSM tests; no other package writes job status; `sessions` works through task-engine |
+| A7.1 | M40.7 #605 | `TestDeniedToolNotListed`, `TestUnknownToolIsCritical`, `TestApprovalSingleUseAndBoundToArgs`, `TestApprovalTimeoutDenies`, `TestUnpromptedRunCannotWriteExternal`, `TestToolResultCannotApprove`; routing test per family; every tool has exactly one executor; no other process opens `tool.db` |
+| A8.1 | M40.8 #606 | `TestGroupWithOneUserAndBotServedByOwnerSpace`, `TestGuestCannotApprove`, `TestDeliveryRecordedAfterResult`, `TestUnknownSendOutcomeNotResent`; Telegram and Slack through ingress in process mode; native gateway fallback |
+| A9.1 | M40.9 #607 | Provider conformance; `TestForgetRemovesItem`, `TestDisconnectPurgesConnectorItems`; native memory fallback |
+| A10.1 | M40.10 #608 | `TestCatchUpAfterDowntime`, `TestJobsOnlyViaTaskEngine`, `TestPausedAssignmentApplyRefused`; FSM tables; importer on real-shaped data |
+| A11.1 | M40.11 #609 | Tool preservation for sites and exposure; publish and unpublish a site in process mode |
+| A12.1 | M40.12 #610 | Provider conformance; `TestBudgetAutoPause`, `TestNoProviderKeyInRuntime` |
+| A13.1 | M40.13 #611 | `TestNoSecretInRuntimeEnvArgvOrFiles`, `TestMetadataCIDRBlocked`, `TestEgressRequiresRunToken`; broker contract tests at the module's 85% floor; credential-broker README follows the template (exemption removed) |
+| A14.1 | M40.14 #612 | `TestForgedRunTokenRefusedBeforeBackend`, `TestRunAliasRefused`, `TestStaleGenerationRefused`, `TestPolicyDigestMismatchRefused`, `TestRevocationCascadesToAssignmentRuns`, `TestForeignSpaceTokenRefused`, `TestHeaderInjectionIgnored`, each with a backend spy at zero calls |
+| A14.2 | M40.14 #612 | No `X-Hub-Principal`, control-token principal assertion, header fallback or unsigned admission left |
+| A15.1 | M40.15 #613 | Backend conformance on kind and firecracker (nightly); store suites on Postgres; `TestOnlyOneCopyRunsSweeper` |
+| A16.1 | M40.16 #614 | Profiles x backends matrix (space, first message, one tool per family, one routine) with receipts; v0 import and rollback rehearsal on a copy of live data; load within SPEC-0101; T01-T22 owner sign-off (R7.1) |
+
+Common to every service row A3..A13: README from the template, state
+machines in `docs/state-machines.md`, no `.json`/`.jsonl` service state,
+tenant invariants and the tool snapshot green, old code deleted.

@@ -1,15 +1,28 @@
 ---
 description: Frozen v1 proactive-engine, action modes and evaluation - listeners and event inbox, object model and lifecycle, pipeline and ledgers, attention budgets, modes and owner decisions, live Jira/Slack scenarios and proactivity eval thresholds.
-last_verified: "2026-11-19"
+last_verified: "2026-11-20"
 ---
 # SPEC-0102: v1 proactive-engine, action modes and eval thresholds
 
-Frozen: 2026-11-19. Implementation: CHG-0344..CHG-0349, CHG-0352.
+Frozen: 2026-11-19. Implementation: M41 items 1-6 (event sources and
+watches, assignments with progress, attention, modes and standing
+approvals, user model, evaluation gate); M40.10 (#608) for R2.2-R2.3.
+
+Scope note (2026-11-20, CHG-0334): the simplified v1 plan moves
+listeners, the pipeline and ledgers, attention, action modes and the eval
+gate to M41 ([ADR-0108](../../docs/adr/ADR-0108-proactive-engine.md) and
+[ADR-0109](../../docs/adr/ADR-0109-action-modes-owner-decisions.md) as
+aligned). In M40 only R2.2 (agent paths create drafts only) and R2.3
+(migration with dry run, refusing unmapped records) apply, through
+M40.10; owner decisions in M40 follow ADR-0109 D5 and SPEC-0100 A7.1. The
+rest is a draft for M41 and is re-reviewed when M41 starts. The CHG
+numbers this spec named before were a reserved table that no longer
+exists.
 Decisions: [ADR-0108](../../docs/adr/ADR-0108-proactive-engine.md),
 [ADR-0109](../../docs/adr/ADR-0109-action-modes-owner-decisions.md).
 Trace: [SPEC-0100](SPEC-0100-v1-contracts.md) exit criterion EC5;
 latency P5 in [SPEC-0101](SPEC-0101-v1-execution-slos.md).
-Prior art: `.work/in-progress/CHG-0328-v1-architecture/research.md`.
+Prior art: `.work/done/CHG-0328-v1-architecture/research.md`.
 
 ## R1 Listeners and event inbox
 
@@ -91,7 +104,7 @@ with a recorded model; a release also runs it against the live model.
   violations = 0; premature termination on no-op cases <= 5%; precision >=
   0.70; recall on must-notify events >= 0.90.
 - R7.3 Regression bounds: F1 and precision may not drop more than 0.03
-  below the baseline recorded in CHG-0352; cost per task may not rise more
+  below the baseline recorded by the M41 eval gate; cost per task may not rise more
   than 20%. A baseline update is an owner-confirmed commit.
 
 ## Acceptance
@@ -103,5 +116,5 @@ with a recorded model; a release also runs it against the live model.
 | A3.1-A3.4 | Stage records for every outcome; zero model calls in stages 1-4 (spy); replan and park tests; criteria-without-evidence refused |
 | A4.1-A4.4 | Direct send refused; decision reasons recorded; default budgets; over-budget goes to digest |
 | A5.1-A5.5 | Matrix table test; undeclared effect denies; always-ask under full-access; decision digest binding; remember expiry |
-| A6.1-A6.3 | Live receipts in CHG-0346 state for Jira and Slack |
-| A7.1-A7.3 | CI eval job output and baseline file in CHG-0352 |
+| A6.1-A6.3 | Live receipts in the M41 assignments CHG for Jira and Slack |
+| A7.1-A7.3 | CI eval job output and baseline file in the M41 eval CHG |

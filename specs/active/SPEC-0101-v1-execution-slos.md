@@ -1,11 +1,26 @@
 ---
 description: Frozen v1 execution and provisioning - spawn-controller authority, instant space creation, runtime and job state machines, execution classes, harness isolation, browser tab leases, capacity and latency SLOs.
-last_verified: "2026-11-19"
+last_verified: "2026-11-20"
 ---
 # SPEC-0101: v1 execution and provisioning SLOs
 
-Frozen: 2026-11-19. Implementation: CHG-0333, CHG-0334, CHG-0335,
-CHG-0336, CHG-0351, CHG-0353.
+Frozen: 2026-11-19. Implementation: M40.3 (#601), M40.4 (#602), M40.6
+(#604), M40.16 (#614, load report).
+
+Scope note (2026-11-20, CHG-0334): the simplified v1 plan
+([ADR-0107](../../docs/adr/ADR-0107-execution-spawn-task-runtime.md) as
+aligned) partly supersedes this spec; [SPEC-0100](SPEC-0100-v1-contracts.md)
+holds the acceptance per issue. Still in force: SLOs P1-P4 and P6, R1.2,
+R1.4, R2.1-R2.3, R4.2, R4.5, R5.2, R7.1. Superseded: R1.1 and A1.1 wording
+"hub-control" (read: spawn-controller is the only service with backend
+credentials), R1.3 generation feed (generation is checked at task-engine,
+ADR-0106 D6), R3 pods and pools (replaced by the warm pool keyed by image
+digest, ADR-0107 D3), R4.1 classes (now `interactive|scheduled|subagent`
+with `origin owner|unprompted`), R4.3-R4.4 lanes and preemption (now the
+conversation queue `queue|interrupt`, ADR-0107 D7), R5.1 (relays leave the
+runtime in M40.12/M40.13). Moved: P5 to M41 (attention), R6 browser tab
+leases to M42. The CHG numbers this spec named before were a reserved
+table that no longer exists.
 Decision: [ADR-0107](../../docs/adr/ADR-0107-execution-spawn-task-runtime.md).
 Trace: [SPEC-0100](SPEC-0100-v1-contracts.md) exit criteria EC2, EC4, EC5,
 EC6. Keeps SPEC-0053 S1-S3 and SPEC-0089 lane rules unless a row below
@@ -84,10 +99,10 @@ images pre-pulled. Measured over at least 50 samples per row.
 
 | ID | Check |
 |---|---|
-| AP1-AP6 | Load harness report with sample counts, p50/p95 and source SHA in CHG-0353 |
+| AP1-AP6 | Load harness report with sample counts, p50/p95 and source SHA in the M40.16 CHG |
 | A1.1 | Gate: no binary other than hub-control links a container backend client |
 | A1.2 | Table-driven transition test with every illegal edge |
-| A1.3 | Generation bump invalidates an outstanding run token (with CHG-0332) |
+| A1.3 | Generation bump invalidates an outstanding run token (M40.14) |
 | A2.1-A2.3 | Create-space integration test plus live receipt |
 | A3.1-A3.2 | Pod create/destroy and pool non-reuse tests |
 | A4.1-A4.5 | Ledger tests per class, transition table test, lane and preemption tests, duplicate accept test |
