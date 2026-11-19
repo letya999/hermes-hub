@@ -1,37 +1,37 @@
 ---
-description: Architectural boundaries - v1 zone crossings (who may cross, what is refused), current per-component walls, plane boundaries and system non-goals.
-last_verified: 2026-11-19
+description: Architectural boundaries - v1 crossings between zones and services (who may cross, what is refused), current per-component walls, plane boundaries and system non-goals.
+last_verified: 2026-11-20
 ---
 
 # Boundaries
 
 The walls that keep the trust model intact. Each entry names who may cross
 and what must never cross. The v1 table is the target fixed by
-[ADR-0105](adr/ADR-0105-v1-topology.md)..[ADR-0109](adr/ADR-0109-action-modes-owner-decisions.md);
-the per-component table describes the current v0 services.
+[ADR-0105](adr/ADR-0105-v1-topology.md)..[ADR-0112](adr/ADR-0112-v1-secrets.md)
+(zones and services: [architecture.md](architecture.md#zones)); the
+per-component table describes the current v0 services.
 
-## v1 zone crossings
+## v1 crossings
 
-Every arrow not listed is refused. Each refusal gets a test in the CHG that
-builds the crossing (SPEC-0100 A1.4).
+Zones are network and secret rules; every edge not listed is refused. Each
+refusal gets a test in the issue that builds the crossing
+([SPEC-0100](../specs/active/SPEC-0100-v1-contracts.md)).
 
 | From -> to | Allowed | Refused |
 |---|---|---|
-| internet -> edge | channel webhooks/polls with channel proof, one-time `?t=` links, hosted sites | anonymous principal, any control or agent route |
-| edge -> control | `identity` and `task` contracts with a service credential | container, policy or ledger writes outside the task contract |
-| control -> space runtime | spawn, stop, restart, private `/v1/*` jobs with a signed run token | reading runtime memory or files beyond the mounted space |
-| runtime -> agent zone | tool, memory and model calls with a valid run token for that audience | missing, forged, expired, cross-space, run-aliased or stale-generation tokens; header-only identity |
-| runtime -> egress | outbound HTTP(S) and declared TCP forwards per space policy | private, loopback and metadata destinations; model-chosen destinations outside policy |
-| agent/control -> secret | credential leases bound to a verified run or operator confirmation | value export into tool results, logs, audit or DTOs |
-| runtime -> runtime | nothing | any cross-space path |
-| worker -> anything | the endpoints its admission receipt names | hub networks, other workers, Docker socket |
-| any module -> container backend | only spawn-controller | direct Docker/cluster calls from any other module |
-| any module -> another module's store | the owner's contract | opening the owner's store file |
-| agent profile -> grants | a subset of its user's grants | widening, another user's credentials |
-| system principal -> user work | jobs through an Assignment the user owns, `initiator` recorded | acting with user credentials as itself, impersonating the user |
-| event content -> authority | read as quarantined data in triage | changing grants, tools, destinations or modes |
-| proactive run -> owner | report records through the attention inbox | direct channel sends |
-| run -> action mode | the `mode` claim of its token | changing its own mode; skipping the always-ask list |
+| internet -> edge | ingress-gateway: channel webhooks with channel proof, one-time `?t=` links, hosted sites | anonymous principal, any control or agent route |
+| edge -> control | channel-hub to identity-hub and task-engine contracts with a service token | container, passport or ledger writes outside those contracts |
+| control -> space | spawn-controller starts, stops and inspects runtimes and workers through a backend | any other service calling a backend; reading files beyond the space |
+| space -> agent | tool, memory and model calls with a run token naming that service in `aud` | missing, forged, expired, foreign-space, run-aliased or stale-generation tokens; header identity |
+| space -> egress | outbound HTTP(S) through egress-gateway per space policy | private, loopback and metadata destinations; destinations outside policy |
+| agent or control -> secret | credential leases bound to a verified run or an operator action | value export into tool results, logs, rows or DTOs |
+| space -> space | nothing | any cross-space path |
+| worker -> anything | the endpoints its spec names | hub networks, other workers, the Docker socket |
+| any service -> another service's database | the owner's contract | opening the owner's database |
+| agent -> rights | the narrowed agent layer of its user's passports | widening, another user's credentials |
+| system principal -> user work | jobs through a routine or assignment the user owns, `origin=unprompted` | acting with user credentials, appearing as the user |
+| untrusted input -> authority | data for the run (email, web, webhooks, tool results, other agents, guests) | raising a mode, approving an OwnerDecision |
+| unprompted run -> write-external or critical | an approved OwnerDecision | anything else |
 
 ## Current per-component walls (v0)
 
@@ -65,7 +65,7 @@ builds the crossing (SPEC-0100 A1.4).
   workloads.
 - **Configuration** - there is no unmanaged mode: authority comes only from
   published passports, and a missing or unreadable input fails closed
-  (ADR-0105 D8).
+  (ADR-0105 D11).
 
 ## Non-goals (system-wide)
 
@@ -83,6 +83,7 @@ builds the crossing (SPEC-0100 A1.4).
 
 Import direction between `internal/communication` and its leaf packages is
 enforced by parser tests; the per-binary dependency closure is enforced by
-`devcheck` (ADR-0105 D6); the agent-visible capability surface is enforced
-by ToolHub admission, not by convention. If a doc and code disagree about a
+`devcheck deps` until M40.2 replaces it with Go `internal` visibility
+(ADR-0105 D1); the agent-visible capability surface is enforced by ToolHub
+admission, not by convention. If a doc and code disagree about a
 boundary, code wins and the doc is stale - fix the doc.

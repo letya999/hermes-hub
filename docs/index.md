@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-19
+last_verified: 2026-11-20
 ---
 # Documentation
 
@@ -11,16 +11,17 @@ last_verified: 2026-11-19
 | Document | Purpose |
 |---|---|
 | [principles.md](principles.md) | Project philosophy — the rules every other document assumes |
-| [architecture.md](architecture.md) | System overview — roles, component map, networks, lifecycle |
-| [boundaries.md](boundaries.md) | Per-component walls and system non-goals |
-| [engineering.md](engineering.md) | Go conventions, gates, pins, change process |
+| [architecture.md](architecture.md) | v1 service model - service table, core and optional, profiles, layers, zones, spawn flow, backends, tool executors, extraction map; pointers to the v0 system |
+| [boundaries.md](boundaries.md) | v1 crossings, per-component v0 walls and system non-goals |
+| [engineering.md](engineering.md) | The v1 rulebook - every rule with its enforcing test or gate; gates, pins, change process |
+| [state-machines.md](state-machines.md) | State-machine catalog - v0 states and known defects, v1 target tables per owning service |
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |
 | [ci-mirror.md](ci-mirror.md) | One-way repository mirror, registry-agnostic GitLab gates/publication and optional Helm deploy |
 | [runtime-operations.md](runtime-operations.md) | Runtime images, supervisor lifecycle, rollout and preparation |
 | [runtime-sandbox.md](runtime-sandbox.md) | Optional runc/runsc/Kata selection, node prerequisites, fail-closed rollout and qualification |
-| [glossary.md](glossary.md) | Canonical terms — feature, tool, toolset, capability, connector, backend/`via` |
+| [glossary.md](glossary.md) | Canonical terms - v1 identity and execution vocabulary, feature, tool, toolset, capability, connector, backend/`via` |
 
 ## Access and surface
 
