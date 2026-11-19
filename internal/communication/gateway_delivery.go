@@ -75,138 +75,7 @@ func (g *Gateway) worker(ctx context.Context) {
 			nextObservation = now.Add(5 * time.Second)
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
-			admission, found, admissionErr := g.spool.Mapping(job.ID)
-			if admissionErr != nil || !found || !admission.MatchesJob(*job) {
-				log.Printf("gateway job_id=%q status=blocked reason=admission_binding", job.ID)
-				continue
-			}
-			if job.Text != "" && g.authorizeGroupMapping(mappingFromJob(*job, g.now())) != nil {
-				log.Printf("gateway job_id=%q channel=%q status=denied reason=group_authorization", job.ID, job.Channel)
-				if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
-					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
-				}
-				continue
-			}
-			if job.Trigger == "goal" && !g.goalTurnClaimable(*job) {
-				// A turn queued under a superseded epoch (or a cleared/paused
-				// goal) no-ops: the model is never invoked for a goal that
-				// already moved on (SPEC-0074).
-				if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
-					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
-				}
-				continue
-			}
-			g.busy.Add(1)
-			var response string
-			var outcome RunOutcome
-			var runErr error
-			if detailed, ok := g.runner.(outcomeRunner); ok {
-				outcome, runErr = detailed.RunOutcome(ctx, *job)
-				response = outcome.Text
-			} else {
-				response, runErr = g.runner.Run(ctx, *job, g.user(job.UserID))
-				outcome = RunOutcome{Text: response, Status: "completed", LastEvent: "run.completed"}
-				if runErr != nil {
-					outcome.Status = "failed"
-				}
-			}
-			g.busy.Add(-1)
-			if runErr == nil && outcome.Status != "" && outcome.Status != "completed" {
-				if terminalStatus(outcome.Status) {
-					runErr = errors.New("run ended without completion")
-				} else {
-					runErr = ErrUncertain
-				}
-			}
-			if runErr != nil || outcome.Status == "uncertain" {
-				if mapping, found, err := g.spool.Mapping(job.ID); err == nil && found && terminalStatus(mapping.Status) {
-					saved, saveErr := g.spool.savedTerminalOutcome(mapping)
-					if saveErr != nil {
-						log.Printf("gateway job_id=%q status=uncertain reason=terminal_source", job.ID)
-						continue
-					}
-					outcome = saved
-					response = outcome.Text
-					if mapping.Status == "completed" {
-						runErr = nil
-					} else {
-						runErr = errors.New("run ended without completion")
-					}
-				}
-			}
-			if runErr != nil || outcome.Status == "uncertain" {
-				if runErr == nil {
-					runErr = ErrUncertain
-				}
-				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
-					outcome.Status, outcome.LastEvent = "uncertain", "run.unknown"
-				} else if outcome.Status == "" {
-					outcome.Status, outcome.LastEvent = "failed", "run.failed"
-				}
-				// A goal turn that failed for good must not leave the record
-				// "active" with nothing queued — that zombie reports live in
-				// /goal status while the loop never runs again.
-				goalPaused := false
-				if job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
-					goalPaused = g.pauseGoalAfterRunFailure(*job)
-				}
-				lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
-				key, message := "job-"+job.ID+"-error", failureMessage(lang, outcome.Status)
-				if goalPaused {
-					message += " " + locale.T(lang, "job.goal-paused")
-				}
-				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
-					key = "job-" + job.ID + "-uncertain"
-					message = locale.T(lang, "job.uncertain")
-					if outcome.RunID != "" && g.config.RuntimeURL != "" {
-						message = locale.T(lang, "job.recheck")
-					}
-				}
-				deliver := true
-				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
-					// SPEC-0053 R3.2: while the reconciliation window is still
-					// open the owner is not told the outcome is unknown — the
-					// reconciler or a named cause settles it first. The window
-					// is anchored at the first uncertain outcome, not the
-					// latest re-observation attempt.
-					if mapping, ok, merr := g.spool.Mapping(job.ID); merr == nil && ok {
-						since := mapping.UncertainSince
-						if since.IsZero() {
-							since = g.now()
-						}
-						if g.now().Before(since.Add(hubruntime.RunBudget())) {
-							deliver = false
-						}
-					}
-				}
-				var delivery *Delivery
-				if deliver {
-					delivery = &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()}
-				}
-				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
-					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
-					continue
-				}
-				if outcome.Status == "failed" {
-					g.alertJobFailed(*job)
-				}
-
-			} else {
-				var delivery *Delivery
-				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
-					delivery = &Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()}
-				}
-				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
-					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
-					continue
-				}
-				g.maybeAutoTitle(ctx, *job)
-				g.goalAfterJob(ctx, *job, response)
-			}
-			g.recordJob(*job, outcome)
-			if job.Sensitive {
-				_ = g.api.DeleteMessage(ctx, job.ChatID, job.MessageID)
-			}
+			g.runClaimedJob(ctx, job)
 		}
 		select {
 		case <-ctx.Done():
@@ -214,6 +83,158 @@ func (g *Gateway) worker(ctx context.Context) {
 		case <-g.spool.Notify():
 		case <-ticker.C:
 		}
+	}
+}
+
+// runClaimedJob executes one claimed job. Every exit that has not handed the
+// job to a durable terminal outcome settles it through FailJob, so a claimed
+// job never stays in running/ with its conversation lane held.
+func (g *Gateway) runClaimedJob(ctx context.Context, job *Job) {
+	settled := false
+	defer func() {
+		if !settled {
+			if err := g.spool.FailJob(job.ID); err != nil {
+				log.Printf("gateway job_id=%q status=uncertain reason=settle_failed", job.ID)
+			}
+		}
+	}()
+	admission, found, admissionErr := g.spool.Mapping(job.ID)
+	if admissionErr != nil || !found || !admission.MatchesJob(*job) {
+		log.Printf("gateway job_id=%q status=blocked reason=admission_binding", job.ID)
+		return
+	}
+	if job.Text != "" && g.authorizeGroupMapping(mappingFromJob(*job, g.now())) != nil {
+		log.Printf("gateway job_id=%q channel=%q status=denied reason=group_authorization", job.ID, job.Channel)
+		if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
+			log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+		} else {
+			settled = true
+		}
+		return
+	}
+	if job.Trigger == "goal" && !g.goalTurnClaimable(*job) {
+		// A turn queued under a superseded epoch (or a cleared/paused
+		// goal) no-ops: the model is never invoked for a goal that
+		// already moved on (SPEC-0074).
+		if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
+			log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+		} else {
+			settled = true
+		}
+		return
+	}
+	g.busy.Add(1)
+	var response string
+	var outcome RunOutcome
+	var runErr error
+	if detailed, ok := g.runner.(outcomeRunner); ok {
+		outcome, runErr = detailed.RunOutcome(ctx, *job)
+		response = outcome.Text
+	} else {
+		response, runErr = g.runner.Run(ctx, *job, g.user(job.UserID))
+		outcome = RunOutcome{Text: response, Status: "completed", LastEvent: "run.completed"}
+		if runErr != nil {
+			outcome.Status = "failed"
+		}
+	}
+	g.busy.Add(-1)
+	if runErr == nil && outcome.Status != "" && outcome.Status != "completed" {
+		if terminalStatus(outcome.Status) {
+			runErr = errors.New("run ended without completion")
+		} else {
+			runErr = ErrUncertain
+		}
+	}
+	if runErr != nil || outcome.Status == "uncertain" {
+		if mapping, found, err := g.spool.Mapping(job.ID); err == nil && found && terminalStatus(mapping.Status) {
+			saved, saveErr := g.spool.savedTerminalOutcome(mapping)
+			if saveErr != nil {
+				log.Printf("gateway job_id=%q status=uncertain reason=terminal_source", job.ID)
+				return
+			}
+			outcome = saved
+			response = outcome.Text
+			if mapping.Status == "completed" {
+				runErr = nil
+			} else {
+				runErr = errors.New("run ended without completion")
+			}
+		}
+	}
+	if runErr != nil || outcome.Status == "uncertain" {
+		if runErr == nil {
+			runErr = ErrUncertain
+		}
+		if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+			outcome.Status, outcome.LastEvent = "uncertain", "run.unknown"
+		} else if outcome.Status == "" {
+			outcome.Status, outcome.LastEvent = "failed", "run.failed"
+		}
+		// A goal turn that failed for good must not leave the record
+		// "active" with nothing queued — that zombie reports live in
+		// /goal status while the loop never runs again.
+		goalPaused := false
+		if job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
+			goalPaused = g.pauseGoalAfterRunFailure(*job)
+		}
+		lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
+		key, message := "job-"+job.ID+"-error", failureMessage(lang, outcome.Status)
+		if goalPaused {
+			message += " " + locale.T(lang, "job.goal-paused")
+		}
+		if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+			key = "job-" + job.ID + "-uncertain"
+			message = locale.T(lang, "job.uncertain")
+			if outcome.RunID != "" && g.config.RuntimeURL != "" {
+				message = locale.T(lang, "job.recheck")
+			}
+		}
+		deliver := true
+		if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
+			// SPEC-0053 R3.2: while the reconciliation window is still
+			// open the owner is not told the outcome is unknown — the
+			// reconciler or a named cause settles it first. The window
+			// is anchored at the first uncertain outcome, not the
+			// latest re-observation attempt.
+			if mapping, ok, merr := g.spool.Mapping(job.ID); merr == nil && ok {
+				since := mapping.UncertainSince
+				if since.IsZero() {
+					since = g.now()
+				}
+				if g.now().Before(since.Add(hubruntime.RunBudget())) {
+					deliver = false
+				}
+			}
+		}
+		var delivery *Delivery
+		if deliver {
+			delivery = &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()}
+		}
+		if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
+			log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+			return
+		}
+		settled = true
+		if outcome.Status == "failed" {
+			g.alertJobFailed(*job)
+		}
+
+	} else {
+		var delivery *Delivery
+		if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
+			delivery = &Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()}
+		}
+		if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
+			log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+			return
+		}
+		settled = true
+		g.maybeAutoTitle(ctx, *job)
+		g.goalAfterJob(ctx, *job, response)
+	}
+	g.recordJob(*job, outcome)
+	if job.Sensitive {
+		_ = g.api.DeleteMessage(ctx, job.ChatID, job.MessageID)
 	}
 }
 

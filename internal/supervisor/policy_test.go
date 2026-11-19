@@ -53,7 +53,7 @@ func TestSupervisorPolicyGovernsReleaseDeadline(t *testing.T) {
 	m := &Manager{cfg: Config{WarmTTL: 30 * time.Minute, Environment: "dev", StateDir: stateDir, Now: time.Now}, locks: map[string]*sync.Mutex{}, statePath: filepath.Join(stateDir, "state.json")}
 	binding := Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", ContextRoot: dir}
 	key := "alice\x00alice\x00gateway"
-	entry := &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", State: Busy, Generation: "gen-1", Leases: 1}, binding: binding, leases: map[string]Lease{
+	entry := &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", State: Busy, Generation: "gen-1"}, binding: binding, leases: map[string]Lease{
 		"lease-1": {ID: "lease-1", Kind: LeaseStream, Owner: "caller", Generation: "gen-1"},
 	}}
 	m.items = map[string]*runtimeEntry{key: entry}
@@ -67,7 +67,7 @@ func TestSupervisorPolicyGovernsReleaseDeadline(t *testing.T) {
 	}
 	// The per-lease release path retires on the same bound.
 	key2 := "bob\x00bob\x00gateway"
-	entry2 := &runtimeEntry{Runtime: Runtime{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", State: Busy, Generation: "gen-1", Leases: 1}, binding: Binding{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", ContextRoot: dir}, leases: map[string]Lease{
+	entry2 := &runtimeEntry{Runtime: Runtime{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", State: Busy, Generation: "gen-1"}, binding: Binding{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", ContextRoot: dir}, leases: map[string]Lease{
 		"lease-2": {ID: "lease-2", Kind: LeaseStream, Owner: "caller", Generation: "gen-1"},
 	}}
 	m.items[key2] = entry2
@@ -79,7 +79,7 @@ func TestSupervisorPolicyGovernsReleaseDeadline(t *testing.T) {
 	}
 	// A stale lease swept off a busy runtime retires it on the same bound.
 	key3 := "carol\x00carol\x00gateway"
-	entry3 := &runtimeEntry{Runtime: Runtime{PrincipalID: "carol", ContextID: "carol", RuntimeID: "carol", RuntimeMode: "gateway", State: Busy, Generation: "gen-2", Leases: 1}, binding: Binding{PrincipalID: "carol", ContextID: "carol", RuntimeID: "carol", RuntimeMode: "gateway", ContextRoot: dir}, leases: map[string]Lease{
+	entry3 := &runtimeEntry{Runtime: Runtime{PrincipalID: "carol", ContextID: "carol", RuntimeID: "carol", RuntimeMode: "gateway", State: Busy, Generation: "gen-2"}, binding: Binding{PrincipalID: "carol", ContextID: "carol", RuntimeID: "carol", RuntimeMode: "gateway", ContextRoot: dir}, leases: map[string]Lease{
 		"lease-stale": {ID: "lease-stale", Kind: LeaseStream, Owner: "caller", Generation: "gen-1"},
 	}}
 	m.items[key3] = entry3
@@ -182,7 +182,6 @@ func TestSupervisionProtectedWatcherOnlyObserves(t *testing.T) {
 	entry.readinessBadSince = m.cfg.Now().Add(-wedgedReadinessWindow - time.Minute)
 	entry.lastRemediatedAt = m.cfg.Now().Add(-wedgedRemediationCooldown - time.Minute)
 	entry.leases = map[string]Lease{}
-	entry.Leases = 0
 	m.pins[key] = hubruntime.ExecuteRequest{}
 	m.mu.Unlock()
 	m.ReconcileHealth(context.Background(), m.cfg.Now())

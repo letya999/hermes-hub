@@ -81,6 +81,34 @@ func (s *Spool) SaveGoal(goal Goal) error {
 	return s.saveGoalLocked(goal)
 }
 
+// errGoalSuperseded refuses a goal write whose record was cleared, left the
+// active state or moved to a newer epoch since the caller read it.
+var errGoalSuperseded = errors.New("goal superseded")
+
+// UpdateGoal applies fn to the durable record under the spool lock. It
+// re-reads the record and refuses when it is gone, no longer active or at a
+// different epoch than expectEpoch, so a slow caller cannot undo a concurrent
+// /goal clear, pause or epoch bump with a stale snapshot.
+func (s *Spool) UpdateGoal(principal, conversationID string, expectEpoch int64, fn func(*Goal)) (Goal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	goal, err := s.loadGoalLocked(principal, conversationID)
+	if errors.Is(err, os.ErrNotExist) {
+		return Goal{}, errGoalSuperseded
+	}
+	if err != nil {
+		return Goal{}, err
+	}
+	if goal.Status != "active" || goal.Epoch != expectEpoch {
+		return Goal{}, errGoalSuperseded
+	}
+	fn(&goal)
+	if err := s.saveGoalLocked(goal); err != nil {
+		return Goal{}, err
+	}
+	return goal, nil
+}
+
 func (s *Spool) saveGoalLocked(goal Goal) error {
 	now := time.Now().UTC()
 	if goal.CreatedAt.IsZero() {

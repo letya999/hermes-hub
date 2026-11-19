@@ -355,13 +355,13 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	for i, binding := range bindings {
 		if err := wait("terminal lease settlement", 10*time.Second, func() bool {
 			runtime, ok, err := manager.Status(binding)
-			return err == nil && ok && runtime.Leases == 0 && runtime.State == supervisor.Idle
+			return err == nil && ok && len(runtime.Consumers) == 0 && runtime.State == supervisor.Idle
 		}); err != nil {
 			runtime, _, _ := manager.Status(binding)
-			return fmt.Errorf("%w (last observed leases=%d state=%s)", err, runtime.Leases, runtime.State)
+			return fmt.Errorf("%w (last observed leases=%d state=%s)", err, len(runtime.Consumers), runtime.State)
 		}
 		runtime, ok, err := manager.Status(binding)
-		if err != nil || !ok || runtime.Leases != 0 || runtime.State != supervisor.Idle {
+		if err != nil || !ok || len(runtime.Consumers) != 0 || runtime.State != supervisor.Idle {
 			return errors.New("completed gateway job did not release leases")
 		}
 		idleDeadlines[binding.UserID] = runtime.IdleDeadline
@@ -391,10 +391,10 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err := wait("warm terminal lease settlement and extended deadline", 10*time.Second, func() bool {
 		var ok bool
 		after, ok, err = manager.Status(bindings[0])
-		return err == nil && ok && after.Leases == 0 && after.State == supervisor.Idle &&
+		return err == nil && ok && len(after.Consumers) == 0 && after.State == supervisor.Idle &&
 			after.IdleDeadline.After(before.IdleDeadline) && after.IdleDeadline.Sub(after.LastUsed) >= warmWindow-time.Second
 	}); err != nil {
-		return fmt.Errorf("%w: state=%s leases=%d previous=%s deadline=%s last_used=%s", err, after.State, after.Leases, before.IdleDeadline, after.IdleDeadline, after.LastUsed)
+		return fmt.Errorf("%w: state=%s leases=%d previous=%s deadline=%s last_used=%s", err, after.State, len(after.Consumers), before.IdleDeadline, after.IdleDeadline, after.LastUsed)
 	}
 	idleDeadlines[bindings[0].UserID] = after.IdleDeadline
 	fmt.Println("Real gateway passed: two authenticated users, exact homes, duplicate updates once, warm session reuse and released leases; waiting actual five-minute idle window")
@@ -403,7 +403,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		allStopped := true
 		for _, binding := range bindings {
 			runtime, ok, err := manager.Status(binding)
-			if err != nil || !ok || runtime.State != supervisor.Stopped || runtime.Leases != 0 {
+			if err != nil || !ok || runtime.State != supervisor.Stopped || len(runtime.Consumers) != 0 {
 				allStopped = false
 			} else if time.Now().Before(idleDeadlines[binding.UserID]) {
 				earlyShutdown = true
@@ -415,7 +415,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		detail := ""
 		for _, binding := range bindings {
 			if runtime, ok, statusErr := manager.Status(binding); statusErr == nil && ok {
-				detail += fmt.Sprintf("; %s state=%s leases=%d health=%s ownership=%s desired=%v deadline=%s", binding.UserID, runtime.State, runtime.Leases, runtime.RuntimeHealth, runtime.Ownership, runtime.Desired, runtime.IdleDeadline)
+				detail += fmt.Sprintf("; %s state=%s leases=%d health=%s ownership=%s desired=%v deadline=%s", binding.UserID, runtime.State, len(runtime.Consumers), runtime.RuntimeHealth, runtime.Ownership, runtime.Desired, runtime.IdleDeadline)
 			}
 		}
 		return fmt.Errorf("%w%s", err, detail)

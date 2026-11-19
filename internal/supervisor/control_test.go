@@ -316,7 +316,7 @@ func TestCancellationBeforeWarmRuntimeAdmissionDoesNotExecute(t *testing.T) {
 		t.Fatalf("warm admission escaped cancellation: %s", response.Body.String())
 	}
 	current, _, err := m.Status(b)
-	if err != nil || current.Generation != warm.Generation || current.Leases != 0 {
+	if err != nil || current.Generation != warm.Generation || len(current.Consumers) != 0 {
 		t.Fatalf("warm cancellation changed runtime: %+v %v", current, err)
 	}
 }
@@ -367,7 +367,7 @@ func TestCancellationWhileRuntimeStartsPreventsNativeDispatchAndReleasesHold(t *
 		t.Fatalf("native work not prevented: %d %s", result.Code, result.Body.String())
 	}
 	runtime, ok, err := m.Status(binding(root))
-	if err != nil || !ok || runtime.Leases != 0 {
+	if err != nil || !ok || len(runtime.Consumers) != 0 {
 		t.Fatalf("cancelled startup retained hold: %+v %v", runtime, err)
 	}
 	m.mu.Lock()
@@ -745,7 +745,7 @@ func TestExpireUncertainReconcilesExpiredLease(t *testing.T) {
 	key := runtimeKey(b)
 	m.mu.Lock()
 	entry := m.items[key]
-	entry.State, entry.Leases = Busy, 1
+	entry.State = Busy
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
 	// Past the reconciliation window: expiry is the safety net for records
 	// the reconciler could not settle.
@@ -802,7 +802,7 @@ func TestExpireUncertainInterruptsUnobservableRun(t *testing.T) {
 	key := runtimeKey(b)
 	m.mu.Lock()
 	entry := m.items[key]
-	entry.State, entry.Leases = Busy, 1
+	entry.State = Busy
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: entry.Generation, ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
 	expired := m.jobs[request.JobID]
 	expired.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())
@@ -825,7 +825,7 @@ func TestExpireUncertainInterruptsUnobservableRun(t *testing.T) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(entry.leases) != 0 || entry.Leases != 0 || entry.State != Idle {
+	if len(entry.leases) != 0 || entry.State != Idle {
 		t.Fatalf("lease not freed after interrupt: leases=%v state=%s", entry.leases, entry.State)
 	}
 }
@@ -861,7 +861,7 @@ func TestExpireUncertainInterruptsDeadGeneration(t *testing.T) {
 	// The runtime container was recreated: a new generation means the owning
 	// process — and the run — is provably gone.
 	entry.Generation = "gen-recreated"
-	entry.State, entry.Leases = Busy, 1
+	entry.State = Busy
 	entry.leases = map[string]Lease{"lease-uncertain": {ID: "lease-uncertain", Kind: LeaseUncertain, Owner: "job:" + request.JobID, Generation: "gen-dead", ExpiresAt: time.Now().Add(-2 * m.cfg.WarmTTL)}}
 	expired := m.jobs[request.JobID]
 	expired.UnconfirmedSince = time.Now().Add(-2 * hubruntime.RunBudget())

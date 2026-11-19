@@ -27,7 +27,8 @@ func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.mu.Lock()
-	m.items[runtimeKey(b)].State, m.items[runtimeKey(b)].Leases = Idle, 0
+	m.items[runtimeKey(b)].State = Idle
+	dropEnsureHolds(m.items[runtimeKey(b)])
 	m.mu.Unlock()
 	publishAliceRevision(t, root, func(docs map[string]string) {
 		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
@@ -84,7 +85,8 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(normalized)]
-	entry.State, entry.Leases = Idle, 0
+	entry.State = Idle
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	request := httptest.NewRequest(http.MethodPost, "/v1/respawn", strings.NewReader(`{"principal_id":"alice","context_id":"alice"}`))
 	request.Header.Set("Authorization", "Bearer secret")
@@ -100,7 +102,7 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	}
 	m.mu.Lock()
 	respawned := m.items[runtimeKey(normalized)]
-	leases, state := respawned.Leases, respawned.State
+	leases, state := len(respawned.leases), respawned.State
 	m.mu.Unlock()
 	// Like wake: the respawn is a warm-up, not a hold — the Ensure lease must
 	// settle back to idle instead of pinning the fresh runtime busy.
@@ -220,7 +222,8 @@ func TestRespawnScopedToRuntimeID(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(normalized)]
-	entry.State, entry.Leases = Idle, 0
+	entry.State = Idle
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	request := httptest.NewRequest(http.MethodPost, "/v1/respawn", strings.NewReader(`{"principal_id":"alice","context_id":"alice","runtime_id":"someone-else"}`))
 	request.Header.Set("Authorization", "Bearer secret")
@@ -262,7 +265,8 @@ func TestRespawnSerializesOnRuntimeKey(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(normalized)]
-	entry.State, entry.Leases = Idle, 0
+	entry.State = Idle
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	lock := m.lockFor(runtimeKey(normalized))
 	lock.Lock()

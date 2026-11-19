@@ -37,6 +37,10 @@ func init() {
 		"hubctl.user-disable-stage-failed":        "Отзыв principal на этапе %s не выполнен",
 		"hubctl.user-disable-stage":               "Отозвано %-10s %s",
 		"hubctl.user-disable-complete":            "Principal %s:%s отключён; порядок распространения ingress→jobs→runs→ToolHub→connectors→cron→OAuth→delivery",
+		"hubctl.job-resolve-usage":                "Использование: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":                 "Service-control bearer communication недоступен; передайте --gateway-auth или настройте auth-файлы пространства",
+		"hubctl.job-resolve-failed":               "Задача %s не закрыта: HTTP %d",
+		"hubctl.job-resolved":                     "Задача %s закрыта со статусом %s; полоса разговора свободна",
 		// Language picker and /language.
 		"lang.choose":   "Выберите язык для взаимодействия:",
 		"lang.saved":    "Язык установлен: %s.",

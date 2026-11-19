@@ -187,6 +187,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "user" {
 		return runUser(ctx, args[1:])
 	}
+	if op == "job" {
+		return runJob(ctx, args[1:])
+	}
 	if op == "usage" {
 		f := flag.NewFlagSet("usage", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")

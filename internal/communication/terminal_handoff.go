@@ -37,6 +37,12 @@ func (s *Spool) RecordTerminalOutcome(job Job, outcome RunOutcome, delivery *Del
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.recordTerminalOutcomeLocked(job, outcome, delivery)
+}
+
+// recordTerminalOutcomeLocked is RecordTerminalOutcome after its payload
+// checks; s.mu must be held.
+func (s *Spool) recordTerminalOutcomeLocked(job Job, outcome RunOutcome, delivery *Delivery) error {
 	mapping, err := s.loadMappingLocked(job.ID)
 	if err != nil {
 		return err
