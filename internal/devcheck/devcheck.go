@@ -433,6 +433,7 @@ func Project(root string) error {
 			resolveRef(m[1], m[2], idx)
 		}
 	}
+	problems = append(problems, serviceReadmes(root)...)
 	if len(problems) > 0 {
 		return fmt.Errorf("%s", strings.Join(problems, "\n"))
 	}
