@@ -16,7 +16,7 @@ import (
 // Go durations and bare seconds, and the auxiliary token file maps long
 // tokens to validated envelopes.
 func TestEndpointConfigFromEnv(t *testing.T) {
-	for _, key := range []string{"HUB_TOOLHUB_TOKEN_ENV", "HUB_RUNTIME_AUTH", "HUB_USER_ID", "HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_CAPABILITY_MODE", "HUB_CAPABILITY_GENERATION", "HUB_CAPABILITY_PROFILE_ID", "HUB_CAPABILITY_ENVIRONMENT", "HUB_CREDENTIAL_BROKER_CONTROL_URL", "HUB_CREDENTIAL_BROKER_RUNTIME_URL", "HUB_AGENT_EXEC_CONTAINER", "HUB_AGENT_EXEC_MODE", "HUB_TOOLHUB_STORE", "HUB_DOCKER_SCOPE", "HUB_DOCKER_AGENT_NET"} {
+	for _, key := range []string{"HUB_TOOLHUB_TOKEN_ENV", "HUB_RUNTIME_AUTH", "HUB_USER_ID", "HUB_CONTEXT_ID", "HUB_RUNTIME_ID", "HUB_POLICY_VERSION", "HUB_CAPABILITY_GENERATION", "HUB_CAPABILITY_PROFILE_ID", "HUB_CAPABILITY_ENVIRONMENT", "HUB_CREDENTIAL_BROKER_CONTROL_URL", "HUB_CREDENTIAL_BROKER_RUNTIME_URL", "HUB_AGENT_EXEC_CONTAINER", "HUB_AGENT_EXEC_MODE", "HUB_TOOLHUB_STORE", "HUB_DOCKER_SCOPE", "HUB_DOCKER_AGENT_NET"} {
 		t.Setenv(key, "")
 	}
 
@@ -28,27 +28,18 @@ func TestEndpointConfigFromEnv(t *testing.T) {
 		t.Fatalf("missing principal accepted: %v", err)
 	}
 	t.Setenv("HUB_USER_ID", "alice")
-	cfg, err := EndpointConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Auth.PrincipalID != "alice" || cfg.Auth.ContextID != "alice" || cfg.Auth.PolicyVersion != "policy-1" || cfg.Listen == "" {
-		t.Fatalf("endpoint config: %+v", cfg)
-	}
-	t.Setenv("HUB_CAPABILITY_MODE", "bogus")
-	if _, err := EndpointConfigFromEnv(); err == nil {
-		t.Fatal("bad capability mode accepted")
-	}
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	if _, err := EndpointConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("incomplete managed identity accepted: %v", err)
 	}
 	t.Setenv("HUB_CAPABILITY_PROFILE_ID", "profile-1")
 	t.Setenv("HUB_CAPABILITY_ENVIRONMENT", "dev")
 	t.Setenv("HUB_CAPABILITY_GENERATION", "7")
-	cfg, err = EndpointConfigFromEnv()
+	cfg, err := EndpointConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.Auth.PrincipalID != "alice" || cfg.Auth.ContextID != "alice" || cfg.Auth.PolicyVersion != "policy-1" || cfg.Listen == "" {
+		t.Fatalf("endpoint config: %+v", cfg)
 	}
 	if cfg.Auth.Generation != 7 || cfg.Auth.CapabilityProfile != "profile-1" || cfg.Auth.Environment != "dev" {
 		t.Fatalf("managed identity: %+v", cfg.Auth)

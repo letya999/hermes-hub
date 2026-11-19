@@ -499,7 +499,7 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 		lock.Unlock()
 		return false, err
 	}
-	if err == nil && settings.CapabilityMode == "managed" {
+	if err == nil {
 		binding.PolicyVersion = stack.PolicyVersion(settings)
 	}
 	// The respawn outlives the client's deadline like an accepted restart.

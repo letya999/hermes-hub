@@ -19,7 +19,6 @@ func TestBootstrapGoalFinishesBeforeOrdinaryJobAndRecordsChanges(t *testing.T) {
 	state, workspace = t.TempDir(), t.TempDir()
 	t.Cleanup(func() { state, workspace = oldState, oldWorkspace })
 	t.Setenv("HUB_BOOTSTRAP_GOAL", "prepare-toolchain-marker")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	stamp := time.Unix(1000, 0)
 	for _, name := range []string{"modified.txt", "deleted.txt"} {
 		if err := os.WriteFile(filepath.Join(workspace, name), []byte("old"), 0600); err != nil {

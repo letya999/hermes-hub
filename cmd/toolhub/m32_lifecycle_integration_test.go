@@ -352,7 +352,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 	for key, value := range map[string]string{
 		"HUB_RUNTIME_AUTH": h.tokens[f.Users[0]], "HUB_TOOLHUB_TOKENS_FILE": filepath.Join(f.Infra, "toolhub-tokens.json"), "HUB_TOOLHUB_STORE": f.StorePath,
 		"HUB_USER_ID": auth.PrincipalID, "HUB_PRINCIPAL_ID": auth.PrincipalID, "HUB_CONTEXT_ID": auth.ContextID, "HUB_RUNTIME_ID": auth.RuntimeID, "HUB_POLICY_VERSION": auth.PolicyVersion,
-		"HUB_CAPABILITY_MODE": "managed", "HUB_CAPABILITY_PROFILE_ID": auth.CapabilityProfile, "HUB_CAPABILITY_ENVIRONMENT": environment, "HUB_CAPABILITY_GENERATION": "1",
+		"HUB_CAPABILITY_PROFILE_ID": auth.CapabilityProfile, "HUB_CAPABILITY_ENVIRONMENT": environment, "HUB_CAPABILITY_GENERATION": "1",
 		"HUB_TOOLHUB_LISTEN": toolListen, "HUB_AGENT_EXEC_MODE": "supervisor", "HUB_PASSPORTS_BY_PRINCIPAL": passportRoot, "HUB_VAULTS_BY_PRINCIPAL": vaultRoot,
 		"HUB_TOOL_GOVERNANCE": filepath.Join(filepath.Dir(f.StorePath), "governance.json"), "HUB_AUDIT_LEDGER": filepath.Join(f.Root, "audit.jsonl"),
 		"HUB_COMMUNICATION_AUTH": h.control, "HUB_SUPERVISOR_AUTH": h.control, "HUB_RUNTIME_SUPERVISOR_URL": h.supervisor.URL, "HUB_TOOLHUB_URL_PATTERN": h.toolURL,

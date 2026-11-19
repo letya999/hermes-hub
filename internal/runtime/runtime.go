@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
-	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io/fs"
 	"net"
@@ -47,16 +46,9 @@ var (
 	signalStop   = stopSignals
 	command      = exec.Command
 	displayProbe = func(display string) error { return exec.Command("xdpyinfo", "-display", display).Run() }
-	lookPath     = exec.LookPath
 	chown        = chownPath
+	preflight    = managedPreflight
 )
-
-func toolHubAutostartBinary() string {
-	if _, err := lookPath("hub-toolhub"); err == nil {
-		return "hub-toolhub"
-	}
-	return "toolhub"
-}
 
 func env(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
@@ -97,9 +89,6 @@ func Run(args []string) error {
 	case "egress-relay":
 		return runEgressRelay()
 	case "verify-managed":
-		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
-			return errors.New("verify-managed requires managed capability mode")
-		}
 		return managedPreflight()
 	case "cliproxy-materialize":
 		return runCliproxyMaterialize(context.Background())
@@ -114,40 +103,10 @@ func Run(args []string) error {
 	case "browser":
 		return superviseBrowser()
 	case "idle", "gateway", "serve":
-		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
-			if err := loadSelfEnv(); err != nil {
-				return err
-			}
-		}
 		return supervise(args[0])
 	default:
 		return errors.New("expected idle, gateway, prepare, serve, health, browser, model-relay, toolhub-relay, control-relay or egress-relay")
 	}
-}
-
-func loadSelfEnv() error {
-	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
-		return errors.New("managed runtime forbids self-managed environment")
-	}
-	path := filepath.Join(state, envstore.FileName)
-	for _, key := range []string{"ATLASSIAN_EMAIL", "ATLASSIAN_API_TOKEN", "ATLASSIAN_BASIC_AUTH"} {
-		if err := os.Unsetenv(key); err != nil {
-			return fmt.Errorf("clear legacy Atlassian env %s: %w", key, err)
-		}
-	}
-	if _, err := envstore.Remove(path, os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"), "ATLASSIAN_EMAIL", "ATLASSIAN_API_TOKEN", "ATLASSIAN_BASIC_AUTH"); err != nil {
-		return fmt.Errorf("remove legacy Atlassian env: %w", err)
-	}
-	values, err := envstore.Load(path, os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"))
-	if err != nil {
-		return err
-	}
-	for key, value := range values {
-		if err := os.Setenv(key, value); err != nil {
-			return fmt.Errorf("set self-env %s: %w", key, err)
-		}
-	}
-	return loadSelfServices()
 }
 
 func Prepare(roots []string, uid, gid int, chown func(string, int, int) error) error {
@@ -240,11 +199,6 @@ func supervise(mode string) error {
 		restart, err := superviseOnce(mode)
 		if err != nil || !restart {
 			return err
-		}
-		if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
-			if err := loadSelfEnv(); err != nil {
-				return err
-			}
 		}
 	}
 }
@@ -356,11 +310,8 @@ func (c *childSet) stopAll() {
 }
 
 func superviseOnce(mode string) (bool, error) {
-	managed := os.Getenv("HUB_CAPABILITY_MODE") == "managed"
-	if managed {
-		if err := managedPreflight(); err != nil {
-			return false, err
-		}
+	if err := preflight(); err != nil {
+		return false, err
 	}
 	setUmask()
 	restartPath := filepath.Join(state, "restart.request")
@@ -369,34 +320,14 @@ func superviseOnce(mode string) (bool, error) {
 	}
 	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
 	folders := []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "cache"), filepath.Join(hermesHome, "memories")}
-	if !managed {
-		folders = []string{env("HOME", filepath.Join(state, "home")), hermesHome, filepath.Join(state, "cache"), filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "hooks"), filepath.Join(hermesHome, "plugins"), filepath.Join(hermesHome, "memories")}
-	}
 	for _, folder := range folders {
 		if err := os.MkdirAll(folder, 0770); err != nil {
 			return false, err
 		}
 	}
 	// The effective Hermes config is materialized on the host and mounted
-	// read-only over the agent-writable state dir: mcp_servers cannot be
-	// mutated from inside the runtime. When it is missing (legacy mount) the
-	// runtime materializes the config itself as before.
-	configDst := filepath.Join(hermesHome, "config.yaml")
-	if effectiveConfigWritable(configDst) {
-		var configErr error
-		var opts stack.MaterializeOptions
-		if opts, configErr = materializeOptionsFromEnv(); configErr == nil {
-			if _, statErr := os.Stat("/config/config.yaml"); statErr == nil {
-				configErr = stack.MaterializeHermesConfig("/config/config.yaml", configDst, opts)
-			} else {
-				// No rendered source mount (legacy/test run): mutate in place.
-				configErr = stack.ApplyHermesConfig(configDst, opts)
-			}
-		}
-		if configErr != nil {
-			return false, configErr
-		}
-	}
+	// read-only; the preflight already refused a writable one, so the
+	// runtime never materializes or mutates it itself.
 	if err := copySoulUnlessEdited("/config/SOUL.md", filepath.Join(hermesHome, "SOUL.md")); err != nil {
 		return false, err
 	}
@@ -433,14 +364,6 @@ func superviseOnce(mode string) (bool, error) {
 	if mode == "serve" {
 		if os.Getenv("HUB_RUNTIME_AUTH") == "" {
 			return false, errors.New("HUB_RUNTIME_AUTH is required")
-		}
-		if os.Getenv("HUB_TOOLHUB_AUTOSTART") == "true" {
-			if os.Getenv("HUB_TOOLHUB_STORE") == "" {
-				return false, errors.New("HUB_TOOLHUB_STORE is required when ToolHub autostart is enabled")
-			}
-			if err := start(toolHubAutostartBinary()); err != nil {
-				return false, err
-			}
 		}
 		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
 			return false, err
@@ -792,22 +715,6 @@ func waitForDisplay(display string, stop <-chan struct{}) error {
 		sleep(100 * time.Millisecond)
 	}
 	return errors.New("xvfb display did not start")
-}
-
-// effectiveConfigWritable reports whether the effective Hermes config path is
-// mutable inside the container. A read-only bind mount over the file is the
-// enforced signal that the host already materialized the config; a missing
-// file on a writable directory means the runtime must materialize it itself.
-func effectiveConfigWritable(destination string) bool {
-	if f, err := os.OpenFile(destination, os.O_WRONLY, 0); err == nil { // #nosec G703 -- effective config destination from operator layout
-		_ = f.Close()
-		return true
-	}
-	if f, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0660); err == nil { // #nosec G703 -- effective config destination from operator layout
-		_ = f.Close()
-		return true
-	}
-	return false
 }
 
 // copySoulUnlessEdited replaces a missing SOUL or the Init stub. Any other

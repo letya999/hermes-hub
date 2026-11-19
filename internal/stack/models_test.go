@@ -28,7 +28,6 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		settings.CapabilityMode = "managed"
 		settings.CapabilityProfileID = "shared-model-profile"
 		settings.CapabilityGeneration = 1
 		settings.Model = "shared-model"
@@ -226,7 +225,7 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
+	s.CapabilityProfileID, s.CapabilityGeneration = "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
 	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
@@ -332,7 +331,7 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
+	s.CapabilityProfileID, s.CapabilityGeneration = "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
 	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)

@@ -20,7 +20,7 @@ func managedPassportSibling() Settings {
 		Schema: 1, Environment: "dev", User: "alice",
 		Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
 		Model: "m", ModelURL: "http://model-relay:8318/v1",
-		CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
+		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
 		ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876",
 		Infra: &infra, Cliproxy: "dedicated",
 	}

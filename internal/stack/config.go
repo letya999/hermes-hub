@@ -23,7 +23,6 @@ type Settings struct {
 	SupervisorURL        string `yaml:"-"`
 	NativeCron           string `yaml:"-"`
 	Environment          string `yaml:"-"`
-	CapabilityMode       string `yaml:"capability_mode,omitempty"`
 	CapabilityProfileID  string `yaml:"capability_profile_id,omitempty"`
 	CapabilityGeneration uint64 `yaml:"capability_generation,omitempty"`
 	// CLIRegistries widens only the controller's CLI ceiling. Each reviewed
@@ -359,21 +358,6 @@ func (s Settings) imageCredential() string {
 func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
 func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
 
-// usesDockerSocket reports whether the rendered surface can drive the Docker
-// engine: toolhub-managed executors, ToolHub connector workloads, the managed
-// agent channel and the diagnostics collector all consume it. A stack of
-// native and mcp-raw tools with diagnostics off mounts no socket at all.
-func (s Settings) usesDockerSocket() bool {
-	if s.CapabilityMode == "managed" || s.DiagnosticsEnabled() {
-		return true
-	}
-	for _, entry := range s.Tools {
-		if entry.Via == ToolViaToolHub || entry.Via == ToolViaMCP {
-			return true
-		}
-	}
-	return false
-}
 func (s Settings) Validate() error {
 	seenRegistries := map[string]bool{}
 	for _, name := range s.CLIRegistries {
@@ -400,56 +384,48 @@ func (s Settings) Validate() error {
 			}
 		}
 	}
-	if s.CapabilityMode != "" && s.CapabilityMode != "managed" {
-		return fmt.Errorf("capability_mode must be managed or absent for an unmigrated deployment")
+	if s.Model == "" || len(s.Model) > 256 || strings.TrimSpace(s.Model) != s.Model || strings.ContainsAny(s.Model, "\x00\r\n") {
+		return fmt.Errorf("managed model requires an exact reviewed identifier")
 	}
-	if s.CapabilityMode == "managed" {
-		if s.Model == "" || len(s.Model) > 256 || strings.TrimSpace(s.Model) != s.Model || strings.ContainsAny(s.Model, "\x00\r\n") {
-			return fmt.Errorf("managed model requires an exact reviewed identifier")
-		}
-		if s.ModelURL != "http://model-relay:8318/v1" {
-			return fmt.Errorf("managed model_url must use the reviewed model relay")
-		}
-		if !idPattern.MatchString(s.CapabilityProfileID) || s.CapabilityGeneration == 0 {
-			return fmt.Errorf("managed capability profile needs an exact id and generation")
-		}
-		if _, err := ManagedCapabilityInventory(); err != nil {
-			return err
-		}
-		if len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" {
-			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not hooks or native extensions")
-		}
-		// image_gen stays an operator key: under managed mode the block carries
-		// only the normalized grant (provider/model/delivery) into the effective
-		// config — admission still goes through the ToolHub capability, so an
-		// operator block without the toolhub selection is a rejected ambiguity.
-		// The r5 `media` family is the canonical admission; `image_gen` is the
-		// retired legacy entry name (toolhubCapabilityID maps it onto media).
-		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub && s.toolEntry("media").Via != ToolViaToolHub {
-			return fmt.Errorf("image_gen belongs to a media/image_gen toolhub selection under managed mode")
-		}
-		// Under managed mode raw MCP servers come from the organization
-		// catalog (merged in by ApplyOrganization) or the published tools
-		// passport's connectors; definitions written into a legacy file
-		// stay forbidden. Which of them render is selected per-entry with
-		// via: mcp-raw.
-		if len(s.MCP) > 0 && !s.OrgScoped() && !s.PassportConnectors {
-			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
-		}
-		for name, entry := range s.Tools {
-			switch entry.Via {
-			case "", ToolViaOff, ToolViaToolHub, ToolViaMCP, ToolViaMCPRaw:
-			case ToolViaNative:
-				if !nativeCarveoutToolsets[name] && !pseudoToolsets[name] {
-					return fmt.Errorf("tools.%s: %q cannot be enabled natively under managed mode", name, name)
-				}
-			default:
-				return fmt.Errorf("tools.%s: unknown backend %q", name, entry.Via)
+	if s.ModelURL != "http://model-relay:8318/v1" {
+		return fmt.Errorf("managed model_url must use the reviewed model relay")
+	}
+	if !idPattern.MatchString(s.CapabilityProfileID) || s.CapabilityGeneration == 0 {
+		return fmt.Errorf("managed capability profile needs an exact id and generation")
+	}
+	if _, err := ManagedCapabilityInventory(); err != nil {
+		return err
+	}
+	if len(s.Hooks) > 0 || s.Memory || s.Honcho || s.GlobalSkillsDir != "" {
+		return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not hooks or native extensions")
+	}
+	// image_gen stays an operator key: under managed mode the block carries
+	// only the normalized grant (provider/model/delivery) into the effective
+	// config — admission still goes through the ToolHub capability, so an
+	// operator block without the toolhub selection is a rejected ambiguity.
+	// The r5 `media` family is the canonical admission; `image_gen` is the
+	// retired legacy entry name (toolhubCapabilityID maps it onto media).
+	if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub && s.toolEntry("media").Via != ToolViaToolHub {
+		return fmt.Errorf("image_gen belongs to a media/image_gen toolhub selection under managed mode")
+	}
+	// Under managed mode raw MCP servers come from the organization
+	// catalog (merged in by ApplyOrganization) or the published tools
+	// passport's connectors; definitions written into a legacy file
+	// stay forbidden. Which of them render is selected per-entry with
+	// via: mcp-raw.
+	if len(s.MCP) > 0 && !s.OrgScoped() && !s.PassportConnectors {
+		return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
+	}
+	for name, entry := range s.Tools {
+		switch entry.Via {
+		case "", ToolViaOff, ToolViaToolHub, ToolViaMCP, ToolViaMCPRaw:
+		case ToolViaNative:
+			if !nativeCarveoutToolsets[name] && !pseudoToolsets[name] {
+				return fmt.Errorf("tools.%s: %q cannot be enabled natively under managed mode", name, name)
 			}
+		default:
+			return fmt.Errorf("tools.%s: unknown backend %q", name, entry.Via)
 		}
-	}
-	if s.CapabilityMode == "" && (s.CapabilityProfileID != "" || s.CapabilityGeneration != 0) {
-		return fmt.Errorf("managed capability identity requires capability_mode managed")
 	}
 	switch s.Cliproxy {
 	case "", "shared":
@@ -554,7 +530,7 @@ func (s Settings) Validate() error {
 		if err != nil {
 			return err
 		}
-		if s.PassportServices["hub-media"] == "per-space" && (s.CapabilityMode != "managed" || gen.Provider != media.ProviderCLIProxy || !slices.Contains(media.CLIProxyChatImageModels(), gen.Model)) {
+		if s.PassportServices["hub-media"] == "per-space" && (gen.Provider != media.ProviderCLIProxy || !slices.Contains(media.CLIProxyChatImageModels(), gen.Model)) {
 			return fmt.Errorf("per-space hub-media requires a managed cliproxy chat-image model")
 		}
 	}

@@ -223,25 +223,6 @@ func (s Settings) sectionForEntry(name string, e ToolEntry) string {
 	}
 }
 
-// implicitSections lists the platform-emitted sections not selected by a
-// tools entry: the unmanaged default toolset list and the hub executor
-// server. Denied sections are filtered out at render; no error is raised
-// because nothing was explicitly requested.
-func implicitToolsetSections(s Settings) []string {
-	if s.CapabilityMode == "managed" {
-		return nil
-	}
-	// SPEC-0083 R3.2: the unmanaged native base list is gone — only the hub
-	// tools server and the conditional guest browser are implicit emissions.
-	out := []string{api.SectionHubTools}
-	if s.toolEntry("browser").enabled() {
-		// The anonymous-profile guest server rides the browser entry but is a
-		// distinct emission surface with its own section.
-		out = append(out, "hub:browser_guest")
-	}
-	return out
-}
-
 // denyDefaultSelections lists deny-default sections the space already
 // selected by name — the only surfaces migration preserves. Implicit default
 // emissions (terminal in the unmanaged base list) are not preserved: the
@@ -335,10 +316,6 @@ func applyGovernance(s *Settings) error {
 		if decision := evaluate(api.SectionOrgMCP); !decision.Allowed() {
 			return fmt.Errorf("organization MCP catalog (%s) denied by tool governance (%s): %s", api.SectionOrgMCP, decision.Via, decision.Reason)
 		}
-	}
-	// Implicit platform emissions are recorded for render-time filtering.
-	for _, sectionID := range implicitToolsetSections(*s) {
-		evaluate(sectionID)
 	}
 	s.gov = view
 	return nil

@@ -16,7 +16,6 @@ func TestConcurrentJobsWaitForOneBootstrap(t *testing.T) {
 	state, workspace = t.TempDir(), t.TempDir()
 	t.Cleanup(func() { state, workspace = oldState, oldWorkspace })
 	t.Setenv("HUB_BOOTSTRAP_GOAL", "prepare")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	started, release := make(chan struct{}, 1), make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }

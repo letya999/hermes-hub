@@ -158,7 +158,7 @@ func managedRuntimeConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_PASSPORT_REVISION", revision)
-	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", CapabilityMode: "managed"}
+	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}
 	content, err := yaml.Marshal(stack.Config(s))
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,6 @@ func managedRuntimeConfig(t *testing.T) string {
 	if err := os.WriteFile(source, content, 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HERMES_HOME", dir)
 	t.Setenv("HUB_MANAGED_MODEL_ID", s.Model)
 	t.Setenv("HUB_MANAGED_MODEL_URL", s.ModelURL)
@@ -231,108 +230,6 @@ func TestRunRejectsInvalidGID(t *testing.T) {
 	t.Setenv("HUB_SHARED_GID", "bad")
 	if err := Run([]string{"prepare"}); err == nil {
 		t.Fatal("invalid gid accepted")
-	}
-}
-
-func TestLoadSelfEnv(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Setenv("GITHUB_TOKEN", "original")
-	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
-	t.Setenv("HUB_PROTECTED_ENV_KEYS", "ORG_TOKEN")
-	t.Setenv("ATLASSIAN_EMAIL", "owner@example.com")
-	t.Setenv("ATLASSIAN_API_TOKEN", "token")
-	t.Setenv("ATLASSIAN_BASIC_AUTH", "")
-	t.Cleanup(func() { state = oldState })
-	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"GITHUB_TOKEN":"updated","ATLASSIAN_EMAIL":"old@example.com","ATLASSIAN_API_TOKEN":"old-token"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := loadSelfEnv(); err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("GITHUB_TOKEN") != "updated" {
-		t.Fatal("self env was not loaded")
-	}
-	if os.Getenv("ATLASSIAN_BASIC_AUTH") != "" {
-		t.Fatal("legacy Rovo auth was derived")
-	}
-	body, err := os.ReadFile(filepath.Join(state, "self-env.json"))
-	if err != nil || strings.Contains(string(body), "ATLASSIAN_") {
-		t.Fatal("legacy Atlassian values were not removed")
-	}
-	if err := os.WriteFile(filepath.Join(state, "self-env.json"), []byte(`{"ORG_TOKEN":"blocked"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := loadSelfEnv(); err == nil {
-		t.Fatal("protected self env was loaded")
-	}
-}
-
-func TestLoadSelfServicesSetsActiveFeatures(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	t.Setenv("HUB_FEATURES", "workspace")
-	t.Setenv("HUB_HH_ENABLED", "false")
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["hh","gitlab"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := loadSelfServices(); err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("HUB_HH_ENABLED") != "true" || !strings.Contains(os.Getenv("HUB_ACTIVE_FEATURES"), "gitlab") {
-		t.Fatal(os.Getenv("HUB_ACTIVE_FEATURES"), os.Getenv("HUB_HH_ENABLED"))
-	}
-}
-
-func TestLoadSelfServicesRejectsInvalidState(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	for _, body := range []string{`not-json`, `{"features":["browser"]}`, `{"features":["gitlab","gitlab"]}`} {
-		if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := loadSelfServices(); err == nil {
-			t.Fatal("invalid self-services accepted", body)
-		}
-	}
-}
-
-func TestLoadSelfServicesMergesConfiguredFeatures(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["gitlab"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_FEATURES", "workspace")
-	if err := loadSelfServices(); err != nil {
-		t.Fatal(err)
-	}
-	if got := os.Getenv("HUB_ACTIVE_FEATURES"); !strings.Contains(got, "workspace") || !strings.Contains(got, "gitlab") {
-		t.Fatal(got)
-	}
-	if err := os.WriteFile(filepath.Join(state, selfServicesFile), []byte(`{"features":["hh"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := loadSelfServices(); err != nil || os.Getenv("HUB_HH_ENABLED") != "true" {
-		t.Fatal(err, os.Getenv("HUB_HH_ENABLED"))
-	}
-}
-
-func TestEffectiveConfigWritableDetection(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "config.yaml")
-	if !effectiveConfigWritable(missing) {
-		t.Fatal("missing config on writable dir must materialize")
-	}
-	ro := filepath.Join(dir, "ro.yaml")
-	if err := os.WriteFile(ro, []byte("model: {}"), 0400); err != nil {
-		t.Fatal(err)
-	}
-	if effectiveConfigWritable(ro) {
-		t.Fatal("read-only config must be treated as pre-materialized")
 	}
 }
 
@@ -450,7 +347,17 @@ func TestSupervisorReportsChildExit(t *testing.T) {
 	}
 }
 
+// stubPreflight lets supervise-loop tests run without the container-level
+// managed attestation, which only a real runtime mount can satisfy.
+func stubPreflight(t *testing.T) {
+	t.Helper()
+	old := preflight
+	preflight = func() error { return nil }
+	t.Cleanup(func() { preflight = old })
+}
+
 func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldCommand := state, command
 	state = t.TempDir()
 	root := t.TempDir()
@@ -468,7 +375,7 @@ func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
 	if err := supervise("gateway"); err == nil {
 		t.Fatal("child exit accepted")
 	}
-	for _, path := range []string{home, hermesHome, filepath.Join(hermesHome, "skills"), filepath.Join(hermesHome, "memories")} {
+	for _, path := range []string{home, hermesHome, filepath.Join(hermesHome, "memories")} {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			t.Fatalf("configured runtime directory missing: %s: %v", path, err)
 		}
@@ -479,6 +386,7 @@ func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
 }
 
 func TestTextOnlyContextStartsNoBrowser(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldCommand := state, command
 	oldNotify, oldStop := signalNotify, signalStop
 	state = t.TempDir()
@@ -527,6 +435,7 @@ func TestRuntimeExitHelper(t *testing.T) {
 }
 
 func TestRunIdleShutdown(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldWorkspace := state, workspace
 	oldNotify, oldStop := signalNotify, signalStop
 	oldChown := chown
@@ -561,6 +470,7 @@ func TestRunIdleShutdown(t *testing.T) {
 }
 
 func TestServeStartsPinnedGatewayChild(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldCommand, oldNotify, oldStop := state, command, signalNotify, signalStop
 	state = t.TempDir()
 	command = func(string, ...string) *exec.Cmd {
@@ -586,6 +496,7 @@ func TestServeStartsPinnedGatewayChild(t *testing.T) {
 }
 
 func TestSupervisorRestartsInPlaceAfterEnvUpdate(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldNotify, oldStop := state, signalNotify, signalStop
 	state = t.TempDir()
 	calls := 0
@@ -610,7 +521,8 @@ func TestSupervisorRestartsInPlaceAfterEnvUpdate(t *testing.T) {
 	}
 }
 
-func TestRunIdleLoadsEnvAndStops(t *testing.T) {
+func TestRunIdleStops(t *testing.T) {
+	stubPreflight(t)
 	oldState, oldNotify, oldStop := state, signalNotify, signalStop
 	state = t.TempDir()
 	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }

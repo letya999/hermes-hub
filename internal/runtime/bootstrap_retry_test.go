@@ -14,7 +14,6 @@ func TestBootstrapExplicitRevisionStartsNewAttempt(t *testing.T) {
 	state, workspace = t.TempDir(), t.TempDir()
 	t.Cleanup(func() { state, workspace = oldState, oldWorkspace })
 	t.Setenv("HUB_BOOTSTRAP_GOAL", "prepare")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_BOOTSTRAP_REVISION", "1")
 	var keys []string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

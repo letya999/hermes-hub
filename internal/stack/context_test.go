@@ -10,7 +10,7 @@ import (
 )
 
 func contextTestSettings() Settings {
-	return Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	return Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 }
 
 func TestSettingsContextDeclarationAccepted(t *testing.T) {

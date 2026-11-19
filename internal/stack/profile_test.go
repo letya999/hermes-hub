@@ -17,7 +17,8 @@ var nativeToolsets = []string{
 
 func profileSettings(features ...string) Settings {
 	return Settings{Schema: 1, Environment: "prod", User: "me", Model: "m",
-		ModelURL: "https://example.invalid/v1", Timezone: "UTC",
+		ModelURL: "http://model-relay:8318/v1", Timezone: "UTC",
+		CapabilityProfileID: "me-default", CapabilityGeneration: 1,
 		OAuthPort: 8000, BrowserPort: 6080, GoogleEmail: "me@example.org",
 		Tools: testTools(features...), Ingress: testIngress(features...)}
 }
@@ -60,6 +61,7 @@ func TestCapabilityProfileSingleSurface(t *testing.T) {
 		"hub", "browser", "browser_guest", "toolhub",
 		"google", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts") {
 		s := profileSettings("workspace")
+		s.PassportConnectors = true
 		s.MCP = map[string]MCPServer{name: {URL: "https://example.invalid/mcp"}}
 		if err := s.Validate(); err == nil {
 			t.Fatalf("owner MCP took reserved name %q", name)
@@ -67,6 +69,7 @@ func TestCapabilityProfileSingleSurface(t *testing.T) {
 	}
 	// A plain owner name still works.
 	s := profileSettings("workspace")
+	s.PassportConnectors = true
 	s.MCP = map[string]MCPServer{"notes": {URL: "https://example.invalid/mcp"}}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("owner MCP rejected: %v", err)
@@ -77,12 +80,6 @@ func TestCapabilityProfileOptInAbsent(t *testing.T) {
 	// Default feature set renders only its own surface; nothing opt-in leaks.
 	def := profileSettings("workspace", "browser", "hh")
 	cfg := Config(def)
-	servers := cfg["mcp_servers"].(M)
-	for _, name := range []string{"browser", "browser_guest", "hub"} {
-		if _, ok := servers[name]; !ok {
-			t.Fatalf("default capability %q missing", name)
-		}
-	}
 	if _, ok := cfg["image_gen"]; ok {
 		t.Fatal("image_gen section present without the feature")
 	}

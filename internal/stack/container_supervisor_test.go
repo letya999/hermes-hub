@@ -10,7 +10,7 @@ import (
 
 func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", CapabilityMode: "managed", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
 	c := Compose(s, root, dir)
@@ -87,7 +87,7 @@ func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
 // forwarded; unset they resolve empty and stay disabled.
 func TestComposeSupervisorForwardsOptInAuthorities(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", CapabilityMode: "managed", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	env := Compose(s, t.TempDir(), dir)["services"].(M)["supervisor"].(M)["environment"].(M)
 	for _, key := range []string{"HUB_SUPERVISOR_ADMIN_AUTH", "HUB_PERSONAL_MODEL", "HUB_MANAGED_MODEL_URL", "OPENAI_API_KEY", "HUB_RUN_BUDGET", "HUB_STREAM_IDLE"} {

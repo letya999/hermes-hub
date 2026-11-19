@@ -31,7 +31,8 @@ func webSettings(base Settings) Settings {
 }
 
 func validSettings() Settings {
-	return Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	return Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "m", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1}
 }
 
 func TestWebConfigRendersOnlySetFields(t *testing.T) {
@@ -136,9 +137,8 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	s = validSettings()
 	s.Tools = testTools("web", "deep_research")
 	cfg = Config(s)
-	cli = cfg["platform_toolsets"].(M)["cli"].([]string)
-	if !slices.Contains(cli, "web") {
-		t.Fatal("web toolset missing with web feature")
+	if api := cfg["platform_toolsets"].(M)["api_server"].([]string); !slices.Contains(api, "web") {
+		t.Fatalf("web toolset missing with web feature: %v", api)
 	}
 	if skills := cfg["skills"].(M); len(skills) != 0 {
 		t.Fatalf("skills loader config rendered: %#v", skills)
@@ -298,6 +298,8 @@ func TestMaterializeHubPluginsRejectsSymlink(t *testing.T) {
 	}
 }
 
+// Hub plugins stay sealed: the runtime mounts no plugin directory, with or
+// without the web feature (the plugins root is an empty read-only tmpfs).
 func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
 	space := t.TempDir()
 	s := validSettings()
@@ -309,18 +311,10 @@ func TestWebPluginMountedOnlyWithFeature(t *testing.T) {
 		}
 	}
 	s.Tools = testTools("web")
-	volumes = RuntimeService(s, "", space)["volumes"].([]any)
-	found := false
-	for _, v := range volumes {
-		if m, ok := v.(M); ok && m["target"] == "/opt/hermes/plugins/hub-web" {
-			found = true
-			if m["read_only"] != true {
-				t.Fatal("hub plugin mount is not read-only")
-			}
+	for _, v := range RuntimeService(s, "", space)["volumes"].([]any) {
+		if m, ok := v.(M); ok && strings.HasPrefix(fmt.Sprint(m["target"]), "/opt/hermes/plugins") {
+			t.Fatal("hub plugin mounted into the sealed runtime")
 		}
-	}
-	if !found {
-		t.Fatal("hub-web plugin mount missing with web feature")
 	}
 }
 

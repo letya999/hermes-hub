@@ -9,8 +9,7 @@ import (
 // read-only so the agent reports consumption but never rewrites counters.
 func TestRuntimeMountsModelUsageSources(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", OAuthPort: 8000,
-		CapabilityMode: "managed",
-		Model:          "test", ModelURL: "http://model.invalid/v1",
+		Model: "test", ModelURL: "http://model.invalid/v1",
 		Tools: testTools("telegram")}
 	// Managed spaces spawn their runtime through RuntimeService, not a
 	// compose service — the mounts/env must ride that render.

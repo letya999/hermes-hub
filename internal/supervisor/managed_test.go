@@ -191,7 +191,10 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stack.GeneratedEffectiveSkillsDir(root), "hermes-hub-system-guide", "SKILL.md")); err != nil {
 		t.Fatalf("managed spawn did not build the effective view: %v", err)
 	}
-	for _, want := range []string{"HUB_CAPABILITY_MODE=managed", "HUB_CAPABILITY_PROFILE_ID=alice-default", "HUB_CAPABILITY_GENERATION=1", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "HUB_RUNTIME_GENERATION=gen-1"} {
+	if strings.Contains(joined, "HUB_CAPABILITY_MODE") {
+		t.Fatal("spawned runtime still receives the retired capability mode switch")
+	}
+	for _, want := range []string{"HUB_CAPABILITY_PROFILE_ID=alice-default", "HUB_CAPABILITY_GENERATION=1", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "HUB_RUNTIME_GENERATION=gen-1"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("managed environment missing %s", want)
 		}

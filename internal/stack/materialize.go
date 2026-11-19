@@ -165,11 +165,7 @@ func writeModelRegistryRevision(dir string, s Settings, revisionID string) error
 func materializeHermesConfig(dir string, s Settings) error {
 	source := filepath.Join(dir, "generated", "hermes."+s.Environment+".yaml")
 	dest := filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")
-	envFile := "runtime." + s.Environment + ".env"
-	if s.CapabilityMode == "managed" {
-		envFile = "managed-runtime." + s.Environment + ".env"
-	}
-	runtimeEnv, err := ReadSecrets(filepath.Join(dir, envFile))
+	runtimeEnv, err := ReadSecrets(filepath.Join(dir, "managed-runtime."+s.Environment+".env"))
 	if err != nil {
 		return err
 	}
@@ -179,7 +175,7 @@ func materializeHermesConfig(dir string, s Settings) error {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
-		Managed:            s.CapabilityMode == "managed",
+		Managed:            true,
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: strings.TrimSpace(auth[tokenEnv]) != "" || strings.TrimSpace(runtimeEnv[tokenEnv]) != "",

@@ -74,24 +74,14 @@ func ServiceInfoByName(name string) (ServiceInfo, bool) {
 // ServiceMCPConfig returns the MCP definition a self-service connector writes
 // into the Hermes config. Upstream connectors (google, github, slack,
 // atlassian, telegram_user and their write variants) are served through
-// ToolHub and intentionally return no direct entry, like CLI-only GitLab.
-// Only the platform-internal hub tool server is written for hh/workspace.
+// ToolHub and intentionally return no direct entry, like CLI-only GitLab and
+// hh: the rendered Hermes config carries no direct hub tool server.
 func ServiceMCPConfig(name string) (string, M, bool, error) {
 	if !selfServiceNames[name] {
 		return "", nil, false, fmt.Errorf("service %q is host-managed", name)
 	}
 	switch name {
-	case "hh":
-		servers, ok := Config(Settings{Tools: map[string]ToolEntry{"hh": {Via: ToolViaToolHub}}})["mcp_servers"].(M)
-		if !ok {
-			return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
-		}
-		config, ok := servers["hub"].(M)
-		if !ok {
-			return "", nil, false, fmt.Errorf("service %q has no MCP definition", name)
-		}
-		return "hub", config, true, nil
-	case "google", "google_write", "github", "slack", "atlassian", "telegram_user", "telegram_write", "gitlab":
+	case "hh", "google", "google_write", "github", "slack", "atlassian", "telegram_user", "telegram_write", "gitlab":
 		return "", nil, true, nil
 	default:
 		return "", nil, false, fmt.Errorf("service %q is not available", name)

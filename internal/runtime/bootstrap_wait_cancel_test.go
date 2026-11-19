@@ -15,7 +15,6 @@ func TestBootstrapWaitHonorsCallerCancellation(t *testing.T) {
 	state, workspace = t.TempDir(), t.TempDir()
 	t.Cleanup(func() { state, workspace = oldState, oldWorkspace })
 	t.Setenv("HUB_BOOTSTRAP_GOAL", "prepare")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	started, release := make(chan struct{}, 1), make(chan struct{})
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/sessions" {

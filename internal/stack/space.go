@@ -18,7 +18,6 @@ import (
 func finishManagedRead(s Settings, dir string, eff passportview.Effective) (Settings, error) {
 	s.Environment = "prod"
 	s.SpaceDir = dir
-	s.CapabilityMode = "managed"
 	if err := s.applyEffective(eff); err != nil {
 		return s, err
 	}

@@ -36,7 +36,7 @@ func TestSandboxDockerSelectionFailsClosed(t *testing.T) {
 			if !strings.Contains(strings.Join(args, " "), "--runtime "+runtime+" ") {
 				t.Fatal("selected runtime missing from launch")
 			}
-			s := stack.Settings{CapabilityMode: "managed"}
+			s := stack.Settings{}
 			err = m.checkContainerRuntime(t.Context(), s)
 			if (err == nil) != (runtime == "runc") {
 				t.Fatalf("unavailable %s: %v", runtime, err)
@@ -48,7 +48,7 @@ func TestSandboxDockerSelectionFailsClosed(t *testing.T) {
 				if runs != 0 {
 					t.Fatal("missing sandbox attempted compute/fallback")
 				}
-				if m.checkContainerRuntime(t.Context(), stack.Settings{}) == nil {
+				if err := m.checkContainerRuntime(t.Context(), stack.Settings{Tools: map[string]stack.ToolEntry{"browser": {Via: stack.ToolViaNative}}}); err == nil || !strings.Contains(err.Error(), "without browser") {
 					t.Fatal("unqualified layout accepted")
 				}
 			}
@@ -87,7 +87,7 @@ func TestSandboxRelayDiscovery(t *testing.T) {
 				}
 				return json.Marshal(map[string]any{"IPAddress": ip, "Aliases": aliases})
 			}, nil)
-			args, err := m.sandboxRelayHosts(t.Context(), stack.Settings{User: "alice", CapabilityMode: "managed"}, t.TempDir())
+			args, err := m.sandboxRelayHosts(t.Context(), stack.Settings{User: "alice"}, t.TempDir())
 			if scenario != "valid" {
 				if err == nil {
 					t.Fatal("unsafe discovery accepted")

@@ -70,7 +70,6 @@ func TestPolicyVersionIgnoresNonRightsFields(t *testing.T) {
 // so a field classified rights-bearing without a mutator fails here.
 func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 	mutators := map[string]func(*Settings){
-		"CapabilityMode":       func(s *Settings) { s.CapabilityMode = "managed" },
 		"CapabilityProfileID":  func(s *Settings) { s.CapabilityProfileID = "p-1" },
 		"CapabilityGeneration": func(s *Settings) { s.CapabilityGeneration = 7 },
 		"CLIRegistries":        func(s *Settings) { s.CLIRegistries = []string{"ghcr.io/x"} },
@@ -154,7 +153,6 @@ func TestPolicyVersionIgnoresMCPTransportFields(t *testing.T) {
 
 func TestManagedConnectorSelectionKeepsSessionPolicyVersion(t *testing.T) {
 	s := policyBaseline()
-	s.CapabilityMode = "managed"
 	s.CapabilityProfileID, s.CapabilityGeneration = "alice-default", 1
 	s.Tools["github"] = ToolEntry{Via: ToolViaMCP}
 	s.Tools["gitlab"] = ToolEntry{Via: ToolViaMCP}
@@ -170,6 +168,20 @@ func TestManagedConnectorSelectionKeepsSessionPolicyVersion(t *testing.T) {
 	s.Tools["file"] = ToolEntry{Via: ToolViaOff}
 	if got := PolicyVersion(s); got == stable {
 		t.Fatal("first-party rights change left policy version unchanged")
+	}
+}
+
+// Removing Settings.CapabilityMode must not rotate any live space's policy
+// version: the hashed projection still carries capability_mode "managed",
+// so ToolHub bindings keyed on HUB_POLICY_VERSION survive (CHG-0230). The
+// expected value was computed on the pre-removal code with the same fixture.
+func TestPolicyVersionStableAcrossCapabilityModeRemoval(t *testing.T) {
+	s := policyBaseline()
+	s.CapabilityProfileID, s.CapabilityGeneration = "alice-default", 3
+	s.Tools["github"] = ToolEntry{Via: ToolViaMCP}
+	s.Tools["web"] = ToolEntry{Via: ToolViaNative}
+	if got := PolicyVersion(s); got != "policy-7742dd8152f9ffc4" {
+		t.Fatalf("managed policy version moved: %s", got)
 	}
 }
 
@@ -196,6 +208,8 @@ func TestEverySettingsFieldClassified(t *testing.T) {
 	for i := 0; i < projectionType.NumField(); i++ {
 		projected[projectionType.Field(i).Name] = true
 	}
+	// CapabilityMode is a constant kept only for hash stability.
+	delete(projected, "CapabilityMode")
 	for name, projectionField := range settingsFieldRights {
 		if projectionField == "" {
 			continue

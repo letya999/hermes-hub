@@ -632,7 +632,6 @@ func TestComposeMountsWritableSkillsStore(t *testing.T) {
 		t.Fatalf("skills env contract missing: %v", env)
 	}
 	// Managed mode renders the same contract.
-	s.CapabilityMode = "managed"
 	s.ExecutionMode = "supervisor"
 	menv := RuntimeService(s, "", dir)["environment"].(M)
 	if menv["HUB_SKILLS_STORE"] != "/skills-store" {
@@ -674,7 +673,6 @@ func TestComposeMountsViewRebuildContract(t *testing.T) {
 func TestManagedComposeMountsEffectiveViewReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()
-	s.CapabilityMode = "managed"
 	s.ExecutionMode = "supervisor"
 	found := false
 	for _, volume := range RuntimeService(s, "", dir)["volumes"].([]any) {
@@ -699,12 +697,9 @@ func TestManagedComposeMountsEffectiveViewReadOnly(t *testing.T) {
 
 func TestComposeSealsHermesSkillsDirInBothModes(t *testing.T) {
 	dir := t.TempDir()
-	for _, mode := range []string{"", "managed"} {
+	for _, mode := range []string{"managed"} {
 		s := validSettings()
-		s.CapabilityMode = mode
-		if mode == "managed" {
-			s.ExecutionMode = "supervisor"
-		}
+		s.ExecutionMode = "supervisor"
 		sealed := false
 		for _, tmpfs := range RuntimeService(s, "", dir)["tmpfs"].([]string) {
 			if strings.HasPrefix(tmpfs, "/state/hermes/skills:") {
@@ -735,7 +730,7 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Model, s.ModelURL = "test", "http://model-relay:8318/v1"
-	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
+	s.CapabilityProfileID, s.CapabilityGeneration = "p", 1
 	s.ExecutionMode = "supervisor"
 	s.SupervisorURL = "http://localhost:8876"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
@@ -906,9 +901,8 @@ func TestInitCreatesUnifiedSkillsStore(t *testing.T) {
 }
 
 func TestConfigRendersEmptySkillsSectionInBothModes(t *testing.T) {
-	for _, mode := range []string{"", "managed"} {
+	for _, mode := range []string{"managed"} {
 		s := validSettings()
-		s.CapabilityMode = mode
 		s.OrganizationSkillsDir = t.TempDir() // legacy org source must not leak
 		skills, ok := Config(s)["skills"].(M)
 		if !ok {
@@ -943,7 +937,6 @@ func TestSkillGovernanceSections(t *testing.T) {
 func TestToolhubSeesEffectiveIndexForSkillEnum(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()
-	s.CapabilityMode = "managed"
 	s.ExecutionMode = "supervisor"
 	services := Compose(s, "", dir)["services"].(M)
 	toolhub, ok := services["toolhub"].(M)
@@ -977,7 +970,6 @@ func TestToolhubSeesEffectiveIndexForSkillEnum(t *testing.T) {
 func TestToolhubMountsSkillStoreForLeaseResolution(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()
-	s.CapabilityMode = "managed"
 	s.ExecutionMode = "supervisor"
 	services := Compose(s, "", dir)["services"].(M)
 	toolhub, ok := services["toolhub"].(M)

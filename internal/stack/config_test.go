@@ -187,12 +187,7 @@ func TestRenderAllFeatures(t *testing.T) {
 			t.Fatalf("managed browser sidecar exposed directly to the model: %s", name)
 		}
 	}
-	unmanaged := s
-	unmanaged.CapabilityMode = ""
-	unmanaged.Tools, unmanaged.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
-	if servers := Config(unmanaged)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
-		t.Fatalf("connector features produced direct MCP servers: %v", servers)
-	}
+	static := s
 	// The runtime env contract is shared between compose and the supervised
 	// spawn spec; RuntimeService carries it verbatim.
 	spawned.Tools, spawned.Ingress = testTools("gitlab"), testIngress("gitlab")
@@ -204,15 +199,15 @@ func TestRenderAllFeatures(t *testing.T) {
 	if composeEnv["GITLAB_HOST"] != "gitlab.example.com" {
 		t.Fatal("GitLab host missing")
 	}
-	// The static runtime generation is the unmanaged contract: a supervised
-	// runtime gets its dynamic generation from the supervisor at spawn.
-	unmanaged.ExecutionMode = ""
-	staticEnv := RuntimeService(unmanaged, root, d)["environment"].(M)
+	// The static runtime generation is the non-supervised contract: a
+	// supervised runtime gets its dynamic generation from the supervisor.
+	static.ExecutionMode = ""
+	staticEnv := RuntimeService(static, root, d)["environment"].(M)
 	if staticEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
 		t.Fatalf("static runtime generation missing: %#v", staticEnv["HUB_RUNTIME_GENERATION"])
 	}
-	unmanaged.Tools, unmanaged.Ingress = testTools("atlassian"), testIngress("atlassian")
-	if _, ok := Config(unmanaged)["mcp_servers"].(M)["atlassian"]; ok {
+	static.Tools, static.Ingress = testTools("atlassian"), testIngress("atlassian")
+	if _, ok := Config(static)["mcp_servers"].(M)["atlassian"]; ok {
 		t.Fatal("direct Atlassian MCP config leaked")
 	}
 	soul := filepath.Join(d, "SOUL.md")
@@ -385,7 +380,6 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.CapabilityMode = "managed"
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("workspace", "telegram"), testIngress("workspace", "telegram")
@@ -453,7 +447,7 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 
 func TestDisabledComponentsStayCold(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram")}
-	runtime := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)
+	runtime := RuntimeService(s, "/source", "/space")
 	for _, port := range runtime["ports"].([]string) {
 		if strings.Contains(port, ":6080") {
 			t.Fatalf("browser port exposed without the feature: %s", port)
@@ -780,8 +774,8 @@ func TestServiceCatalogConfig(t *testing.T) {
 		}
 	}
 	server, config, ok, err = ServiceMCPConfig("hh")
-	if err != nil || !ok || server != "hub" || config == nil {
-		t.Fatal("hh must still enable the platform hub tool server", server, ok, err)
+	if err != nil || !ok || server != "" || config != nil {
+		t.Fatal("hh must not write a direct hub tool server", server, ok, err)
 	}
 	if _, _, _, err := ServiceMCPConfig("unknown"); err == nil {
 		t.Fatal("unknown service accepted")
@@ -808,7 +802,7 @@ func TestSecretParsing(t *testing.T) {
 }
 
 func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}
 	cfg := Config(s)
 	if _, ok := cfg["mcp_servers"].(M)["slack"]; ok {
 		t.Fatal("slack_app created Slack read/write tools")
@@ -830,8 +824,8 @@ func TestSlackAppIsNotSlackDataToolsAndHonchoIsOptIn(t *testing.T) {
 		t.Fatal("honcho without official URL accepted")
 	}
 	s.HonchoURL = "http://127.0.0.1:8000"
-	if err := s.Validate(); err != nil {
-		t.Fatal(err)
+	if err := s.Validate(); err == nil {
+		t.Fatal("honcho native extension accepted")
 	}
 	d := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(d, "hermes"), 0700); err != nil {
@@ -860,7 +854,7 @@ func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	if err := os.WriteFile(authEnv, []byte("HUB_TELEGRAM_AUTH_API_ID=123\nHUB_TELEGRAM_AUTH_API_HASH="+strings.Repeat("a", 32)+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), Memory: true}
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram")}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -926,7 +920,7 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	if control["image"] != "hermes-hub:0.5.0-prod-control" || control["build"].(M)["target"] != "prod-control" {
 		t.Fatalf("toolhub not on the control role image: %#v", control["image"])
 	}
-	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != "hermes-hub:0.5.0-prod" {
+	if services["workload-controller"].(M)["image"] != control["image"] || RuntimeService(s, "/source", "/space")["image"] != "hermes-hub:0.5.0-prod" {
 		t.Fatal("Docker consumers and Hermes runtime use the wrong images")
 	}
 	// R1.5/R4: shm_size exists for the browser sidecar's Chromium workload
@@ -988,7 +982,6 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 	// Managed mode spawns its own relays; image_gen adds hub-media; a
 	// dedicated cliproxy belongs to a secondary space. Same role rules.
 	managed := s
-	managed.CapabilityMode = "managed"
 	managed.CapabilityProfileID = "profile"
 	managed.CapabilityGeneration = 1
 	managed.Tools, managed.Ingress = testTools("telegram", "image_gen", "hosting"), testIngress("telegram", "image_gen", "hosting")
@@ -1030,16 +1023,13 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 	}
 }
 
-func TestSupervisedUnmanagedSpaceWiresAgentExec(t *testing.T) {
+func TestSupervisedSpaceWiresAgentExec(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), ExecutionMode: "supervisor", SupervisorURL: "http://host.docker.internal:8876"}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	hub := services["toolhub"].(M)
 	env := hub["environment"].(M)
 	if env["HUB_AGENT_EXEC_MODE"] != "supervisor" {
-		t.Fatal("supervised unmanaged space lost the agent-tools executor channel")
-	}
-	if env["HUB_CAPABILITY_MODE"] != nil {
-		t.Fatal("capability env leaked onto an unmanaged space")
+		t.Fatal("supervised space lost the agent-tools executor channel")
 	}
 	aliases := hub["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)
 	if len(aliases) != 2 || aliases[0] != "toolhub-control" || aliases[1] != "toolhub-alice" || services["communication-hub"].(M)["environment"].(M)["HUB_TOOLHUB_URL"] != "http://toolhub-control:8090" {
@@ -1085,7 +1075,7 @@ func TestToolhubInstallationWitnessUsesIndependentMount(t *testing.T) {
 }
 
 func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Tools: testTools("slack_app"), Ingress: testIngress("slack_app")}
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Tools: testTools("slack_app"), Ingress: testIngress("slack_app")}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -1103,7 +1093,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	if err := saveSpace(t, dir, Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
+	if err := saveSpace(t, dir, Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
 		t.Fatal(err)
 	}
 	dev, err := ReadEnvironment(dir, "dev")
@@ -1273,8 +1263,14 @@ func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
 		if !ok {
 			t.Fatalf("infra service %q missing", name)
 		}
-		nets, ok := service["networks"].([]string)
-		if !ok || !slices.Contains(nets, "hermes-hub-runtime") {
+		reachable := false
+		switch nets := service["networks"].(type) {
+		case []string:
+			reachable = slices.Contains(nets, "hermes-hub-runtime")
+		case M:
+			_, reachable = nets["hermes-hub-runtime"]
+		}
+		if !reachable {
 			t.Fatalf("infra service %q not reachable on the shared network: %v", name, service["networks"])
 		}
 	}
@@ -1373,41 +1369,6 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	}
 }
 
-func TestBrowserCapabilityReadOnlyByDefault(t *testing.T) {
-	for _, features := range [][]string{{"browser"}, {"browser", "browser_act"}, {"browser_act"}, {"meet"}} {
-		s := Settings{Tools: testTools(features...), Ingress: testIngress(features...)}
-		servers := Config(s)["mcp_servers"].(M)
-		persistent, hasPersistent := servers["browser"].(M)
-		guest, hasGuest := servers["browser_guest"].(M)
-		switch {
-		case s.Has("browser"):
-			if !hasPersistent || !hasGuest {
-				t.Fatalf("browser feature must render both profiles: %v", servers)
-			}
-			for name, server := range map[string]M{"browser": persistent, "browser_guest": guest} {
-				include := server["tools"].(MCPTools).Include
-				for _, mutation := range browserMutationTools {
-					if slices.Contains(include, mutation) && !s.Has("browser_act") {
-						t.Fatalf("%s leaks mutation %s without browser_act", name, mutation)
-					}
-					if !slices.Contains(include, mutation) && s.Has("browser_act") {
-						t.Fatalf("browser_act did not enable %s on %s", mutation, name)
-					}
-				}
-				for _, read := range browserReadTools {
-					if !slices.Contains(include, read) {
-						t.Fatalf("%s missing read tool %s", name, read)
-					}
-				}
-			}
-		default:
-			if hasPersistent || hasGuest {
-				t.Fatalf("features %v must not render browser servers", features)
-			}
-		}
-	}
-}
-
 func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 	d := t.TempDir()
 	docs := managedDocs("alice")
@@ -1436,7 +1397,6 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.CapabilityMode = "managed"
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
@@ -1479,7 +1439,6 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.CapabilityMode = "managed"
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("browser", "media=toolhub"), testIngress("browser")
@@ -1618,10 +1577,7 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 	}
 	// M32/#515: vault access is ToolHub-owned — the runtime container itself
 	// never mounts any vault path, as source or target.
-	runtime, ok := services["hermes-runtime"].(M)
-	if !ok {
-		t.Fatalf("hermes-runtime service missing: %#v", services)
-	}
+	runtime := RuntimeService(s, dir, dir)
 	for _, raw := range runtime["volumes"].([]any) {
 		volume := raw.(M)
 		target, _ := volume["target"].(string)
@@ -1748,7 +1704,7 @@ func TestDiagnosticRotationMountsOnlyDedicatedDirectory(t *testing.T) {
 func TestComposeRendersWorkspaceReadOnlyBoundaries(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools(), Ingress: testIngress(),
 		Workspace: Workspace{Mounts: []Mount{{From: "shared", To: "/workspace/shared", Mode: "ro"}}}}
-	env := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	env := RuntimeService(s, "/source", "/space")["environment"].(M)
 	ro, _ := env["HUB_WORKSPACE_RO"].(string)
 	for _, want := range []string{"inbox", "shared"} {
 		if !strings.Contains(","+ro+",", ","+want+",") {

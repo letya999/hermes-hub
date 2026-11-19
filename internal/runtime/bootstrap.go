@@ -99,9 +99,6 @@ func (s *runtimeHTTP) ensureBootstrap(ctx context.Context, request ExecuteReques
 	if goal == "" {
 		return nil
 	}
-	if os.Getenv("HUB_CAPABILITY_MODE") != "managed" {
-		return errors.New("bootstrap requires the managed sandbox and its existing egress grants")
-	}
 	ctx, cancel := context.WithTimeout(ctx, RunBudget())
 	defer cancel()
 	select {

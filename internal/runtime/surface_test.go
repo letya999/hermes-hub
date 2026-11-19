@@ -46,6 +46,7 @@ func TestSurfaceProbeReportsMissingProjectedNames(t *testing.T) {
 	t.Setenv("HERMES_HOME", filepath.Join(dir, "hermes"))
 	t.Setenv("HUB_TOOL_MANIFEST", filepath.Join(dir, "tool-manifest.json"))
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-token")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", connectors.URL+"/mcp")
 	t.Setenv("OPENAI_API_KEY", "model-key")
 
 	result := surfaceProbe(context.Background())
@@ -91,7 +92,6 @@ func TestManagedSurfaceInventoryUsesAuthenticatedRelay(t *testing.T) {
 	if err := os.WriteFile(path, []byte("mcp_servers:\n  toolhub:\n    url: "+proxy.URL+"/mcp\n    headers:\n      Authorization: Bearer ${HUB_RUNTIME_AUTH}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", relay.URL+"/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-token")
 	t.Setenv("HUB_TOOLHUB_TOKEN_ENV", "")
@@ -129,6 +129,7 @@ func TestSurfaceProbeFlagsUnresolvedChildEnv(t *testing.T) {
 	t.Setenv("HERMES_HOME", filepath.Join(dir, "hermes"))
 	t.Setenv("HUB_TOOL_MANIFEST", filepath.Join(dir, "tool-manifest.json"))
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-token")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", connectors.URL+"/mcp")
 
 	result := surfaceProbe(context.Background())
 	if result.surface != "degraded" {
@@ -282,6 +283,7 @@ func TestSurfaceProbeHubChildSelfTestRunsOnce(t *testing.T) {
 	t.Setenv("HERMES_HOME", filepath.Join(dir, "hermes"))
 	t.Setenv("HUB_TOOL_MANIFEST", filepath.Join(dir, "tool-manifest.json"))
 	t.Setenv("HUB_RUNTIME_AUTH", "runtime-token")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", connectors.URL+"/mcp")
 	t.Setenv("HUB_POLICY_VERSION", "policy-x")
 	t.Setenv("HUB_SELFTEST_CHILD", "stay-alive")
 

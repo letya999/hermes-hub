@@ -3,7 +3,6 @@ package stack
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,16 +164,8 @@ func TestDoctorScopeOptionalConnectorCredentialIsWarning(t *testing.T) {
 
 func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Organization: "acme", OrgActions: []string{}, Tools: testTools("workspace", "slack"), MCP: map[string]MCPServer{"org": {URL: "https://org.invalid/mcp", Tools: &MCPTools{Include: []string{"query"}}}}, OrganizationDir: "/host/organizations/acme", OrganizationDocsDir: "/host/organizations/acme/docs"}
+	s.Tools["org"] = ToolEntry{Via: ToolViaMCPRaw}
 	c := Config(s)
-	hub := c["mcp_servers"].(M)["hub"].(M)
-	args := hub["args"].([]string)
-	if !slices.Contains(args, "--organization") {
-		t.Fatal("organization root was not passed to hub MCP")
-	}
-	hubEnv := hub["env"].(M)
-	if hubEnv["HUB_SELF_ENV_KEYS"] != "${HUB_SELF_ENV_KEYS}" || hubEnv["HUB_STATE"] != "/state" || hubEnv["JIRA_API_TOKEN"] != "${JIRA_API_TOKEN}" {
-		t.Fatal("self-env runtime wiring missing")
-	}
 	orgMCP := c["mcp_servers"].(M)["org"].(M)
 	if orgMCP["tools"].(*MCPTools).Include[0] != "query" {
 		t.Fatal("organization MCP tool allowlist was not rendered")
@@ -182,22 +173,10 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 	if _, ok := c["mcp_servers"].(M)["slack"]; ok {
 		t.Fatal("slack must not produce a direct MCP server; connectors go through ToolHub")
 	}
-	compose := Compose(s, "/source", "/host/spaces/alice")
-	runtime := compose["services"].(M)["hermes-runtime"].(M)
+	runtime := RuntimeService(s, "/source", "/host/spaces/alice")
 	envFiles := runtime["env_file"].([]any)
-	if envFiles[0].(M)["path"] != "/host/spaces/alice/runtime.prod.env" {
+	if envFiles[0].(M)["path"] != "/host/spaces/alice/managed-runtime.prod.env" {
 		t.Fatal("runtime secret overlay was not rendered")
-	}
-	volumes := runtime["volumes"].([]any)
-	foundOrg := false
-	for _, raw := range volumes {
-		volume := raw.(M)
-		if volume["target"] == "/org" {
-			foundOrg = volume["read_only"] == true
-		}
-	}
-	if !foundOrg {
-		t.Fatal("organization mount is not read-only")
 	}
 }
 

@@ -70,7 +70,7 @@ func TestRenderEnvHelpers(t *testing.T) {
 
 	// Managed egress hosts: toolhub-backed tools map to fixed siblings, native
 	// web contributes provider hosts; non-managed mode renders nothing.
-	managed := Settings{CapabilityMode: "managed", Environment: "dev", Tools: map[string]ToolEntry{
+	managed := Settings{Environment: "dev", Tools: map[string]ToolEntry{
 		"routines": {Via: ToolViaToolHub},
 		"hh":       {Via: ToolViaToolHub},
 		"web":      {Via: ToolViaNative},
@@ -80,9 +80,6 @@ func TestRenderEnvHelpers(t *testing.T) {
 		if !slices.Contains(hosts, want) {
 			t.Fatalf("egress hosts %v missing %s", hosts, want)
 		}
-	}
-	if h := managedEgressHosts(Settings{}, dir); h != nil {
-		t.Fatalf("non-managed egress: %v", h)
 	}
 
 	// Small file helpers: atomic env file write, honcho config gating,

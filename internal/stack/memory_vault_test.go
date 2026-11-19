@@ -103,7 +103,6 @@ func TestRuntimeNeverMountsVault(t *testing.T) {
 	if env := RuntimeService(s, t.TempDir(), dir)["environment"].(M); env["HUB_VAULT"] != nil {
 		t.Fatalf("runtime received HUB_VAULT: %v", env["HUB_VAULT"])
 	}
-	s.CapabilityMode = "managed"
 	s.PassportWorkspace = &passportview.Workspace{Writable: []string{"/workspace"}}
 	for _, v := range RuntimeService(s, t.TempDir(), dir)["volumes"].([]any) {
 		m := v.(M)
@@ -155,19 +154,7 @@ func TestNativeMemoryDisabledWithVault(t *testing.T) {
 		"memory":       {Via: ToolViaNative},
 		"memory_vault": {Via: ToolViaNative},
 	}
-	cfg := Config(s)
-	if mem := cfg["memory"].(M); mem["memory_enabled"].(bool) || mem["user_profile_enabled"].(bool) {
-		t.Fatalf("unmanaged render keeps native memory armed: %v", mem)
-	}
-	for platform, sets := range cfg["platform_toolsets"].(M) {
-		if slices.Contains(sets.([]string), "memory") {
-			t.Fatalf("unmanaged platform_toolsets[%s] still serves memory", platform)
-		}
-	}
-	if !slices.Contains(cfg["agent"].(M)["disabled_toolsets"].([]string), "memory") {
-		t.Fatal("unmanaged disabled_toolsets lost memory")
-	}
-	mcfg := managedHermesConfig(s)
+	mcfg := Config(s)
 	if mcfg["memory"].(M)["memory_enabled"].(bool) {
 		t.Fatal("managed render keeps memory_enabled true")
 	}
@@ -176,7 +163,7 @@ func TestNativeMemoryDisabledWithVault(t *testing.T) {
 	}
 	// Without the vault the same carve-out arms exactly as before.
 	s.Tools = map[string]ToolEntry{"memory": {Via: ToolViaNative}}
-	cfg = Config(s)
+	cfg := Config(s)
 	if !cfg["memory"].(M)["memory_enabled"].(bool) {
 		t.Fatal("native memory carve-out regressed without the vault")
 	}

@@ -31,7 +31,7 @@ func RuntimeConnections(s Settings, dir string) []RuntimeConnection {
 // managedExposureRelay is the only non-HTTPS CONNECT exception; its address
 // comes from the reviewed sish config, never an agent-supplied argument.
 func managedExposureRelay(s Settings, dir string) string {
-	if s.CapabilityMode != "managed" || !s.Has("exposure") {
+	if !s.Has("exposure") {
 		return ""
 	}
 	cfg, err := exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml"))
@@ -66,7 +66,7 @@ func ValidateRuntimeConnections(s Settings, dir string) error {
 			if err != nil {
 				return fmt.Errorf("exposure config: %w", err)
 			}
-			if s.CapabilityMode == "managed" && cfg.Provider == "sish" && s.PassportServices["egress-relay"] != "per-space" {
+			if cfg.Provider == "sish" && s.PassportServices["egress-relay"] != "per-space" {
 				return fmt.Errorf("managed sish exposure requires a per-space egress-relay in stack passport")
 			}
 			if path, ok := strings.CutPrefix(cfg.KeyRef, "file:"); ok {

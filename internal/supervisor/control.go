@@ -488,9 +488,6 @@ func (m *Manager) resolveSettings(selected stack.Settings) (stack.Settings, erro
 			settings.SlackEventsPort++
 		}
 	}
-	if settings.CapabilityMode != "managed" && strings.TrimSpace(settings.GlobalSkillsDir) == "" {
-		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
-	}
 	if err := settings.Validate(); err != nil {
 		return stack.Settings{}, err
 	}

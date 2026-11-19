@@ -40,15 +40,11 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
 		t.Fatal("secondary did not use shared media auth", err)
 	}
-	for _, mode := range []string{"", "managed"} {
-		s.CapabilityMode = mode
-		for _, file := range RuntimeService(s, root, secondary)["env_file"].([]any) {
-			if file.(M)["path"] == filepath.ToSlash(filepath.Join(secondary, "media.auth")) {
-				t.Fatal("secondary compose overrides shared auth with unused local token")
-			}
+	for _, file := range RuntimeService(s, root, secondary)["env_file"].([]any) {
+		if file.(M)["path"] == filepath.ToSlash(filepath.Join(secondary, "media.auth")) {
+			t.Fatal("secondary compose overrides shared auth with unused local token")
 		}
 	}
-	s.CapabilityMode = ""
 	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=rotated-synthetic\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +97,7 @@ func TestPerSpaceMediaUsesOwnAuthAndModelRelay(t *testing.T) {
 	}
 	s := profileSettings("workspace", "image_gen")
 	no := false
-	s.User, s.Infra, s.CapabilityMode = "alice", &no, "managed"
+	s.User, s.Infra = "alice", &no
 	s.PassportServices = map[string]string{"hub-media": "per-space", "model-relay": "per-space", "hermes-runtime": "supervised"}
 	s.ImageGen = media.ImageGen{Provider: media.ProviderCLIProxy, Model: "gemini-3.1-flash-image"}
 	auth, err := runtimeMediaAuth(secondary, s)
@@ -142,11 +138,6 @@ func TestPerSpaceMediaUsesOwnAuthAndModelRelay(t *testing.T) {
 	unsupported.ImageGen.Model = "gpt-image-2"
 	if err := unsupported.Validate(); err == nil {
 		t.Fatal("per-space relay accepted a non-chat image endpoint")
-	}
-	unsupported = s
-	unsupported.CapabilityMode = ""
-	if err := unsupported.Validate(); err == nil {
-		t.Fatal("per-space media accepted a runtime without a managed relay")
 	}
 }
 
@@ -205,42 +196,7 @@ func TestMediaProfileBuildsSharedImageOnce(t *testing.T) {
 }
 
 func TestDocumentImageProfile(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
-	cfg := Config(s)
-	for _, platform := range []string{"cli", "telegram"} {
-		toolsets := cfg["platform_toolsets"].(M)[platform].([]string)
-		if slices.Contains(toolsets, "vision") || slices.Contains(toolsets, "image_gen") {
-			t.Fatal(platform, toolsets)
-		}
-	}
-	aux := cfg["auxiliary"].(M)["vision"].(M)
-	if aux["provider"] != "main" || aux["timeout"] != 30 || aux["download_timeout"] != 15 || aux["max_concurrency"] != media.InspectConcurrency {
-		t.Fatalf("auxiliary vision %#v", aux)
-	}
-	if _, ok := cfg["image_gen"]; ok {
-		t.Fatal("image_gen section without the feature")
-	}
-	raw, err := yaml.Marshal(cfg)
-	if err != nil || strings.Contains(string(raw), "FAL_KEY") || !strings.Contains(string(raw), "${OPENAI_API_KEY}") {
-		t.Fatalf("config leaked or lost the model reference: %v %s", err, raw)
-	}
-	s.ExecutionMode = "supervisor"
-	supervised := Config(s)["platform_toolsets"].(M)["cli"].([]string)
-	if slices.Contains(supervised, "cronjob") || slices.Contains(supervised, "vision") || slices.Contains(supervised, "image_gen") {
-		t.Fatal(supervised)
-	}
-
-	s.ExecutionMode = ""
-	s.Tools, s.Ingress = testTools("workspace", "image_gen"), testIngress("workspace", "image_gen")
-	cfg = Config(s)
-	section := cfg["image_gen"].(M)
-	if section["provider"] != media.ProviderCLIProxy || section["model"] != media.CLIProxyDefaultModel || section["delivery"] != media.DeliveryWorkspace {
-		t.Fatal(section)
-	}
-	raw, err = yaml.Marshal(cfg)
-	if err != nil || strings.Contains(string(raw), "FAL_KEY") || !strings.Contains(string(raw), media.CLIProxyDefaultModel) {
-		t.Fatalf("granted config: %v %s", err, raw)
-	}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen")}
 	if _, _, ok, err := ServiceMCPConfig("image_gen"); err == nil || ok {
 		t.Fatal("image_gen became self-service", ok, err)
 	}
@@ -251,15 +207,6 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal("cliproxy doctor asked for FAL_KEY")
 	}
 	s.ImageGen = media.ImageGen{Provider: media.FalProvider}
-	cfg = Config(s)
-	section = cfg["image_gen"].(M)
-	if section["provider"] != media.FalProvider || section["model"] != media.ImageModel || section["delivery"] != media.DeliveryWorkspace {
-		t.Fatal(section)
-	}
-	raw, err = yaml.Marshal(cfg)
-	if err != nil || strings.Contains(string(raw), "FAL_KEY") || !strings.Contains(string(raw), media.ImageModel) {
-		t.Fatalf("fal config: %v %s", err, raw)
-	}
 	if !slices.Contains(selfEnvKeys(s), "FAL_KEY") {
 		t.Fatal("fal image_gen did not name FAL_KEY")
 	}
@@ -273,27 +220,6 @@ func TestDocumentImageProfile(t *testing.T) {
 	}
 	if err := (Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Tools: testTools("image_gen"), Ingress: testIngress("image_gen"), ImageGen: media.ImageGen{Provider: "guessed"}, BrowserPort: 6080, OAuthPort: 8000}).Validate(); err == nil {
 		t.Fatal("unknown image provider accepted")
-	}
-
-	browser := Config(Settings{User: "me", Tools: testTools("browser"), Ingress: testIngress("browser"), Model: "m", ModelURL: "http://model.invalid/v1"})
-	// R4.3: vision+pdf caps ride the sidecar's playwright-mcp launch flags;
-	// the rendered server is a URL endpoint on the space-internal alias.
-	if url := browser["mcp_servers"].(M)["browser"].(M)["url"]; url != "http://browser-me:8931/mcp" {
-		t.Fatal(url)
-	}
-
-	sourceDir := t.TempDir()
-	source := filepath.Join(sourceDir, "hermes.yaml")
-	if err := os.WriteFile(source, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(sourceDir, "effective.yaml")
-	if err := MaterializeHermesConfig(source, dest, MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true}); err != nil {
-		t.Fatal(err)
-	}
-	effective, err := os.ReadFile(dest)
-	if err != nil || !strings.Contains(string(effective), media.ImageModel) || strings.Contains(string(effective), "FAL_KEY") {
-		t.Fatalf("effective config: %v %s", err, effective)
 	}
 
 	envDir := t.TempDir()
@@ -479,7 +405,7 @@ func TestDocumentImageProfile(t *testing.T) {
 // The r5 `media` toolset is the canonical admission for an image_gen operator
 // grant; the managed check must not demand the retired legacy entry name.
 func TestManagedImageGenAcceptsMediaToolset(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model-relay:8318/v1", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1, Tools: testTools("media=toolhub"), ImageGen: media.ImageGen{Provider: media.ProviderCLIProxy}}
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model-relay:8318/v1", BrowserPort: 6080, OAuthPort: 8000, CapabilityProfileID: "p", CapabilityGeneration: 1, Tools: testTools("media=toolhub"), ImageGen: media.ImageGen{Provider: media.ProviderCLIProxy}}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("r5 media toolset rejected for image_gen grant: %v", err)
 	}

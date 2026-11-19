@@ -21,7 +21,7 @@ func TestPreparedComposeKeepsCurrentPrincipalVaultMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabled := true
-	s := Settings{Schema: 3, User: "infra", Environment: "dev", CapabilityMode: "managed", PassportRevision: "r-candidate", PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
+	s := Settings{Schema: 3, User: "infra", Environment: "dev", PassportRevision: "r-candidate", PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
 	if got := RuntimeService(s, dir, dir)["environment"].(M)["HUB_PASSPORT_REVISION"]; got != s.PassportRevision {
 		t.Fatalf("runtime revision pin = %v", got)
 	}

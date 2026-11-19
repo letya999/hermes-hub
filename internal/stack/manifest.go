@@ -38,7 +38,7 @@ func toolManifest(s Settings) ToolManifest {
 		if !entry.enabled() {
 			continue
 		}
-		if entry.Via == ToolViaToolHub || (s.CapabilityMode == "managed" && entry.Via == ToolViaMCP && mcpConnectors[name]) {
+		if entry.Via == ToolViaToolHub || (entry.Via == ToolViaMCP && mcpConnectors[name]) {
 			manifest.Projected = append(manifest.Projected, name)
 		} else {
 			manifest.Direct = append(manifest.Direct, name)

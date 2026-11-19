@@ -15,7 +15,7 @@ import (
 // the migration matrix deliberately — it is the baseline every later M29
 // stage migrates from.
 func TestManagedPromptSourcesInventory(t *testing.T) {
-	managed := Settings{CapabilityMode: "managed", CapabilityProfileID: "ops", CapabilityGeneration: 3, Model: "m", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Environment: "dev"}
+	managed := Settings{CapabilityProfileID: "ops", CapabilityGeneration: 3, Model: "m", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Environment: "dev"}
 
 	t.Run("allowed", func(t *testing.T) {
 		cfg := Config(managed)
@@ -115,7 +115,7 @@ func TestManagedPromptSourcesInventory(t *testing.T) {
 // a second authority, because the managed render pins upstream's
 // skip_context_files and HERMES_IGNORE_RULES fences.
 func TestManagedTurnHasSinglePinnedPromptAcrossEntrypoints(t *testing.T) {
-	managed := Settings{CapabilityMode: "managed", CapabilityProfileID: "ops", CapabilityGeneration: 3, Model: "m", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Environment: "dev"}
+	managed := Settings{CapabilityProfileID: "ops", CapabilityGeneration: 3, Model: "m", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Environment: "dev"}
 
 	cfg := Config(managed)
 	gw, ok := cfg["gateway"].(M)

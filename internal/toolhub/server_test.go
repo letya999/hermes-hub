@@ -285,6 +285,9 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 
 func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_CAPABILITY_PROFILE_ID", "alice-default")
+	t.Setenv("HUB_CAPABILITY_ENVIRONMENT", "dev")
+	t.Setenv("HUB_CAPABILITY_GENERATION", "1")
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_CONTEXT_ID", "")
 	t.Setenv("HUB_RUNTIME_ID", "")
@@ -324,7 +327,6 @@ func TestEndpointConfigFromEnvUsesRuntimeIdentityDefaults(t *testing.T) {
 func TestEndpointConfigFromEnvBindsManagedIdentity(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
 	t.Setenv("HUB_USER_ID", "alice")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_CAPABILITY_PROFILE_ID", "alice-default")
 	t.Setenv("HUB_CAPABILITY_ENVIRONMENT", "dev")
 	t.Setenv("HUB_CAPABILITY_GENERATION", "3")
@@ -336,9 +338,9 @@ func TestEndpointConfigFromEnvBindsManagedIdentity(t *testing.T) {
 	if _, err := EndpointConfigFromEnv(); err == nil {
 		t.Fatal("managed endpoint accepted zero generation")
 	}
-	t.Setenv("HUB_CAPABILITY_MODE", "unknown")
+	t.Setenv("HUB_CAPABILITY_GENERATION", "")
 	if _, err := EndpointConfigFromEnv(); err == nil {
-		t.Fatal("unknown mode fell back to legacy")
+		t.Fatal("endpoint without a managed identity fell back to legacy")
 	}
 }
 

@@ -202,13 +202,11 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	if _, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings); err != nil {
 		return nil, nil, errors.New("runtime policy projection unavailable")
 	}
-	if settings.CapabilityMode == "managed" {
-		if err := stack.MaterializeModelRegistry(binding.ContextRoot, settings); err != nil {
-			return nil, nil, errors.New("runtime model registry projection unavailable")
-		}
-		if err := stack.EnsureModelRelayAuth(binding.ContextRoot); err != nil {
-			return nil, nil, errors.New("model relay credentials unavailable")
-		}
+	if err := stack.MaterializeModelRegistry(binding.ContextRoot, settings); err != nil {
+		return nil, nil, errors.New("runtime model registry projection unavailable")
+	}
+	if err := stack.EnsureModelRelayAuth(binding.ContextRoot); err != nil {
+		return nil, nil, errors.New("model relay credentials unavailable")
 	}
 	service := stack.RuntimeService(settings, "", binding.ContextRoot)
 	in := &kubeInputs{root: root, data: map[string][]byte{}}

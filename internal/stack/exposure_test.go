@@ -44,7 +44,7 @@ func TestExposureFeatureWiring(t *testing.T) {
 	if tools["exposure"].Via != ToolViaToolHub || len(ingress) != 0 {
 		t.Fatalf("exposure must be a toolhub capability family: %v %v", tools, ingress)
 	}
-	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s.Tools, s.Ingress = testTools("exposure"), testIngress("exposure")
 	if err := s.Validate(); err != nil {
 		t.Fatalf("exposure alone should validate: %v", err)
@@ -82,7 +82,6 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
-	s.CapabilityMode = "managed"
 	s.Tools, s.Ingress = testTools("exposure"), testIngress("exposure")
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
@@ -116,7 +115,7 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	services := Compose(s, root, d)["services"].(M)
 	egress, ok := services["egress-relay"].(M)
 	if !ok {
-		t.Fatalf("managed exposure did not create its private egress relay: mode=%q has=%t relay=%q", s.CapabilityMode, s.Has("exposure"), managedExposureRelay(s, d))
+		t.Fatalf("managed exposure did not create its private egress relay: has=%t relay=%q", s.Has("exposure"), managedExposureRelay(s, d))
 	}
 	egressEnv := egress["environment"].(M)
 	if got := egressEnv["HUB_EGRESS_RELAY_CONNECT_TARGET"]; got != "tunnel.example.com:22" {
@@ -128,14 +127,6 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	managedEnv, err := os.ReadFile(filepath.Join(d, "managed-runtime.prod.env"))
 	if err != nil || !strings.Contains(string(managedEnv), "HUB_EGRESS_PROXY=http://egress-relay:8319") {
 		t.Fatal("managed exposure runtime lacks its egress proxy")
-	}
-	// The unmanaged `hub` stdio server carries the same reviewed config path.
-	unmanaged := s
-	unmanaged.CapabilityMode = ""
-	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)
-	env := hub["env"].(M)
-	if env["HUB_EXPOSURE_CONFIG"] != "/state/exposure/config.yaml" {
-		t.Fatalf("exposure env wrong: %v", env)
 	}
 }
 

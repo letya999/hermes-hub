@@ -19,7 +19,7 @@ const maxMCPBodyBytes = 4 << 20
 // Hermes stamps each tool call with the run ID held in its per-turn context.
 // The runtime resolves that ID to its admitted job before ToolHub verifies it.
 func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
-	if os.Getenv("HUB_CAPABILITY_MODE") != "managed" || !s.authorized(r) {
+	if !s.authorized(r) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}

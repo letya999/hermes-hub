@@ -21,10 +21,7 @@ type HostingSettings struct {
 func hostingVolume(s Settings) string { return "hermes-hub-sites-" + s.User + "-" + s.Environment }
 func hostingName(s Settings) string   { return "hosting-" + s.User + "-" + s.Environment }
 func (s Settings) hostingWorkspace(dir string) string {
-	if s.CapabilityMode == "managed" {
-		return filepath.Join(dir, "managed", s.Environment, "workspace")
-	}
-	return filepath.Join(dir, "workspace")
+	return filepath.Join(dir, "managed", s.Environment, "workspace")
 }
 func hostingConfig(s Settings) hosting.Deployment {
 	cfg := hosting.Deployment{ContextID: s.User, PolicyVersion: PolicyVersion(s), Config: hosting.Config{Owner: s.User, Environment: s.Environment, Zone: hosting.ZoneForOwner(s.User), Domain: "invalid.test", Workspace: "/workspace", Store: "/sites", AdmissionDigest: hostingAdmissionDigest(s)}, Slots: s.Hosting.Slots, ExposureConfig: "/exposure/config.yaml", ControlTokenFile: "/run/hosting.key", DataListen: "127.0.0.1:8181", ControlListen: "0.0.0.0:8182"}
@@ -145,10 +142,7 @@ func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEn
 	svc["environment"] = M{"HOME": "/tmp", "TZ": s.Timezone}
 	svc["env_file"] = []any{}
 	svc["ports"] = []string{}
-	svc["networks"] = []string{"default", sharedNetworkName}
-	if s.CapabilityMode == "managed" {
-		svc["networks"] = []string{"default", sharedNetworkName, managedAgentNetwork(s)}
-	}
+	svc["networks"] = []string{"default", sharedNetworkName, managedAgentNetwork(s)}
 	svc["volumes"] = []any{
 		M{"type": "volume", "source": "hosting-zone", "target": "/zone"},
 		M{"type": "volume", "source": "hosting-sites", "target": "/sites"},

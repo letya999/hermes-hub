@@ -11,14 +11,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
-const defaultToolHubEndpoint = "http://127.0.0.1:8090/mcp"
-
 func toolHubEndpoint() string {
-	endpoint := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_ENDPOINT"))
-	if endpoint == "" && os.Getenv("HUB_TOOLHUB_AUTOSTART") == "true" {
-		return defaultToolHubEndpoint
-	}
-	return endpoint
+	return strings.TrimSpace(os.Getenv("HUB_TOOLHUB_ENDPOINT"))
 }
 
 // materializeOptionsFromEnv builds the effective-config inputs from the
@@ -56,7 +50,7 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		}
 	}
 	return stack.MaterializeOptions{
-		Managed:            os.Getenv("HUB_CAPABILITY_MODE") == "managed",
+		Managed:            true,
 		ToolHubEndpoint:    toolHubEndpoint(),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: os.Getenv(tokenEnv) != "",

@@ -59,7 +59,7 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 	if _, ok := services["communication-hub"]; !ok {
 		t.Fatal("communication-hub missing")
 	}
-	runtimeService := services["hermes-runtime"].(M)
+	runtimeService := RuntimeService(s, "/source", "/host/spaces/artem")
 	communication := services["communication-hub"].(M)
 	if len(runtimeService["volumes"].([]any)) == 0 {
 		t.Fatal("runtime lost its state mounts")
@@ -69,6 +69,7 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 			t.Fatal("gateway received a user mount")
 		}
 	}
+	services["hermes-runtime"] = runtimeService
 	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "credential-broker"} {
 		for _, raw := range services[name].(M)["volumes"].([]any) {
 			if strings.Contains(fmt.Sprint(raw.(M)["source"]), "docker.sock") {
@@ -91,20 +92,12 @@ func TestRenderedServiceBoundaries(t *testing.T) {
 	}
 }
 
+// ToolHub and the workload controller always drive the Docker engine: every
+// space runs managed agent tools through admitted workloads.
 func TestDockerSocketFollowsWorkloadSurface(t *testing.T) {
 	off := false
-	socketless := Settings{Schema: 1, Environment: "prod", User: "artem", Diagnostics: &off, Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	services := Compose(socketless, "/source", "/host/spaces/artem")["services"].(M)
-	for _, name := range []string{"toolhub", "workload-controller"} {
-		for _, raw := range services[name].(M)["volumes"].([]any) {
-			if strings.Contains(fmt.Sprint(raw.(M)["source"]), "docker.sock") {
-				t.Fatalf("docker socket mounted into %s without workload features", name)
-			}
-		}
-	}
-	withWork := socketless
-	withWork.Tools = testTools("workspace", "telegram", "hh=toolhub")
-	services = Compose(withWork, "/source", "/host/spaces/artem")["services"].(M)
+	withWork := Settings{Schema: 1, Environment: "prod", User: "artem", Diagnostics: &off, Tools: testTools("workspace", "telegram", "hh=toolhub"), Ingress: testIngress("workspace", "telegram"), Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	services := Compose(withWork, "/source", "/host/spaces/artem")["services"].(M)
 	for _, name := range []string{"toolhub", "workload-controller"} {
 		found := false
 		for _, raw := range services[name].(M)["volumes"].([]any) {
@@ -146,7 +139,7 @@ func TestIdentityBindingIsSharedAndPolicyVersionChanges(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	compose := Compose(s, "/source", "/space")
 	services := compose["services"].(M)
-	runtime := services["hermes-runtime"].(M)["environment"].(M)
+	runtime := RuntimeService(s, "/source", "/space")["environment"].(M)
 	gateway := services["communication-hub"].(M)["environment"].(M)
 	for _, key := range []string{"HUB_RUNTIME_ID", "HUB_POLICY_VERSION"} {
 		if runtime[key] == "" || runtime[key] != gateway[key] {

@@ -294,7 +294,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	}
 	boundaryPath := strings.TrimSpace(os.Getenv("HUB_WORKSPACE_BOUNDARY"))
 	explicitBoundary := boundaryPath != ""
-	managed := os.Getenv("HUB_PASSPORT_REVISION") != "" || os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	managed := os.Getenv("HUB_PASSPORT_REVISION") != ""
 	if boundaryPath == "" {
 		boundaryPath = "/config/workspace.yaml"
 	}

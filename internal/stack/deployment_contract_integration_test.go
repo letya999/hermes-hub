@@ -88,8 +88,8 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if s.CapabilityMode != "managed" || s.ExecutionMode != "supervisor" || s.SupervisorURL != "http://supervisor:8876" {
-					t.Fatalf("rendered deployment lost published managed selection: capability=%q execution=%q supervisor=%q", s.CapabilityMode, s.ExecutionMode, s.SupervisorURL)
+				if s.ExecutionMode != "supervisor" || s.SupervisorURL != "http://supervisor:8876" {
+					t.Fatalf("rendered deployment lost published managed selection: execution=%q supervisor=%q", s.ExecutionMode, s.SupervisorURL)
 				}
 				body, err := yaml.Marshal(stack.Compose(s, root, dir))
 				if err != nil {

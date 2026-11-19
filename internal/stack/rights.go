@@ -44,7 +44,6 @@ var settingsFieldRights = map[string]string{
 	"SpaceDir":               "",
 	"PassportRevision":       "",
 
-	"CapabilityMode":        "CapabilityMode",
 	"CapabilityProfileID":   "CapabilityProfileID",
 	"CapabilityGeneration":  "CapabilityGeneration",
 	"CLIRegistries":         "CLIRegistries",
@@ -122,7 +121,9 @@ type mcpRights struct {
 // rightsView is the canonical rights-bearing subset of Settings hashed into
 // HUB_POLICY_VERSION. Field names pair with settingsFieldRights.
 type rightsView struct {
-	Hosting               *HostingSettings              `json:"hosting,omitempty"`
+	Hosting *HostingSettings `json:"hosting,omitempty"`
+	// CapabilityMode is always "managed"; the field stays so the hashed JSON
+	// (HUB_POLICY_VERSION) of live spaces is byte-identical (CHG-0230).
 	CapabilityMode        string                        `json:"capability_mode,omitempty"`
 	CapabilityProfileID   string                        `json:"capability_profile_id,omitempty"`
 	CapabilityGeneration  uint64                        `json:"capability_generation,omitempty"`
@@ -158,20 +159,18 @@ type rightsView struct {
 
 func rightsProjection(s Settings) rightsView {
 	tools := s.Tools
-	if s.CapabilityMode == "managed" {
-		// Managed connector selection is fenced by the published profile
-		// revision. Keep the session policy version stable when only that
-		// selection changes, so a sibling connector remains callable.
-		tools = make(map[string]ToolEntry, len(s.Tools))
-		for name, entry := range s.Tools {
-			if name != "browser" && mcpConnectors[name] || s.MCP[name].URL != "" || s.MCP[name].Command != "" {
-				continue
-			}
-			tools[name] = entry
+	// Managed connector selection is fenced by the published profile
+	// revision. Keep the session policy version stable when only that
+	// selection changes, so a sibling connector remains callable.
+	tools = make(map[string]ToolEntry, len(s.Tools))
+	for name, entry := range s.Tools {
+		if name != "browser" && mcpConnectors[name] || s.MCP[name].URL != "" || s.MCP[name].Command != "" {
+			continue
 		}
+		tools[name] = entry
 	}
 	view := rightsView{
-		CapabilityMode:        s.CapabilityMode,
+		CapabilityMode:        "managed",
 		CapabilityProfileID:   s.CapabilityProfileID,
 		CapabilityGeneration:  s.CapabilityGeneration,
 		CLIRegistries:         s.CLIRegistries,

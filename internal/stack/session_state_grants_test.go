@@ -17,7 +17,7 @@ func TestSessionStateGrantsAttestAndUseSeparateOwnerHomes(t *testing.T) {
 		}
 		marker := filepath.Join(dir, "hermes", "memories", "USER.md")
 		os.WriteFile(marker, []byte(owner+"-memory"), 0600)
-		s := Settings{Schema: 3, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: owner + "-default", CapabilityGeneration: 1, User: owner, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testNativeTools("todo", "memory", "session_search")}
+		s := Settings{Schema: 3, Environment: "dev", CapabilityProfileID: owner + "-default", CapabilityGeneration: 1, User: owner, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testNativeTools("todo", "memory", "session_search")}
 		source, dest := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "effective.yaml")
 		for _, granted := range []bool{true, false} {
 			if !granted {

@@ -32,7 +32,7 @@ func (t *Tools) boundary() (*workspaceBoundary, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024*1024 {
 		return nil, invalid
 	}
-	managed := os.Getenv("HUB_PASSPORT_REVISION") != "" || os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	managed := os.Getenv("HUB_PASSPORT_REVISION") != ""
 	marker := filepath.Join(filepath.Dir(t.BoundaryPath), "revision")
 	var revision []byte
 	if managed {

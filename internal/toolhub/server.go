@@ -138,19 +138,10 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 	if policy == "" {
 		policy = "policy-1"
 	}
-	capabilityMode := os.Getenv("HUB_CAPABILITY_MODE")
-	if capabilityMode != "" && capabilityMode != "managed" {
-		return EndpointConfig{}, fmt.Errorf("invalid capability mode")
-	}
-	managed := capabilityMode == "managed"
-	var generation uint64
-	if managed {
-		var parseErr error
-		generation, parseErr = strconv.ParseUint(os.Getenv("HUB_CAPABILITY_GENERATION"), 10, 64)
-		if parseErr != nil || generation == 0 || !identity.ValidID(os.Getenv("HUB_CAPABILITY_PROFILE_ID")) ||
-			(os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "dev" && os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "prod") {
-			return EndpointConfig{}, fmt.Errorf("managed ToolHub identity is incomplete")
-		}
+	generation, parseErr := strconv.ParseUint(os.Getenv("HUB_CAPABILITY_GENERATION"), 10, 64)
+	if parseErr != nil || generation == 0 || !identity.ValidID(os.Getenv("HUB_CAPABILITY_PROFILE_ID")) ||
+		(os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "dev" && os.Getenv("HUB_CAPABILITY_ENVIRONMENT") != "prod") {
+		return EndpointConfig{}, fmt.Errorf("managed ToolHub identity is incomplete")
 	}
 	admission, err := api.ControllerAdmissionVerifierFromEnv()
 	if err != nil {
@@ -166,9 +157,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		DeliveryTargetID:   api.EnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"),
 		PolicyVersion:      policy,
 	}
-	if managed {
-		auth.CapabilityProfile, auth.Environment, auth.Generation = os.Getenv("HUB_CAPABILITY_PROFILE_ID"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), generation
-	}
+	auth.CapabilityProfile, auth.Environment, auth.Generation = os.Getenv("HUB_CAPABILITY_PROFILE_ID"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), generation
 	controlBroker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_CONTROL_")
 	if err != nil {
 		return EndpointConfig{}, err
