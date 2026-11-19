@@ -104,7 +104,6 @@ func TestLeaseGenerationFence(t *testing.T) {
 	}
 	m.mu.Lock()
 	m.items[runtimeKey(b)].leases["ghost"] = Lease{ID: "ghost", Kind: LeaseUncertain, Generation: entry.Generation, Owner: "supervisor", ExpiresAt: m.cfg.Now().Add(time.Minute)}
-	entry.Leases++
 	m.mu.Unlock()
 	status, ok, _ = m.Status(b)
 	if !ok || len(status.Consumers) != 1 || status.Consumers[0].ID != "ghost" {
@@ -124,5 +123,49 @@ func TestLeaseGenerationFence(t *testing.T) {
 	m.mu.Unlock()
 	if err := m.RenewLease("ghost"); !errors.Is(err, errStaleLease) && (err == nil || !strings.Contains(err.Error(), "stale")) {
 		t.Fatalf("stale renew=%v", err)
+	}
+}
+
+// Every runtime hold is a lease row: the count is len(leases), never a second
+// persisted counter. A process that dies after the hold persisted but before
+// any release (formerly between Acquire's counter write and its row insert)
+// leaves an expiring supervisor-owned row, so the restarted supervisor's
+// sweep idles the runtime instead of pinning it busy forever.
+func TestLeaseCountDerivedFromLeaseRows(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	held, err := m.Ensure(context.Background(), b)
+	if err != nil || held.State != Busy {
+		t.Fatalf("ensure=%+v err=%v", held, err)
+	}
+	status, _, err := m.Status(b)
+	if err != nil || len(status.Consumers) != 1 {
+		t.Fatalf("hold is not a lease row: consumers=%+v err=%v", status.Consumers, err)
+	}
+	restarted, err := New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.mu.Lock()
+	restarted.sweepStaleLeasesLocked(time.Now().Add(time.Hour + 2*restarted.cfg.WarmTTL))
+	restarted.mu.Unlock()
+	after, _, err := restarted.Status(b)
+	if err != nil || after.State == Busy || len(after.Consumers) != 0 {
+		t.Fatalf("crashed hold pins the runtime: state=%s consumers=%+v err=%v", after.State, after.Consumers, err)
+	}
+}
+
+// dropEnsureHolds clears anonymous Ensure references, the row form of the
+// former "Leases = 0" test setup.
+func dropEnsureHolds(entry *runtimeEntry) {
+	for id, lease := range entry.leases {
+		if lease.Reason == ensureHoldReason {
+			delete(entry.leases, id)
+		}
 	}
 }

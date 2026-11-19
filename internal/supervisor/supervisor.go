@@ -207,7 +207,6 @@ type Runtime struct {
 	Address       string    `json:"address"`
 	State         State     `json:"state"`
 	ImageSource   string    `json:"image_source,omitempty"`
-	Leases        int       `json:"leases"`
 	LastUsed      time.Time `json:"last_used"`
 	IdleDeadline  time.Time `json:"idle_deadline,omitempty"`
 	Managed       bool      `json:"managed,omitempty"`
@@ -852,7 +851,6 @@ func (m *Manager) markDegraded(key string) {
 	if runtime := m.items[key]; runtime != nil {
 		runtime.restored = true
 		runtime.State = Degraded
-		runtime.Leases = len(runtime.leases)
 		m.recordRuntimeFailureLocked(&runtime.Runtime)
 		_ = m.persistLocked()
 	}

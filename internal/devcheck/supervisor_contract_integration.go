@@ -488,7 +488,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		return fmt.Errorf("disconnected stream did not return")
 	}
 	before, _, err := m.Status(binding)
-	if err != nil || before.Leases == 0 {
+	if err != nil || len(before.Consumers) == 0 {
 		return fmt.Errorf("disconnect released unresolved runtime hold")
 	}
 	containerID, err := smokeOwnedContainerID(ctx, m, before)
@@ -606,11 +606,11 @@ func smokeWaitIdle(ctx context.Context, m *supervisor.Manager, binding superviso
 		if err != nil {
 			return runtime, err
 		}
-		if runtime.Leases == 0 && (runtime.State == supervisor.Idle || runtime.State == supervisor.Stopped) {
+		if len(runtime.Consumers) == 0 && (runtime.State == supervisor.Idle || runtime.State == supervisor.Stopped) {
 			return runtime, nil
 		}
 		if time.Now().After(deadline) {
-			return runtime, fmt.Errorf("terminal lease did not settle: state=%s leases=%d", runtime.State, runtime.Leases)
+			return runtime, fmt.Errorf("terminal lease did not settle: state=%s leases=%d", runtime.State, len(runtime.Consumers))
 		}
 		if err := contractSleep(ctx, 20*time.Millisecond); err != nil {
 			return runtime, err

@@ -255,7 +255,6 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 						deadline = time.Now().UTC().Add(2 * time.Minute)
 					}
 					entry.leases[id] = Lease{ID: id, Kind: LeaseApproval, PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode, Generation: entry.Generation, Owner: "job:" + key, ExpiresAt: deadline}
-					entry.Leases++
 					entry.State, entry.IdleDeadline = Busy, time.Time{}
 				}
 			}
@@ -265,10 +264,9 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 					release := terminalRunStatus(status) || (status == "running" && record.ApprovalDeadline.IsZero()) || obsolete
 					if release && lease.Kind == LeaseApproval && lease.Owner == "job:"+key {
 						delete(entry.leases, id)
-						entry.Leases--
 					}
 				}
-				if entry.Leases == 0 {
+				if len(entry.leases) == 0 {
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
 			}

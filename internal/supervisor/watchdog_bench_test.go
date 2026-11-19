@@ -39,7 +39,7 @@ func BenchmarkWatchdogSweep20(b *testing.B) {
 	for i := 0; i < 20; i++ {
 		key := fmt.Sprintf("p%d\x00ctx%d\x00gateway", i, i)
 		m.items[key] = &runtimeEntry{
-			Runtime: Runtime{PrincipalID: fmt.Sprintf("p%d", i), ContextID: fmt.Sprintf("ctx%d", i), RuntimeID: fmt.Sprintf("rt%d", i), RuntimeMode: "gateway", Generation: "gen-1", Container: fmt.Sprintf("c%d", i), Address: "http://127.0.0.1:1", State: Idle, Leases: 1, LastUsed: m.cfg.Now()},
+			Runtime: Runtime{PrincipalID: fmt.Sprintf("p%d", i), ContextID: fmt.Sprintf("ctx%d", i), RuntimeID: fmt.Sprintf("rt%d", i), RuntimeMode: "gateway", Generation: "gen-1", Container: fmt.Sprintf("c%d", i), Address: "http://127.0.0.1:1", State: Idle, LastUsed: m.cfg.Now()},
 			leases:  map[string]Lease{},
 		}
 	}

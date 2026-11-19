@@ -422,7 +422,7 @@ func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
 	if _, ok := m.pins[runtimeKey(Binding{PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode})]; ok {
 		return true
 	}
-	if entry.Leases > 0 {
+	if len(entry.leases) > 0 {
 		return true
 	}
 	for _, record := range m.jobs {

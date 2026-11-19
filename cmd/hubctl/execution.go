@@ -140,7 +140,7 @@ func checkSupervisorStopped(ctx context.Context, endpoint, auth, user string) er
 		return errors.New("invalid supervisor migration status")
 	}
 	for _, runtime := range runtimes {
-		if runtime.ContextID == user && (runtime.State != supervisor.Stopped || runtime.Leases != 0 || runtime.Desired) {
+		if runtime.ContextID == user && (runtime.State != supervisor.Stopped || len(runtime.Consumers) != 0 || runtime.Desired) {
 			return errors.New("selected supervisor runtime is not drained/stopped")
 		}
 	}

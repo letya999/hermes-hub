@@ -22,7 +22,7 @@ func TestExecutionSupervisorDrainUsesExactContextAndAuth(t *testing.T) {
 				if r.URL.Path != "/v1/runtimes" || r.Header.Get("Authorization") != "Bearer synthetic" {
 					t.Error("incorrect migration authority")
 				}
-				json.NewEncoder(w).Encode([]supervisor.Runtime{{ContextID: "bob", State: supervisor.Busy, Leases: 1}, {ContextID: "alice", State: state}})
+				json.NewEncoder(w).Encode([]supervisor.Runtime{{ContextID: "bob", State: supervisor.Busy, Consumers: []supervisor.LeaseConsumer{{ID: "held"}}}, {ContextID: "alice", State: state}})
 			}))
 			defer api.Close()
 			err := checkSupervisorStopped(context.Background(), api.URL, "synthetic", "alice")

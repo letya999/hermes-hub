@@ -426,7 +426,8 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(normalized)]
-	entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, Ready, 0, "secret"
+	entry.Address, entry.State, entry.auth = runtimeAPI.URL, Ready, "secret"
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
 	body, err := json.Marshal(request)
@@ -495,8 +496,8 @@ func TestWakeIsIdempotentAndCarriesNoText(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("post-wake status: ok=%v err=%v", ok, err)
 	}
-	if runtime.Leases != 0 || runtime.State != Idle {
-		t.Fatalf("post-wake runtime leases=%d state=%s, want 0/%s", runtime.Leases, runtime.State, Idle)
+	if len(runtime.Consumers) != 0 || runtime.State != Idle {
+		t.Fatalf("post-wake runtime leases=%d state=%s, want 0/%s", len(runtime.Consumers), runtime.State, Idle)
 	}
 }
 
@@ -609,7 +610,8 @@ func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
 			}
 			m.mu.Lock()
 			entry := m.items[runtimeKey(normalized)]
-			entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, tc.state, 0, "secret"
+			entry.Address, entry.State, entry.auth = runtimeAPI.URL, tc.state, "secret"
+			dropEnsureHolds(entry)
 			m.mu.Unlock()
 			body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
 			if err != nil {
@@ -1535,7 +1537,7 @@ func TestSupervisorMarksTransportOutcomeUncertain(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime, _, _ := m.Status(b)
-	if runtime.State != Busy || runtime.Leases != 1 {
+	if runtime.State != Busy || len(runtime.Consumers) != 1 {
 		t.Fatalf("uncertain execution was reaped: %+v", runtime)
 	}
 	restored, err := New(m.cfg)
@@ -1546,7 +1548,7 @@ func TestSupervisorMarksTransportOutcomeUncertain(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime, _, _ = restored.Status(b)
-	if runtime.State != Busy || runtime.Leases != 1 {
+	if runtime.State != Busy || len(runtime.Consumers) != 1 {
 		t.Fatalf("restart lost uncertain hold: %+v", runtime)
 	}
 }
@@ -1574,7 +1576,7 @@ func TestConcurrentNamedLeaseReleaseIsAtomic(t *testing.T) {
 		}
 	}
 	runtime, _, _ := m.Status(b)
-	if success != 1 || runtime.Leases != 0 || runtime.State != Idle {
+	if success != 1 || len(runtime.Consumers) != 0 || runtime.State != Idle {
 		t.Fatalf("success=%d runtime=%+v", success, runtime)
 	}
 }
@@ -1584,7 +1586,7 @@ func TestConcurrentReleaseAndSweepPreserveOtherPrincipal(t *testing.T) {
 	for _, principal := range []string{"alice", "bob"} {
 		b := Binding{PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway"}
 		lease := Lease{ID: "lease-" + principal, PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway", Generation: "gen-" + principal, Owner: "job:" + principal, Kind: LeaseJob}
-		m.items[runtimeKey(b)] = &runtimeEntry{Runtime: Runtime{PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway", Generation: lease.Generation, State: Busy, Leases: 1}, leases: map[string]Lease{lease.ID: lease}}
+		m.items[runtimeKey(b)] = &runtimeEntry{Runtime: Runtime{PrincipalID: principal, ContextID: principal, RuntimeMode: "gateway", Generation: lease.Generation, State: Busy}, leases: map[string]Lease{lease.ID: lease}}
 		status := "running"
 		if principal == "alice" {
 			status = "completed"
@@ -1608,13 +1610,10 @@ func TestConcurrentReleaseAndSweepPreserveOtherPrincipal(t *testing.T) {
 	close(start)
 	done.Wait()
 	for _, entry := range m.items {
-		if entry.Leases != len(entry.leases) {
-			t.Fatalf("lease map/count diverged: %+v", entry.Runtime)
-		}
-		if entry.PrincipalID == "alice" && (entry.Leases != 0 || entry.State != Idle) {
+		if entry.PrincipalID == "alice" && (len(entry.leases) != 0 || entry.State != Idle) {
 			t.Fatalf("terminal principal still busy: %+v", entry.Runtime)
 		}
-		if entry.PrincipalID == "bob" && (entry.Leases != 1 || entry.State != Busy) {
+		if entry.PrincipalID == "bob" && (len(entry.leases) != 1 || entry.State != Busy) {
 			t.Fatalf("other principal lost its hold: %+v", entry.Runtime)
 		}
 	}
@@ -1638,7 +1637,7 @@ func TestNamedLeaseReleaseRollsBackOnPersistenceFailure(t *testing.T) {
 		t.Fatal("persistence failure ignored")
 	}
 	runtime, _, _ := m.Status(b)
-	if runtime.Leases != 1 || runtime.State != Busy {
+	if len(runtime.Consumers) != 1 || runtime.State != Busy {
 		t.Fatalf("failed release changed hold: %+v", runtime)
 	}
 	m.statePath = path
@@ -1887,7 +1886,7 @@ func TestTypedLeasesProtectStreamsApprovalsAndPrincipalIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, _, _ := m.Status(b)
-	if status.State != Busy || status.Leases != 2 {
+	if status.State != Busy || len(status.Consumers) != 2 {
 		t.Fatalf("leased status=%+v", status)
 	}
 	if err := m.ReleaseLease(stream.ID); err != nil {
@@ -2399,7 +2398,6 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 		"lease-superold": {ID: "lease-superold", Kind: LeaseJob, Owner: "supervisor", Generation: entry.Generation, ExpiresAt: m.cfg.Now().Add(-2 * time.Minute)},
 		"lease-live-job": {ID: "lease-live-job", Kind: LeaseJob, Owner: "job:live", Generation: entry.Generation},
 	}
-	entry.Leases = 5
 	m.jobs["live"] = jobRecord{Status: "running"}
 	m.jobs["ghost"] = jobRecord{Status: "completed"}
 	m.mu.Unlock()
@@ -2408,8 +2406,8 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if entry.Leases != 2 || len(entry.leases) != 2 {
-		t.Fatalf("orphan leases not swept: leases=%v map=%v", entry.Leases, entry.leases)
+	if len(entry.leases) != 2 {
+		t.Fatalf("orphan leases not swept: map=%v", entry.leases)
 	}
 	for _, id := range []string{"lease-live-job", "lease-super"} {
 		if _, ok := entry.leases[id]; !ok {
@@ -2428,8 +2426,8 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.mu.Lock()
-	if entry.Leases != 1 || len(entry.leases) != 1 || entry.State != Busy {
-		t.Fatalf("caller-held lease must survive the job sweep: leases=%v state=%s", entry.Leases, entry.State)
+	if len(entry.leases) != 1 || entry.State != Busy {
+		t.Fatalf("caller-held lease must survive the job sweep: leases=%v state=%s", entry.leases, entry.State)
 	}
 	if _, ok := entry.leases["lease-super"]; !ok {
 		t.Fatalf("caller-held lease swept: %v", entry.leases)
