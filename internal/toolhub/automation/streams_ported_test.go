@@ -1346,8 +1346,38 @@ func TestStreamEditFencesPendingBatch(t *testing.T) {
 	if resumeErr == nil || !drained {
 		t.Fatalf("edited schedule resumed a stale batch: drained=%v err=%v", drained, resumeErr)
 	}
-	if err := f.host.Tick(context.Background(), f.h.now.Add(2*time.Minute)); err == nil {
-		t.Fatal("tick silently ignored the fenced batch")
+	if err := f.host.Tick(context.Background(), f.h.now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("fenced batch wedged the tick: %v", err)
+	}
+	if st := f.state(t, sc.ScheduleID); st.Pending != nil || st.GapCount == 0 {
+		t.Fatalf("fenced batch was not dropped as a recorded gap: %+v", st)
+	}
+	if f.h.comm.count() != 0 {
+		t.Fatal("stale batch delivered after edit")
+	}
+}
+
+// An edit that moves the schedule revision under a pending batch must not
+// wedge the principal: the stale batch is dropped as a recorded gap and the
+// tick still materializes every other stream of the same principal.
+func TestScheduleEditDropsPendingBatchAndKeepsOtherStreams(t *testing.T) {
+	f := newEventFixture(t)
+	edited := f.create(t, f.streamSchedule("a-edit", "watch dms", "notify", &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}))
+	other := f.create(t, f.streamSchedule("b-other", "watch mail", "notify", &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-def"}))
+	o := f.probing(t, streamOccurrence(edited, f.h.now))
+	stagePendingBatch(t, f, edited, o, []commodel.Event{{ID: "one", Text: "stale batch"}})
+	if _, err := f.host.EditRoutine(context.Background(), f.env, edited.ScheduleID, map[string]json.RawMessage{"input": json.RawMessage(`"new text"`)}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.host.tickStreams(context.Background(), f.eng, "alice", f.h.now.Add(time.Minute)); err != nil {
+		t.Fatalf("schedule edit wedged the principal's streams: %v", err)
+	}
+	st := f.state(t, edited.ScheduleID)
+	if st.Pending != nil || st.GapCount == 0 || st.LastGapAt.IsZero() {
+		t.Fatalf("stale batch not dropped as a recorded gap: %+v", st)
+	}
+	if got := f.state(t, other.ScheduleID); got.StreamAt.IsZero() {
+		t.Fatalf("other stream of the principal was not materialized: %+v", got)
 	}
 	if f.h.comm.count() != 0 {
 		t.Fatal("stale batch delivered after edit")

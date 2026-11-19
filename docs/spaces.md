@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-16"
+last_verified: "2026-11-20"
 ---
 
 # Spaces
@@ -350,9 +350,10 @@ revoked. A failed rights restore reports rollback divergence. The durable
 candidate revision, profile IDs, phase and affected service names. A later
 `space apply` first restores the previous view and rights, then replays possibly
 affected service actions. Repeated recovery is idempotent. If a first apply
-may have touched services, an image build was interrupted, or replay fails,
-the journal stays in place and `current` is pending until operator repair;
-ToolHub admission remains closed. A dev apply does not alter the prod sibling.
+recorded service actions that may have touched services, an image build was
+interrupted, or replay fails, the journal stays in place and `current` is
+pending until operator repair; ToolHub admission remains closed. A first apply
+with no recorded actions is rolled back and its journal cleared. A dev apply does not alter the prod sibling.
 Completed publications prune superseded revisions to the live pointer chain —
 `current`, the mounted view's pinned revision and the just-replaced previous —
 plus the newest three bundles for audit slack; an open journal or pending

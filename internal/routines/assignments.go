@@ -151,6 +151,10 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return commodel.Assignment{}, err
 	}
+	// Kept sources stay paused, so only Resume may leave pause.
+	if item.State == "paused" {
+		return commodel.Assignment{}, errors.New("assignment is paused; resume it first")
+	}
 	if item.Plan == nil {
 		return commodel.Assignment{}, errors.New("assignment plan required")
 	}
@@ -282,6 +286,9 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 	}
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return commodel.Assignment{}, err
+	}
+	if item.State == "paused" {
+		return commodel.Assignment{}, errors.New("assignment is paused; resume it first")
 	}
 	if plan.Revision == 0 {
 		plan.Revision = 1

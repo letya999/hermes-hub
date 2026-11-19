@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-12"
+last_verified: "2026-11-20"
 ---
 # Routines
 
@@ -14,6 +14,8 @@ dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
 schedule with a normal routine occurrence and due recovery, keyed once per
 owner and local date. Its operation processes memory and queues its digest
 through the normal delivery outbox; ordinary routine CRUD cannot change it.
+A night whose operation fails three times (retried after 1 and 2 minutes)
+settles `failed`, so it never blocks later nights.
 The schedule time and timezone come from the current published passport.
 Memory disablement overrides tool selection. Calls require `tools.use` and
 their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
@@ -284,7 +286,8 @@ and the `/assignments` `/assignment <id> …` chat commands.
   resurrected. For a one-time first HTTP read, use `watcher` with `deliver_mode=content`; `check expect=unchanged` requires a prior baseline. A completed `once:` schedule may finish its in-flight probe after retirement.
 - Lifecycle propagates to artifacts: pause/resume flip the applied
   schedules, cancel/complete tombstone them and fence the record
-  terminal; wakes are fenced by the applied plan generation at admission
+  terminal; apply and plan updates refuse a paused assignment, which leaves
+  pause only through resume; wakes are fenced by the applied plan generation at admission
   and claim, so a paused or re-planned assignment cannot run a stale job. The completing trigger's confirmed response remains sendable after its own source retires and occurrence moves to archive, while deleting the assignment or revoking delivery rights still blocks it.
   An active owner assignment may use the owner's currently selected and
   granted memory tools under the same `memory.enabled` switch. The exact
@@ -477,6 +480,8 @@ prepared sink payloads in their existing cursor state before fanout. A restart o
 full sink drains that remainder before another source fetch; recovered events do
 not rerun the filter. Drop decisions and sink admission precede cursor advance.
 Pause, owner authorization and assignment/revision fences still apply to replay.
+A schedule edit that moves the revision under a pending stream batch drops its
+unadmitted events as a recorded gap (`gap_count`); it never blocks the owner's other streams.
 Agent batch references additionally bind schedule and probe revisions at claim
 and delivery. Sources with consuming reads and no ACK cannot guarantee delivery
 across a crash before the first local receipt; prefer non-consuming cursor reads.

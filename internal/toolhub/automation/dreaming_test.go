@@ -146,10 +146,12 @@ func TestDreamingRunRetriesAndQueuesDigestOnce(t *testing.T) {
 		t.Fatal("failed run marked done")
 	}
 	failed = false
-	if err := host.Tick(context.Background(), now); err != nil {
+	// A failed night retries after its backoff, not on the next tick.
+	retry := now.Add(time.Minute)
+	if err := host.Tick(context.Background(), retry); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Tick(context.Background(), now); err != nil {
+	if err := host.Tick(context.Background(), retry); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 || h.comm.count() != 1 {
