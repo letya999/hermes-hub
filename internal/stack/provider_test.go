@@ -133,8 +133,8 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 // an unknown adapter kind, an orphan config field, a non-HTTP endpoint and
 // a credential-typed token field all fail validation outright.
 func TestProviderNoSilentFallback(t *testing.T) {
-	base := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1",
+	base := Settings{CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model-relay:8318/v1",
 		Tools:   testTools("workspace", "memory_vault", "memory_provider"),
 		Ingress: testIngress("workspace")}
 
@@ -187,7 +187,7 @@ func TestProviderNoSilentFallback(t *testing.T) {
 // disabling revokes egress at the relay rather than only at render.
 func TestProviderManagedEgress(t *testing.T) {
 	dir := t.TempDir()
-	on := Settings{CapabilityMode: "managed", Environment: "prod",
+	on := Settings{Environment: "prod",
 		Tools:             testTools("memory_vault", "memory_provider"),
 		MemoryProvider:    "hindsight",
 		MemoryProviderURL: "https://api.hindsight.vectorize.io"}
@@ -195,7 +195,7 @@ func TestProviderManagedEgress(t *testing.T) {
 		t.Fatalf("enabled provider host missing from egress allowlist: %v", hosts)
 	}
 
-	off := Settings{CapabilityMode: "managed", Environment: "prod",
+	off := Settings{Environment: "prod",
 		Tools: testTools("memory_vault")}
 	if hosts := managedEgressHosts(off, dir); slices.Contains(hosts, "api.hindsight.vectorize.io") {
 		t.Fatalf("disabled provider kept egress: %v", hosts)
@@ -232,7 +232,7 @@ func TestOpenProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "vault", "runtime", "memory", "provider.json"), append(cfg, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(d, "runtime.prod.env"), []byte("HINDSIGHT_API_KEY=tok-1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(d, "managed-runtime.prod.env"), []byte("HINDSIGHT_API_KEY=tok-1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	p, err := OpenProvider(d, s)
@@ -247,8 +247,11 @@ func TestOpenProvider(t *testing.T) {
 		t.Fatal("degraded endpoint must report through the opened provider")
 	}
 
-	// Managed mode resolves the managed secrets file, not the legacy one.
-	managed := Settings{Environment: "prod", CapabilityMode: "managed"}
+	// The managed secrets file is the only source; a legacy one is ignored.
+	managed := Settings{Environment: "prod"}
+	if err := os.Rename(filepath.Join(d, "managed-runtime.prod.env"), filepath.Join(d, "runtime.prod.env")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := OpenProvider(d, managed); err == nil {
 		t.Fatal("managed mode must read managed-runtime.prod.env, not runtime.prod.env")
 	}

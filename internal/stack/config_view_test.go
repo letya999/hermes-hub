@@ -10,8 +10,7 @@ import (
 
 func runtimeBinds(t *testing.T, s Settings, dir string) []M {
 	t.Helper()
-	out := Compose(s, t.TempDir(), dir)
-	rt, ok := out["services"].(M)["hermes-runtime"].(M)
+	rt, ok := compose(s, t.TempDir(), dir, false)["services"].(M)["hermes-runtime"].(M)
 	if !ok {
 		t.Skip("no hermes-runtime service in this render")
 	}

@@ -44,7 +44,7 @@ func TestRetiredSelfSettingsCannotChangeMaterializedConfig(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "config.yaml")
 	overlay := filepath.Join(dir, "self-settings.json")
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	body, err := yaml.Marshal(Config(s))
 	if err != nil {
 		t.Fatal(err)
@@ -91,14 +91,14 @@ func TestRenderEmitsNoImplicitNativeToolsets(t *testing.T) {
 }
 
 func TestToolHubTerminalRemovesNativeEvenWhenGovernanceAllows(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: map[string]ToolEntry{"terminal": {Via: ToolViaToolHub}}}
 	// nil governance allows emission, so this catches the backend-routing bug.
 	// R3.2: no implicit base list — an explicit file wish keeps the rest of
 	// the render honest about what toolhub terminal removed.
 	s.Tools["file"] = ToolEntry{Via: ToolViaNative}
 	cfg := Config(s)
-	for _, channel := range []string{"cli", "telegram", "api_server", "cron"} {
+	for _, channel := range []string{"api_server"} {
 		sets := cfg["platform_toolsets"].(M)[channel].([]string)
 		if slices.Contains(sets, "terminal") || slices.Contains(sets, "code_execution") {
 			t.Fatalf("%s exposes native execution: %v", channel, sets)
@@ -112,7 +112,7 @@ func TestToolHubTerminalRemovesNativeEvenWhenGovernanceAllows(t *testing.T) {
 		t.Fatalf("native code execution bypass accepted: %v", err)
 	}
 	s.Tools["terminal"] = ToolEntry{Via: ToolViaNative}
-	if !slices.Contains(Config(s)["platform_toolsets"].(M)["cli"].([]string), "terminal") {
+	if !slices.Contains(Config(s)["platform_toolsets"].(M)["api_server"].([]string), "terminal") {
 		t.Fatal("explicit unrestricted native mode lost")
 	}
 }
@@ -146,11 +146,6 @@ func TestUnnamedPlatformsFallClosed(t *testing.T) {
 			t.Fatalf("exec/actuation toolset %s not denied for unnamed platforms", name)
 		}
 	}
-	for _, name := range []string{"debugging", "safe", "yuanbao", "search"} {
-		if slices.Contains(denied, name) {
-			t.Fatalf("composite %s in denylist would strip enabled core tools", name)
-		}
-	}
 	// R3.1: ungranted native leaves stay on the deny net.
 	for _, name := range []string{"file", "memory", "skills", "todo", "session_search"} {
 		if !slices.Contains(denied, name) {
@@ -166,7 +161,7 @@ func TestUnnamedPlatformsFallClosed(t *testing.T) {
 }
 
 func TestCLIRegistryEgressIsOptInAndDefinitionScoped(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Environment: "dev", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	base := cliControllerSection(s, "")
 	if slices.Contains(base.AllowedEgress, "pypi.org") {
 		t.Fatal("registry egress enabled without operator selection")
@@ -195,7 +190,7 @@ func TestCLIRegistryEgressIsOptInAndDefinitionScoped(t *testing.T) {
 }
 
 func TestCLIRuntimeUIDAndToolboxKnobs(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Environment: "dev", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	ref := "hermes-cli-artifact/shfmt@sha256:" + strings.Repeat("a", 64)
 	s.CLIRuntime = "runsc"
 	s.CLIPerPrincipalUID = true

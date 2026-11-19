@@ -98,11 +98,10 @@ func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
 // claimManagedLane admits up to five conversations to one managed Hermes runtime.
 // Each job keeps its own run identity; prior lane modes remain routable on replay.
 func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.ExecuteRequest, binding Binding) (string, error) {
-	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if settings.CapabilityMode != "managed" {
+	if _, err := stack.ReadEffective(binding.ContextRoot, m.environment()); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
 		return "gateway", nil
 	}
 	key := executeJobKey(request)
@@ -133,7 +132,7 @@ func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.Execu
 			record.RuntimeMode = "gateway"
 			record.UpdatedAt = time.Now().UTC()
 			m.jobs[key] = record
-			err = m.persistLocked()
+			err := m.persistLocked()
 			if err != nil {
 				m.jobs[key] = previous
 			}

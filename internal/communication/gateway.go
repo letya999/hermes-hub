@@ -117,28 +117,16 @@ func New(config Config) (*Gateway, error) {
 	if config.PollTimeout <= 0 {
 		config.PollTimeout = 25 * time.Second
 	}
-	if config.HermesCommand == "" {
-		config.HermesCommand = "hermes"
+	// Turns execute only behind the runtime or supervisor endpoint; there is
+	// no in-process fallback that could run Hermes against user directories.
+	if strings.TrimSpace(config.RuntimeURL) == "" {
+		return nil, errors.New(locale.T(locale.Operator(), "communication.runtime-endpoint-required"))
 	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	if config.TelegramToken == "" {
 		return nil, errors.New("TELEGRAM_BOT_TOKEN is required")
-	}
-	for _, user := range config.Users {
-		if !user.Enabled {
-			continue
-		}
-		if config.RuntimeURL != "" {
-			continue
-		}
-		for _, root := range []string{user.StateDir, user.WorkspaceDir} {
-			info, err := os.Stat(root)
-			if err != nil || !info.IsDir() {
-				return nil, fmt.Errorf("user %q runtime root is unavailable", user.ID)
-			}
-		}
 	}
 	if _, err := os.Lstat(config.SpoolDir); err == nil {
 		if err := automation.ValidateLegacySpool(config.SpoolDir); err != nil {
@@ -179,10 +167,7 @@ func New(config Config) (*Gateway, error) {
 		}
 	}
 	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices)
-	runner := Runner(HermesRunner{Command: config.HermesCommand})
-	if config.RuntimeURL != "" {
-		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
-	}
+	runner := Runner(HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil})
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	// Draft approval cards persist beside the spool so a restart does not

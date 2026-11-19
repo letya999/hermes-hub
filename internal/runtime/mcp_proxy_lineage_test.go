@@ -100,7 +100,6 @@ func TestManagedToolCallLineageVerifiedEndToEnd(t *testing.T) {
 	t.Setenv("HUB_AUDIT_LEDGER", ledger)
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
 	t.Setenv("HUB_COMMUNICATION_AUTH", "control-token")
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("s", 32))
 	handler, err := toolhub.NewEndpointHandler(toolhub.EndpointConfig{
 		Token: strings.Repeat("s", 32), Auth: auth, Backend: backend,

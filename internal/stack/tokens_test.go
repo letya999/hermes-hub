@@ -439,7 +439,7 @@ func TestRenderEnvironmentEnrollsModelRelayAdmins(t *testing.T) {
 }
 
 func TestRuntimeTokenEnvelopeUsesOrganizationContext(t *testing.T) {
-	settings := Settings{Schema: 1, User: "bob", Organization: "acme", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	settings := Settings{Schema: 1, User: "bob", Organization: "acme", Environment: "prod", CapabilityProfileID: "bob-default", CapabilityGeneration: 1, Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	envelope, err := runtimeTokenEnvelope(settings)
 	if err != nil {
 		t.Fatal(err)
@@ -450,7 +450,7 @@ func TestRuntimeTokenEnvelopeUsesOrganizationContext(t *testing.T) {
 }
 
 func TestManagedRuntimeTokenEnvelopeBindsGeneration(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 3}
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 3}
 	envelope, err := runtimeTokenEnvelope(s)
 	if err != nil || envelope.CapabilityProfile != "alice-default" || envelope.Environment != "dev" || envelope.Generation != 3 {
 		t.Fatalf("managed envelope=%+v err=%v", envelope, err)

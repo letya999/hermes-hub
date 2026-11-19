@@ -45,7 +45,7 @@ func writeSSHConfig(t *testing.T, dir string) {
 }
 
 func TestSSHFeatureValidationAndDoctor(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	for _, sub := range []string{"write", "shell", "tunnel"} {
 		copy := s
 		copy.Tools = map[string]ToolEntry{"ssh": {Via: "off", Tools: map[string]bool{sub: true}}}
@@ -119,17 +119,6 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	managedEnv := RuntimeService(s, root, d)["environment"].(M)
 	if managedEnv["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || managedEnv["HUB_SSH_WRITE"] != "true" || managedEnv["HUB_SSH_TUNNEL"] != "true" || managedEnv["HUB_SSH_SHELL"] != "false" {
 		t.Fatal("managed SSH config environment missing")
-	}
-	// The unmanaged `hub` stdio server carries the same reviewed settings.
-	unmanaged := s
-	unmanaged.CapabilityMode = ""
-	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)
-	env := hub["env"].(M)
-	if env["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || env["HUB_SSH_WRITE"] != "true" || env["HUB_SSH_TUNNEL"] != "true" || env["HUB_SSH_SHELL"] != "false" {
-		t.Fatalf("ssh env wrong: %v", env)
-	}
-	if env["HUB_CREDENTIAL_BROKER_RUNTIME_URL"] != "${HUB_CREDENTIAL_BROKER_RUNTIME_URL}" {
-		t.Fatal("broker runtime env not wired through")
 	}
 }
 

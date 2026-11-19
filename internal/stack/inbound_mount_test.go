@@ -35,7 +35,7 @@ func TestComposeMountsOwnerInboxesForControlFetch(t *testing.T) {
 			t.Fatalf("missing owner inbox mount for %s", owner)
 		}
 	}
-	if got := services["hermes-runtime"].(M)["environment"].(M)["HUB_WORKSPACE_RO"]; got == "" {
+	if got := RuntimeService(s, dir, dir)["environment"].(M)["HUB_WORKSPACE_RO"]; got == "" {
 		t.Fatal("runtime inbox lost read-only boundary")
 	}
 }

@@ -19,11 +19,9 @@ func TestRuntimeEntrypointGuards(t *testing.T) {
 	if err := Run([]string{"bogus"}); err == nil {
 		t.Fatal("unknown mode accepted")
 	}
-	t.Setenv("HUB_CAPABILITY_MODE", "")
 	if err := Run([]string{"verify-managed"}); err == nil || !strings.Contains(err.Error(), "managed") {
-		t.Fatalf("verify-managed without mode: %v", err)
+		t.Fatalf("verify-managed without a mounted revision: %v", err)
 	}
-	t.Setenv("HUB_CAPABILITY_MODE", "unmanaged")
 	if err := Run([]string{"health"}); err == nil {
 		t.Fatal("missing health marker accepted")
 	}

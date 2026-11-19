@@ -78,7 +78,7 @@ func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	if groups, ok := controller["group_add"].([]string); !ok || len(groups) != 1 || groups[0] != fmt.Sprint(dockerSocketGID("/var/run/docker.sock")) {
 		t.Fatal("hosting controller lacks Docker socket group")
 	}
-	runtime := services["hermes-runtime"].(M)
+	runtime := RuntimeService(s, t.TempDir(), dir)
 	for _, mount := range runtime["volumes"].([]any) {
 		m, ok := mount.(M)
 		if ok && m["target"] == "/run/controller.key" {

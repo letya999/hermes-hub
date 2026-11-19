@@ -44,7 +44,7 @@ func HermesCapabilityContract(ctx context.Context, image string) error {
 	if err != nil || manifest.SourcePin != hermesContractPin {
 		return fmt.Errorf("managed Hermes inventory does not match source pin")
 	}
-	config, err := json.Marshal(stack.Config(stack.Settings{CapabilityMode: "managed", Model: "capability-probe", ModelURL: "http://127.0.0.1:1/v1", Timezone: "UTC"}))
+	config, err := json.Marshal(stack.Config(stack.Settings{Model: "capability-probe", ModelURL: "http://127.0.0.1:1/v1", Timezone: "UTC"}))
 	if err != nil {
 		return err
 	}

@@ -17,7 +17,7 @@ import (
 )
 
 func TestManagedNativeSelectionReachesAPIServer(t *testing.T) {
-	s := Settings{Schema: 3, Environment: "prod", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Tools: map[string]ToolEntry{"terminal": {Via: ToolViaNative}}}
+	s := Settings{Schema: 3, Environment: "prod", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Tools: map[string]ToolEntry{"terminal": {Via: ToolViaNative}}}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 	if err != nil || inventory.SourcePin == "" || inventory.InventorySHA256 == "" || len(inventory.Platforms) != 27 {
 		t.Fatalf("pinned inventory: %+v %v", inventory, err)
 	}
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.CapabilityProfileID, settings.CapabilityGeneration = "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
@@ -235,7 +235,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.CapabilityProfileID, settings.CapabilityGeneration = "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
@@ -292,8 +292,8 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 // merge, which breaks every dev-rebuild/dev-image override on these stacks.
 func TestComposeExtraHostsAlwaysMapping(t *testing.T) {
 	for _, s := range []Settings{
-		{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080},
-		{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080, Web: WebSettings{SearchBackend: "keenable"}, Tools: map[string]ToolEntry{"web": {Via: ToolViaNative}}},
+		{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080},
+		{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080, Web: WebSettings{SearchBackend: "keenable"}, Tools: map[string]ToolEntry{"web": {Via: ToolViaNative}}},
 		{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080, Tools: testTools("telegram"), Ingress: testIngress("telegram")},
 	} {
 		for name, raw := range Compose(s, t.TempDir(), t.TempDir())["services"].(M) {
@@ -308,7 +308,7 @@ func TestComposeExtraHostsAlwaysMapping(t *testing.T) {
 }
 
 func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	topology := Compose(s, t.TempDir(), t.TempDir())
 	services := topology["services"].(M)
 	if _, ok := services["hermes-runtime"]; ok {
@@ -460,7 +460,7 @@ func TestNativeToolsetValidation(t *testing.T) {
 			t.Fatalf("carve-out accepted: %v", names)
 		}
 	}
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s.Tools = testNativeTools("terminal", "memory")
 	if err := s.Validate(); err != nil {
 		t.Fatalf("managed settings with carve-outs rejected: %v", err)
@@ -469,13 +469,6 @@ func TestNativeToolsetValidation(t *testing.T) {
 	if err := s.Validate(); err == nil {
 		t.Fatal("unreviewed native toolset accepted into managed settings")
 	}
-	s.Tools = testNativeTools("terminal")
-	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "", "", 0
-	// Outside managed mode a native entry is an ordinary allowlist grant on the
-	// unmanaged platform_toolsets surface, so it stays valid.
-	if err := s.Validate(); err != nil {
-		t.Fatalf("native entry rejected outside managed mode: %v", err)
-	}
 }
 
 func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
@@ -483,7 +476,7 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: testNativeTools("terminal", "memory", "todo")}
 	zero := Config(s)
 	disabled := zero["agent"].(M)["disabled_toolsets"].([]string)
@@ -513,7 +506,7 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 }
 
 func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: testNativeTools("terminal")}
 	zero := Config(s)
 	dir := t.TempDir()
@@ -567,7 +560,7 @@ func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
 // source carrying it is always unreviewed drift — no grant replay may attest
 // it. memory_vault still evicts the native memory backend on the same source.
 func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}, "memory": {Via: ToolViaNative}}}
 	zero := Config(s)
 	dir := t.TempDir()
@@ -629,7 +622,7 @@ func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
 }
 
 func TestManagedOrganizationRuntimeDoesNotMountOrgDocuments(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Organization: "acme", OrganizationDocsDir: t.TempDir(), Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
+	s := Settings{Schema: 1, User: "alice", Organization: "acme", OrganizationDocsDir: t.TempDir(), Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	for _, infra := range []bool{true, false} {
 		s.Infra = &infra
 		service := RuntimeService(s, t.TempDir(), t.TempDir())
@@ -643,11 +636,7 @@ func TestManagedOrganizationRuntimeDoesNotMountOrgDocuments(t *testing.T) {
 
 func TestManagedEgressHosts(t *testing.T) {
 	dir := t.TempDir()
-	unmanaged := Settings{Schema: 1, User: "alice", Environment: "dev"}
-	if hosts := managedEgressHosts(unmanaged, dir); hosts != nil {
-		t.Fatalf("unmanaged egress: %v", hosts)
-	}
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+	s := Settings{Schema: 1, User: "alice", Environment: "dev",
 		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
 		Web: WebSettings{SearchBackend: "keenable", SearchProviders: []string{"ddgs"}},
 		Tools: map[string]ToolEntry{
@@ -669,7 +658,7 @@ func TestManagedEgressHosts(t *testing.T) {
 }
 
 func TestManagedToolHubWebKeepsProviderConfigWithoutNativeWeb(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+	s := Settings{Schema: 1, User: "alice", Environment: "dev",
 		CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC",
 		Web:   WebSettings{SearchBackend: "ddgs", SearchProviders: []string{"ddgs"}},
 		Tools: map[string]ToolEntry{"web_search": {Via: ToolViaToolHub}},
@@ -699,7 +688,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.CapabilityProfileID, settings.CapabilityGeneration = "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Ingress = false, nil
@@ -813,7 +802,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 // toolhub, the wish maps to the assignments capability, and the control
 // plane host opens exactly like routines (SPEC-0080 R2.3).
 func TestAssignmentToolhubFamily(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+	s := Settings{Schema: 1, User: "alice", Environment: "dev",
 		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
 		Tools: map[string]ToolEntry{"assignments": {Via: ToolViaToolHub}}}
 	if err := s.validateTools(); err != nil {
@@ -900,7 +889,7 @@ func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
 // Managed browser access is mediated by ToolHub and the private tools-daemon;
 // the model cannot call the sidecar's raw MCP tools directly.
 func TestManagedRenderBrowserServer(t *testing.T) {
-	base := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	base := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s := base
 	s.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP}}
 	if servers := Config(s)["mcp_servers"].(M); len(servers) != 0 {
@@ -937,7 +926,7 @@ func TestManagedRenderBrowserServer(t *testing.T) {
 // the grant rides MaterializeOptions.Browser so the in-container
 // reconstruction emits the identical server set.
 func TestManagedBrowserMaterializeAndAttest(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Schema: 1, Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}}
 	zero := Config(s)
 	dir := t.TempDir()
@@ -974,7 +963,7 @@ func TestManagedBrowserMaterializeAndAttest(t *testing.T) {
 // HUB_MANAGED_IMAGE_GEN, so the in-container preflight emits the identical
 // server set without consulting agent-editable state.
 func TestManagedRuntimeEnvCarriesBrowserGrant(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
 		Tools: map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}}
 	env := RuntimeService(s, t.TempDir(), t.TempDir())["environment"].(M)
 	var grant BrowserGrant
@@ -1019,7 +1008,7 @@ func TestManagedRuntimeEnvCarriesBrowserGrant(t *testing.T) {
 // agent-editable state. HUB_MANAGED_KNOWLEDGE_UI never renders — the retired
 // surface has nothing to replay (M32/#520).
 func TestManagedRuntimeEnvCarriesFeatureFlags(t *testing.T) {
-	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
 		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}}}
 	env := RuntimeService(s, t.TempDir(), t.TempDir())["environment"].(M)
 	if env["HUB_MANAGED_KNOWLEDGE_UI"] != nil {
@@ -1051,7 +1040,7 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.CapabilityProfileID, settings.CapabilityGeneration = "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Ingress = false, nil
@@ -1109,7 +1098,7 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.CapabilityProfileID, settings.CapabilityGeneration = "alice-default", 1
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Ingress = false, nil
@@ -1166,7 +1155,7 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 // paths; only an explicit `native:tool_search` pseudo-toolset re-enables it,
 // and it never lands in platform_toolsets as a bogus toolset name.
 func TestToolSearchBridgeOffUnlessCarvedOut(t *testing.T) {
-	base := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+	base := Settings{Schema: 1, User: "alice", Environment: "dev",
 		CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC"}
 	section := managedHermesConfig(base)["tools"].(M)["tool_search"].(M)
 	if section["enabled"] != "off" {

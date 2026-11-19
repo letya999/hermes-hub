@@ -42,7 +42,7 @@ func TestRuntimeConnectionWiring(t *testing.T) {
 
 func TestValidateRuntimeConnectionsMissingAndDisabled(t *testing.T) {
 	dir := t.TempDir()
-	s := Settings{Tools: map[string]ToolEntry{}}
+	s := Settings{Tools: map[string]ToolEntry{}, PassportServices: map[string]string{"egress-relay": "per-space"}}
 	if err := ValidateRuntimeConnections(s, dir); err != nil {
 		t.Fatalf("disabled feature required config: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestValidateRuntimeConnectionsMissingAndDisabled(t *testing.T) {
 func TestManagedSishExposureRequiresDeclaredEgressRelay(t *testing.T) {
 	dir := t.TempDir()
 	writeExposureConfig(t, dir)
-	s := Settings{CapabilityMode: "managed", Tools: map[string]ToolEntry{"exposure": {Via: ToolViaToolHub}}, PassportServices: map[string]string{"hermes-runtime": "supervised"}}
+	s := Settings{Tools: map[string]ToolEntry{"exposure": {Via: ToolViaToolHub}}, PassportServices: map[string]string{"hermes-runtime": "supervised"}}
 	if err := ValidateRuntimeConnections(s, dir); err == nil {
 		t.Fatal("managed sish exposure admitted without a declared egress relay")
 	}

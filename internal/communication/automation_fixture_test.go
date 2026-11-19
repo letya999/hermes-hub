@@ -62,6 +62,9 @@ func automationGatewayFixtureProbe(t *testing.T, cfg Config, extra map[string]ro
 // servers instead of the public-egress client.
 func automationGatewayFixtureIO(t *testing.T, cfg Config, extra map[string]routines.OccurrenceChannel, supervisor automation.SupervisorClient, toolCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error), fetch func(context.Context, string) ([]byte, error)) (*Gateway, *automation.Host, string) {
 	t.Helper()
+	if cfg.RuntimeURL == "" {
+		cfg.RuntimeURL, cfg.RuntimeAuth = "http://127.0.0.1:1", "runtime-test"
+	}
 	g, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)

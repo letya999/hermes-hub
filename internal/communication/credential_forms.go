@@ -13,17 +13,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -324,83 +321,59 @@ func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, va
 	if form.Skill != "" {
 		return g.persistSkillCredentials(r, form, values)
 	}
-	if g.config.RuntimeURL != "" {
-		request := hubruntime.SelfEnvRequest{Envelope: form.Envelope, OrganizationID: g.config.OrganizationID, UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID, Values: values}
-		body, err := json.Marshal(request)
-		if err != nil {
-			return err
-		}
-		defer clear(body)
-		requestURL := strings.TrimRight(g.config.RuntimeURL, "/") + "/v1/self-env"
-		httpRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, requestURL, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		httpRequest.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
-		httpRequest.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(httpRequest)
-		if err != nil {
-			return err
-		}
-		defer response.Body.Close()
-		if response.StatusCode/100 != 2 {
-			return errors.New("runtime rejected credential update")
-		}
-		return nil
-	}
-	user := g.user(form.OwnerID)
-	allowed := make([]string, 0, len(user.ConfiguredEnv))
-	for key := range user.ConfiguredEnv {
-		allowed = append(allowed, key)
-	}
-	if _, err := envstore.UpdateValues(filepath.Join(user.StateDir, envstore.FileName), values, strings.Join(allowed, ","), strings.Join(stack.GatewaySecretKeys(), ",")); err != nil {
+	request := hubruntime.SelfEnvRequest{Envelope: form.Envelope, OrganizationID: g.config.OrganizationID, UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID, Values: values}
+	body, err := json.Marshal(request)
+	if err != nil {
 		return err
 	}
-	if g.restart != nil {
-		request := hubruntime.ExecuteRequest{}
-		if g.config.Supervised {
-			request = supervisorRestartRequest(form.Envelope, g.config.OrganizationID, user.ID, user.ID, "user:"+user.ID, "credentials-"+form.OwnerID)
-		}
-		return g.restart(r.Context(), request)
+	defer clear(body)
+	requestURL := strings.TrimRight(g.config.RuntimeURL, "/") + "/v1/self-env"
+	httpRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, requestURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(httpRequest)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		return errors.New("runtime rejected credential update")
 	}
 	return nil
 }
 
 // persistSkillCredentials lands a skill-scoped form's values in the owning
 // store's .state/credentials (R8.2); cells read them at exec time, so no
-// restart is needed. Managed deployments relay through /v1/skill-creds so the
-// owning runtime writes its own store; a standalone gateway writes its mount.
+// restart is needed. The gateway relays through /v1/skill-creds so the owning
+// runtime writes its own store; it never writes the store itself.
 func (g *Gateway) persistSkillCredentials(r *http.Request, form credentialForm, values map[string]string) error {
-	if g.config.RuntimeURL != "" {
-		payload, err := json.Marshal(hubruntime.SkillCredsRequest{
-			Envelope: form.Envelope, OrganizationID: g.config.OrganizationID,
-			UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID,
-			Skill: form.Skill, Values: values,
-		})
-		if err != nil {
-			return err
-		}
-		defer clear(payload)
-		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/skill-creds", bytes.NewReader(payload))
-		if err != nil {
-			return err
-		}
-		request.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
-		request.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
-		if err != nil {
-			return err
-		}
-		defer response.Body.Close()
-		if response.StatusCode/100 != 2 {
-			return errors.New("runtime rejected skill credentials")
-		}
-		return nil
+	payload, err := json.Marshal(hubruntime.SkillCredsRequest{
+		Envelope: form.Envelope, OrganizationID: g.config.OrganizationID,
+		UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID,
+		Skill: form.Skill, Values: values,
+	})
+	if err != nil {
+		return err
 	}
-	if strings.TrimSpace(g.config.SkillsStore) == "" {
-		return errors.New("skill store unavailable")
+	defer clear(payload)
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/skill-creds", bytes.NewReader(payload))
+	if err != nil {
+		return err
 	}
-	return skillstore.WriteCredentials(g.config.SkillsStore, form.Skill, values)
+	request.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		return errors.New("runtime rejected skill credentials")
+	}
+	return nil
 }
 
 func communicationLoopbackHTTP(r *http.Request) bool {

@@ -110,22 +110,16 @@ func ManagedAgentNetwork(s Settings) string { return managedAgentNetwork(s) }
 
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
+	// The workspace is a durable bind, not tmpfs: admitted file, document,
+	// image and artifact writes must survive runtime respawns, which are the
+	// supervisor's normal lifecycle.
 	stateVolumes := []any{
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime")), "target": "/state"},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
 		M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "google")), "target": "/state/google"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "cache")), "target": "/state/cache"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "archive")), "target": "/archive", "read_only": true},
-
-		// Hermes reads the effective SOUL — persona plus the rendered channel
-		// contract — not the owner's raw file (SPEC-0053 R1.8/D7).
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
-		// The effective Hermes config is materialized on the host and mounted
-		// read-only over the agent-writable state dir: mcp_servers must come
-		// from ToolHub onboarding, never from terminal edits inside the runtime.
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 	}
 	if s.PassportWorkspace == nil {
 		stateVolumes = append(stateVolumes,
@@ -140,34 +134,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
 		)
 	}
-	if s.CapabilityMode == "managed" {
-		// The managed workspace is a durable bind, not tmpfs: admitted file,
-		// document, image and artifact writes must survive runtime respawns,
-		// which are the supervisor's normal lifecycle under managed mode.
-		stateVolumes = []any{
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
-			M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
-		}
-		if s.PassportWorkspace == nil {
-			stateVolumes = append(stateVolumes,
-				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
-			)
-		}
-	}
 	// The workspace passport owns the container filesystem once a revision
 	// is published (SPEC-0092 R5.2): /config, /workspace with read-only
 	// sub-binds, /vault, /skills and every /shared/* mount come from the
 	// MountPlan. Component renders without a workspace still select the
 	// published /config directory; startup cannot use raw config files.
-	wsBase := dir
-	if s.CapabilityMode == "managed" {
-		wsBase = filepath.Join(dir, "managed", s.Environment)
-	}
+	wsBase := filepath.Join(dir, "managed", s.Environment)
 	if s.PassportWorkspace != nil {
 		for _, pm := range MountPlan(dir, s.Environment, wsBase, s, *s.PassportWorkspace) {
 			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(pm.Source), "target": pm.Target, "read_only": pm.ReadOnly})
@@ -180,15 +152,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	for _, connection := range connections {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(connection.Source), "target": connection.Target, "read_only": true})
 	}
-	if s.CapabilityMode == "managed" {
-		// M31.8 S4: platform_usage reads the merged models.yaml limits and
-		// the relay's reserved-usage meter — both mounted read-only so the
-		// agent can report consumption but never rewrite its own counters.
-		stateVolumes = append(stateVolumes,
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment, "models.yaml")), "target": "/run/model-config/models.yaml", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state", "read_only": true},
-		)
-	}
+	// M31.8 S4: platform_usage reads the merged models.yaml limits and
+	// the relay's reserved-usage meter — both mounted read-only so the
+	// agent can report consumption but never rewrite its own counters.
+	stateVolumes = append(stateVolumes,
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment, "models.yaml")), "target": "/run/model-config/models.yaml", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state", "read_only": true},
+	)
 	// Declared mounts are part of the MountPlan when a workspace passport is
 	// published; the legacy loop runs only for spaces without a revision.
 	if s.PassportWorkspace == nil {
@@ -200,18 +170,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
 		}
 	}
-	ports := []string{}
 	// SPEC-0082 R4.2: the noVNC publish lives on the browser sidecar, not the
-	// runtime — the runtime carries no display surface at all. The OAuth port
-	// stays: legacy self-service connectors use this callback; managed
-	// connectors are admitted through the control plane and do not expose it.
-	if s.CapabilityMode != "managed" {
-		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
-	}
-	runtimeEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}}
-	if s.CapabilityMode == "managed" {
-		runtimeEnvFiles[0] = M{"path": filepath.ToSlash(filepath.Join(dir, "managed-runtime."+s.Environment+".env")), "format": "raw"}
-	}
+	// runtime; connectors are admitted through the control plane, so the
+	// runtime publishes no port at all.
+	ports := []string{}
+	runtimeEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "managed-runtime."+s.Environment+".env")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}}
 	organizationID := s.Organization
 	if organizationID == "" {
 		organizationID = "personal"
@@ -232,7 +195,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
 		toolhubStoreEnv = "/state/toolhub/store.db"
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json", "HUB_MODEL_USAGE_FILE": "/run/model-state/model-select.json.usage.json", "HUB_MODEL_REGISTRY_FILE": "/run/model-config/models.yaml"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json", "HUB_MODEL_USAGE_FILE": "/run/model-state/model-select.json.usage.json", "HUB_MODEL_REGISTRY_FILE": "/run/model-config/models.yaml"}
 	for _, connection := range connections {
 		runtimeEnv[connection.EnvKey] = connection.ConfigPath
 	}
@@ -260,57 +223,51 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
-	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
-	if s.CapabilityMode == "managed" {
-		// R9.1: defense-in-depth for non-gateway Hermes entrypoints inside the
-		// managed runtime — the same context-file fence the gateway renders.
-		runtimeEnv["HERMES_IGNORE_RULES"] = "1"
+	// R9.1: defense-in-depth for non-gateway Hermes entrypoints inside the
+	// runtime — the same context-file fence the gateway renders.
+	runtimeEnv["HERMES_IGNORE_RULES"] = "1"
+	runtimeEnv["HUB_PASSPORT_REVISION"] = s.PassportRevision
+	runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
+	runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
+	runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
+	runtimeEnv["HUB_MANAGED_MODEL_ID"] = s.Model
+	runtimeEnv["HUB_MANAGED_MODEL_URL"] = s.ModelURL
+	runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.nativeCarveouts(), ",")
+	runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
+	runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
+	// The effective-config preflight must reconstruct the same web block
+	// the host materialized; the provider selection cannot be derived from
+	// the carve-out list alone, so it rides in as JSON.
+	if web := s.managedWebSettings(); !web.empty() {
+		if managedWebJSON, err := json.Marshal(web); err == nil {
+			runtimeEnv["HUB_MANAGED_WEB"] = string(managedWebJSON)
+		}
 	}
-	if s.CapabilityMode == "managed" {
-		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
-		runtimeEnv["HUB_PASSPORT_REVISION"] = s.PassportRevision
-		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
-		runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
-		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
-		runtimeEnv["HUB_MANAGED_MODEL_ID"] = s.Model
-		runtimeEnv["HUB_MANAGED_MODEL_URL"] = s.ModelURL
-		runtimeEnv["HUB_NATIVE_TOOLSETS"] = strings.Join(s.nativeCarveouts(), ",")
-		runtimeEnv["HERMES_BUNDLES_DIR"] = "/state/hermes/skill-bundles"
-		runtimeEnv["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
-		// The effective-config preflight must reconstruct the same web block
-		// the host materialized; the provider selection cannot be derived from
-		// the carve-out list alone, so it rides in as JSON.
-		if web := s.managedWebSettings(); !web.empty() {
-			if managedWebJSON, err := json.Marshal(web); err == nil {
-				runtimeEnv["HUB_MANAGED_WEB"] = string(managedWebJSON)
-			}
+	// Same contract for the image_gen grant: the spawned runtime
+	// reconstructs the identical config block from this normalized JSON
+	// (riding RuntimeService env → -e flags), never from agent-editable
+	// state. A non-empty value is itself the "feature enabled" marker —
+	// see ValidateManagedEffectiveConfig.
+	if gen := s.managedImageGenGrant(); gen != (media.ImageGen{}) {
+		if imageGenJSON, err := json.Marshal(gen); err == nil {
+			runtimeEnv["HUB_MANAGED_IMAGE_GEN"] = string(imageGenJSON)
 		}
-		// Same contract for the image_gen grant: the spawned runtime
-		// reconstructs the identical config block from this normalized JSON
-		// (riding RuntimeService env → -e flags), never from agent-editable
-		// state. A non-empty value is itself the "feature enabled" marker —
-		// see ValidateManagedEffectiveConfig.
-		if gen := s.managedImageGenGrant(); gen != (media.ImageGen{}) {
-			if imageGenJSON, err := json.Marshal(gen); err == nil {
-				runtimeEnv["HUB_MANAGED_IMAGE_GEN"] = string(imageGenJSON)
-			}
+	}
+	// Same contract for the browser sidecar grant: which endpoints the
+	// reviewed render admitted and whether mutation tools joined the
+	// surface. The in-container attestation replays these decisions
+	// instead of re-reading governance state the agent could edit.
+	if grant := s.managedBrowserGrant(); grant != (BrowserGrant{}) {
+		if grantJSON, err := json.Marshal(grant); err == nil {
+			runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
 		}
-		// Same contract for the browser sidecar grant: which endpoints the
-		// reviewed render admitted and whether mutation tools joined the
-		// surface. The in-container attestation replays these decisions
-		// instead of re-reading governance state the agent could edit.
-		if grant := s.managedBrowserGrant(); grant != (BrowserGrant{}) {
-			if grantJSON, err := json.Marshal(grant); err == nil {
-				runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
-			}
-		}
-		// Same contract for the hub-side subsystem flags: pseudo-toolset
-		// wishes (memory_vault) are `via: native` markers that
-		// never join the carve-out list, so their reviewed admission rides
-		// its own env bits for the in-container replay.
-		if s.managedMemoryVaultFlag() {
-			runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
-		}
+	}
+	// Same contract for the hub-side subsystem flags: pseudo-toolset
+	// wishes (memory_vault) are `via: native` markers that
+	// never join the carve-out list, so their reviewed admission rides
+	// its own env bits for the in-container replay.
+	if s.managedMemoryVaultFlag() {
+		runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
 	}
 	// The declared context-control section rides env so the materialized
 	// effective config and the in-container attestation reconstruct identical
@@ -319,9 +276,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if contextJSON, err := json.Marshal(ctx); err == nil {
 			runtimeEnv["HUB_MANAGED_CONTEXT"] = string(contextJSON)
 		}
-	}
-	if s.OrgScoped() && s.CapabilityMode != "managed" {
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
 	// The mounted dir is the read-only effective view materialized by
 	// Render: platform > org > user, with gated platform skills absent
@@ -353,18 +307,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// R5.4: the bound member's role gates org publishes at apply time.
 		runtimeEnv["HUB_ORGANIZATION_ROLE"] = s.OrganizationRole
 	}
-	if s.CapabilityMode != "managed" {
-		for name, feature := range hubGatedPlugins {
-			if !s.Has(feature) {
-				continue
-			}
-			// Hub plugins mount read-only into upstream's bundled plugins dir:
-			// source "bundled" + kind "backend" auto-loads them, and the agent
-			// cannot tamper with tool code the way it could in its own
-			// /state/hermes/plugins dir.
-			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
-		}
-	}
 	// SPEC-0082 R3: role commons — daemons run the lean core image, Docker
 	// consumers the control image, only hermes-runtime keeps the agent image.
 	common := M{"init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
@@ -389,20 +331,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["environment"] = runtimeEnv
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
-	if s.CapabilityMode == "managed" {
-		runtimeService["extra_hosts"] = M{}
-		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
-			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
-			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
-			"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
-	}
-	if s.CapabilityMode != "managed" {
-		// Same seal managed mode applies: upstream skills-sync tolerates an
-		// empty read-only /state/hermes/skills, so the agent never gets a
-		// writable skill path (SPEC-0083 R2.6/D13).
-		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
-			"/state/hermes/skills:ro,mode=0555")
-	}
+	runtimeService["extra_hosts"] = M{}
+	runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
+		"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
+		"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
+		"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
 	runtimeService["command"] = []string{"serve"}
 	if !s.Has("telegram") && s.NativeCron != "unmigrated" {
 		runtimeService["command"] = []string{"idle"}
@@ -413,26 +346,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// default 10s grace it is SIGKILLed and the lifecycle ledger records a
 	// false UNCLEAN death on every routine restart.
 	runtimeService["stop_grace_period"] = "30s"
-	if s.CapabilityMode == "managed" {
-		runtimeService["networks"] = []string{managedAgentNetwork(s)}
-	}
+	runtimeService["networks"] = []string{managedAgentNetwork(s)}
 	if s.Environment == "dev" {
 		runtimeService["restart"] = "no"
-		if s.CapabilityMode != "managed" {
-			runtimeService["read_only"] = false
-			for _, name := range []string{"cmd", "internal", "services", "docker", "config", "docs", "specs", ".work", ".github", "go.mod", "go.sum", "justfile", "AGENTS.md", "README.md", "SETUP.md", "START_HERE.ru.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md"} {
-				stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, name)), "target": "/src/" + name})
-			}
-			runtimeService["environment"].(M)["GOCACHE"] = "/state/go-build"
-			runtimeService["environment"].(M)["GOMODCACHE"] = "/state/go-mod"
-		}
-		runtimeService["volumes"] = stateVolumes
-	}
-	if !infra && s.CapabilityMode != "managed" {
-		// Secondary spaces keep only their runtime; it reaches the shared
-		// control plane on the shared network where `toolhub`, `credential-broker`
-		// and `cliproxy` resolve to the single deployed instances.
-		runtimeService["networks"] = []string{"default", sharedNetworkName}
 	}
 	// hub-media carries the image/video provider credentials; the runtime only
 	// gets the service URL and the shared media bearer (media.auth), never
@@ -464,13 +380,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
 		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet")), "HUB_BROWSER_HOST": "browser-" + s.User}
 		// Sidecar downloads/screenshots must land where the agent's own
-		// workspace resolves: managed runtimes bind managed/<env>/workspace,
-		// unmanaged ones the space root — mounting the other tree strands
-		// every browser artifact outside the delivery path.
-		browserWorkspace := filepath.Join(dir, "workspace")
-		if s.CapabilityMode == "managed" {
-			browserWorkspace = filepath.Join(dir, "managed", s.Environment, "workspace")
-		}
+		// workspace resolves (managed/<env>/workspace); any other tree
+		// strands every browser artifact outside the delivery path.
+		browserWorkspace := filepath.Join(dir, "managed", s.Environment, "workspace")
 		browserVolumes := []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
 			M{"type": "bind", "source": filepath.ToSlash(browserWorkspace), "target": "/workspace"},
@@ -491,18 +403,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "meet-node-token.json")), "target": "/state/hermes/workspace/meetings/node_token.json", "read_only": true})
 		}
 		browserService["volumes"] = browserVolumes
-		if s.CapabilityMode == "managed" {
-			// Managed runtimes spawn onto the private per-space agent network;
-			// CDP stays reachable only through it. Internal networks silently
-			// drop published ports, so the sidecar also joins a dedicated
-			// publishable network (nothing else attaches) for the loopback
-			// noVNC port.
-			browserService["networks"] = M{
-				managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}},
-				"browser-publish":      M{},
-			}
-		} else {
-			browserService["networks"] = M{"default": M{"aliases": []string{"browser-" + s.User}}}
+		// Runtimes spawn onto the private per-space agent network; CDP stays
+		// reachable only through it. Internal networks silently drop
+		// published ports, so the sidecar also joins a dedicated publishable
+		// network (nothing else attaches) for the loopback noVNC port.
+		browserService["networks"] = M{
+			managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}},
+			"browser-publish":      M{},
 		}
 		services["browser-"+s.User] = browserService
 	}
@@ -555,18 +462,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
 			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
 		}
-		if s.CapabilityMode == "managed" {
-			nets := M{managedAgentNetwork(s): M{}}
-			// Internal networks silently drop published ports — like the
-			// browser sidecar, the loopback edge needs a dedicated
-			// publishable network that nothing else attaches to.
-			if s.UIPort > 0 {
-				nets["knowledge-publish"] = M{}
-			}
-			okService["networks"] = nets
-		} else {
-			okService["networks"] = M{"default": M{}}
+		nets := M{managedAgentNetwork(s): M{}}
+		// Internal networks silently drop published ports — like the
+		// browser sidecar, the loopback edge needs a dedicated
+		// publishable network that nothing else attaches to.
+		if s.UIPort > 0 {
+			nets["knowledge-publish"] = M{}
 		}
+		okService["networks"] = nets
 		services["open-knowledge"] = okService
 	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
@@ -593,12 +496,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	brokerClientEnv := func(prefix, keyID, issuer string) M {
 		return M{prefix + "URL": brokerURL, prefix + "KEY_FILE": "/run/broker-secrets/" + keyID + ".private", prefix + "KEY_ID": keyID, prefix + "ISSUER": issuer, prefix + "CA_FILE": brokerCA}
-	}
-	if s.CapabilityMode != "managed" {
-		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
-			runtimeEnv[key] = value
-		}
-		runtimeService["volumes"] = append(runtimeService["volumes"].([]any), brokerSecrets("runtime"))
 	}
 
 	// Services every spawned or secondary runtime resolves by name attach to the
@@ -647,71 +544,65 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		svc["stop_grace_period"] = "30s"
 		services["supervisor"] = svc
 	}
-	var egressHosts []string
-	var exposureRelay string
-	if s.CapabilityMode == "managed" {
-		egressHosts = managedEgressHosts(s, dir)
-		exposureRelay = managedExposureRelay(s, dir)
+	egressHosts := managedEgressHosts(s, dir)
+	exposureRelay := managedExposureRelay(s, dir)
+	modelRelay := cloneMap(coreCommon)
+	modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
+	// The merged models.yaml (spaces -> org -> user layers) mounts
+	// read-only; provider key_env names resolve from the space's own
+	// secrets env file, the owner-facing switch bearer from
+	// model-relay.auth — never as literals in compose.
+	cliproxyURL := "http://cliproxy:8317"
+	if s.Cliproxy == "dedicated" {
+		cliproxyURL = "http://cliproxy-" + s.User + ":8317"
 	}
-	if s.CapabilityMode == "managed" {
-		modelRelay := cloneMap(coreCommon)
-		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
-		// The merged models.yaml (spaces -> org -> user layers) mounts
-		// read-only; provider key_env names resolve from the space's own
-		// secrets env file, the owner-facing switch bearer from
-		// model-relay.auth — never as literals in compose.
-		cliproxyURL := "http://cliproxy:8317"
-		if s.Cliproxy == "dedicated" {
-			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
-		}
-		modelRelay["environment"] = M{
-			"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml",
-			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
-			"HUB_MODEL_RELAY_OWNER":    s.User,
-			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
-			"HUB_ENVIRONMENT":          s.Environment,
-			// Rights PDP (SPEC-0092 R2.2): model-relay PEPs decide against
-			// this space's toolhub through the control-plane bearer. A
-			// secondary space shares the infra toolhub — its own
-			// toolhub-<user> alias never exists there.
-			"HUB_TOOLHUB_URL":     toolhubDecideURL(infra, s.User),
-			"HUB_TOOLHUB_CONTROL": "${HUB_SUPERVISOR_AUTH:-}",
-		}
-		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
-			modelRelay["environment"].(M)[key] = value
-		}
-		modelRelay["env_file"] = []any{
-			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
-			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay."+s.Environment+".env")), "format": "raw"},
-			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
-		}
-		modelRelay["volumes"] = []any{
-			brokerSecrets("model"),
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
-		}
-		modelRelay["extra_hosts"] = M{}
-		// A stable per-space alias on the shared network lets the gateway of
-		// the same space call its own relay (owner model switching) without
-		// colliding with other spaces' model-relay service names.
-		modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
-		services["model-relay"] = modelRelay
-		toolhubRelay := cloneMap(coreCommon)
-		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
-		toolhubRelay["extra_hosts"] = M{}
-		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
-		services["toolhub-relay"] = toolhubRelay
-		if len(egressHosts) > 0 || exposureRelay != "" {
-			// The managed agent network has no default route; the reviewed
-			// web/sibling reachability for the runtime goes through this
-			// allowlisted forward proxy and nowhere else.
-			egressRelay := cloneMap(coreCommon)
-			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
-			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": exposureRelay}
-			egressRelay["extra_hosts"] = M{}
-			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
-			services["egress-relay"] = egressRelay
-		}
+	modelRelay["environment"] = M{
+		"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml",
+		"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
+		"HUB_MODEL_RELAY_OWNER":    s.User,
+		"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+		"HUB_ENVIRONMENT":          s.Environment,
+		// Rights PDP (SPEC-0092 R2.2): model-relay PEPs decide against
+		// this space's toolhub through the control-plane bearer. A
+		// secondary space shares the infra toolhub — its own
+		// toolhub-<user> alias never exists there.
+		"HUB_TOOLHUB_URL":     toolhubDecideURL(infra, s.User),
+		"HUB_TOOLHUB_CONTROL": "${HUB_SUPERVISOR_AUTH:-}",
+	}
+	for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
+		modelRelay["environment"].(M)[key] = value
+	}
+	modelRelay["env_file"] = []any{
+		M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
+		M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay."+s.Environment+".env")), "format": "raw"},
+		M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
+	}
+	modelRelay["volumes"] = []any{
+		brokerSecrets("model"),
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
+	}
+	modelRelay["extra_hosts"] = M{}
+	// A stable per-space alias on the shared network lets the gateway of
+	// the same space call its own relay (owner model switching) without
+	// colliding with other spaces' model-relay service names.
+	modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
+	services["model-relay"] = modelRelay
+	toolhubRelay := cloneMap(coreCommon)
+	toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
+	toolhubRelay["extra_hosts"] = M{}
+	toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
+	services["toolhub-relay"] = toolhubRelay
+	if len(egressHosts) > 0 || exposureRelay != "" {
+		// The managed agent network has no default route; the reviewed
+		// web/sibling reachability for the runtime goes through this
+		// allowlisted forward proxy and nowhere else.
+		egressRelay := cloneMap(coreCommon)
+		egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
+		egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ","), "HUB_EGRESS_RELAY_CONNECT_TARGET": exposureRelay}
+		egressRelay["extra_hosts"] = M{}
+		egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
+		services["egress-relay"] = egressRelay
 	}
 	if infra {
 		cliproxy := cloneMap(coreCommon)
@@ -723,18 +614,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["cliproxy"] = cliproxy
 
 		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment, "HUB_EGRESS_PROXY": "${HUB_EGRESS_PROXY:-}"}
-		if s.CapabilityMode == "managed" {
-			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
-			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
-			toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
-			toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
-		}
+		toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
+		toolhubEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
+		toolhubEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
 		if s.ExecutionMode == "supervisor" {
 			// The agent-tools executor runs inside the owning runtime
 			// container; the supervisor owns its naming contract and docker
 			// exec is the only control-plane path that never crosses the
-			// agent network. Applies to every supervised runtime, managed or
-			// not — otherwise unmanaged spaces lose agent-tools entirely.
+			// agent network.
 			toolhubEnv["HUB_AGENT_EXEC_MODE"] = "supervisor"
 		}
 		supervisorURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
@@ -852,9 +739,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				}
 			}
 		}
-		if s.usesDockerSocket() {
-			toolhubVolumes = append(toolhubVolumes, dockerSock)
-		}
+		toolhubVolumes = append(toolhubVolumes, dockerSock)
 		if s.DiagnosticsEnabled() {
 			toolhubEnv["HUB_DIAGNOSTICS_DIR"] = "/diagnostics"
 			toolhubEnv["HUB_DIAGNOSTICS_PROJECT"] = "hermes-hub-" + s.User + "-" + s.Environment
@@ -882,18 +767,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["environment"] = toolhubEnv
 		toolhub["volumes"] = toolhubVolumes
 		groups := []string{fmt.Sprint(max(0, os.Getgid()))}
-		if s.usesDockerSocket() && dockerGroup != groups[0] {
+		if dockerGroup != groups[0] {
 			groups = append(groups, dockerGroup)
 		}
 		toolhub["group_add"] = groups
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
-		toolhub["networks"] = sharedNetworks
-		if s.CapabilityMode == "managed" || supervisorURL != "" {
-			// toolhub-<user> is the rights-PDP address sibling services
-			// (supervisor, model-relay) call; the flat toolhub-control alias
-			// stays for the gateway's legacy URL.
-			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control", "toolhub-" + s.User}}}
-		}
+		// toolhub-<user> is the rights-PDP address sibling services
+		// (supervisor, model-relay) call; the flat toolhub-control alias
+		// stays for the gateway's legacy URL.
+		toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control", "toolhub-" + s.User}}}
 		// Bounded-cli children share this cgroup: the admission receipt can
 		// claim cpu/memory/pid bounds only when the measured container cap is
 		// at or under the plan, so the cap matches the CLI plan floor.
@@ -912,11 +794,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
 		controller["environment"].(M)["HUB_CONTAINER_RUNTIME"] = "${HUB_CONTAINER_RUNTIME:-runc}"
 		controller["environment"].(M)["HUB_CLI_RUNTIME"] = "${HUB_CLI_RUNTIME:-}"
-		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind}
-		if s.usesDockerSocket() {
-			controllerVolumes = append(controllerVolumes, dockerSock)
-			controller["group_add"] = []string{dockerGroup}
-		}
+		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind, dockerSock}
+		controller["group_add"] = []string{dockerGroup}
 		controller["volumes"] = controllerVolumes
 		controller["ports"] = []string{"127.0.0.1:8545:8545"}
 		services["workload-controller"] = controller
@@ -1373,16 +1252,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services[mediaServiceName(s)] = mediaSvc
 	}
-	if includeGateway && !infra {
-		// Secondary spaces never keep a resident runtime: their gateway jobs
-		// reach the shared supervisor over the shared network and every control
-		// call goes through it. Only file outputs (env, config, volumes) feed
-		// the supervisor's spawned runtimes.
-		delete(services, "hermes-runtime")
-	}
-	if includeGateway && s.CapabilityMode == "managed" {
-		// Managed runtimes are spawned by the supervisor onto the private agent
-		// network. Compose owns only the control plane and the narrow relays.
+	if includeGateway {
+		// Runtimes are spawned by the supervisor onto the private agent
+		// network. Compose owns only the control plane and the narrow relays;
+		// only file outputs (env, config, volumes) feed the spawned runtimes.
 		// RuntimeService (includeGateway=false) keeps the entry for its env contract.
 		delete(services, "hermes-runtime")
 	}
@@ -1412,9 +1285,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		hostingService["volumes"] = append(hostingService["volumes"].([]any), brokerSecrets("runtime"))
 		runtimeService["volumes"] = hostingVolumes
 	}
-	if s.CapabilityMode == "managed" {
-		volumes["broker-secrets-model"] = M{}
-	}
+	volumes["broker-secrets-model"] = M{}
 	if includeGateway {
 		// The stack passport bounds the emitted set: services map modes
 		// decide what renders locally; undeclared emission is dropped (R3.2).
@@ -1465,14 +1336,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if containerSupervisor {
 		result["networks"].(M)["supervisor-control"] = M{"name": "hermes-hub-control", "internal": true}
 	}
-	if s.CapabilityMode == "managed" {
-		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
-		if s.Has("browser") || s.Has("meet") {
-			result["networks"].(M)["browser-publish"] = M{}
-		}
-		if s.Has("knowledge_ui") && s.UIPort > 0 {
-			result["networks"].(M)["knowledge-publish"] = M{}
-		}
+	result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
+	if s.Has("browser") || s.Has("meet") {
+		result["networks"].(M)["browser-publish"] = M{}
+	}
+	if s.Has("knowledge_ui") && s.UIPort > 0 {
+		result["networks"].(M)["knowledge-publish"] = M{}
 	}
 	return result
 }

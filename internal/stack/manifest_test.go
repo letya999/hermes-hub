@@ -166,28 +166,25 @@ func TestRuntimeServiceMountsToolManifest(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"", "managed"} {
-		settings.CapabilityMode = mode
-		service := RuntimeService(settings, root, d)
-		env, _ := service["environment"].(M)
-		if env["HUB_TOOL_MANIFEST"] != "/config/tool-manifest.json" {
-			t.Fatalf("mode=%q HUB_TOOL_MANIFEST=%v", mode, env["HUB_TOOL_MANIFEST"])
+	service := RuntimeService(settings, root, d)
+	env, _ := service["environment"].(M)
+	if env["HUB_TOOL_MANIFEST"] != "/config/tool-manifest.json" {
+		t.Fatalf("HUB_TOOL_MANIFEST=%v", env["HUB_TOOL_MANIFEST"])
+	}
+	// A published workspace passport serves the manifest inside the
+	// /config view bind; without one the file mounts directly.
+	found := false
+	for _, v := range service["volumes"].([]any) {
+		volume, _ := v.(M)
+		if volume["target"] == "/config/tool-manifest.json" && volume["read_only"] == true {
+			found = true
 		}
-		// A published workspace passport serves the manifest inside the
-		// /config view bind; without one the file mounts directly.
-		found := false
-		for _, v := range service["volumes"].([]any) {
-			volume, _ := v.(M)
-			if volume["target"] == "/config/tool-manifest.json" && volume["read_only"] == true {
-				found = true
-			}
-			if volume["target"] == "/config" && volume["read_only"] == true &&
-				strings.Contains(fmt.Sprint(volume["source"]), "config-view") {
-				found = true
-			}
+		if volume["target"] == "/config" && volume["read_only"] == true &&
+			strings.Contains(fmt.Sprint(volume["source"]), "config-view") {
+			found = true
 		}
-		if !found {
-			t.Fatalf("mode=%q manifest mount missing in %+v", mode, service["volumes"])
-		}
+	}
+	if !found {
+		t.Fatalf("manifest mount missing in %+v", service["volumes"])
 	}
 }

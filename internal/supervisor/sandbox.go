@@ -14,7 +14,7 @@ func (m *Manager) checkContainerRuntime(ctx context.Context, settings stack.Sett
 	if m.cfg.ContainerRuntime == "runc" {
 		return nil
 	}
-	if settings.CapabilityMode != "managed" || settings.Has("browser") || settings.Has("meet") {
+	if settings.Has("browser") || settings.Has("meet") {
 		return errors.New("sandbox Docker runtime requires managed execution without browser or meet")
 	}
 	body, err := m.command(ctx, "info", "--format", "{{json .Runtimes}}")

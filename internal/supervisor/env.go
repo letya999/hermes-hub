@@ -289,11 +289,14 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	}
 	source := filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
-	envName := "runtime." + env + ".env"
-	if settings.CapabilityMode == "managed" {
-		envName = "managed-runtime." + env + ".env"
+	envName := "managed-runtime." + env + ".env"
+	// A missing, unreadable or malformed runtime env refuses the spawn: an
+	// empty secret map would drop the ToolHub endpoint and token reference
+	// silently. The parser error is not wrapped because it can name a key.
+	secrets, err := stack.ReadSecrets(filepath.Join(binding.ContextRoot, envName))
+	if err != nil {
+		return "", fmt.Errorf("runtime environment %s unavailable", envName)
 	}
-	secrets, _ := stack.ReadSecrets(filepath.Join(binding.ContextRoot, envName))
 	tokenEnv := strings.TrimSpace(secrets["HUB_TOOLHUB_TOKEN_ENV"])
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
@@ -309,7 +312,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		}
 	}
 	opts := stack.MaterializeOptions{
-		Managed:            settings.CapabilityMode == "managed",
+		Managed:            true,
 		ToolHubEndpoint:    strings.TrimSpace(secrets["HUB_TOOLHUB_ENDPOINT"]),
 		ToolHubTokenEnv:    tokenEnv,
 		RuntimeAuthPresent: authPresent,

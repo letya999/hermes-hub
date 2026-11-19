@@ -109,7 +109,6 @@ func TestManagedMCPProxyRoutesEachCallToItsAdmittedRun(t *testing.T) {
 	})
 	upstream := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return tools }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	defer upstream.Close()
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_RUNTIME_AUTH", "synthetic")
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", upstream.URL+"/mcp")
 	handler := runtimeHandler().(*runtimeHTTP)

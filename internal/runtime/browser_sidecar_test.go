@@ -62,6 +62,7 @@ func captureCommands(t *testing.T) (spawned *[]spawnedCmd, restore func()) {
 // HUB_BROWSER set the supervisor must spawn none of the X/VNC/Chromium
 // processes the sidecar now owns.
 func TestRuntimeNeverSpawnsBrowserStack(t *testing.T) {
+	stubPreflight(t)
 	spawned, restore := captureCommands(t)
 	defer restore()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))

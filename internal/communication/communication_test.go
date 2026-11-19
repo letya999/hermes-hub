@@ -12,9 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -285,7 +283,30 @@ func baseTestConfig(t *testing.T) Config {
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "alice", "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(root, "alice", "workspace"), 0700)
-	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
+	return Config{OrganizationID: "personal", TelegramToken: "token", RuntimeURL: "http://127.0.0.1:1", RuntimeAuth: "runtime-test", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
+}
+
+// acceptingRuntime points c at a runtime stub that accepts every call and
+// records the last request body per path.
+func acceptingRuntime(t *testing.T, c *Config) func(path string) string {
+	t.Helper()
+	var mu sync.Mutex
+	calls := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls[r.URL.Path] = string(body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	c.RuntimeURL = server.URL
+	return func(path string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[path]
+	}
 }
 
 // pinLang seeds a workspace preference for fixtures that predate the locale
@@ -713,11 +734,6 @@ func TestConfigFromEnvAndIDs(t *testing.T) {
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Fatal("invalid IDs accepted", raw)
 		}
-	}
-	t.Setenv("OTHER_SECRET", "must-not-leak")
-	env := strings.Join(processEnv(map[string]string{"OPENAI_API_KEY": "alice-key", "TELEGRAM_BOT_TOKEN": "bot-secret", "bad-key": "ignored"}), "\n")
-	if !strings.Contains(env, "OPENAI_API_KEY=alice-key") || strings.Contains(env, "OTHER_SECRET") || strings.Contains(env, "TELEGRAM_BOT_TOKEN") || strings.Contains(env, "bad-key") {
-		t.Fatal("Hermes environment is not scoped", env)
 	}
 	for key, value := range map[string]string{"JIRA_URL": "https://jira.example", "JIRA_USERNAME": "alice@example.com", "JIRA_API_TOKEN": "jira-token", "GITLAB_HOST": "gitlab.example", "GOOGLE_EMAIL": "alice@example.com", "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost", "HH_USER_AGENT": "hub/test", "SLACK_MCP_ADD_MESSAGE_TOOL": "true"} {
 		t.Setenv(key, value)
@@ -1244,14 +1260,6 @@ func TestTelegramAPIAndRunnerErrors(t *testing.T) {
 	if err := upload.SendPhoto(context.Background(), 7, 0, "a.png", "", nil); err == nil {
 		t.Fatal("empty photo accepted")
 	}
-	config := testConfig(t)
-	runner := HermesRunner{Command: filepath.Join(t.TempDir(), "missing")}
-	if _, err := runner.Run(context.Background(), Job{}, config.Users[0]); err == nil {
-		t.Fatal("empty prompt accepted")
-	}
-	if _, err := runner.Run(context.Background(), Job{Text: "hello"}, config.Users[0]); err == nil {
-		t.Fatal("missing command accepted")
-	}
 	if limitTelegramText(strings.Repeat("x", 5000)) != strings.Repeat("x", 4000) || limitTelegramText("ok") != "ok" {
 		t.Fatal("telegram text limit broken")
 	}
@@ -1302,11 +1310,6 @@ func TestSpoolAndTelegramErrorPaths(t *testing.T) {
 	if _, err := New(config); err == nil {
 		t.Fatal("missing Telegram token accepted")
 	}
-	config = testConfig(t)
-	config.Users[0].StateDir = filepath.Join(root, "missing")
-	if _, err := New(config); err == nil {
-		t.Fatal("missing user root accepted")
-	}
 }
 
 func TestGatewayInterceptsSecretsAndRejectsGroups(t *testing.T) {
@@ -1350,6 +1353,7 @@ func TestCredentialFormStoresOnlyAfterProtectedSubmit(t *testing.T) {
 	c.FormOrigin = "http://127.0.0.1:8081"
 	c.ControlAuth = "control-token"
 	c.Users[0].ConfiguredEnv = map[string]bool{"GOOGLE_OAUTH_CLIENT_ID": true, "GOOGLE_OAUTH_CLIENT_SECRET": true}
+	relayed := acceptingRuntime(t, &c)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -1386,15 +1390,19 @@ func TestCredentialFormStoresOnlyAfterProtectedSubmit(t *testing.T) {
 	if saved.Code != http.StatusOK || strings.Contains(saved.Body.String(), "client-secret") {
 		t.Fatalf("submit status=%d body=%s", saved.Code, saved.Body.String())
 	}
-	values, err := envstore.Load(filepath.Join(c.Users[0].StateDir, envstore.FileName), "GOOGLE_OAUTH_CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET", "")
-	if err != nil || values["GOOGLE_OAUTH_CLIENT_ID"] != "client-id" || values["GOOGLE_OAUTH_CLIENT_SECRET"] != "client-secret" {
-		t.Fatalf("stored values=%v err=%v", values, err)
+	var update struct{ Values map[string]string }
+	if err := json.Unmarshal([]byte(relayed("/v1/self-env")), &update); err != nil || update.Values["GOOGLE_OAUTH_CLIENT_ID"] != "client-id" || update.Values["GOOGLE_OAUTH_CLIENT_SECRET"] != "client-secret" {
+		t.Fatalf("relayed values=%v err=%v", update.Values, err)
+	}
+	if entries, err := os.ReadDir(c.Users[0].StateDir); err != nil || len(entries) != 0 {
+		t.Fatalf("gateway wrote user state: %v %v", entries, err)
 	}
 }
 
 func TestCredentialFormRejectsReplayAndNonLoopbackRequests(t *testing.T) {
 	c := testConfig(t)
 	c.FormOrigin = "http://127.0.0.1:8081"
+	acceptingRuntime(t, &c)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -1962,23 +1970,33 @@ type errorRunner struct{}
 
 func (errorRunner) Run(context.Context, Job, User) (string, error) { return "", errors.New("fail") }
 
-func TestHermesRunnerSuccess(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "helper.go")
-	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main(){fmt.Print(\"reply\")}\n"), 0600); err != nil {
+// A misconfigured environment without a runtime or supervisor endpoint must
+// stop the gateway: there is no in-process Hermes fallback on user state.
+func TestGatewayRefusesWithoutRuntimeEndpoint(t *testing.T) {
+	t.Setenv("HUB_LANG", "en")
+	want := locale.T(locale.LangEN, "communication.runtime-endpoint-required")
+	for _, url := range []string{"", "   "} {
+		config := testConfig(t)
+		config.RuntimeURL = url
+		state := config.Users[0].StateDir
+		if g, err := New(config); err == nil || g != nil || err.Error() != want {
+			t.Fatalf("runtime URL %q: gateway=%v err=%v", url, g, err)
+		}
+		if entries, err := os.ReadDir(state); err != nil || len(entries) != 0 {
+			t.Fatalf("user state touched: %v %v", entries, err)
+		}
+	}
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
+	t.Setenv("HUB_RUNTIME_URL", "")
+	t.Setenv("HUB_COMMUNICATION_SPOOL", filepath.Join(t.TempDir(), "spool"))
+	config, err := ConfigFromEnv()
+	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(root, "helper")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	if output, err := exec.Command("go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-		t.Skipf("cannot build helper: %v (%s)", err, output)
-	}
-	state, workspace := filepath.Join(root, "state"), filepath.Join(root, "workspace")
-	response, err := (HermesRunner{Command: bin, Timeout: 10 * time.Second}).Run(context.Background(), Job{Text: "hello"}, User{StateDir: state, WorkspaceDir: workspace})
-	if err != nil || response != "reply" {
-		t.Fatal(response, err)
+	if _, err := New(config); err == nil || err.Error() != want {
+		t.Fatalf("env without runtime endpoint started: %v", err)
 	}
 }
 

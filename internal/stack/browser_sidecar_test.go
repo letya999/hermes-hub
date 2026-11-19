@@ -93,10 +93,11 @@ func TestBrowserSidecarServiceRendered(t *testing.T) {
 	}
 	// The sidecar resolves as browser-<user> on the space-internal network.
 	nets, _ := sidecar["networks"].(M)
-	if _, ok := nets["default"].(M)["aliases"]; !ok {
+	agentNet, _ := nets[managedAgentNetwork(s)].(M)
+	if _, ok := agentNet["aliases"]; !ok {
 		t.Fatalf("sidecar must alias browser-%s on the space network: %v", s.User, nets)
 	}
-	if !slices.Contains(nets["default"].(M)["aliases"].([]string), "browser-"+s.User) {
+	if !slices.Contains(agentNet["aliases"].([]string), "browser-"+s.User) {
 		t.Fatalf("sidecar alias missing: %v", nets)
 	}
 	// Meet spaces get the same sidecar — it hosts the upstream remote node.
@@ -127,7 +128,7 @@ func TestBrowserSidecarServiceRendered(t *testing.T) {
 	if meetSidecar["environment"].(M)["HUB_MEET"] != "true" {
 		t.Fatal("meet sidecar must start the upstream NodeServer (HUB_MEET)")
 	}
-	if meetServices["hermes-runtime"].(M)["environment"].(M)["BROWSER_CDP_URL"] != "http://browser-"+ms.User+":9222" {
+	if RuntimeService(ms, t.TempDir(), t.TempDir())["environment"].(M)["BROWSER_CDP_URL"] != "http://browser-"+ms.User+":9222" {
 		t.Fatal("meet runtime must reach the sidecar CDP")
 	}
 }
@@ -135,8 +136,8 @@ func TestBrowserSidecarServiceRendered(t *testing.T) {
 // SPEC-0082 R4.3: runtime renders BROWSER_CDP_URL at the sidecar alias and
 // carries no browser display surface of its own.
 func TestRuntimeEnvCarriesCDPURL(t *testing.T) {
-	services, s := browserSpace(t, "browser")
-	runtime := services["hermes-runtime"].(M)
+	_, s := browserSpace(t, "browser")
+	runtime := RuntimeService(s, t.TempDir(), t.TempDir())
 	env := runtime["environment"].(M)
 	if env["BROWSER_CDP_URL"] != "http://browser-"+s.User+":9222" {
 		t.Fatalf("runtime must reach the sidecar CDP by alias: %v", env["BROWSER_CDP_URL"])
@@ -160,30 +161,11 @@ func TestRuntimeEnvCarriesCDPURL(t *testing.T) {
 func TestCdpNotPublished(t *testing.T) {
 	services, _ := browserSpace(t, "browser")
 	for name, raw := range services {
-		for _, p := range raw.(M)["ports"].([]string) {
+		ports, _ := raw.(M)["ports"].([]string)
+		for _, p := range ports {
 			if strings.Contains(p, "9222") {
 				t.Fatalf("%s publishes CDP: %v", name, p)
 			}
-		}
-	}
-}
-
-// SPEC-0082 R4.3/R4.4: the browser MCP servers become URL servers on the
-// sidecar — persistent profile via CDP, guest as an isolated instance.
-func TestBrowserServersUseSidecarURL(t *testing.T) {
-	s := Settings{User: "alice", Tools: testTools("browser"), Ingress: testIngress("browser")}
-	servers := Config(s)["mcp_servers"].(M)
-	persistent := servers["browser"].(M)
-	guest := servers["browser_guest"].(M)
-	if persistent["url"] != "http://browser-alice:8931/mcp" {
-		t.Fatalf("persistent browser server must hit the sidecar MCP endpoint: %v", persistent["url"])
-	}
-	if guest["url"] != "http://browser-alice:8932/mcp" {
-		t.Fatalf("guest browser server must hit the isolated sidecar instance: %v", guest["url"])
-	}
-	for _, server := range []M{persistent, guest} {
-		if server["command"] != nil || server["args"] != nil {
-			t.Fatalf("browser servers must not render as stdio in the runtime: %v", server)
 		}
 	}
 }
@@ -253,7 +235,7 @@ func TestBrowserSidecarResourceLimits(t *testing.T) {
 		s    Settings
 	}{
 		{"unmanaged", Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Model: "test", ModelURL: "http://model.invalid/v1", Tools: testTools("browser"), Ingress: testIngress("browser")}},
-		{"managed", Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Model: "test", ModelURL: "http://model-relay:8318/v1", CapabilityMode: "managed", CapabilityProfileID: "managed-dev", CapabilityGeneration: 1, Tools: testTools("browser"), Ingress: testIngress("browser")}},
+		{"managed", Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Model: "test", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "managed-dev", CapabilityGeneration: 1, Tools: testTools("browser"), Ingress: testIngress("browser")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			services := Compose(tc.s, t.TempDir(), t.TempDir())["services"].(M)
@@ -278,7 +260,7 @@ func TestBrowserSidecarResourceLimits(t *testing.T) {
 // same per-space isolation the spawned runtime gets (SPEC-0082 R4.2).
 func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: "managed",
+		Model: "test", ModelURL: "http://model.invalid/v1",
 		CapabilityProfileID: "managed-dev", CapabilityGeneration: 1,
 		Tools: testTools("browser"), Ingress: testIngress("browser")}
 	rendered := Compose(s, t.TempDir(), t.TempDir())
@@ -320,7 +302,7 @@ func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 // the same tree or delivery can never see them.
 func TestManagedBrowserSidecarMountsManagedWorkspace(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: "managed",
+		Model: "test", ModelURL: "http://model.invalid/v1",
 		CapabilityProfileID: "managed-dev", CapabilityGeneration: 1,
 		Tools: testTools("browser"), Ingress: testIngress("browser")}
 	services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)

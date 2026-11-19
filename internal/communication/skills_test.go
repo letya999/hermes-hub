@@ -97,8 +97,8 @@ func sealEffectiveIndex(t *testing.T, dir string, ineligible map[string]bool) {
 }
 
 // R8.2: `service: "skill:<name>"` scopes the protected credential form to
-// the skill's declared credentials — values persist into the owner store's
-// .state/credentials, bound to (principal, skill); undeclared keys reject.
+// the skill's declared credentials - values relay to the owning runtime's
+// /v1/skill-creds, bound to (principal, skill); undeclared keys reject.
 func TestSkillCredentialFormFlow(t *testing.T) {
 	c := testConfig(t)
 	skillsDir := t.TempDir()
@@ -109,6 +109,7 @@ func TestSkillCredentialFormFlow(t *testing.T) {
 	}
 	c.SkillsDir = skillsDir
 	c.SkillsStore = t.TempDir()
+	relayed := acceptingRuntime(t, &c)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -129,11 +130,10 @@ func TestSkillCredentialFormFlow(t *testing.T) {
 	if err := g.persistCredentialForm(request, form, map[string]string{"API_KEY": "s3cr3t"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := skillstore.ReadCredentials(c.SkillsStore, "demo")
-	if err != nil || got["API_KEY"] != "s3cr3t" {
-		t.Fatalf("stored credentials: %v %v", got, err)
+	if got := relayed("/v1/skill-creds"); !strings.Contains(got, `"skill":"demo"`) || !strings.Contains(got, `"API_KEY":"s3cr3t"`) {
+		t.Fatalf("relayed skill credentials: %s", got)
 	}
-	if _, err := os.Stat(filepath.Join(c.Users[0].StateDir, "self-env.json")); err == nil {
+	if relayed("/v1/self-env") != "" {
 		t.Fatal("skill credentials must never land in the runtime env store")
 	}
 }
@@ -169,8 +169,8 @@ func TestSkillCredentialFormReadsCallerView(t *testing.T) {
 }
 
 // The skill-scoped form must carry the skill name through to persistence —
-// a form minted for skill:demo persists under .state/credentials/demo.json,
-// not the runtime env store.
+// a form minted for skill:demo relays to /v1/skill-creds, not the runtime
+// env store.
 func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
 	c := testConfig(t)
 	c.FormOrigin = "http://127.0.0.1:8081"
@@ -182,6 +182,7 @@ func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
 	}
 	c.SkillsDir = skillsDir
 	c.SkillsStore = t.TempDir()
+	relayed := acceptingRuntime(t, &c)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +201,7 @@ func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
 	if stored.Skill != "demo" {
 		t.Fatalf("form lost skill scope: %+v", stored)
 	}
-	// The served POST persists to .state — prove the loop end to end.
+	// The served POST relays to the runtime - prove the loop end to end.
 	saved := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), strings.NewReader("API_KEY=s3cr3t&nonce="+parsed.Query().Get("nonce")))
 	saved.Host = "127.0.0.1:8081"
 	saved.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -209,9 +210,8 @@ func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("form save status=%d", rec.Code)
 	}
-	got, err := skillstore.ReadCredentials(c.SkillsStore, "demo")
-	if err != nil || got["API_KEY"] != "s3cr3t" {
-		t.Fatalf("end-to-end persist: %v %v", got, err)
+	if got := relayed("/v1/skill-creds"); !strings.Contains(got, `"skill":"demo"`) || !strings.Contains(got, `"API_KEY":"s3cr3t"`) {
+		t.Fatalf("end-to-end relay: %s", got)
 	}
 }
 

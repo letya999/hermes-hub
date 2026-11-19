@@ -78,7 +78,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err != nil {
 		return err
 	}
-	if s.CapabilityMode == "managed" && s.ExecutionMode != "supervisor" {
+	if s.ExecutionMode != "supervisor" {
 		return fmt.Errorf("managed runtime requires supervisor-executed runtimes; static managed launch is not proven")
 	}
 	if err := ValidateRuntimeConnections(s, dir); err != nil {
@@ -159,21 +159,16 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			return fmt.Errorf("organization skills migration: %w", err)
 		}
 	}
-	if s.CapabilityMode == "managed" {
-		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
-			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
-				return err
-			}
+	for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
+		if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
+			return err
 		}
 	}
 	// A published workspace passport declares the layout: Render creates
 	// every boundary directory the MountPlan binds — including the /vault
 	// skeleton — without writing content into them (SPEC-0092 R5.2).
 	if s.PassportWorkspace != nil {
-		bases := []string{dir}
-		if s.CapabilityMode == "managed" {
-			bases = append(bases, filepath.Join(dir, "managed", s.Environment))
-		}
+		bases := []string{dir, filepath.Join(dir, "managed", s.Environment)}
 		for _, base := range bases {
 			if err = MaterializeWorkspaceLayout(base, *s.PassportWorkspace); err != nil {
 				return err
@@ -208,16 +203,14 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = allowServiceGroupRead(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
-	if s.CapabilityMode == "managed" {
-		if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
-			return err
-		}
-		if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
-			return err
-		}
-		if err = writeModelRelayCallerAuth(dir); err != nil {
-			return err
-		}
+	if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
+		return err
+	}
+	if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
+		return err
+	}
+	if err = writeModelRelayCallerAuth(dir); err != nil {
+		return err
 	}
 	if voiceServicesEnabled(s) || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {
@@ -225,9 +218,6 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		}
 	}
 	if s.Has("image_gen") && s.PassportServices["hub-media"] == "per-space" {
-		if s.CapabilityMode != "managed" {
-			return fmt.Errorf("per-space hub-media requires a managed model relay")
-		}
 		relayAuth, readErr := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
 		if readErr != nil || strings.TrimSpace(relayAuth["HUB_MODEL_RELAY_AUTH"]) == "" {
 			return fmt.Errorf("per-space hub-media model relay auth is unavailable")
@@ -285,68 +275,66 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = writeSupervisorPolicy(dir, s); err != nil {
 		return err
 	}
-	if s.CapabilityMode == "managed" {
-		relayAuth, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+	relayAuth, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+	if err != nil {
+		return err
+	}
+	managedEnv := map[string]string{
+		"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
+	}
+	if layer, loadErr := passportRegistryLayer(dir, revisionID); loadErr == nil {
+		if _, ok := layer.Models["vision"]; ok {
+			managedEnv["HUB_MEDIA_VISION_MODEL"] = "vision"
+		}
+	} else {
+		return loadErr
+	}
+	// Spawned runtimes live on a route-less internal network: every
+	// reviewed outbound hop goes through the egress relay by proxy env.
+	// docker exec children inherit the container env, so the agenttools
+	// executor sees the same relay. NO_PROXY keeps the control relays
+	// direct — proxying them would loop back through egress anyway.
+	if len(managedEgressHosts(s, dir)) > 0 || managedExposureRelay(s, dir) != "" {
+		// Uppercase only: env files validate keys as [A-Z0-9_]* and every
+		// consumer (Go http.DefaultTransport, requests, httpx) honors it.
+		managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
+		managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
+		managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
+		if s.Has("browser") {
+			// The browser MCP sidecar is internal like the relays:
+			// proxying it through egress breaks the streamable-HTTP
+			// handshake (the relay rightly refuses arbitrary forwards).
+			managedEnv["NO_PROXY"] += ",browser-" + s.User
+		}
+		managedEnv["HUB_EGRESS_PROXY"] = "http://egress-relay:8319"
+		for _, key := range s.Web.envKeys() {
+			if value := secrets[key]; value != "" {
+				managedEnv[key] = value
+			}
+		}
+	}
+	if slices.Contains(managedEgressHosts(s, dir), mediaServiceName(s)) {
+		auth, err := runtimeMediaAuth(dir, s)
 		if err != nil {
 			return err
 		}
-		managedEnv := map[string]string{
-			"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
-		}
-		if layer, loadErr := passportRegistryLayer(dir, revisionID); loadErr == nil {
-			if _, ok := layer.Models["vision"]; ok {
-				managedEnv["HUB_MEDIA_VISION_MODEL"] = "vision"
-			}
-		} else {
-			return loadErr
-		}
-		// Spawned runtimes live on a route-less internal network: every
-		// reviewed outbound hop goes through the egress relay by proxy env.
-		// docker exec children inherit the container env, so the agenttools
-		// executor sees the same relay. NO_PROXY keeps the control relays
-		// direct — proxying them would loop back through egress anyway.
-		if len(managedEgressHosts(s, dir)) > 0 || managedExposureRelay(s, dir) != "" {
-			// Uppercase only: env files validate keys as [A-Z0-9_]* and every
-			// consumer (Go http.DefaultTransport, requests, httpx) honors it.
-			managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
-			managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
-			managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
-			if s.Has("browser") {
-				// The browser MCP sidecar is internal like the relays:
-				// proxying it through egress breaks the streamable-HTTP
-				// handshake (the relay rightly refuses arbitrary forwards).
-				managedEnv["NO_PROXY"] += ",browser-" + s.User
-			}
-			managedEnv["HUB_EGRESS_PROXY"] = "http://egress-relay:8319"
-			for _, key := range s.Web.envKeys() {
-				if value := secrets[key]; value != "" {
-					managedEnv[key] = value
-				}
+		if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
+			managedEnv["HUB_MEDIA_URL"] = "http://" + mediaServiceName(s) + ":8090"
+			managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
+			if _, declared := s.PassportServices["hub-stt"]; declared {
+				managedEnv["HUB_STT_URL"] = "http://hub-stt:8090"
 			}
 		}
-		if slices.Contains(managedEgressHosts(s, dir), mediaServiceName(s)) {
-			auth, err := runtimeMediaAuth(dir, s)
-			if err != nil {
-				return err
-			}
-			if strings.TrimSpace(auth["HUB_MEDIA_AUTH"]) != "" {
-				managedEnv["HUB_MEDIA_URL"] = "http://" + mediaServiceName(s) + ":8090"
-				managedEnv["HUB_MEDIA_AUTH"] = strings.TrimSpace(auth["HUB_MEDIA_AUTH"])
-				if _, declared := s.PassportServices["hub-stt"]; declared {
-					managedEnv["HUB_STT_URL"] = "http://hub-stt:8090"
-				}
-			}
-		}
-		if slices.Contains(managedEgressHosts(s, dir), "communication-hub") {
-			managedEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
-			managedEnv["HUB_COMMUNICATION_AUTH"] = runtimeAuthToken(filepath.Join(dir, "runtime.auth"))
-		}
-		if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), managedEnv); err != nil {
-			return err
-		}
-		if err = allowServiceGroupRead(filepath.Join(dir, "managed-runtime."+s.Environment+".env")); err != nil {
-			return err
-		}
+	}
+	if slices.Contains(managedEgressHosts(s, dir), "communication-hub") {
+		managedEnv["HUB_COMMUNICATION_CONTROL_URL"] = "http://communication-hub:8081"
+		managedEnv["HUB_COMMUNICATION_AUTH"] = runtimeAuthToken(filepath.Join(dir, "runtime.auth"))
+	}
+	if err = writeEnvFile(filepath.Join(dir, "managed-runtime."+s.Environment+".env"), managedEnv); err != nil {
+		return err
+	}
+	if err = allowServiceGroupRead(filepath.Join(dir, "managed-runtime."+s.Environment+".env")); err != nil {
+		return err
 	}
 	if err = writeToolHubFiles(dir, s); err != nil {
 		return err
@@ -553,9 +541,6 @@ func removeIfExists(path string) error {
 // shared-network siblings admitted agenttools executors legitimately reach.
 // Empty result means no egress relay is rendered at all.
 func managedEgressHosts(s Settings, dir string) []string {
-	if s.CapabilityMode != "managed" {
-		return nil
-	}
 	hosts := map[string]bool{}
 	webOn := s.Has("web")
 	for _, name := range []string{"web", "search", "x_search"} {

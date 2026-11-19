@@ -967,7 +967,6 @@ func TestRunStartsCanaryWhenConfigured(t *testing.T) {
 
 func TestCanaryTimeoutStartsWhenRoundActuallyRuns(t *testing.T) {
 	c := testConfig(t)
-	c.RuntimeURL, c.RuntimeAuth = "", ""
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)

@@ -466,26 +466,6 @@ func TestDenyDefaultSelections(t *testing.T) {
 	}
 }
 
-// Implicit sections omit the whole toolset surface in managed mode and
-// include the guest browser surface only when the browser entry is on.
-func TestImplicitToolsetSections(t *testing.T) {
-	managed := Settings{User: "alice", CapabilityMode: "managed"}
-	if got := implicitToolsetSections(managed); got != nil {
-		t.Fatalf("managed implicit: %v", got)
-	}
-	plain := implicitToolsetSections(Settings{User: "alice"})
-	if !slices.Equal(plain, []string{api.SectionHubTools}) {
-		t.Fatalf("unmanaged implicit must be hub tools only: %v", plain)
-	}
-	if slices.Contains(plain, "hub:browser_guest") {
-		t.Fatal("guest surface listed without browser")
-	}
-	withBrowser := implicitToolsetSections(Settings{User: "alice", Tools: map[string]ToolEntry{"browser": {Via: ToolViaNative}}})
-	if !slices.Contains(withBrowser, "hub:browser_guest") {
-		t.Fatalf("guest surface missing: %v", withBrowser)
-	}
-}
-
 // govDecision/govForcedRO on a hand-built Settings (no Read) report nothing —
 // the governance boundary is the load path.
 func TestGovViewAbsent(t *testing.T) {

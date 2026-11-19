@@ -108,10 +108,7 @@ func OpenProvider(dir string, s Settings) (memory.Provider, error) {
 	}
 	token := ""
 	if cfg.TokenEnv != "" {
-		envFile := "runtime." + s.Environment + ".env"
-		if s.CapabilityMode == "managed" {
-			envFile = "managed-runtime." + s.Environment + ".env"
-		}
+		envFile := "managed-runtime." + s.Environment + ".env"
 		secrets, err := ReadSecrets(filepath.Join(dir, envFile))
 		if err != nil {
 			return nil, fmt.Errorf("memory provider secrets: %w", err)

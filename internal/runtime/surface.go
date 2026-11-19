@@ -278,14 +278,8 @@ func spawnHubChild(name string, args []string) string {
 // of blocking health.
 func probeConnectors(ctx context.Context, config surfaceConfig) ([]connectorView, error) {
 	server, configured := config.MCPServers["toolhub"]
-	endpoint := server.URL
-	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
-		// The loopback MCP proxy has no inventory route; use its reviewed relay upstream.
-		endpoint = toolHubEndpoint()
-	}
-	if endpoint == "" {
-		endpoint = toolHubEndpoint()
-	}
+	// The loopback MCP proxy has no inventory route; use its reviewed relay upstream.
+	endpoint := toolHubEndpoint()
 	tokenEnv := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_TOKEN_ENV"))
 	if tokenEnv == "" && configured {
 		tokenEnv = envReference(strings.TrimPrefix(server.Headers["Authorization"], "Bearer "))

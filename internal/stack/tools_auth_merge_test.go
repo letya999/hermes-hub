@@ -40,7 +40,6 @@ func TestValidateToolsEdgeBranchesAndAuthFiles(t *testing.T) {
 	check(map[string]ToolEntry{"github": {Via: ToolViaMCP}}, "")
 
 	managed := base
-	managed.CapabilityMode = "managed"
 	managed.Tools = map[string]ToolEntry{"meet": {Via: ToolViaNative}}
 	if err := managed.validateTools(); err == nil || !strings.Contains(err.Error(), "meet") {
 		t.Fatalf("managed meet not sealed: %v", err)

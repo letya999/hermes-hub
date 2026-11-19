@@ -7,23 +7,17 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "")
-	t.Setenv("HUB_TOOLHUB_AUTOSTART", "")
 	if got := toolHubEndpoint(); got != "" {
 		t.Fatalf("unset ToolHub endpoint is not opt-in: %q", got)
 	}
-	t.Setenv("HUB_TOOLHUB_AUTOSTART", "true")
-	if got := toolHubEndpoint(); got != defaultToolHubEndpoint {
-		t.Fatalf("autostart endpoint=%q", got)
-	}
-	t.Setenv("HUB_TOOLHUB_AUTOSTART", "")
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
-	original := []byte("model: {}\n")
-	if err := os.WriteFile(source, original, 0600); err != nil {
+	if err := os.WriteFile(source, []byte("model: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "config.yaml")
@@ -31,17 +25,20 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(dest)
-	if err != nil || string(body) != string(original) {
-		t.Fatalf("opt-in config changed: %q %v", body, err)
+	if err := stack.MaterializeHermesConfig(source, dest, opts); err == nil {
+		t.Fatal("config materialized without a scoped ToolHub endpoint")
 	}
 
 	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://127.0.0.1:8090/mcp")
 	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "")
+	managed, err := yaml.Marshal(stack.Config(stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, managed, 0600); err != nil {
+		t.Fatal(err)
+	}
 	opts, err = materializeOptionsFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -49,12 +46,12 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(dest)
+	body, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "http://127.0.0.1:8090/mcp") || !strings.Contains(text, "${HUB_RUNTIME_AUTH}") || !strings.Contains(text, "timeout: 1800") || !strings.Contains(text, "mcp_reload_confirm: false") || strings.Contains(text, strings.Repeat("a", 32)) {
+	if !strings.Contains(text, "http://127.0.0.1:8080/mcp") || !strings.Contains(text, "${HUB_RUNTIME_AUTH}") || !strings.Contains(text, "timeout: 1800") || !strings.Contains(text, "mcp_reload_confirm: false") || strings.Contains(text, strings.Repeat("a", 32)) {
 		t.Fatalf("ToolHub config leaked or omitted token reference: %s", text)
 	}
 	t.Setenv("HUB_TOOLHUB_RECONNECT", "false")
@@ -72,7 +69,6 @@ func TestMaterializeOptionsFromEnvIsOptInAndUsesEnvReference(t *testing.T) {
 }
 
 func TestMaterializeOptionsFromEnvCarriesNativeToolsets(t *testing.T) {
-	t.Setenv("HUB_CAPABILITY_MODE", "managed")
 	t.Setenv("HUB_NATIVE_TOOLSETS", "terminal, memory ,,todo")
 	opts, err := materializeOptionsFromEnv()
 	if err != nil {
@@ -111,24 +107,6 @@ func TestMaterializeOptionsFromEnvCarriesManagedContext(t *testing.T) {
 	t.Setenv("HUB_MANAGED_CONTEXT", `{`)
 	if _, err := materializeOptionsFromEnv(); err == nil {
 		t.Fatal("invalid managed context env accepted")
-	}
-}
-
-func TestToolHubAutostartBinaryPrefersShippedName(t *testing.T) {
-	old := lookPath
-	t.Cleanup(func() { lookPath = old })
-	lookPath = func(name string) (string, error) {
-		if name == "hub-toolhub" {
-			return "/usr/local/bin/hub-toolhub", nil
-		}
-		return "", os.ErrNotExist
-	}
-	if got := toolHubAutostartBinary(); got != "hub-toolhub" {
-		t.Fatalf("preferred binary=%q", got)
-	}
-	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
-	if got := toolHubAutostartBinary(); got != "toolhub" {
-		t.Fatalf("fallback binary=%q", got)
 	}
 }
 

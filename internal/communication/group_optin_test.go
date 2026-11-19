@@ -27,6 +27,7 @@ func TestGroupUsesDedicatedSpaceAndMentionGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded.TelegramToken = c.TelegramToken
+	loaded.RuntimeURL, loaded.RuntimeAuth = c.RuntimeURL, c.RuntimeAuth
 	g, err := New(loaded)
 	if err != nil {
 		t.Fatal(err)

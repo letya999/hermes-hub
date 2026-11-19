@@ -15,9 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -339,32 +337,6 @@ func TestDirectDeliveryResolvesLangFromChat(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"lang":"es"`) {
 		t.Fatalf("durable record lacks lang: %s", b)
-	}
-}
-
-// The spawned runtime sees the workspace language via HUB_USER_LANG so the
-// model keeps answering in the user's language without prompt patching.
-func TestRunnerPassesUserLang(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "helper.go")
-	if err := os.WriteFile(source, []byte("package main\nimport (\"fmt\";\"os\")\nfunc main(){fmt.Print(os.Getenv(\"HUB_USER_LANG\"))}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(root, "helper")
-	if goruntime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	if output, err := exec.Command("go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-		t.Skipf("cannot build helper: %v (%s)", err, output)
-	}
-	workspace := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(workspace, 0700); err != nil {
-		t.Fatal(err)
-	}
-	pinLang(t, workspace, locale.LangKK)
-	response, err := (HermesRunner{Command: bin, Timeout: 10 * time.Second}).Run(context.Background(), Job{Text: "hello"}, User{StateDir: filepath.Join(root, "state"), WorkspaceDir: workspace})
-	if err != nil || response != "kk" {
-		t.Fatalf("response=%q err=%v", response, err)
 	}
 }
 
@@ -1021,6 +993,7 @@ func TestCompactCommandLocalized(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Without a compact-capable runner the reply reports unavailability.
+	g.runner = errorRunner{}
 	if err := g.compactCommand(ctx, user, task, route, "c2", "/compact"); err != nil {
 		t.Fatal(err)
 	}
@@ -1144,6 +1117,7 @@ func TestGoalCommandLocalized(t *testing.T) {
 	checks = append(checks, struct{ got, want string }{call("bogus", ""), want("goal.unhandled")})
 
 	// set with no goal-capable runner, then a rejected and an accepted set.
+	g.runner = errorRunner{}
 	checks = append(checks, struct{ got, want string }{call("set", "enviar el informe"), want("goal.unsupported-runner")})
 	g.runner = &goalStubRunner{result: hubruntime.GoalResult{FailureClass: "engine_conflict"}}
 	checks = append(checks, struct{ got, want string }{call("set", "enviar el informe"), want("goal.rejected", wantText(t, locale.LangES, "goal.err.engine-conflict"))})
@@ -2280,6 +2254,7 @@ func TestRoutineBlockedNoticeLangWired(t *testing.T) {
 // declares it on the html element.
 func TestCredentialFormPageLocalized(t *testing.T) {
 	c := baseTestConfig(t)
+	acceptingRuntime(t, &c)
 	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
 	g, err := New(c)
 	if err != nil {

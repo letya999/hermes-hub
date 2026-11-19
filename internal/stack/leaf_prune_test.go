@@ -9,8 +9,8 @@ import (
 // knobs — 0 disables; retention below 2 or negative values are invalid;
 // both require memory_vault like every memory_* surface.
 func TestLeafRetentionValidation(t *testing.T) {
-	base := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1",
+	base := Settings{CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model-relay:8318/v1",
 		Tools:   testTools("workspace", "memory_vault"),
 		Ingress: testIngress("workspace")}
 

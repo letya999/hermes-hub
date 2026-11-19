@@ -43,7 +43,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
-	managed := managedErr == nil && managedSettings.CapabilityMode == "managed"
+	managed := managedErr == nil
 	// The stack passport is the spawn contract (SPEC-0092 R3.2): a declared
 	// supervised hermes-runtime selects the supervisor even when the rollout
 	// execution file was never written. A file that picks another executor
@@ -405,15 +405,10 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.ReadEffective(abs, m.environment())
-	if settingsErr != nil && !os.IsNotExist(settingsErr) {
-		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
+	if _, err := stack.ReadEffective(abs, m.environment()); err != nil && !os.IsNotExist(err) {
+		return Binding{}, fmt.Errorf("context settings unavailable: %w", err)
 	}
-	managed := settingsErr == nil && settings.CapabilityMode == "managed"
-	runtimeEnv := "runtime." + m.environment() + ".env"
-	if managed {
-		runtimeEnv = "managed-runtime." + m.environment() + ".env"
-	}
+	runtimeEnv := "managed-runtime." + m.environment() + ".env"
 	if info, err := os.Lstat(filepath.Join(abs, runtimeEnv)); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return Binding{}, errors.New("runtime env file is unavailable")
 	}
@@ -431,14 +426,11 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, err
 	}
 	// Match static Compose data paths without allowing a symlink to another
-	// home. Managed contexts keep a separate private layout: no shared state,
+	// home. Contexts keep a separate private layout: no shared state,
 	// workspace or connection directories ever enter the spawned runtime.
-	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
-	if managed {
-		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
-		if binding.RuntimeMode != "gateway" {
-			dirs = append(dirs, "managed/"+m.environment()+"/runtime/"+binding.RuntimeMode)
-		}
+	dirs := []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
+	if binding.RuntimeMode != "gateway" {
+		dirs = append(dirs, "managed/"+m.environment()+"/runtime/"+binding.RuntimeMode)
 	}
 	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
@@ -475,198 +467,16 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	env := m.environment()
 	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
 	// dev port offsets, execution selection) must match the rendered compose.
-	settings, settingsErr := stack.ReadEffective(binding.ContextRoot, env)
-	if settingsErr != nil && !os.IsNotExist(settingsErr) {
-		return nil, settingsErr
-	}
-	if settingsErr == nil {
-		if err := stack.ValidateRuntimeConnections(settings, binding.ContextRoot); err != nil {
-			return nil, err
-		}
-	}
-	if settingsErr == nil && settings.CapabilityMode == "managed" {
-		return m.managedRunArgs(binding, settings, container, generation)
-	}
-	m.prepareSpawnFiles(binding, env)
-	project := "hermes-hub-" + binding.UserID + "-" + env
-	// Spawned runtimes join the single shared runtime network where the shared
-	// control plane (toolhub, credential-broker, cliproxy, communication-hub)
-	// resolves; per-user isolation lives in mounts and principal-scoped auth.
-	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
-	args = append(args, "--runtime", m.cfg.ContainerRuntime)
-	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+env+".env")); err == nil && info.Mode().IsRegular() {
-		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+env+".env"))
-	}
-	args = append(args, "--env-file", binding.EnvFile)
-	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
-	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/scope,readonly")
-	if settings, err := stack.ReadEffective(binding.ContextRoot, env); err == nil {
-		service := stack.RuntimeService(settings, "", binding.ContextRoot)
-		keys := make([]string, 0)
-		for key := range service["environment"].(stack.M) {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
-		}
-	}
-	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"archive", "/archive"}} {
-		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
-		if mount.target == "/archive" {
-			value += ",readonly"
-		}
-		args = append(args, "--mount", value)
-	}
-	// Mirror the rendered runtime contract: shipped hub skills (connector
-	// onboarding rules) must be readable at /opt/hub/skills, matching
-	// external_dirs in the generated Hermes config. Without them the agent
-	// improvises installs through terminal instead of ToolHub control ops.
-	// The mount is the per-space filtered copy materialized at spawn so
-	// feature gating applies even when Render was not rerun after a toggle.
-	spawnSettings, serr := stack.ReadEffective(binding.ContextRoot, env)
-	if serr != nil {
-		spawnSettings = stack.Settings{}
-	}
-	// The workspace passport owns the container filesystem once a revision is
-	// published (SPEC-0092 R5.2): /config, /workspace with read-only
-	// sub-binds, /skills and /shared/* come from the MountPlan —
-	// identical to the rendered Compose service. Without a revision the
-	// space keeps the legacy workspace bind and raw /config mounts.
-	if spawnSettings.PassportWorkspace != nil {
-		for _, pm := range stack.MountPlan(binding.ContextRoot, env, binding.ContextRoot, spawnSettings, *spawnSettings.PassportWorkspace) {
-			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
-			if pm.ReadOnly {
-				value += ",readonly"
-			}
-			args = append(args, "--mount", value)
-		}
-	} else {
-		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
-	}
-	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, spawnSettings)
-	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, spawnSettings)
-	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
-		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
-		// Same contract as RenderEnvironment: a defaulted platform catalog is
-		// created empty so its absence never breaks the spawn.
-		if err := os.MkdirAll(spawnSettings.GlobalSkillsDir, 0755); err != nil {
-			return nil, fmt.Errorf("platform skills dir: %w", err)
-		}
-	}
-	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, spawnSettings); err != nil {
-		return nil, fmt.Errorf("effective skills view: %w", err)
-	}
-	// A published workspace passport carries /skills through the MountPlan.
-	if spawnSettings.PassportWorkspace == nil {
-		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
-	}
-	// Post-publish rebuild contract: the platform tier and the render
-	// snapshot mount read-only; the view gets a second writable bind so
-	// /v1/skill-apply can recompose it in place without a respawn.
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
-	args = append(args, "--tmpfs", "/state/hermes/skills:ro,mode=0555")
-	// R5.1: the owner store is writable beside the read-only effective view;
-	// the env contract tells the executor which path is which. skill_manage
-	// writes drafts here — never into /skills.
-	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
-	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
-	// R5.2: org-bound spawns also mount the writable org store for org drafts;
-	// HUB_SKILLS_ORG reaches the env through the rendered service contract.
-	if spawnSettings.OrgScoped() && spawnSettings.OrganizationSkillsDir != "" {
-		args = append(args, "--mount", "type=bind,src="+spawnSettings.OrganizationSkillsDir+",dst=/skills-store-org")
-	}
-	// Same contract for hub plugins: materialize the feature-filtered copy at
-	// spawn and mount each plugin read-only into upstream's bundled plugins
-	// dir, where kind=backend manifests auto-load. A disabled feature leaves
-	// the dir unmounted, so the plugin is never discovered.
-	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), spawnSettings); err != nil {
-		log.Printf("supervisor plugins materialization skipped: %v", err)
-	}
-	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
-			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
-		}
-	}
-	// The published passport view is the runtime's whole /config: a stable
-	// read-only directory bind, never per-file mounts (SPEC-0092 S1.4). A
-	// space without a published revision keeps the legacy raw mounts — its
-	// heal path still reads them. A published workspace passport already
-	// carries /config through the MountPlan.
-	if spawnSettings.PassportWorkspace == nil {
-		if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
-			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
-		} else {
-			for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
-				if _, err := os.Stat(file.source); err == nil {
-					args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
-				}
-			}
-		}
-	}
-	// Materialize the effective Hermes config host-side and mount it read-only
-	// over the agent-writable state dir: mcp_servers must come from ToolHub
-	// onboarding, never from terminal edits inside the runtime.
-	effectiveConfig, err := m.materializeHermesConfig(binding, env)
+	// Without a published revision there is nothing to spawn: no legacy
+	// unmanaged run arguments exist.
+	settings, err := stack.ReadEffective(binding.ContextRoot, env)
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
-	// The executor's compiled governance extract: same contract the rendered
-	// compose mounts read-only at /config/tool-policy.json (HUB_TOOL_POLICY).
-	// Written at spawn so it tracks the space's current settings.
-	if settings.Environment == "" {
-		settings.Environment = env
-	}
-	policyPath, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings)
-	if err != nil {
-		return nil, fmt.Errorf("materialize tool policy: %w", err)
-	}
-	// A published workspace passport owns /config as one read-only directory
-	// bind: nested per-file mounts cannot create mountpoints under it, so the
-	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
-	if spawnSettings.PassportWorkspace == nil {
-		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
-	}
-	// The render-time tool-surface expectation, mounted read-only like the
-	// policy snapshot; the runtime's /v1/health probe reads it and nothing
-	// inside the container can rewrite it.
-	if spawnSettings.PassportWorkspace == nil {
-		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
-		}
-	}
-	// The rendered effective SOUL — persona plus channel contract — is what
-	// Hermes reads at $HERMES_HOME/SOUL.md. Without it (pre-R1.8 space) the
-	// heal path copies the raw persona as before.
-	if soul := filepath.Join(binding.ContextRoot, "generated", "soul-effective."+env+".md"); fileExists(soul) {
-		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
-	}
-	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
-	if binding.OrganizationRoot != "" {
-		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
-	}
-	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
-	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
-	if generation != "" {
-		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
-	}
-	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
-		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
-	}
-	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
-	if err != nil {
+	if err := stack.ValidateRuntimeConnections(settings, binding.ContextRoot); err != nil {
 		return nil, err
 	}
-	args = append(args, image, "serve")
-	return args, nil
+	return m.managedRunArgs(binding, settings, container, generation)
 }
 
 // managedAgentNetworkName mirrors the Compose topology: one internal network
@@ -746,8 +556,8 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	}
 	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, settings)
 	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, settings)
-	// Same skill contract as unmanaged spawns: the hub-built effective view
-	// mounts read-only at /skills and a failed build refuses the spawn.
+	// Skill contract: the hub-built effective view mounts read-only at
+	// /skills and a failed build refuses the spawn.
 	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
 		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
 		if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
@@ -767,16 +577,15 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
-	// R5.1: identical to unmanaged — the owner store (not a private managed
-	// copy) is writable at /skills-store so drafts, publishes and the
-	// effective view all see the same store.
+	// R5.1: the owner store (not a private managed copy) is writable at
+	// /skills-store so drafts, publishes and the effective view all see the
+	// same store.
 	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
 	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
 	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
 		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
 	}
-	// Same contract for hub plugins as unmanaged and Compose renders: a
-	// feature-filtered copy materialized at spawn mounts read-only into
+	// Hub plugins: a feature-filtered copy materialized at spawn mounts read-only into
 	// upstream's bundled plugins dir.
 	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), settings); err != nil {
 		log.Printf("supervisor plugins materialization skipped: %v", err)

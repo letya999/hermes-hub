@@ -23,9 +23,9 @@ func TestKnowledgeUIFeature(t *testing.T) {
 	if !found {
 		t.Fatal("knowledge_ui missing from the Features registry")
 	}
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC",
+	s := Settings{CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC",
 		BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1",
+		Model: "test", ModelURL: "http://model-relay:8318/v1",
 		Tools: testTools("knowledge_ui"), Ingress: testIngress()}
 	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "memory_vault") {
 		t.Fatalf("knowledge_ui without memory_vault must be refused: %v", err)
@@ -144,35 +144,22 @@ func TestOKWritablePasswdHome(t *testing.T) {
 	}
 }
 
-// The service joins only the space-private network — the project default net
-// in static and supervisor modes, the internal agent net in managed mode.
-// The shared hub net is never joined: nothing dials the service by name now
-// that the runtime MCP route stays retired. A managed ui_port adds exactly
-// one dedicated publishable network (the agent net is internal and drops
-// published ports) — the browser-publish pattern, minus any alias.
+// The service joins only the space-private internal agent net. The shared
+// hub net is never joined: nothing dials the service by name now that the
+// runtime MCP route stays retired. A ui_port adds exactly one dedicated
+// publishable network (the agent net is internal and drops published
+// ports) — the browser-publish pattern, minus any alias.
 func TestOKPrivateNetOnly(t *testing.T) {
-	nets := func(mode string, exec string, uiPort int) M {
+	nets := func(exec string, uiPort int) M {
 		s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-			Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: mode, ExecutionMode: exec, UIPort: uiPort,
+			Model: "test", ModelURL: "http://model.invalid/v1", ExecutionMode: exec, UIPort: uiPort,
+			CapabilityProfileID: "managed-dev", CapabilityGeneration: 1,
 			Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
-		if mode == "managed" {
-			s.CapabilityProfileID = "managed-dev"
-			s.CapabilityGeneration = 1
-		}
 		svc := Compose(s, t.TempDir(), t.TempDir())["services"].(M)["open-knowledge"].(M)
 		raw, _ := svc["networks"].(M)
 		return raw
 	}
-	for _, exec := range []string{"", "supervisor"} {
-		static := nets("", exec, 0)
-		if len(static) != 1 {
-			t.Fatalf("unmanaged mode (exec %q) must join exactly one network: %v", exec, static)
-		}
-		if _, ok := static["default"]; !ok {
-			t.Fatalf("unmanaged mode must join the project default network: %v", static)
-		}
-	}
-	managed := nets("managed", "", 0)
+	managed := nets("", 0)
 	if len(managed) != 1 {
 		t.Fatalf("managed mode without ui_port must join exactly one network: %v", managed)
 	}
@@ -181,12 +168,12 @@ func TestOKPrivateNetOnly(t *testing.T) {
 			t.Fatalf("managed mode must join only the internal agent network: %v", managed)
 		}
 	}
-	published := nets("managed", "", 8443)
+	published := nets("supervisor", 8443)
 	if len(published) != 2 || published["knowledge-publish"] == nil {
 		t.Fatalf("managed ui_port must add the publishable network to the agent net: %v", published)
 	}
 	rendered := Compose(Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: "managed", CapabilityProfileID: "managed-dev", CapabilityGeneration: 1, UIPort: 8443,
+		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityProfileID: "managed-dev", CapabilityGeneration: 1, UIPort: 8443,
 		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}, t.TempDir(), t.TempDir())
 	def, ok := rendered["networks"].(M)["knowledge-publish"].(M)
 	if !ok || def["internal"] == true {
@@ -257,8 +244,8 @@ func TestUIPortRejectsNonLoopback(t *testing.T) {
 // without the feature it publishes are all validation errors, never a
 // silent remap.
 func TestUIPortCollisionDiagnostic(t *testing.T) {
-	base := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1",
+	base := Settings{CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model-relay:8318/v1",
 		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
 	for _, port := range []int{80, 1023, 70000, 6080, 8000} {
 		s := base
@@ -283,8 +270,8 @@ func TestUIPortCollisionDiagnostic(t *testing.T) {
 // drives the named edge service / one-time ?t= link without a vocabulary
 // change.
 func TestUIExposeReservedForM18(t *testing.T) {
-	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
-		Model: "test", ModelURL: "http://model.invalid/v1", UIPort: 8443, UIExpose: "named-edge",
+	s := Settings{CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model-relay:8318/v1", UIPort: 8443, UIExpose: "named-edge",
 		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
 	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "M18") {
 		t.Fatalf("ui_expose must fail as reserved-for-M18, got %v", err)
@@ -308,7 +295,6 @@ func TestKnowledgeUINoRuntimeRoute(t *testing.T) {
 			t.Fatalf("unmanaged render must not emit open_knowledge: %v", servers)
 		}
 	}
-	s.CapabilityMode = "managed"
 	if _, ok := managedMCPServers(s)["open_knowledge"]; ok {
 		t.Fatalf("managed render must not emit open_knowledge: %v", managedMCPServers(s))
 	}

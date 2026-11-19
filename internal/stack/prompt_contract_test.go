@@ -117,7 +117,7 @@ func TestChannelContractRequiresHumanToolHubConfirmation(t *testing.T) {
 // stock hint and tells users the chat cannot receive file attachments.
 func TestAPIServerPlatformHintOverrideRendered(t *testing.T) {
 	for name, cfg := range map[string]M{
-		"managed":   Config(Settings{CapabilityMode: "managed", Model: "m", ModelURL: "http://x", Timezone: "UTC"}),
+		"managed":   Config(Settings{Model: "m", ModelURL: "http://x", Timezone: "UTC"}),
 		"unmanaged": Config(Settings{Model: "m", ModelURL: "http://x", Timezone: "UTC"}),
 	} {
 		agent, ok := cfg["agent"].(M)

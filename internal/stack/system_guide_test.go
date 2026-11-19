@@ -90,7 +90,7 @@ func TestMaterializeSoulEffectiveStaysContainerReadable(t *testing.T) {
 }
 
 func TestSystemGuideRoutingSurvivesCustomPersona(t *testing.T) {
-	for _, mode := range []string{"", "managed"} {
+	for _, mode := range []string{"managed"} {
 		for _, env := range []string{"dev", "prod"} {
 			dir := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(dir, "generated"), 0755); err != nil {
@@ -100,7 +100,7 @@ func TestSystemGuideRoutingSurvivesCustomPersona(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte(persona), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := MaterializeSoulEffective(dir, Settings{Environment: env, CapabilityMode: mode}); err != nil {
+			if err := MaterializeSoulEffective(dir, Settings{Environment: env}); err != nil {
 				t.Fatal(err)
 			}
 			body, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective."+env+".md"))
@@ -154,9 +154,9 @@ func TestSystemGuideMaterializedWithEmptyOrCustomSkillCatalog(t *testing.T) {
 }
 
 func TestSystemGuideReachesEffectiveViewInBothModes(t *testing.T) {
-	for _, mode := range []string{"", "managed"} {
+	for _, mode := range []string{"managed"} {
 		s := validSettings()
-		s.CapabilityMode, s.GlobalSkillsDir = mode, ""
+		s.GlobalSkillsDir = ""
 		dir := t.TempDir()
 		if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
 			t.Fatal(err)
@@ -173,10 +173,6 @@ func TestSystemGuideLoaderDisabledWithoutCustomCatalog(t *testing.T) {
 	s.GlobalSkillsDir = ""
 	// SPEC-0083 R2.6: no external_dirs in either mode — the effective view
 	// mounts read-only at /skills instead of feeding the upstream loader.
-	if len(Config(s)["skills"].(M)) != 0 {
-		t.Fatal("unmanaged native skill loader enabled")
-	}
-	s.CapabilityMode = "managed"
 	if len(Config(s)["skills"].(M)) != 0 {
 		t.Fatal("managed native skill loader enabled")
 	}

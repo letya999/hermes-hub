@@ -18,6 +18,7 @@ func TestToolEntryYAMLForms(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Environment = "prod"
+	s.Model, s.ModelURL, s.CapabilityProfileID, s.CapabilityGeneration = "synthetic", "http://model-relay:8318/v1", "alice-default", 1
 	if s.Tools["terminal"].Via != "native" {
 		t.Fatalf("scalar backend lost: %+v", s.Tools["terminal"])
 	}
@@ -66,7 +67,7 @@ func TestValidateToolsRejectsMalformedEntries(t *testing.T) {
 // Workspace mounts: traversal, reserved roots, duplicates and the org
 // read-only invariant are all rejected before render.
 func TestWorkspaceMountValidation(t *testing.T) {
-	good := Settings{Schema: 2, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	good := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 2, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Workspace: Workspace{Mounts: []Mount{{From: "docs", To: "/docs"}, {From: "shared/in", To: "/mnt/in", Mode: "ro"}, {From: "org:docs", To: "/orgdocs"}}}}
 	good.SpaceDir = t.TempDir()
 	good.OrganizationDir = t.TempDir()
@@ -119,7 +120,7 @@ func TestResolveMountAndComposeVolumes(t *testing.T) {
 		t.Fatal("org mount resolved without an organization dir")
 	}
 	s.OrganizationDir = org
-	volumes := Compose(s, "/source", space)["services"].(M)["hermes-runtime"].(M)["volumes"].([]any)
+	volumes := RuntimeService(s, "/source", space)["volumes"].([]any)
 	var docs, orgdocs map[string]any
 	for _, v := range volumes {
 		m, ok := v.(map[string]any)
@@ -253,7 +254,7 @@ func TestReadOnlyCapabilitiesEnv(t *testing.T) {
 	if slices.Contains(ro, "documents") {
 		t.Fatalf("rw capability leaked into ro set: %v", ro)
 	}
-	env := Compose(s, "/source", s.SpaceDir)["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	env := RuntimeService(s, "/source", s.SpaceDir)["environment"].(M)
 	v, _ := env["HUB_TOOLS_RO"].(string)
 	if !strings.Contains(v, "files") || !strings.Contains(v, "ssh") {
 		t.Fatalf("HUB_TOOLS_RO rendered wrong: %q", v)
@@ -264,9 +265,9 @@ func TestReadOnlyCapabilitiesEnv(t *testing.T) {
 // tools.exclude; an unknown server must carry an explicit except list.
 func TestMCPRawROExcludesMutations(t *testing.T) {
 	dir := t.TempDir()
-	s := Settings{Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
 		Tools: map[string]ToolEntry{"browser": {Via: "mcp-raw", Server: "playwright", Access: "ro"}},
-		MCP:   map[string]MCPServer{"playwright": {Command: "npx", Args: []string{"-y", "@playwright/mcp"}}}}
+		MCP:   map[string]MCPServer{"playwright": {Command: "npx", Args: []string{"-y", "@playwright/mcp"}}}, PassportConnectors: true}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("ro raw MCP rejected: %v", err)
 	}
@@ -299,7 +300,7 @@ func TestMCPRawROExcludesMutations(t *testing.T) {
 
 // Credential-shaped mount sources are rejected outright — NanoClaw blocklist.
 func TestMountBlocklist(t *testing.T) {
-	s := Settings{Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+	s := Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 3, User: "alice", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		SpaceDir: t.TempDir()}
 	for _, from := range []string{
 		".ssh", ".ssh/id_rsa", "keys/id_rsa_backup", ".aws", ".kube", ".docker",

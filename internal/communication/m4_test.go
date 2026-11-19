@@ -126,10 +126,6 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 	if strings.Contains(joined, secret) || !strings.Contains(joined, "не настроен") || !strings.Contains(joined, "Сессии:") {
 		t.Fatalf("sent=%v", fake.sent)
 	}
-	env := strings.Join(processEnv(map[string]string{"TELEGRAM_BOT_TOKEN": "bot-secret", "SLACK_SIGNING_SECRET": "slack-secret", "OPENAI_API_KEY": "k"}), "\n")
-	if strings.Contains(env, "TELEGRAM_BOT_TOKEN") || strings.Contains(env, "SLACK_SIGNING_SECRET") {
-		t.Fatal("bot/app tokens leaked into runtime env")
-	}
 }
 
 func TestEmptyVoiceUpdateIsTranscribedNotDropped(t *testing.T) {
@@ -714,6 +710,8 @@ func TestVoiceUnavailableStatus(t *testing.T) {
 	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
 	t.Setenv("HUB_STT_COMMAND", self)
 	t.Setenv("HUB_TTS_COMMAND", self)
+	t.Setenv("HUB_RUNTIME_URL", "http://127.0.0.1:1")
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-test")
 	config, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)

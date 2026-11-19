@@ -439,14 +439,12 @@ func mcpRawSelector(s Settings, serverName string) (string, ToolEntry, bool) {
 	return "", ToolEntry{}, false
 }
 
-// rawMCPServers renders the mcp: definitions selected for this runtime.
-// Unmanaged mode keeps the historical implicit surface (every definition not
-// explicitly denied renders); managed mode renders only definitions picked
-// by a via: mcp-raw entry, which can only name organization-provided servers.
+// rawMCPServers renders the mcp: definitions selected for this runtime: only
+// definitions picked by a via: mcp-raw entry, which can only name
+// organization-provided servers.
 // `access: ro` and `except:` merge into the server's tools.exclude filter.
 func rawMCPServers(s Settings) M {
 	servers := M{}
-	managed := s.CapabilityMode == "managed"
 	// The whole declaration surface is one governance section: user_mcp on a
 	// personal space, org_mcp for the merged organization catalog.
 	section := api.SectionUserMCP
@@ -461,7 +459,7 @@ func rawMCPServers(s Settings) M {
 			continue
 		}
 		entryName, e, selected := mcpRawSelector(s, name)
-		if managed && !selected {
+		if !selected {
 			continue
 		}
 		cfg := server.Config()
@@ -592,7 +590,6 @@ func (s Settings) validateTools() error {
 	if s.toolEntry("terminal").Via == ToolViaToolHub && s.toolEntry("code_execution").Via == ToolViaNative {
 		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless terminal_exec tool")
 	}
-	managed := s.CapabilityMode == "managed"
 	for name, e := range s.Tools {
 		if name == "desktop" || name == "drafts" {
 			return fmt.Errorf("tools.%s: companion was removed; remove this selection", name)
@@ -614,7 +611,7 @@ func (s Settings) validateTools() error {
 			if !nativeCarveoutToolsets[name] && !pseudoToolsets[name] {
 				return fmt.Errorf("tools.%s: %q is not a reviewed native toolset", name, name)
 			}
-			if pseudoToolsets[name] && managed && name == "meet" {
+			if pseudoToolsets[name] && name == "meet" {
 				return fmt.Errorf("tools.%s: meet needs plugin support sealed under managed mode", name)
 			}
 			if e.Access == ToolAccessRO {
@@ -634,7 +631,7 @@ func (s Settings) validateTools() error {
 			if !mcpConnectors[name] {
 				return fmt.Errorf("tools.%s: %q is not a ToolHub connector — a raw mcp: server uses via: mcp-raw", name, name)
 			}
-			if e.Server != "" && e.Server != "playwright" && (s.CapabilityMode != "managed" || !identity.ValidID(e.Server)) {
+			if e.Server != "" && e.Server != "playwright" && !identity.ValidID(e.Server) {
 				return fmt.Errorf("tools.%s: unknown connector server %q", name, e.Server)
 			}
 		case ToolViaMCPRaw:

@@ -75,7 +75,6 @@ type Config struct {
 	RuntimeURL       string                 `yaml:"-"`
 	RuntimeAuth      string                 `yaml:"-"`
 	PollTimeout      time.Duration          `yaml:"-"`
-	HermesCommand    string                 `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -113,9 +112,8 @@ type Config struct {
 	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
 	// disables expansion entirely.
 	SkillsDir string `yaml:"-"`
-	// SkillsStore is the owner's writable skill store; skill-scoped
-	// credential forms persist under its private .state dir (R8.2). Empty
-	// disables the unmanaged persist path — managed relays via RuntimeURL.
+	// SkillsStore is the owner's writable skill store. Skill-scoped
+	// credential forms never write it directly; they relay via RuntimeURL.
 	SkillsStore string `yaml:"-"`
 	// SkillsStoreByDir is the per-principal writable-store root: each
 	// subdirectory <principal>/ is that space's skills/ store so /v1/skill-git
@@ -307,7 +305,6 @@ func ConfigFromEnv() (Config, error) {
 			}
 		}
 		config.PollTimeout = 25 * time.Second
-		config.HermesCommand = envOr("HUB_HERMES_COMMAND", "hermes")
 		config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 		config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
 		if err != nil {
@@ -364,7 +361,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	user := User{ID: userID, RuntimeID: envOr("HUB_RUNTIME_ID", userID), PolicyVersion: envOr("HUB_POLICY_VERSION", "policy-1"), Enabled: true, TelegramIDs: ids, SlackIDs: parseSlackLinks(os.Getenv("SLACK_ALLOWED_USERS")), StateDir: envOr("HUB_STATE", "/state"), WorkspaceDir: envOr("HUB_WORKSPACE", "/workspace"), Features: features, ConfiguredEnv: configured, Env: runtimeEnv(features)}
-	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, HermesCommand: envOr("HUB_HERMES_COMMAND", "hermes"), Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
+	config := Config{Supervised: strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "", OrganizationID: orgID, Users: []User{user}, TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), APIBaseURL: envOr("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), SpoolDir: envOr("HUB_COMMUNICATION_SPOOL", "/state/gateway"), RuntimeURL: runtimeURLFromEnv(), RuntimeAuth: runtimeAuthFromEnv(), PollTimeout: 25 * time.Second, Workers: workersFromEnv(), STTTimeout: durationSecondsFromEnv("HUB_STT_TIMEOUT", defaultSTTTimeout), MediaMaxDuration: intFromEnv("HUB_MEDIA_MAX_DURATION", defaultMediaDurationLimit), SpoolRetention: spoolRetentionFromEnv(), MockDir: os.Getenv("HUB_MOCK_DIR")}
 	config.BrokerApprove, err = credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_APPROVE_")
 	config.TelegramAuthEnabled = os.Getenv("HUB_TELEGRAM_AUTH_ENABLED") != "false" && config.TelegramToken != ""
 	if err != nil {

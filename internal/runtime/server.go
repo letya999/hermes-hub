@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"io"
 	"net/http"
@@ -511,55 +510,14 @@ func writeRestartMarker(path string, body []byte, syncFile func(*os.File) error,
 	}
 }
 
+// selfEnv stays routed so a caller gets an explicit refusal: runtime
+// credentials come from the reviewed render, never an in-runtime env store.
 func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || !s.authorized(r) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
-		writeRuntimeError(w, http.StatusForbidden, "self-managed environment disabled")
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
-	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeRuntimeError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	defer clear(body)
-	var request SelfEnvRequest
-	if json.Unmarshal(body, &request) != nil {
-		writeRuntimeError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	if err := validateSelfEnvRequest(request); err != nil {
-		writeRuntimeError(w, http.StatusConflict, "invalid runtime scope")
-		return
-	}
-	keys, err := envstore.UpdateValues(filepath.Join(state, envstore.FileName), request.Values, os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"))
-	if err != nil {
-		writeRuntimeError(w, http.StatusBadRequest, "credential update rejected")
-		return
-	}
-	if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
-		writeRuntimeError(w, http.StatusInternalServerError, "restart unavailable")
-		return
-	}
-	writeRuntimeJSON(w, http.StatusOK, map[string]any{"updated": keys, "restart_scheduled": true})
-	go func() {
-		time.Sleep(250 * time.Millisecond)
-		signalRuntimeProcess()
-	}()
-}
-
-func validateSelfEnvRequest(request SelfEnvRequest) error {
-	user := env("HUB_USER_ID", "me")
-	organization := env("HUB_ORGANIZATION_ID", "personal")
-	if request.OrganizationID != organization || request.UserID != user || request.ActorID != user || request.ScopeID != "user:"+user {
-		return errors.New("runtime scope mismatch")
-	}
-	return request.Envelope.Validate(user, user, env("HUB_RUNTIME_ID", user), env("HUB_POLICY_VERSION", "policy-1"))
+	writeRuntimeError(w, http.StatusForbidden, "self-managed environment disabled")
 }
 
 func shutdownRuntimeServer(server *http.Server) {

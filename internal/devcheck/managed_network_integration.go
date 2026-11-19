@@ -217,7 +217,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 			result = errors.Join(result, fmt.Errorf("remove config canary root: %w", err))
 		}
 	}()
-	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", CapabilityMode: "managed"}
+	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}
 	source, effective := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "config.yaml")
 	body, err := yaml.Marshal(stack.Config(s))
 	if err != nil {
@@ -251,7 +251,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 	}
 	probe := func(expected string, overrides ...string) error {
 		args := []string{"run", "--rm", "--network", "none", "--read-only", "--mount", "type=bind,src=" + filepath.ToSlash(dir) + ",dst=/config,readonly",
-			"-e", "HERMES_HOME=/config", "-e", "HUB_CAPABILITY_MODE=managed", "-e", "HUB_MANAGED_MODEL_ID=synthetic",
+			"-e", "HERMES_HOME=/config", "-e", "HUB_MANAGED_MODEL_ID=synthetic",
 			"-e", "HERMES_BUNDLES_DIR=/config/skill-bundles", "-e", "HERMES_ENABLE_PROJECT_PLUGINS=0",
 			"-e", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "-e", "TZ=UTC", "-e", "HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp",
 			"-e", "HUB_RUNTIME_AUTH=synthetic-auth", "-e", "HUB_PASSPORT_REVISION=" + revision}
