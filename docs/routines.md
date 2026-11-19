@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-12"
+last_verified: "2026-11-20"
 ---
 # Routines
 
@@ -477,6 +477,8 @@ prepared sink payloads in their existing cursor state before fanout. A restart o
 full sink drains that remainder before another source fetch; recovered events do
 not rerun the filter. Drop decisions and sink admission precede cursor advance.
 Pause, owner authorization and assignment/revision fences still apply to replay.
+A schedule edit that moves the revision under a pending stream batch drops its
+unadmitted events as a recorded gap (`gap_count`); it never blocks the owner's other streams.
 Agent batch references additionally bind schedule and probe revisions at claim
 and delivery. Sources with consuming reads and no ACK cannot guarantee delivery
 across a crash before the first local receipt; prefer non-consuming cursor reads.
