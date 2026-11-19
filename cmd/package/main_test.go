@@ -78,7 +78,7 @@ func TestSourceArchiveContainsOnlyTrackedInputs(t *testing.T) {
 	if out, err := exec.Command("git", "init", "--quiet").CombinedOutput(); err != nil {
 		t.Fatalf("git: %v %s", err, out)
 	}
-	files := map[string]string{"README.md": "fixture", "contracts/task/v1/task.go": "package task", ".work/tmp/private.txt": "private-fixture", "config/local.txt": "untracked-fixture", "services/credential-broker/go.mod": "module fixture/broker", "go.work": "go 1.27.4", "platform/catalogs/fixture/manifest.yaml": "release: fixture"}
+	files := map[string]string{"README.md": "fixture", "contracts/task/v1/task.go": "package task", ".work/tmp/private.txt": "private-fixture", "config/local.txt": "untracked-fixture", "services/credential-broker/go.mod": "module fixture/broker", "go.work": "go 1.27.4", "platform/catalogs/fixture/manifest.yaml": "release: fixture", "services/README.template.md": "## Responsibility"}
 	for name, body := range files {
 		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func TestSourceArchiveContainsOnlyTrackedInputs(t *testing.T) {
 	if err := os.WriteFile(".gitignore", []byte(".work/tmp/\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "add", "README.md", "contracts/task/v1/task.go", "services/credential-broker/go.mod", "go.work", "platform/catalogs/fixture/manifest.yaml").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "add", "README.md", "contracts/task/v1/task.go", "services/credential-broker/go.mod", "go.work", "platform/catalogs/fixture/manifest.yaml", "services/README.template.md").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v %s", err, out)
 	}
 	for _, root := range sourcePaths {
@@ -112,7 +112,7 @@ func TestSourceArchiveContainsOnlyTrackedInputs(t *testing.T) {
 	for _, file := range archive.File {
 		got[file.Name] = true
 	}
-	if len(got) != 5 || !got["README.md"] || !got["contracts/task/v1/task.go"] || !got["services/credential-broker/go.mod"] || !got["go.work"] || !got["platform/catalogs/fixture/manifest.yaml"] {
+	if len(got) != 6 || !got["services/README.template.md"] || !got["README.md"] || !got["contracts/task/v1/task.go"] || !got["services/credential-broker/go.mod"] || !got["go.work"] || !got["platform/catalogs/fixture/manifest.yaml"] {
 		t.Fatalf("source entries: %v", got)
 	}
 }

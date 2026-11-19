@@ -24,12 +24,13 @@ slices:
 validation:
   documents: passed
   devcheck_unit: passed
-  just_check: not_run_coordinator_runs_repo_gates
+  just_check: passed
   docker_check: not_applicable
   red_team: local_regressions_passed
   live_acceptance: not_applicable
   owner_review: pending
 evidence:
+  - "2026-11-20: just check passed at 0a794569 plus archive fix. TestSourceArchiveContainsOnlyTrackedInputs failed before sourcePaths included the service README template, then passed; go vet -p=2 ./cmd/package passed."
   - "Source base: 380fb5aa on feat/m40-v1-platform; work step 1 (parking 6e6b53c6 on chore/park-chg-0332-run-tokens) done by the coordinator before this CHG. No push, no GitHub writes."
   - "TestServiceReadmeTemplateHeadings: 6 of 10 subtests red before the rule existed (missing heading, heading in prose or at another level, missing README, missing template, template without headings, stale exemption), all 10 green after (59352c9c)."
   - "go vet -p=2 ./internal/devcheck passed; go test -short for TestServiceReadmeTemplateHeadings, TestProjectGate*, TestProjectAndFormat and TestPathBugDirectoriesRejected passed."
@@ -39,8 +40,6 @@ evidence:
   - "Commits: 59352c9c devcheck rule; 842f23d3 ADRs; fe012893 state machines; 285c402d rulebook; 864b587f architecture; 00cd413a glossary/boundaries/index; d6ce6dff SPEC-0100..0102; 5a086b83 record reconciliation."
 remaining:
   - "Owner review of docs/engineering.md, docs/architecture.md, docs/state-machines.md, services/README.template.md and ADR-0105..0112 (issue #599 acceptance)."
-  - "Repo-wide just check by the coordinator."
 limitations:
   - "ADR-0110..0112 numbers taken without coordination with the parallel M40.2 worktree (feat/m40-2-skeleton); a collision there fails devcheck docs at merge."
   - "Issue 612 still names branch wip/chg-0332-run-tokens; the parked work is on chore/park-chg-0332-run-tokens."
-  - "cmd/package sourcePaths ship services/credential-broker only; a source archive lacks services/README.template.md, so devcheck docs would fail inside an extracted archive. M40.2 changes the services tree and should add it."

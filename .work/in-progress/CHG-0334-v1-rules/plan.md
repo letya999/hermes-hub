@@ -123,5 +123,5 @@ Code moves (M40.2+), GitHub writes, changes to the live stack.
 - [x] Devcheck test red, then green.
 - [ ] Owner reviewed `docs/engineering.md`, `docs/architecture.md`,
       `docs/state-machines.md`, the template and the ADRs.
-- [ ] `just check` green (coordinator).
+- [x] `just check` green (2026-11-20).
 - [ ] Merge with the branch; state done; folder moved to `.work/done/`.
