@@ -1,0 +1,48 @@
+schema: 1
+change: CHG-0331
+title: Extract the control-zone identity registry
+status: in_progress
+branch: feat/m40-v1-platform
+updated: 2026-11-19
+phase: implementation
+adr: ADR-0106
+spec: SPEC-0100
+requirements: [R4.3, R6.4, R6.5]
+depends_on: [CHG-0330]
+github_milestone: M40 - v1.0 Proactive Agent Platform
+github_issue: 575
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S3.1-principals: green
+  S3.2-profiles-and-administration: green
+  S3.3-layers: red
+  S3.4-channel-proofs: red
+  S3.5-migration-and-wiring: red
+validation:
+  documents: passed
+  just_check: passed
+  affected_packages: passed
+  red_team: local_regressions_passed
+  live_acceptance: not_run
+evidence:
+  - "Source base: 98514d40. No published SHA or remote run URL."
+  - "Read ADR-0106, SPEC-0100, existing identity primitives, IAM link flow, channel routing, SQLite helper and spawn skill materialization."
+  - "The four requested initial regressions were red against unavailable registry methods, then green with the real SQLite implementation."
+  - "Real-registry identity conformance passed over in-process and HTTP transports; Telegram and canonical Slack keys resolve exactly."
+  - "Atomic/idempotent migration, disabled-user refusal, duplicate-channel ownership, concurrent proof acquisition, proof expiry/account binding and forbidden transition regressions passed."
+  - "System grants, org role scope, break-glass expiry/audit, failed-audit rollback and count-only diagnostic regressions passed. No first-user admin default exists."
+  - "Foreign SQLite schema-1 store was accepted before the owner fence; now a read-only application-ID check refuses it without changing bytes. Direct symlinks refuse too."
+  - "Layer/profile regressions were red before implementation and passed with set intersection, accumulated guardrails, explicit empty denial and mode narrowing. Spawn consumption remains pending."
+  - "Company/private space aliases and removed org membership were admitted before their fences; both regressions now pass. CanAct and Template share the same acting-profile SQL predicate."
+  - "Human deactivation retires owned profiles and channel proofs atomically while retaining principal tombstones. Named regression passed after one transient Windows test-launch refusal."
+  - "Issuer-role revocation and expired-grant transitions exposed stale administrative authority; both regressions were red, then green with live issuer-role checks and terminal grant states."
+  - "Scoped go vet passed. Targeted race regression TestConcurrentChannelProofNeverSharesAnAccount passed."
+  - "Foundation checkpoint: just check passed; just test ./internal/identityhub ./contracts/identity/v1/... passed. No control/edge cutover or live migration claimed."
+remaining:
+  - "Connect registry lifetime/read handler to hub-control and migrate legacy inputs through an explicit operator command."
+  - "Move all gateway channel lookups and verified OIDC link lifecycle/provenance into identity-hub; retain exact session and audience binding."
+  - "Expose copying template transport, consume narrowing constraints at spawn, and add control upkeep for expired pending proofs."
+  - "Final check, affected-package verification and complete local migration matrix before acceptance."
+limitations:
+  - "Live spaces, auth files, ZITADEL and Docker stacks are untouched."
