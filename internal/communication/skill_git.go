@@ -24,9 +24,9 @@ type skillGitRequest struct {
 }
 
 func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, policy, ok := g.authorizeAgentControl(r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		denyAgentOperation(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -39,6 +39,22 @@ func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid skill-git request", http.StatusBadRequest)
 		return
 	}
+	operation, mutates := "draft", true
+	skill := ""
+	switch request.Action {
+	case "install", "update":
+		skill = request.Name
+	case "remove_source":
+	case "sources", "check_updates":
+		operation, mutates = "list", false
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	if !agentOperationAllowed(policy, "skills", operation, mutates) || !agentSkillAllowed(policy, skill) {
+		denyAgentOperation(w, r)
+		return
+	}
 	storeDir := g.skillStoreDirFor(caller.PrincipalID)
 	if strings.TrimSpace(storeDir) == "" {
 		http.Error(w, "skill store unavailable", http.StatusServiceUnavailable)
@@ -49,10 +65,13 @@ func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "skill store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	cell, err := g.skillGitCell(r, caller, request)
-	if err != nil {
-		http.Error(w, "credential unavailable", http.StatusBadGateway)
-		return
+	var cell gitsource.ExecCell
+	if request.Action != "sources" && request.Action != "remove_source" {
+		cell, err = g.skillGitCell(r, caller, request)
+		if err != nil {
+			http.Error(w, "credential unavailable", http.StatusBadGateway)
+			return
+		}
 	}
 	switch request.Action {
 	case "install":
@@ -104,8 +123,6 @@ func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]any{"removed": removed, "skills": affected})
-	default:
-		http.Error(w, "unknown action", http.StatusBadRequest)
 	}
 }
 

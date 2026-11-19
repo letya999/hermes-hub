@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 	}
 	policy := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: "r-1", Passports: map[string]json.RawMessage{}}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
-		policy.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"goals":["read"]}}`, name))
+		policy.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"goals":["read"],"skills":["list"]}}`, name))
 	}
 	base, err := registry.StagePassports(ctx, policy)
 	if err != nil {
@@ -69,7 +70,7 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &Gateway{config: Config{Identity: registry, Runs: agentRunRecord{record}, ControlAuth: "synthetic-runtime", Users: users, Environment: "dev"}}
+	g := &Gateway{config: Config{Identity: registry, Runs: agentRunRecord{record}, ControlAuth: "synthetic-runtime", Users: users, Environment: "dev", SkillsStore: t.TempDir()}}
 	request := func(bearer, principal, conversation string) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/v1/goals", strings.NewReader(`{"op":"status","conversation_id":"`+conversation+`"}`))
 		r.Header.Set("Authorization", "Bearer synthetic-runtime")
@@ -91,5 +92,34 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("unverified goal request reached handler, status=%d", w.Code)
 		}
+	}
+	for _, endpoint := range []struct{ path, body string }{
+		{"/v1/credential-forms", `{"service":"skill:sample","keys":["EXAMPLE_KEY"]}`},
+		{"/v1/skill-drafts", `{"skill_name":"sample","draft_id":"draft-1"}`},
+		{"/v1/skill-git", `{"action":"update","name":"sample"}`},
+	} {
+		for _, proof := range []string{"", "forged", token} {
+			r := httptest.NewRequest(http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
+			r.Header.Set("Authorization", "Bearer synthetic-runtime")
+			r.Header.Set(contract.RunTokenHeader, proof)
+			r.Header.Set(api.HeaderRunID, record.RunID)
+			out := httptest.NewRecorder()
+			g.Handler().ServeHTTP(out, r)
+			if out.Code != http.StatusUnauthorized {
+				t.Errorf("%s accepted missing authority or missing rights: status=%d", endpoint.path, out.Code)
+			}
+		}
+	}
+	entries, err := os.ReadDir(g.config.SkillsStore)
+	if err != nil || len(entries) != 0 || len(g.forms.m) != 0 || len(g.drafts.m) != 0 {
+		t.Fatal("a denied request touched the skill store or created a form")
+	}
+	sources := httptest.NewRequest(http.MethodPost, "/v1/skill-git", strings.NewReader(`{"action":"sources","grant":"unused"}`))
+	sources.Header.Set(contract.RunTokenHeader, token)
+	sources.Header.Set(api.HeaderRunID, record.RunID)
+	out := httptest.NewRecorder()
+	g.Handler().ServeHTTP(out, sources)
+	if out.Code != http.StatusOK {
+		t.Fatalf("signed skill listing failed: status=%d", out.Code)
 	}
 }

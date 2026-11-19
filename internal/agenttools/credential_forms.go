@@ -28,8 +28,7 @@ func (t *Tools) credentialForm(ctx context.Context, service string, keys []strin
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	request.Header.Set("X-Hub-Principal", principal)
+	t.communicationAuthority(request, principal)
 	request.Header.Set("Content-Type", "application/json")
 	client := t.HTTP
 	if client == nil {

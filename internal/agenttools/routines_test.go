@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -957,12 +959,16 @@ func TestCredentialFormCallCommunicationHub(t *testing.T) {
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/credential-forms" || r.Header.Get("Authorization") != "Bearer control-token" || r.Header.Get("X-Hub-Principal") != "alice" {
+		legacy := r.Header.Get("Authorization") == "Bearer control-token" && r.Header.Get("X-Hub-Principal") == "alice"
+		delegated := r.Header.Get(contract.RunTokenHeader) == "synthetic-proof" && r.Header.Get(api.HeaderRunID) == "run-one" &&
+			r.Header.Get("Authorization") == "" && r.Header.Get("X-Hub-Principal") == ""
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/credential-forms" || (!legacy && !delegated) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var request map[string]any
-		if json.NewDecoder(r.Body).Decode(&request) != nil || request["service"] != "google" {
+		if json.NewDecoder(r.Body).Decode(&request) != nil ||
+			(legacy && request["service"] != "google") || (delegated && request["service"] != "skill:sample") {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -974,6 +980,10 @@ func TestCredentialFormCallCommunicationHub(t *testing.T) {
 	form, err := v.credentialForm(context.Background(), "google", []string{"GOOGLE_OAUTH_CLIENT_SECRET"})
 	if err != nil || form["form_url"] != "http://127.0.0.1:8081/credentials/id?nonce=nonce" {
 		t.Fatalf("form=%v err=%v", form, err)
+	}
+	ctx := WithRunDelegation(t.Context(), api.RunDelegation{RunID: "run-one", Communication: "synthetic-proof"})
+	if _, err := v.credentialForm(ctx, "skill:sample", []string{"EXAMPLE_KEY"}); err != nil {
+		t.Fatalf("signed credential form failed: %v", err)
 	}
 	if _, err := v.EnvUpdate(Input{Text: "GOOGLE_OAUTH_CLIENT_SECRET=must-not-be-stored"}); err == nil {
 		t.Fatal("env_update accepted credentials with protected form configured")

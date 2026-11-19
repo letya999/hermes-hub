@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +15,33 @@ import (
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/identityhub"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
+
+func TestOwnedRegistryRefusesUnsignedRuntimeAdmission(t *testing.T) {
+	calls := 0
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) {
+		calls++
+		return nil, errors.New("unexpected runtime call")
+	}, nil)
+	registry := m.cfg.Identity.(*identityhub.Registry)
+	if err := registry.EnsureSigningKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Identity, m.ownedIdentity = nil, registry
+	const body = `{"identity_schema":1,"principal_id":"alice","external_identity_id":"telegram-1","conversation_id":"telegram-1","delivery_target_id":"telegram-1","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","job_id":"job-1","text":"synthetic message"}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+m.cfg.RuntimeAuth)
+	out := httptest.NewRecorder()
+	m.Handler().ServeHTTP(out, request)
+	if out.Code != http.StatusServiceUnavailable || out.Header().Get("X-Hub-Admission") != "not-dispatched" || calls != 0 {
+		t.Fatalf("unsigned run crossed admission: status=%d runtime_calls=%d", out.Code, calls)
+	}
+	if _, err := m.Run(t.Context(), "job-1"); !errors.Is(err, task.ErrNotFound) {
+		t.Fatal("unsigned refusal consumed the durable job ID")
+	}
+}
 
 func TestSignedRunCannotReachEffectAfterAuthorityChanges(t *testing.T) {
 	ctx := t.Context()

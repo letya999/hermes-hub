@@ -81,6 +81,12 @@ workload. Supervised Hermes obtains these tools through the authenticated
 ToolHub run route. The legacy headed browser sidecar for human noVNC access
 does not share the supervised runtime's network.
 
+Agent requests for skill Git operations, draft forms and skill credential
+forms use delegated Communication run authority. Communication checks the
+active job, signed rights, skill scope and action mode before touching the
+owner's store or creating a form. Human form confirmation still uses a
+separate protected link.
+
 Interrupted runs keep artifact attribution via the
 `/state/runstarts/<runID>` marker whose mtime preserves the artifact scan
 window when observation resumes (SPEC-0037).

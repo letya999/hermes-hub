@@ -57,9 +57,9 @@ type credentialFormResponse struct {
 }
 
 func (g *Gateway) handleCredentialFormRequest(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, policy, ok := g.authorizeAgentControl(r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		denyAgentOperation(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -71,14 +71,19 @@ func (g *Gateway) handleCredentialFormRequest(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid form request", http.StatusBadRequest)
 		return
 	}
+	skill, forSkill := strings.CutPrefix(request.Service, "skill:")
+	if policy != nil && (!forSkill || !agentOperationAllowed(policy, "skills", "invoke", true) ||
+		!agentSkillAllowed(policy, skill)) {
+		denyAgentOperation(w, r)
+		return
+	}
 	keys, err := g.formKeys(g.user(caller.PrincipalID), request.Service, request.Keys)
 	if err != nil {
 		http.Error(w, "credential form rejected", http.StatusBadRequest)
 		return
 	}
-	skill := ""
-	if name, ok := strings.CutPrefix(request.Service, "skill:"); ok {
-		skill = name
+	if !forSkill {
+		skill = ""
 	}
 	response, err := g.createCredentialForm(caller, keys, skill)
 	if err != nil {

@@ -109,15 +109,19 @@ type skillDraftRequest struct {
 const skillDraftTTL = 72 * time.Hour
 
 func (g *Gateway) handleSkillDraftRequest(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	caller, policy, ok := g.authorizeAgentControl(r)
+	if !ok || !agentOperationAllowed(policy, "skills", "draft", true) {
+		denyAgentOperation(w, r)
 		return
 	}
 	var request skillDraftRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
 	if decodeJSON(r, &request) != nil {
 		http.Error(w, "invalid draft request", http.StatusBadRequest)
+		return
+	}
+	if !agentSkillAllowed(policy, request.SkillName) {
+		denyAgentOperation(w, r)
 		return
 	}
 	origin, err := g.formOrigin()

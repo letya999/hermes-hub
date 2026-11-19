@@ -2,6 +2,7 @@ package communication
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
@@ -47,6 +48,14 @@ func agentOperationAllowed(policy *contract.PolicyBundle, capability, operation 
 	}
 	return policy.AllowsRight(capability, operation) &&
 		(!write || policy.Identity.Restrictions.AllowsUnattendedWrite())
+}
+
+func agentSkillAllowed(policy *contract.PolicyBundle, skill string) bool {
+	if policy == nil {
+		return true
+	}
+	skills := policy.Identity.Restrictions.Skills
+	return skills == nil || slices.Contains(skills, skill)
 }
 
 func denyAgentOperation(w http.ResponseWriter, r *http.Request) {

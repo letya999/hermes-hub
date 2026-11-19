@@ -101,7 +101,7 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--env-file " + filepath.Join(root, "managed-runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/state", "dst=/state/hermes", "dst=/state/home", "dst=/state/cache", "dst=/workspace", "dst=/config,readonly", "HUB_BROWSER=true", "HUB_FEATURES=browser,workspace", "BROWSER_CDP_URL=http://browser-alice:9222", "HUB_STATE=/state", "--tmpfs /tmp:"} {
+	for _, want := range []string{"--env-file " + filepath.Join(root, "managed-runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/state", "dst=/state/hermes", "dst=/state/home", "dst=/state/cache", "dst=/workspace", "dst=/config,readonly", "HUB_BROWSER=false", "HUB_FEATURES=browser,workspace", "HUB_STATE=/state", "--tmpfs /tmp:"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -112,11 +112,8 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	if strings.Contains(joined, "synthetic-only") || strings.Contains(joined, "dst=/src") || strings.Contains(joined, "docker.sock") || strings.Contains(joined, "dst=/scope") {
 		t.Fatal("secret/source/control exposed in arguments")
 	}
-	// The browser stack lives in the per-space sidecar: the spawned runtime
-	// carries neither the profile mount nor the shared-memory budget for
-	// in-container Chromium (SPEC-0082 R4.1).
-	if strings.Contains(joined, "dst=/state/browser") || strings.Contains(joined, "--shm-size") {
-		t.Fatal("browser profile mount or shared memory leaked into the lean runtime")
+	if strings.Contains(joined, "dst=/state/browser") || strings.Contains(joined, "--shm-size") || strings.Contains(joined, "BROWSER_CDP_URL=") {
+		t.Fatal("browser resources or direct CDP address leaked into the supervised runtime")
 	}
 	for _, target := range []string{"/state/hermes", "/state/home", "/workspace"} {
 		count := 0
@@ -131,10 +128,8 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	}
 }
 
-// Under the managed topology a browser space's runtime joins the space's
-// private agent network at spawn; the compose-owned browser sidecar aliases
-// into the same network, so browser-<user> resolves without a second
-// attach. The spawn must also wake the sleeping sidecar (SPEC-0083 R2).
+// The runtime joins its agent network and wakes the separate human browser
+// sidecar (SPEC-0083 R2).
 func TestBrowserSpaceRuntimeJoinsSpaceNetwork(t *testing.T) {
 	for _, tc := range []struct {
 		user string
@@ -199,7 +194,7 @@ func TestBrowserSpaceRuntimeJoinsSpaceNetwork(t *testing.T) {
 				t.Fatal("browser-enabled spawn must start the space browser sidecar")
 			}
 			if sidecar < run {
-				t.Fatal("sidecar start must follow the run so readiness can probe it")
+				t.Fatal("sidecar start must follow the runtime spawn")
 			}
 		})
 	}

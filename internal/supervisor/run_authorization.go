@@ -28,7 +28,13 @@ func (m *Manager) runPolicy(ctx context.Context, binding Binding) (string, strin
 	}
 	base, err := registry.ActivePassports(ctx, binding.ContextID, m.environment())
 	if errors.Is(err, contract.ErrNotFound) {
-		return "", "", nil
+		m.mu.Lock()
+		// Serve opens the production registry before accepting requests.
+		requiresPublication := m.ownedIdentity != nil
+		m.mu.Unlock()
+		if !requiresPublication {
+			return "", "", nil
+		}
 	}
 	if err != nil {
 		return "", "", err

@@ -479,8 +479,7 @@ func (t *Tools) skillGit(ctx context.Context, action string, arguments map[strin
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	request.Header.Set("X-Hub-Principal", os.Getenv("HUB_PRINCIPAL_ID"))
+	t.communicationAuthority(request, os.Getenv("HUB_PRINCIPAL_ID"))
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -534,8 +533,7 @@ func (t *Tools) skillDraftLink(ctx context.Context, payload map[string]string) s
 	if err != nil {
 		return ""
 	}
-	request.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
-	request.Header.Set("X-Hub-Principal", os.Getenv("HUB_PRINCIPAL_ID"))
+	t.communicationAuthority(request, os.Getenv("HUB_PRINCIPAL_ID"))
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

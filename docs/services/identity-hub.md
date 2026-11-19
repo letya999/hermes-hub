@@ -105,8 +105,8 @@ The publisher connects to the local control endpoint on port 8876.
 `HUB_PASSPORT_PUBLISHER_URL` can select another loopback port. The generated
 `passports/current` file carries the signed digest and the apply journal
 restores the control digest and generated view together. An unsigned offline
-apply can prepare a new space. A protected managed run needs a control
-publication before it can call the model or tools.
+apply can prepare a new space. The deployed supervisor requires an active
+signed control publication before it dispatches a run.
 
 The `task/v1` verifier compares the token with the supervisor's durable job
 record, current generation, deadline and revocation state. The supervisor
