@@ -11,6 +11,11 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
+// slowObservationInterval paces re-observation of an uncertain job once its
+// budget notice is durable: the supervisor settles such runs through its own
+// reconcile and expiry sweeps, and the gateway must still accept that result.
+const slowObservationInterval = 5 * time.Minute
+
 // RequeueObservations retries observation for uncertain jobs. A durably
 // admitted run re-observes by run identity; an admission never confirmed
 // (no run binding) is only requeued when reconcileAdmissionUnknown is set —
@@ -25,7 +30,6 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 	if err != nil {
 		return err
 	}
-jobs:
 	for _, name := range entries {
 		if !strings.HasSuffix(name, ".json") {
 			continue
@@ -54,17 +58,24 @@ jobs:
 			return errors.New("recovery job binding mismatch")
 		}
 		// Once the budget notice is durable, further observation cannot
-		// notify again and must not consume a worker forever.
+		// notify again and must not consume a worker on the fast backoff.
+		// It slows down instead of stopping: an admitted run keeps its
+		// conversation lane until the supervisor's terminal result lands.
+		noticed := false
 		if !now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget())) {
 			for _, dir := range []string{"pending", "sending", "done", "failed"} {
 				_, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID("job-"+job.ID+"-uncertain")+".json"))
 				if err == nil {
-					continue jobs
+					noticed = true
+					break
 				}
 				if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
 			}
+		}
+		if noticed && now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget()+slowObservationInterval)) {
+			continue
 		}
 		if mapping.ObservationAttempts < 6 {
 			mapping.ObservationAttempts++
@@ -76,6 +87,9 @@ jobs:
 				delay = 30 * time.Second
 				break
 			}
+		}
+		if noticed {
+			delay = slowObservationInterval
 		}
 		mapping.NextObservationAt = now.Add(delay)
 		if err = s.writeMappingLocked(mapping); err != nil {

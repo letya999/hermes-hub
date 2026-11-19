@@ -1038,3 +1038,68 @@ func TestCorruptMappingSettlesClaimedJob(t *testing.T) {
 		t.Fatalf("conversation lane still held: %d", held)
 	}
 }
+
+// An admitted job still unknown when its budget notice went out keeps its
+// conversation lane. Observation slows down past the run budget instead of
+// stopping, so the supervisor's eventual terminal result still settles the
+// job and frees the lane.
+func TestUncertainJobReleasesLaneAfterSupervisorSettles(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	event := streamEvent(job)
+	if err := s.RecordStreamEvent(job, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	notice := Delivery{ID: "job-" + job.ID + "-uncertain", ChatID: job.ChatID, Text: "unknown outcome"}
+	if err := atomicJSON(filepath.Join(s.root, "outbox", "done", spoolFileID(notice.ID)+".json"), notice); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	held := len(s.inFlight)
+	s.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("precondition: admitted uncertain job holds its lane, held=%d", held)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/resume" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
+		settled := event
+		settled.Status, settled.LastEvent, settled.EventID = "interrupted", "run.interrupted", "terminal:interrupted"
+		_ = json.NewEncoder(w).Encode(settled)
+	}))
+	defer api.Close()
+	later := hubruntime.RunBudget() + time.Hour
+	g := &Gateway{spool: s, api: &fakeAPI{}, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s}, config: Config{RuntimeURL: api.URL, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: func() time.Time { return time.Now().Add(later) }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
+	var mapping JobMapping
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		mapping, _, _ = s.Mapping(job.ID)
+		if terminalStatus(mapping.Status) {
+			break
+		}
+	}
+	cancel()
+	<-done
+	if mapping.Status != "interrupted" {
+		t.Fatalf("supervisor's terminal result never settled the job: %s", mapping.Status)
+	}
+	s.mu.Lock()
+	held = len(s.inFlight)
+	s.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("conversation lane still held after settlement: %d", held)
+	}
+}
