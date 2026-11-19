@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	toolsurface "github.com/letya999/hermes-hub/contracts/toolsurface/v1"
 )
 
 const SchemaVersion = 1
@@ -72,7 +74,7 @@ func ErrorCode(err error) string {
 	}
 }
 
-type WorkloadClass string
+type WorkloadClass = toolsurface.WorkloadClass
 
 const (
 	Shared  WorkloadClass = "shared"
@@ -80,7 +82,7 @@ const (
 	PerJob  WorkloadClass = "per-job"
 )
 
-type Transport string
+type Transport = toolsurface.Transport
 
 const (
 	RemoteMCP    Transport = "remote-mcp"

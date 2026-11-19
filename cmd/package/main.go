@@ -5,16 +5,17 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
-var sourcePaths = []string{".github", ".work", "cmd", "config", "docker", "docs", "internal", "specs", ".dockerignore", ".gitignore", "AGENTS.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "LICENSE", "NOTICE", "README.md", "SECURITY.md", "SETUP.md", "START_HERE.ru.md", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "go.mod", "go.sum", "justfile"}
+var sourcePaths = []string{".github", ".work", "cmd", "config", "contracts", "docker", "docs", "internal", "platform", "services/credential-broker", "specs", ".dockerignore", ".gitignore", "AGENTS.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "LICENSE", "NOTICE", "README.md", "SECURITY.md", "SETUP.md", "START_HERE.ru.md", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "go.mod", "go.sum", "go.work", "go.work.sum", "justfile"}
 var buildBinary = build
 
 func main() {
@@ -50,6 +51,11 @@ func pack(version string) error {
 	for _, arch := range []string{"amd64", "arm64"} {
 		name := filepath.Join("dist", "hub-runtime-linux-"+arch)
 		if err := buildBinary(name, "./cmd/runtime", "linux", arch); err != nil {
+			return err
+		}
+		outputs = append(outputs, name)
+		name = filepath.Join("dist", "hub-linux-"+arch)
+		if err := buildBinary(name, "./cmd/hub", "linux", arch); err != nil {
 			return err
 		}
 		outputs = append(outputs, name)
@@ -103,41 +109,63 @@ func zipSources(name string) (result error) {
 			result = err
 		}
 	}()
-	for _, root := range sourcePaths {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	root, err := os.OpenRoot(".")
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	args := append([]string{"ls-files", "-z", "--"}, sourcePaths...)
+	paths, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "package.sources-unavailable"), err)
+	}
+	for _, path := range strings.Split(strings.TrimSuffix(string(paths), "\x00"), "\x00") {
+		if path == "" {
+			continue
+		}
+		// Tracked inputs only; refuse symlinks in every component before opening.
+		var info os.FileInfo
+		for current := path; current != "."; current = filepath.Dir(current) {
+			item, err := os.Lstat(current)
 			if err != nil {
 				return err
 			}
-			if entry.IsDir() {
-				return nil
+			if item.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s", locale.T(locale.Operator(), "package.source-invalid"))
 			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
+			if current == path {
+				info = item
 			}
-			header, err := zip.FileInfoHeader(info)
-			if err != nil {
-				return err
-			}
-			header.Name = filepath.ToSlash(path)
-			header.Method = zip.Deflate
-			destination, err := archive.CreateHeader(header)
-			if err != nil {
-				return err
-			}
-			source, err := os.Open(path) // #nosec G122 -- walked path inside the package source tree
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(destination, source)
-			closeErr := source.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			return closeErr
-		})
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s", locale.T(locale.Operator(), "package.source-invalid"))
+		}
+		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
+		}
+		header.Name = filepath.ToSlash(path)
+		header.Method = zip.Deflate
+		destination, err := archive.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		source, err := root.Open(path)
+		if err != nil {
+			return err
+		}
+		opened, err := source.Stat()
+		if err != nil || !os.SameFile(info, opened) {
+			_ = source.Close()
+			return fmt.Errorf("%s", locale.T(locale.Operator(), "package.source-invalid"))
+		}
+		_, copyErr := io.Copy(destination, source)
+		closeErr := source.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 	return nil

@@ -1,4 +1,4 @@
-package main
+package toolhub
 
 import (
 	"bytes"
@@ -18,20 +18,19 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestRunRequiresStore(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_STORE", "")
-	if err := run(); err == nil {
+	if err := Main(nil); err == nil {
 		t.Fatal("missing ToolHub store accepted")
 	}
 }
 
 func TestRunRefusesForeignInstallationWitness(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
-	if err := toolhub.NewStore().Save(path); err != nil {
+	if err := NewStore().Save(path); err != nil {
 		t.Fatal(err)
 	}
 	witness := filepath.Join(t.TempDir(), "toolhub-installation")
@@ -52,7 +51,7 @@ func TestRunRefusesForeignInstallationWitness(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "witness") {
@@ -80,7 +79,7 @@ func TestRunWithContextStopsOnCancel(t *testing.T) {
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	select {
 	case err := <-done:
 		t.Fatalf("server exited before cancellation: %v", err)
@@ -126,7 +125,7 @@ func TestRunWiresDurableRestartState(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_AUTH", "fixture-control")
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	select {
 	case <-posts:
 	case err := <-done:
@@ -145,7 +144,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	removalRetryInterval = 10 * time.Millisecond
 	defer func() { removalRetryInterval = oldInterval }()
 	path := filepath.Join(t.TempDir(), "store.json")
-	store := toolhub.NewStore()
+	store := NewStore()
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -209,7 +208,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	// Generous deadline: startup under parallel -race load can take seconds
 	// before the first removal attempt reaches the stub Broker.
 	deadline := time.Now().Add(15 * time.Second)
@@ -221,7 +220,7 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	}
 	allow.Store(true)
 	for time.Now().Before(deadline) {
-		reloaded, err := toolhub.Load(path)
+		reloaded, err := Load(path)
 		if err == nil {
 			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
 			got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
@@ -252,7 +251,7 @@ func TestRunSchedulesReconcilerPass(t *testing.T) {
 	reconcileInterval = 10 * time.Millisecond
 	defer func() { reconcileInterval = oldInterval }()
 	path := filepath.Join(t.TempDir(), "store.json")
-	store := toolhub.NewStore()
+	store := NewStore()
 	definition := api.ToolDefinition{
 		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
 		Source:      api.DefinitionSource{URL: "https://mcp.example.com/mcp", TLSMode: "required"},
@@ -296,12 +295,12 @@ func TestRunSchedulesReconcilerPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	// Generous deadline: startup under parallel -race load can take seconds
 	// before the first reconciler pass writes the store.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		reloaded, err := toolhub.Load(path)
+		reloaded, err := Load(path)
 		if err == nil {
 			connections := reloaded.Connections()
 			if len(connections) == 1 && connections[0].Status == api.DegradedStatus {
@@ -373,7 +372,7 @@ func TestRemovalRetryLoopReportsFailure(t *testing.T) {
 
 func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
-	store := toolhub.NewStore()
+	store := NewStore()
 	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Stage: api.StageFailed, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
@@ -391,8 +390,8 @@ func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
 	t.Setenv("HUB_CONTEXT_ID", "alice")
 	t.Setenv("HUB_TOOLHUB_LISTEN", "invalid-listen-address")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
-	_ = run()
-	reloaded, err := toolhub.Load(path)
+	_ = Main(nil)
+	reloaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +417,7 @@ func TestRunRejectsInvalidListenAddressAfterLoadingStore(t *testing.T) {
 	t.Setenv("HUB_CONTEXT_ID", "alice")
 	t.Setenv("HUB_TOOLHUB_LISTEN", "invalid-listen-address")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
-	if err := run(); err == nil {
+	if err := Main(nil); err == nil {
 		t.Fatal("invalid listen address accepted")
 	}
 }
@@ -443,7 +442,7 @@ func TestRunFailsOnUnusablePublicListen(t *testing.T) {
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
 	t.Setenv("HUB_PUBLIC_LISTEN", "no-such-host.invalid:80")
 	done := make(chan error, 1)
-	go func() { done <- run() }()
+	go func() { done <- Main(nil) }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -478,7 +477,7 @@ func TestRunServesPublicSurface(t *testing.T) {
 	t.Setenv("HUB_PUBLIC_LISTEN", publicAddr)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(ctx) }()
+	go func() { done <- Serve(ctx) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {

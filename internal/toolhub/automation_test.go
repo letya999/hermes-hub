@@ -1,4 +1,4 @@
-package main
+package toolhub
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
 type automationProjectionFixture struct{ principals []string }
@@ -44,8 +43,8 @@ func TestAutomationStartupPreflightBeforeOwnerWrites(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", "http://127.0.0.1:1")
 	t.Setenv("HUB_COMMUNICATION_AUTH", "control")
 	projection := automationProjectionFixture{principals: []string{"alice", "bob"}}
-	store := toolhub.NewStore()
-	if _, err := newAutomationHost(context.Background(), projection, store, nil); err == nil {
+	store := NewStore()
+	if _, err := NewAutomationHost(context.Background(), projection, store, nil); err == nil {
 		t.Fatal("missing enrolled owner mount passed preflight")
 	}
 	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
@@ -58,7 +57,7 @@ func TestAutomationStartupPreflightBeforeOwnerWrites(t *testing.T) {
 	if err := os.WriteFile(legacyRecord, []byte(`{"existing":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newAutomationHost(context.Background(), projection, store, nil); err == nil {
+	if _, err := NewAutomationHost(context.Background(), projection, store, nil); err == nil {
 		t.Fatal("shared legacy automation record passed preflight")
 	}
 	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
@@ -67,7 +66,7 @@ func TestAutomationStartupPreflightBeforeOwnerWrites(t *testing.T) {
 	if err := os.Remove(legacyRecord); err != nil {
 		t.Fatal(err)
 	}
-	host, err := newAutomationHost(context.Background(), projection, store, nil)
+	host, err := NewAutomationHost(context.Background(), projection, store, nil)
 	if err != nil {
 		t.Fatalf("empty legacy spool and complete owners refused: %v", err)
 	}
@@ -86,7 +85,7 @@ func TestStaticAutomationRefusesMultipleOwners(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_AUTH", "")
 	t.Setenv("HUB_AUTOMATION_ROOT", filepath.Join(root, "host"))
 	projection := automationProjectionFixture{principals: []string{"alice", "bob"}}
-	if _, err := newAutomationHost(context.Background(), projection, toolhub.NewStore(), nil); err == nil {
+	if _, err := NewAutomationHost(context.Background(), projection, NewStore(), nil); err == nil {
 		t.Fatal("static runtime accepted sibling automation jobs on one runtime URL")
 	}
 	if _, err := os.Stat(filepath.Join(root, "host")); !os.IsNotExist(err) {

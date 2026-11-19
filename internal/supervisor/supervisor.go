@@ -762,8 +762,8 @@ func (m *Manager) Status(binding Binding) (Runtime, bool, error) {
 func (m *Manager) Handler() http.Handler { return http.HandlerFunc(m.serveHTTP) }
 
 func (m *Manager) authorized(r *http.Request) bool {
-	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return len(provided) == len(m.cfg.RuntimeAuth) && subtle.ConstantTimeCompare([]byte(provided), []byte(m.cfg.RuntimeAuth)) == 1
+	provided, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return bearer && m.cfg.RuntimeAuth != "" && len(provided) == len(m.cfg.RuntimeAuth) && subtle.ConstantTimeCompare([]byte(provided), []byte(m.cfg.RuntimeAuth)) == 1
 }
 
 func (m *Manager) list(w http.ResponseWriter, r *http.Request) {

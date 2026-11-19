@@ -2,7 +2,9 @@ package toolhub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	toolsurface "github.com/letya999/hermes-hub/contracts/toolsurface/v1"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"slices"
 	"strconv"
@@ -14,16 +16,28 @@ import (
 // CatalogEntry is a secret-free view of one immutable manifest and its exact
 // owner-scoped effective binding. It is the replacement data shape for the
 // legacy service catalog.
-type CatalogEntry struct {
-	Name               string            `json:"name"`
-	Version            string            `json:"version"`
-	Transport          api.Transport     `json:"transport"`
-	WorkloadClass      api.WorkloadClass `json:"workload_class"`
-	Tools              []string          `json:"tools"`
-	BindingID          string            `json:"binding_id,omitempty"`
-	Status             string            `json:"status"`
-	Enabled            bool              `json:"enabled"`
-	MissingCredentials []string          `json:"missing_credentials,omitempty"`
+type CatalogEntry = toolsurface.CatalogEntry
+
+// CatalogServer adapts the store's owner-scoped catalog to toolsurface/v1.
+// The caller must authenticate the envelope before serving this contract.
+type CatalogServer struct{ Store *Store }
+
+func (s CatalogServer) Catalog(_ context.Context, auth identity.Envelope) ([]CatalogEntry, error) {
+	entries, err := s.Store.Catalog(auth)
+	switch {
+	case err == nil:
+		return entries, nil
+	case errors.Is(err, api.ErrUnauthorized):
+		return nil, toolsurface.ErrForbidden
+	case errors.Is(err, api.ErrInvalid):
+		return nil, toolsurface.ErrInvalid
+	case errors.Is(err, api.ErrNotFound):
+		return nil, toolsurface.ErrNotFound
+	case errors.Is(err, api.ErrConflict):
+		return nil, toolsurface.ErrConflict
+	default:
+		return nil, toolsurface.ErrUnavailable
+	}
 }
 
 // Catalog returns only manifest metadata and the current exact-owner status.

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"io/fs"
 	"net"
@@ -379,7 +381,7 @@ func (h *m32Lifecycle) startToolHub(t *testing.T, ctx context.Context) func() {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- runWithContext(runCtx) }()
+	go func() { done <- toolhub.Serve(runCtx) }()
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -454,9 +456,9 @@ func (h *m32Lifecycle) execute(ctx context.Context, job runtime.ExecuteRequest) 
 
 func (h *m32Lifecycle) waitRun(t *testing.T, ctx context.Context, id string) api.RunContext {
 	t.Helper()
-	authority := api.SupervisorRunAuthority{URL: h.supervisor.URL, Token: h.control}
+	authority := task.NewHTTPClient(h.supervisor.URL, h.control, nil)
 	for range 100 {
-		run, err := authority.Lookup(ctx, id)
+		run, err := authority.Run(ctx, id)
 		if err == nil && run.RunID != "" {
 			return run
 		}

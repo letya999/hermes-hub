@@ -1,4 +1,4 @@
-package main
+package supervisor
 
 import (
 	"context"

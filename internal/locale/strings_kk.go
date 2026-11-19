@@ -2,6 +2,12 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"package.sources-unavailable":              "Мұрағатқа арналған бастапқы файлдар қолжетімсіз",
+		"package.source-invalid":                   "Мұрағатта символдық сілтемелері жоқ кәдімгі файлдар ғана болуы тиіс",
+		"hub.usage":                                "Қолданылуы: hub serve --zone control|agent|edge [аймақ аргументтері]",
+		"hub.agent-usage":                          "Agent аймағы аргумент қабылдамайды.",
+		"hub.edge-usage":                           "Edge аймағы тек --script аргументтерін қабылдайды.",
+		"hub.script-failed":                        "Скрипт қатесі.",
 		"tools.legacy-service-enable-unavailable":  "Ескі сервисті қосу қолжетімсіз; ToolHub арқылы қосыңыз.",
 		"tools.legacy-service-disable-unavailable": "Ескі сервисті өшіру қолжетімсіз; ToolHub арқылы басқарыңыз.",
 		"hubctl.toolhub-render-drift":              "Жасалған саясат өзгерді; ToolHub көшіру алдында қайта жасаңыз.",

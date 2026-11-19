@@ -1,4 +1,4 @@
-package main
+package supervisor
 
 import (
 	"bytes"
@@ -9,21 +9,16 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
 func TestSupervisorCLIAuthAndDefaults(t *testing.T) {
 	t.Setenv("HUB_SUPERVISOR_AUTH", "supervisor-secret")
-	if supervisorAuthFromEnv() != "supervisor-secret" || envOr("MISSING_SUPERVISOR_ENV", "fallback") != "fallback" {
+	if supervisorAuthFromEnv() != "supervisor-secret" || supervisorCLIEnvOr("MISSING_SUPERVISOR_ENV", "fallback") != "fallback" {
 		t.Fatal("supervisor environment defaults are wrong")
 	}
 	t.Setenv("HUB_SUPERVISOR_AUTH", "")
 	t.Setenv("HUB_RUNTIME_AUTH", "")
-	oldArgs := os.Args
-	os.Args = []string{"hub-supervisor"}
-	t.Cleanup(func() { os.Args = oldArgs })
-	if err := run(); err == nil {
+	if err := Main(nil); err == nil {
 		t.Fatal("supervisor started without auth")
 	}
 }
@@ -128,11 +123,11 @@ func TestSupervisorFlagDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.warmTTL != supervisor.DefaultWarmTTL {
-		t.Fatalf("warm-ttl default=%s, want %s", parsed.warmTTL, supervisor.DefaultWarmTTL)
+	if parsed.warmTTL != DefaultWarmTTL {
+		t.Fatalf("warm-ttl default=%s, want %s", parsed.warmTTL, DefaultWarmTTL)
 	}
-	if parsed.browserIdleTTL != supervisor.DefaultBrowserIdleTTL {
-		t.Fatalf("browser-idle-ttl default=%s, want %s", parsed.browserIdleTTL, supervisor.DefaultBrowserIdleTTL)
+	if parsed.browserIdleTTL != DefaultBrowserIdleTTL {
+		t.Fatalf("browser-idle-ttl default=%s, want %s", parsed.browserIdleTTL, DefaultBrowserIdleTTL)
 	}
 	parsed, err = parseSupervisorArgs([]string{"-browser-idle-ttl", "7m"})
 	if err != nil || parsed.browserIdleTTL != 7*time.Minute {

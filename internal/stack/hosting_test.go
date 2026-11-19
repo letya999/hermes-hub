@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/hosting"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestHostingReviewedZoneForUnderscoreOwner(t *testing.T) {
@@ -137,7 +137,7 @@ func TestHostingReviewedConfigAndPrivateController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var controller toolhub.GenericControllerConfig
+	var controller api.GenericControllerConfig
 	if json.Unmarshal(data, &controller) != nil || !controller.HostingOnly || len(controller.Hosting) != 1 || controller.CLI != nil {
 		t.Fatal("hosting controller exposes generic workload policy")
 	}

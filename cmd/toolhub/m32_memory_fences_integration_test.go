@@ -4,13 +4,13 @@ package main
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

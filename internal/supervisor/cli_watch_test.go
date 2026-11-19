@@ -1,4 +1,4 @@
-package main
+package supervisor
 
 import (
 	"context"
@@ -50,10 +50,22 @@ func TestSupervisorServiceFlags(t *testing.T) {
 	}
 }
 
+func TestWatchPreservesHubZoneInvocation(t *testing.T) {
+	args := []string{"serve", "--zone", "control", "--watch", "--env", "dev"}
+	got := supervisorWatchArgs(args)
+	if strings.Join(got, " ") != "serve --zone control --watch --env dev -watch=false" {
+		t.Fatalf("watch child: %v", got)
+	}
+	got[0] = "mutated"
+	if args[0] != "serve" {
+		t.Fatal("watch changed the parent invocation")
+	}
+}
+
 func TestSupervisorWatchCLIStartsChild(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "supervisor.exe")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", binary, "../../cmd/supervisor").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

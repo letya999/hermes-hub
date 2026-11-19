@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"net"
 	"os"
 	"path/filepath"
@@ -57,13 +58,13 @@ func TestM32LocalConcurrentWriters(t *testing.T) {
 	}
 	for i := range runs {
 		runs[i] = h.waitRun(t, ctx, "m32-overlap-"+strconv.Itoa(i))
-		authority := api.SupervisorRunAuthority{URL: h.supervisor.URL, Token: h.control}
+		authority := task.NewHTTPClient(h.supervisor.URL, h.control, nil)
 		for j := 0; j < 100 && (runs[i].Status != "running" || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration); j++ {
 			time.Sleep(100 * time.Millisecond)
-			runs[i], err = authority.Lookup(ctx, "m32-overlap-"+strconv.Itoa(i))
+			runs[i], err = authority.Run(ctx, "m32-overlap-"+strconv.Itoa(i))
 			m32Require(t, err)
 		}
-		if runs[i].Status != "running" || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration || runs[i].Environment != "dev" || !runs[i].MayUseOwnerMemory() || runs[i].Envelope.PrincipalID != f.Users[i] {
+		if runs[i].Status != "running" || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration || runs[i].Environment != "dev" || !api.MayUseOwnerMemory(runs[i]) || runs[i].Envelope.PrincipalID != f.Users[i] {
 			t.Fatal("run authority did not confirm both active owner runs")
 		}
 	}

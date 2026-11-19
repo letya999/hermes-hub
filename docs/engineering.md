@@ -71,6 +71,34 @@ migration after render; stack rendering and agent-tools never open ToolHub's
 store. The HTTP automation client and read-only legacy-spool bridge live in
 `commops`, apart from the automation engine.
 
+The first contracts in `contracts/*/v1` expose DTOs, a client interface,
+copying in-process and HTTP transports, typed errors and a shared conformance
+suite. Each owning module runs that suite against its real implementation:
+
+| Contract | Owner | Current consumer |
+|---|---|---|
+| `task/v1` | Supervisor job ledger | ToolHub run authority |
+| `identity/v1` | Communication's enabled user and verified SSO mapping | Reference adapter, replaced by identity-hub in CHG-0331 |
+| `toolsurface/v1` | ToolHub owner-scoped store catalog | Reference adapter; callers must authenticate the envelope |
+
+The latter two adapters do not publish additional HTTP routes in the running
+services. A contract handler's service bearer authenticates its caller; it
+does not prove that an arbitrary envelope in the body belongs to that caller.
+`RunContext` and `CatalogEntry` compatibility aliases preserve current callers
+while the wire DTOs belong to contracts. Remaining `toolhub/api` logic stays on
+the dependency baseline until CHG-0337.
+
+`hub serve --zone control|agent|edge [zone arguments]` selects one entrypoint
+per process: supervisor, ToolHub or communication. The old binaries call the
+same internal `Main(args)` functions and Docker entrypoints stay unchanged.
+`just build` also builds `bin/hub`; release packaging includes the Linux hub
+binaries and contract sources. Source archives include only Git-tracked
+allowlisted inputs, refuse symlinks and cannot include ignored diagnostics.
+Supervisor watch re-exec preserves the whole process invocation, including
+the hub zone. ToolHub's context-aware `Serve` and `NewAutomationHost` retain
+the startup test paths. Automation tests use a test-only external factory for
+real ToolHub stores, avoiding a parent/child test import cycle.
+
 - No unsolicited framework/database/queue dependencies; stdlib first.
 - Never commit deployments, tokens, browser profiles, transcripts or real
   personal data; secrets materialize only through the broker/secret store.

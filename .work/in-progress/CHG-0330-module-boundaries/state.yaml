@@ -4,7 +4,7 @@ title: Enforce module boundaries with versioned contracts
 status: in_progress
 branch: feat/m40-v1-platform
 updated: 2026-11-19
-phase: implementation
+phase: acceptance
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [R1.3, R2.1, R2.2, R2.3, R2.4, R2.5, R3.1, R3.2, R3.3, R4.3]
@@ -12,14 +12,14 @@ depends_on: [CHG-0328, CHG-0329]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 574
 design_status: accepted
-implementation_status: in_progress
+implementation_status: locally_verified_pending_acceptance
 slices:
-  S2.1-contracts: red
+  S2.1-contracts: green
   S2.2-dependency-gate: green
   S2.3-no-inprocess-store: green
-  S2.4-dto-moves: not_started
+  S2.4-dto-moves: green
   S2.5-docs: green
-  S2.6-hub-binary: not_started
+  S2.6-hub-binary: green
 validation:
   documents: passed
   just_check: passed
@@ -46,11 +46,21 @@ evidence:
   - "Gitleaks over the complete staged checkpoint, including new files: no leaks."
   - "go test -short -race -run TestOperatorMigrationRejectsRenderedPolicyDrift ./cmd/hubctl passed; this is a local synthetic drift test, not live deployment acceptance."
   - "Final operator-fence source: just check passed; just test ./cmd/hubctl ./internal/locale passed. All other affected packages retain the preceding full passing receipt."
+  - "Task real-owner conformance passed over Manager.Run and the real supervisor handler; ToolHub now consumes task/v1 instead of the old HTTP client."
+  - "Raw supervisor authorization and empty auth configuration reached the jobs route before the bearer gate fix; both are refused before routing now."
+  - "Encoded job IDs were decoded twice by the reference handler; TestEncodedJobIDIsNotDecodedTwice was red, then green."
+  - "Unexpected backend failures leaked through in-process errors before normalization; tests now cover opaque errors and all five wrapped error classes across both transports."
+  - "Identity and toolsurface contracts pass shared conformance with their real Gateway user mapping and Store catalog. Identity owner tests were red before Gateway implemented the contract; ambiguous and disabled users deny."
+  - "DTOs moved to contracts, with compatibility aliases; catalog slice isolation and envelope scope isolation passed."
+  - "TestHubServeZoneDispatch and TestWatchPreservesHubZoneInvocation passed, including localized refusals in all four languages. Legacy binaries call the same internal entrypoints."
+  - "Moving startup exposed test import cycles. External test-only factories retain real ToolHub stores/endpoints; stack's remaining type-only import now uses api. Runtime-to-backend lineage regression passed."
+  - "Integration-tag compile for cmd/toolhub and internal/toolhub passed; integration tests stay under cmd/toolhub so the acceptance runner still finds them. No integration execution claimed."
+  - "just check passed after contracts/entrypoint work; full affected just test passed for contracts, devcheck, communication, supervisor, toolhub/api/automation, runtime, stack, locale, hub and legacy commands, hubctl."
+  - "Release review found missing hub builds/contract sources and ignored-data inclusion. Source archive regression was red with .work/tmp/private.txt and untracked config/local.txt in the archive; now only tracked allowed inputs enter it."
+  - "Named release regressions (hub binaries, contracts, ignored/untracked data, tracked symlink refusal) and cmd/package vet passed. The source allowlist also includes the local broker module, workspace files and pinned platform assets."
+  - "Final release-tail source: just check passed; just test ./cmd/package ./internal/locale passed. Earlier full affected-package receipt remains valid for all unchanged packages."
 remaining:
-  - "Finish task/v1 supervisor server and ToolHub consumer, identity/v1 and toolsurface/v1 with real-owner conformance."
-  - "Move RunContext DTO and classification methods; keep remaining api logic on the baseline for CHG-0337."
-  - "Add hub serve --zone control|agent|edge and thin legacy entrypoints."
-  - "New contracts and cmd/hub will require a reviewed baseline update."
+  - "Owner acceptance/merge and remote CI remain separate from local verification."
 limitations:
   - "Live stack unchanged; Docker/CI acceptance is not claimed."
   - "Windows sometimes refuses freshly built compile/test executables; no safety check was disabled."

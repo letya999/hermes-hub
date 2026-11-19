@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commops"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +19,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/devcheck"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -90,10 +91,10 @@ func (h *m32Lifecycle) dueWorkRecovery(t *testing.T, ctx context.Context, restar
 			t.Fatal("durable result crossed its owner's channel")
 		}
 		if h.image != "" {
-			run, err := (&api.SupervisorRunAuthority{URL: h.supervisor.URL, Token: h.control}).Lookup(ctx, record.Delivery.JobID)
+			run, err := (task.NewHTTPClient(h.supervisor.URL, h.control, nil)).Run(ctx, record.Delivery.JobID)
 			m32Require(t, err)
-			if run.Status != "completed" || run.Kind() != api.RunKindBackground || run.Envelope.PrincipalID != record.Principal {
-				t.Fatalf("due agent lifecycle status=%s kind=%s owner_match=%t", run.Status, run.Kind(), run.Envelope.PrincipalID == record.Principal)
+			if run.Status != "completed" || api.Kind(run) != api.RunKindBackground || run.Envelope.PrincipalID != record.Principal {
+				t.Fatalf("due agent lifecycle status=%s kind=%s owner_match=%t", run.Status, api.Kind(run), run.Envelope.PrincipalID == record.Principal)
 			}
 			if record.Delivery.Text != "M32 acceptance complete" {
 				t.Fatal("due agent reply did not reach its durable delivery intent")

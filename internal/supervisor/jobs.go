@@ -1,10 +1,12 @@
 package supervisor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -34,16 +36,15 @@ func (m *Manager) CompactJobs(now time.Time) {
 	}
 }
 
-// jobStatus is an operator/gateway endpoint protected by the private host token.
-// The stored audience is authoritative; a status lookup cannot redirect delivery.
-func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
-		return
-	}
-	if id == "" || len(id) > 256 || strings.ContainsAny(id, "/\r\n") {
-		writeJSON(w, 400, map[string]string{"error": "invalid job ID"})
-		return
+// Run implements task/v1 from the same snapshot as the legacy status endpoint.
+func (m *Manager) Run(_ context.Context, id string) (task.RunRecord, error) {
+	record, _, err := m.readRunRecord(id)
+	return record, err
+}
+
+func (m *Manager) readRunRecord(id string) (task.RunRecord, hubruntime.ExecuteResponse, error) {
+	if !task.ValidJobID(id) {
+		return task.RunRecord{}, hubruntime.ExecuteResponse{}, task.ErrInvalid
 	}
 	m.mu.Lock()
 	record, ok := m.jobs[id]
@@ -65,16 +66,38 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}
 	m.mu.Unlock()
+
 	if !ok {
-		writeJSON(w, 404, map[string]string{"error": "unknown job"})
-		return
+		return task.RunRecord{}, hubruntime.ExecuteResponse{}, task.ErrNotFound
 	}
 	capture := record.CaptureContext
 	if capture.JobID == "" {
 		capture = captureRunContext(id, record, m.environment())
 	}
+
+	capture.Status = record.Status
+	capture.CurrentGeneration = currentGeneration
+	return capture, record.Response, nil
+}
+
+// jobStatus is an operator/gateway endpoint protected by the private host token.
+// The stored audience is authoritative; a status lookup cannot redirect delivery.
+func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	capture, outcome, err := m.readRunRecord(id)
+	if errors.Is(err, task.ErrInvalid) {
+		writeJSON(w, 400, map[string]string{"error": "invalid job ID"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "unknown job"})
+		return
+	}
 	writeJSON(w, 200, map[string]any{
-		"job_id": id, "identity": capture.Envelope, "status": record.Status, "outcome": record.Response,
+		"job_id": id, "identity": capture.Envelope, "status": capture.Status, "outcome": outcome,
 		"admission_id": capture.AdmissionID,
 		"run_id":       capture.RunID, "session_id": capture.SessionID,
 		"scope_id": capture.ScopeID, "trigger": capture.Trigger, "channel": capture.Channel,
@@ -82,7 +105,7 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 		"response_sha256": capture.ResponseSHA256,
 		"sensitive":       capture.Sensitive, "untrusted": capture.Untrusted,
 		"assignment": capture.Assignment, "probe": capture.Probe,
-		"environment": capture.Environment, "runtime_generation": capture.RuntimeGeneration, "current_generation": currentGeneration,
+		"environment": capture.Environment, "runtime_generation": capture.RuntimeGeneration, "current_generation": capture.CurrentGeneration,
 	})
 }
 

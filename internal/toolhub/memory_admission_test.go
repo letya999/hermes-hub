@@ -122,7 +122,7 @@ func TestMemoryAuthorityRecheckedAfterVaultWait(t *testing.T) {
 	verified := make(chan struct{}, 1)
 	authority := g.Runs
 	g.Runs = runAuthorityFunc(func(ctx context.Context, job string) (api.RunContext, error) {
-		record, err := authority.Lookup(ctx, job)
+		record, err := authority.Run(ctx, job)
 		select {
 		case verified <- struct{}{}:
 		default:

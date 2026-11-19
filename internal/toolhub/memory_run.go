@@ -3,6 +3,9 @@ package toolhub
 import (
 	"context"
 	"fmt"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -28,7 +31,7 @@ func (g *Gateway) requireMemoryAdmission(ctx context.Context, auth identity.Enve
 // comes from the record's stored fields, never from headers or arguments.
 func (g *Gateway) requireLiveMemoryRun(ctx context.Context, auth identity.Envelope, corr api.CallCorrelation) error {
 	record, err := g.lookupLiveRun(ctx, auth, corr)
-	if err != nil || !record.MayUseOwnerMemory() {
+	if err != nil || !api.MayUseOwnerMemory(record) {
 		return fmt.Errorf("%w: run context", api.ErrUnauthorized)
 	}
 	return nil
@@ -47,7 +50,7 @@ func (g *Gateway) lookupLiveRun(ctx context.Context, auth identity.Envelope, cor
 	if g.Runs == nil || corr.JobID == "" || corr.HermesRunID == "" {
 		return api.RunContext{}, deny
 	}
-	record, err := g.Runs.Lookup(ctx, corr.JobID)
+	record, err := g.Runs.Run(ctx, corr.JobID)
 	if err != nil {
 		return api.RunContext{}, deny
 	}
@@ -68,7 +71,7 @@ func (g *Gateway) lookupLiveRun(ctx context.Context, auth identity.Envelope, cor
 			return api.RunContext{}, deny
 		case <-time.After(100 * time.Millisecond):
 		}
-		record, err = g.Runs.Lookup(ctx, corr.JobID)
+		record, err = g.Runs.Run(ctx, corr.JobID)
 		if err != nil || !valid(record) {
 			return api.RunContext{}, deny
 		}
@@ -88,4 +91,14 @@ func (g *Gateway) liveRunConversation(ctx context.Context, auth identity.Envelop
 		return "", fmt.Errorf("%w: run context", api.ErrUnauthorized)
 	}
 	return record.Envelope.ConversationID, nil
+}
+
+// runAuthorityFromEnv keeps an absent control peer fail-closed for run calls.
+func runAuthorityFromEnv() task.Client {
+	url := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")), "/")
+	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
+	if url == "" || token == "" {
+		return nil
+	}
+	return task.NewHTTPClient(url, token, nil)
 }

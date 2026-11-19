@@ -19,8 +19,20 @@ import (
 // store authorization, audit fences, the passport gate and the backend fence.
 type runAuthorityFunc func(ctx context.Context, jobID string) (api.RunContext, error)
 
-func (f runAuthorityFunc) Lookup(ctx context.Context, jobID string) (api.RunContext, error) {
+func (f runAuthorityFunc) Run(ctx context.Context, jobID string) (api.RunContext, error) {
 	return f(ctx, jobID)
+}
+
+func TestRunAuthorityFromEnvRequiresBothHalves(t *testing.T) {
+	for _, tc := range []struct{ url, token string }{
+		{}, {url: "http://supervisor:8876/"}, {token: "control-token"},
+	} {
+		t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", tc.url)
+		t.Setenv("HUB_COMMUNICATION_AUTH", tc.token)
+		if runAuthorityFromEnv() != nil {
+			t.Fatal("incomplete control peer produced a run authority")
+		}
+	}
 }
 
 // memoryToolFixture registers a synthetic memory.search capability admitted
@@ -282,8 +294,8 @@ func TestEndpointHandlerWiresRunAuthority(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"job_id": "job-1", "status": "completed"})
 	}))
 	defer supervisor.Close()
-	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
-	t.Setenv("HUB_COMMUNICATION_AUTH", "control-token")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL+"/")
+	t.Setenv("HUB_COMMUNICATION_AUTH", " control-token ")
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth,
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
@@ -296,7 +308,7 @@ func TestEndpointHandlerWiresRunAuthority(t *testing.T) {
 	if runs == nil {
 		t.Fatal("production wiring dropped the run authority")
 	}
-	rc, err := runs.Lookup(context.Background(), "job-1")
+	rc, err := runs.Run(context.Background(), "job-1")
 	if err != nil || rc.JobID != "job-1" || rc.Status != "completed" {
 		t.Fatalf("wired authority lookup failed: %+v err=%v", rc, err)
 	}

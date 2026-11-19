@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,8 +29,8 @@ func TestSupervisorRunAuthorityContract(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	a := &SupervisorRunAuthority{URL: server.URL, Token: "tok", HTTP: server.Client()}
-	rc, err := a.Lookup(context.Background(), "job-1")
+	a := task.NewHTTPClient(server.URL, "tok", server.Client())
+	rc, err := a.Run(context.Background(), "job-1")
 	if err != nil {
 		t.Fatalf("lookup failed: %v", err)
 	}
@@ -41,8 +43,8 @@ func TestSupervisorRunAuthorityContract(t *testing.T) {
 		rc.Envelope.PrincipalID != "alice" || rc.Envelope.ContextID != "alice" || rc.Envelope.RuntimeID != "alice" {
 		t.Fatalf("decoded run context wrong: %+v", rc)
 	}
-	if rc.Kind() != RunKindPrivate {
-		t.Fatalf("private message run classified %q", rc.Kind())
+	if Kind(rc) != RunKindPrivate {
+		t.Fatalf("private message run classified %q", Kind(rc))
 	}
 }
 
@@ -50,13 +52,16 @@ func TestSupervisorRunAuthorityContract(t *testing.T) {
 // faults and malformed bodies must all surface as errors so the gate denies —
 // a silent zero record would let a mismatched claim pass on empty fields.
 func TestSupervisorRunAuthorityDeniesOnNonOK(t *testing.T) {
-	for _, code := range []int{404, 401, 500} {
+	for _, tc := range []struct {
+		code int
+		want error
+	}{{404, task.ErrNotFound}, {401, task.ErrForbidden}, {500, task.ErrUnavailable}, {204, task.ErrUnavailable}} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(code)
+			w.WriteHeader(tc.code)
 		}))
-		a := &SupervisorRunAuthority{URL: server.URL, Token: "tok", HTTP: server.Client()}
-		if _, err := a.Lookup(context.Background(), "job-x"); err == nil {
-			t.Fatalf("status %d did not error", code)
+		a := task.NewHTTPClient(server.URL, "tok", server.Client())
+		if _, err := a.Run(context.Background(), "job-x"); !errors.Is(err, tc.want) {
+			t.Fatalf("status %d: want %v, got %v", tc.code, tc.want, err)
 		}
 		server.Close()
 	}
@@ -64,24 +69,8 @@ func TestSupervisorRunAuthorityDeniesOnNonOK(t *testing.T) {
 		_, _ = w.Write([]byte("not json"))
 	}))
 	defer server.Close()
-	a := &SupervisorRunAuthority{URL: server.URL, Token: "tok", HTTP: server.Client()}
-	if _, err := a.Lookup(context.Background(), "job-x"); err == nil {
+	a := task.NewHTTPClient(server.URL, "tok", server.Client())
+	if _, err := a.Run(context.Background(), "job-x"); err == nil {
 		t.Fatal("malformed body did not error")
-	}
-}
-
-// FromEnv mirrors the restart notifier's posture: the authority exists only
-// when both halves of the rendered control channel are present.
-func TestRunAuthorityFromEnv(t *testing.T) {
-	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
-	t.Setenv("HUB_COMMUNICATION_AUTH", "")
-	if RunAuthorityFromEnv() != nil {
-		t.Fatal("unconfigured env produced an authority")
-	}
-	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://supervisor:8876/")
-	t.Setenv("HUB_COMMUNICATION_AUTH", " tok ")
-	a := RunAuthorityFromEnv()
-	if a == nil || a.URL != "http://supervisor:8876" || a.Token != "tok" {
-		t.Fatalf("env authority wrong: %+v", a)
 	}
 }

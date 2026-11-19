@@ -20,8 +20,8 @@ const memoryUnavailable = "Memory context unavailable for this run; do not infer
 // job has a durable admission ID and a bound runtime generation. A failed
 // read leaves an explicit unavailable marker in this run's instructions.
 func (m *Manager) memoryInstructions(ctx context.Context, request hubruntime.ExecuteRequest) string {
-	if !(api.RunContext{ScopeID: request.ScopeID, Trigger: request.Trigger, Assignment: request.Assignment,
-		UserID: request.UserID, Envelope: request.Envelope, Sensitive: request.Sensitive}).MayUseOwnerMemory() {
+	if !api.MayUseOwnerMemory(api.RunContext{ScopeID: request.ScopeID, Trigger: request.Trigger, Assignment: request.Assignment,
+		UserID: request.UserID, Envelope: request.Envelope, Sensitive: request.Sensitive}) {
 		return request.Instructions
 	}
 	pattern := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL_PATTERN"))

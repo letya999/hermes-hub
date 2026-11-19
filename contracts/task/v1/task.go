@@ -99,7 +99,7 @@ func Handler(server Client, token string) http.Handler {
 		if r.Method != http.MethodGet {
 			return nil, wire.Errorf(ErrInvalid, "method not allowed")
 		}
-		id, _ := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"))
+		id := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
 		return NewInProc(server).Run(r.Context(), id)
 	})
 }

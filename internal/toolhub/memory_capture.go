@@ -110,7 +110,7 @@ func (g *Gateway) memoryCapture(r *http.Request, auth identity.Envelope, ev *api
 	if g.Runs == nil {
 		return "capture unavailable", http.StatusServiceUnavailable
 	}
-	record, err := g.Runs.Lookup(r.Context(), ev.JobID)
+	record, err := g.Runs.Run(r.Context(), ev.JobID)
 	if err != nil {
 		return "capture unavailable", http.StatusServiceUnavailable
 	}

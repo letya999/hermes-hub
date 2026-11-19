@@ -1,4 +1,4 @@
-package main
+package toolhub
 
 import (
 	"context"
@@ -11,11 +11,11 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/routines"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
-type automationProjection interface {
+// AutomationProjection is the enrolled, authorized view consumed by the host.
+type AutomationProjection interface {
 	EnrolledPrincipals() []string
 	EnrolledAuth(string) (identity.Envelope, error)
 	CallReadTool(context.Context, string, string, map[string]any) ([]byte, error)
@@ -28,10 +28,10 @@ func automationServiceToken() string {
 	return os.Getenv("HUB_RUNTIME_AUTH")
 }
 
-// newAutomationHost checks every mounted owner before recovery can write a
+// NewAutomationHost checks every mounted owner before recovery can write a
 // class or the ToolHub listener can accept a control request. `overloaded`
 // is the serving plane's shed state — the tick defers while it holds.
-func newAutomationHost(ctx context.Context, projection automationProjection, store *toolhub.Store, overloaded func() bool) (*automation.Host, error) {
+func NewAutomationHost(ctx context.Context, projection AutomationProjection, store *Store, overloaded func() bool) (*automation.Host, error) {
 	token := automationServiceToken()
 	jobURL := os.Getenv("HUB_AUTOMATION_JOB_URL")
 	communicationURL := os.Getenv("HUB_COMMUNICATION_CONTROL_URL")

@@ -183,8 +183,11 @@ func Copy[T any](v T) (T, error) {
 // error keeps its code, anything else becomes unavailable.
 func Normalize(err error) error {
 	var typed *Error
-	if err == nil || errors.As(err, &typed) {
+	if err == nil {
 		return err
 	}
-	return &Error{Code: ErrUnavailable.Code, Message: err.Error()}
+	if errors.As(err, &typed) {
+		return typed
+	}
+	return ErrUnavailable
 }

@@ -169,7 +169,7 @@ func TestM32RealGroupMemoryIsolation(t *testing.T) {
 		if i == 1 {
 			want = api.RunKindGroup
 		}
-		if runs[i].Status != "running" || runs[i].Kind() != want || runs[i].RuntimeGeneration != runs[i].CurrentGeneration {
+		if runs[i].Status != "running" || api.Kind(runs[i]) != want || runs[i].RuntimeGeneration != runs[i].CurrentGeneration {
 			t.Fatal("supervisor did not persist the exact private/group run kind")
 		}
 	}

@@ -227,7 +227,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 		return err
 	}
 	if err := stack.MaterializeHermesConfig(source, effective, stack.MaterializeOptions{
-		Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
+		ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
 	}); err != nil {
 		return err
 	}

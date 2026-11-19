@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/commops"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 	"io"
 	"net"
 	"net/http"
@@ -26,7 +27,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -166,14 +166,14 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 	store.RightsDoc = docs.Rights
 	handler, err := toolhub.NewEndpointHandler(config, store)
 	m32Require(t, err)
-	projection := handler.(automationProjection)
+	projection := handler.(toolhub.AutomationProjection)
 	var current atomic.Pointer[automation.Host]
 	restart := func() *automation.Host {
 		t.Helper()
 		if old := current.Load(); old != nil {
 			m32Require(t, old.Close())
 		}
-		host, err := newAutomationHost(ctx, projection, store, nil)
+		host, err := toolhub.NewAutomationHost(ctx, projection, store, nil)
 		m32Require(t, err)
 		current.Store(host)
 		return host

@@ -88,7 +88,7 @@ func TestM32FiveManagedSessionsExecuteConcurrently(t *testing.T) {
 	containers := make([]string, 0, 2)
 	for i := range runs {
 		runs[i] = h.waitRun(t, ctx, "m32-five-"+strconv.Itoa(i))
-		if runs[i].Status != "running" || !runs[i].MayUseOwnerMemory() || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration {
+		if runs[i].Status != "running" || !api.MayUseOwnerMemory(runs[i]) || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration {
 			t.Fatalf("run %d missing active runtime generation", i)
 		}
 		if generation == "" {

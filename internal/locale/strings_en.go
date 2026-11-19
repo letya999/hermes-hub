@@ -2,6 +2,12 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"package.sources-unavailable":              "Package sources are unavailable",
+		"package.source-invalid":                   "Package sources must be regular files without symlinks",
+		"hub.usage":                                "Usage: hub serve --zone control|agent|edge [zone arguments]",
+		"hub.agent-usage":                          "The agent zone accepts no arguments.",
+		"hub.edge-usage":                           "The edge zone accepts only --script arguments.",
+		"hub.script-failed":                        "Script failed.",
 		"tools.legacy-service-enable-unavailable":  "Legacy service enable is unavailable; use the ToolHub connector flow.",
 		"tools.legacy-service-disable-unavailable": "Legacy service disable is unavailable; use the ToolHub connector flow.",
 		"hubctl.toolhub-render-drift":              "Rendered policy changed; render again before migrating ToolHub.",

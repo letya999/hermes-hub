@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -71,7 +72,7 @@ type Gateway struct {
 	proposalAfterWrite func(int) error // fault seam for interrupted multi-file commits
 	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
 	// the exact-run gate for model-facing memory calls. Nil fails closed.
-	Runs api.RunAuthority
+	Runs task.Client
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error

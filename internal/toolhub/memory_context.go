@@ -55,14 +55,14 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 	if !safeCaptureField(claim.JobID) || claim.AdmissionID == "" || len(claim.Text) > 2<<20 || g.Runs == nil {
 		return api.MemoryContextResponse{}, http.StatusForbidden
 	}
-	record, err := g.Runs.Lookup(r.Context(), claim.JobID)
+	record, err := g.Runs.Run(r.Context(), claim.JobID)
 	if err != nil {
 		return api.MemoryContextResponse{}, http.StatusServiceUnavailable
 	}
 	if record.JobID != claim.JobID || record.AdmissionID == "" || record.AdmissionID != claim.AdmissionID ||
 		record.TextSHA256 != captureHash(claim.Text) || record.Status != "running" ||
 		record.RuntimeGeneration == "" || record.RuntimeGeneration != record.CurrentGeneration ||
-		!record.MayUseOwnerMemory() ||
+		!api.MayUseOwnerMemory(record) ||
 		record.UserID != auth.PrincipalID || record.Environment != auth.Environment ||
 		record.Envelope.PrincipalID != auth.PrincipalID || record.Envelope.ContextID != auth.ContextID ||
 		record.Envelope.RuntimeID != auth.RuntimeID {

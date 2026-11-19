@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http"
 	"os"
@@ -152,7 +153,7 @@ func (h *m32Lifecycle) assignmentWatchExecution(t *testing.T, ctx context.Contex
 				return false
 			}
 			count++
-			run, err := (&api.SupervisorRunAuthority{URL: h.supervisor.URL, Token: h.control}).Lookup(ctx, record.Delivery.JobID)
+			run, err := (task.NewHTTPClient(h.supervisor.URL, h.control, nil)).Run(ctx, record.Delivery.JobID)
 			m32Require(t, err)
 			if run.Status != "completed" || run.Envelope.PrincipalID != record.Principal || record.Delivery.Text != "M32 acceptance complete" {
 				t.Fatal("watch/assignment result lacks a completed owner-bound agent run")

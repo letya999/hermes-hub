@@ -2,6 +2,12 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"package.sources-unavailable":              "Исходники для архива недоступны",
+		"package.source-invalid":                   "Архив может содержать только обычные файлы без символических ссылок",
+		"hub.usage":                                "Использование: hub serve --zone control|agent|edge [аргументы зоны]",
+		"hub.agent-usage":                          "Зона agent не принимает аргументы.",
+		"hub.edge-usage":                           "Зона edge принимает только аргументы --script.",
+		"hub.script-failed":                        "Ошибка скрипта.",
 		"tools.legacy-service-enable-unavailable":  "Устаревшее включение сервиса недоступно; используйте подключение через ToolHub.",
 		"tools.legacy-service-disable-unavailable": "Устаревшее отключение сервиса недоступно; используйте подключение через ToolHub.",
 		"hubctl.toolhub-render-drift":              "Отрендеренная политика изменилась; повторите рендер перед миграцией ToolHub.",

@@ -22,7 +22,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -204,13 +203,28 @@ func (c *commServer) count() int {
 type harness struct {
 	root  string
 	env   string
-	store *toolhub.Store
-	gov   *toolhub.GovernanceStore
+	store *harnessStore
+	gov   TestGovernance
 	sup   *supervisorServer
 	comm  *commServer
 	now   time.Time
 	seq   int
 }
+
+type harnessStore struct {
+	DecisionStore
+	RightsDoc api.RightsDoc
+}
+
+type TestGovernance interface {
+	GrantRight(api.RightGrant, api.RightsDoc, time.Time) error
+	RightGrants() ([]api.RightGrant, error)
+	RevokeRight(string, string, string, time.Time) error
+}
+
+// The external test package supplies real ToolHub stores without a test import
+// cycle once ToolHub's entrypoint owns the automation host.
+var TestStoreFactory func(string, api.RightsDoc) (DecisionStore, TestGovernance)
 
 func pendingDispatches(t *testing.T, host *Host, principal string) int {
 	t.Helper()
@@ -233,8 +247,7 @@ func pendingDeliveries(t *testing.T, host *Host, principal string) int {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	root := t.TempDir()
-	store := toolhub.NewStore()
-	store.RightsDoc = api.RightsDoc{
+	doc := api.RightsDoc{
 		Release: "test", DefinitionID: "hub-agent-rights",
 		Capabilities: map[string]api.RightCapability{
 			"tasks": {Description: "fixture", Operations: map[string]api.RightOperation{
@@ -244,8 +257,8 @@ func newHarness(t *testing.T) *harness {
 			}},
 		},
 	}
-	gov := toolhub.NewGovernanceStore(filepath.Join(root, "governance.json"))
-	store.RightsLedger = gov.Load
+	decisionStore, gov := TestStoreFactory(root, doc)
+	store := &harnessStore{DecisionStore: decisionStore, RightsDoc: doc}
 	return &harness{
 		root: root, env: "prod", store: store, gov: gov,
 		sup: newSupervisorServer(t), comm: newCommServer(t),
