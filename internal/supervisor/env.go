@@ -290,7 +290,13 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	source := filepath.Join(binding.ContextRoot, "generated", "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")
 	envName := "managed-runtime." + env + ".env"
-	secrets, _ := stack.ReadSecrets(filepath.Join(binding.ContextRoot, envName))
+	// A missing, unreadable or malformed runtime env refuses the spawn: an
+	// empty secret map would drop the ToolHub endpoint and token reference
+	// silently. The parser error is not wrapped because it can name a key.
+	secrets, err := stack.ReadSecrets(filepath.Join(binding.ContextRoot, envName))
+	if err != nil {
+		return "", fmt.Errorf("runtime environment %s unavailable", envName)
+	}
 	tokenEnv := strings.TrimSpace(secrets["HUB_TOOLHUB_TOKEN_ENV"])
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
