@@ -42,6 +42,7 @@ func (s *runtimeHTTP) proxyMCP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del(api.HeaderJobID)
 	r.Header.Del(api.HeaderRunID)
 	r.Header.Del(contract.RunTokenHeader)
+	r.Header.Del(contract.ModelServiceTokenHeader)
 	r.Header.Del(contract.MemoryRunTokenHeader)
 	r.Header.Del(contract.CommunicationRunTokenHeader)
 	r.Header.Del(contract.EgressRunTokenHeader)

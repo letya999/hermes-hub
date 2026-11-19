@@ -45,17 +45,22 @@ func PolicyDigest(body []byte) string {
 
 // AllowsRight intersects a signed passport right with the agent ceiling.
 func (b PolicyBundle) AllowsRight(domain, operation string) bool {
-	if b.Identity == nil || domain == "" || operation == "" {
+	if b.Identity == nil || !b.HasPassportRight(domain, operation) {
+		return false
+	}
+	ceiling := b.Identity.Restrictions.Grants
+	return ceiling == nil || slices.Contains(ceiling, domain+"."+operation)
+}
+
+// HasPassportRight checks an explicit operation in the signed publication.
+func (b PolicyBundle) HasPassportRight(domain, operation string) bool {
+	if domain == "" || operation == "" {
 		return false
 	}
 	var grants struct {
 		Allow map[string][]string `json:"allow"`
 	}
-	if json.Unmarshal(b.Passports["grants"], &grants) != nil || !slices.Contains(grants.Allow[domain], operation) {
-		return false
-	}
-	ceiling := b.Identity.Restrictions.Grants
-	return ceiling == nil || slices.Contains(ceiling, domain+"."+operation)
+	return json.Unmarshal(b.Passports["grants"], &grants) == nil && slices.Contains(grants.Allow[domain], operation)
 }
 
 func (b PolicyBundle) Canonical() ([]byte, string, error) {

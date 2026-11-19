@@ -179,6 +179,13 @@ func (m *Manager) serveRunVerification(w http.ResponseWriter, r *http.Request) b
 		return true
 	}
 	switch {
+	case r.URL.Path == identitycontract.ServicePassportsPath:
+		reader, ok := m.identityClient().(identitycontract.ServicePassportsReader)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
+			return true
+		}
+		identitycontract.ServicePassportsHandler(reader, secret, m.environment()).ServeHTTP(w, r)
 	case r.URL.Path == "/v1/identity/keys" || strings.HasPrefix(r.URL.Path, "/v1/identity/policies/"):
 		client := m.identityClient()
 		if client == nil {

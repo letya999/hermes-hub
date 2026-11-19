@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // Personal supervisor (#328): an optional, event-driven reviewer for one
@@ -200,8 +203,14 @@ const personalSystemPrompt = `You review one supervised agent runtime. Reply wit
 // relayDecide is the production Decide seam: one bounded POST of the
 // allowlisted request to the managed model relay, strict-JSON parse of the
 // reply. Any transport or decode failure returns an error and applies nothing.
-func relayDecide(ctx context.Context, req PersonalRequest) (PersonalDecision, error) {
-	base := strings.TrimRight(os.Getenv("HUB_MANAGED_MODEL_URL"), "/")
+func (m *Manager) relayDecide(ctx context.Context, req PersonalRequest) (PersonalDecision, error) {
+	issuer, ok := m.identityClient().(interface {
+		IssuePersonalModelService(context.Context, contract.ServiceRequest) (string, error)
+	})
+	if !ok || !identity.ValidID(req.ContextID) {
+		return PersonalDecision{}, errDecideUnavailable
+	}
+	base := strings.TrimRight(strings.ReplaceAll(os.Getenv("HUB_MANAGED_MODEL_URL"), "%s", req.ContextID), "/")
 	model := os.Getenv("HUB_PERSONAL_MODEL")
 	contextJSON, err := json.Marshal(req)
 	if err != nil {
@@ -218,13 +227,18 @@ func relayDecide(ctx context.Context, req PersonalRequest) (PersonalDecision, er
 		return PersonalDecision{}, errDecideUnavailable
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(payload)) // #nosec G704 -- configured managed-relay endpoint
+	if err != nil || (httpReq.URL.Scheme != "http" && httpReq.URL.Scheme != "https") || httpReq.URL.Host == "" ||
+		httpReq.URL.User != nil || httpReq.URL.RawQuery != "" || httpReq.URL.Fragment != "" {
+		return PersonalDecision{}, errDecideUnavailable
+	}
+	token, err := issuer.IssuePersonalModelService(ctx, contract.ServiceRequest{
+		Space: req.ContextID, Environment: m.environment(), RequestDigest: contract.PolicyDigest(payload),
+	})
 	if err != nil {
 		return PersonalDecision{}, errDecideUnavailable
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+key)
-	}
+	httpReq.Header.Set(contract.ModelServiceTokenHeader, token)
 	resp, err := personalRelayClient.Do(httpReq) // #nosec G704 -- configured managed-relay endpoint
 	if err != nil {
 		return PersonalDecision{}, errDecideUnavailable
@@ -237,7 +251,7 @@ func relayDecide(ctx context.Context, req PersonalRequest) (PersonalDecision, er
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Choices) == 0 {
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&out) != nil || len(out.Choices) == 0 {
 		return PersonalDecision{}, errDecideUnavailable
 	}
 	var decision PersonalDecision
@@ -247,4 +261,6 @@ func relayDecide(ctx context.Context, req PersonalRequest) (PersonalDecision, er
 	return decision, nil
 }
 
-var personalRelayClient = &http.Client{Timeout: 45 * time.Second}
+var personalRelayClient = &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}}

@@ -46,11 +46,120 @@ func (a modelPolicyAuthority) Policy(_ context.Context, digest string) (contract
 	return a.policy, nil
 }
 
-func TestModelRelayRequiresExactSignedRunBeforeProvider(t *testing.T) {
-	dir := t.TempDir()
+type servicePassportsFunc func(context.Context, string, string) (string, error)
+
+func (f servicePassportsFunc) ActiveServicePassports(ctx context.Context, space, environment string) (string, error) {
+	return f(ctx, space, environment)
+}
+
+func TestModelRelayPersonalServiceRequiresExactScopeAndCurrentPolicy(t *testing.T) {
 	authority := modelPolicyAuthority{}
+	mint := modelFixtureSigner(t, &authority)
+	bundle := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: "r-1", Passports: map[string]json.RawMessage{}}
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		bundle.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"models":["use"],"agents":["monitor_self"]}}`, name))
+	}
+	canonical, digest, err := bundle.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.policy = contract.SignedPolicy{Digest: digest, JWS: mint(contract.SignPolicy, json.RawMessage(canonical))}
+	for _, purpose := range []contract.SigningPurpose{contract.SignRun, contract.SignLink} {
+		_ = mint(purpose, struct{}{})
+	}
+	const body = `{"model":"default","messages":[{"role":"user","content":"synthetic review"}]}`
+	claims := contract.ServiceClaims{Issuer: contract.RunTokenIssuer, Audience: contract.PersonalModelAudience, Service: contract.PersonalModelPrincipal,
+		Expires: time.Now().Add(time.Minute).Unix(), ServiceRequest: contract.ServiceRequest{Space: "alice", Environment: "dev", PolicyRevision: digest, RequestDigest: contract.PolicyDigest([]byte(body))}}
+	token := mint(contract.SignService, claims)
+	foreign, wrongAudience, expired := claims, claims, claims
+	foreign.Space = "bob"
+	wrongAudience.Audience = contract.MemoryContextServiceAudience
+	expired.Expires = time.Now().Add(-time.Minute).Unix()
+	foreignToken, wrongToken, expiredToken := mint(contract.SignService, foreign), mint(contract.SignService, wrongAudience), mint(contract.SignService, expired)
+	var active atomic.Value
+	active.Store(digest)
+	reader := servicePassportsFunc(func(_ context.Context, space, environment string) (string, error) {
+		if space != "alice" || environment != "dev" {
+			return "", contract.ErrNotFound
+		}
+		return active.Load().(string), nil
+	})
+	const readAuth = "synthetic-verifier"
+	mux := http.NewServeMux()
+	mux.Handle(contract.ServicePassportsPath, contract.ServicePassportsHandler(reader, readAuth, "dev"))
+	mux.Handle("/v1/identity/", contract.Handler(authority, readAuth))
+	control := httptest.NewServer(mux)
+	defer control.Close()
+	t.Setenv("HUB_RUN_VERIFY_URL", control.URL)
+	t.Setenv("HUB_RUN_VERIFY_AUTH", readAuth)
+	t.Setenv("HUB_ENVIRONMENT", "dev")
+	t.Setenv("HUB_MODEL_RELAY_AUTH", "synthetic-model")
+	var monitorDenied atomic.Bool
+	decider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if r.URL.Path != "/v1/rights/decide" || r.Header.Get("Authorization") != "Bearer synthetic-decider" ||
+			json.NewDecoder(r.Body).Decode(&body) != nil || body["principal_id"] != "alice" || body["environment"] != "dev" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		allowed := (body["capability"] == "agents" && body["operation"] == "monitor_self" && body["scope"] == "runtime" && !monitorDenied.Load()) ||
+			(body["capability"] == "models" && body["operation"] == "use" && body["scope"] == "default")
+		_ = json.NewEncoder(w).Encode(api.RightDecision{Allow: allowed})
+	}))
+	defer decider.Close()
+	t.Setenv("HUB_TOOLHUB_URL", decider.URL)
+	t.Setenv("HUB_TOOLHUB_CONTROL", "synthetic-decider")
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get(contract.ModelServiceTokenHeader) != "" || r.Header.Get("Authorization") != "" {
+			t.Error("model provider received Hub service authority")
+		}
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.yaml")
+	if err := os.WriteFile(path, []byte("providers:\n  fixture:\n    url: "+upstream.URL+"\n    allow_private: true\nmodels:\n  default:\n    ladder: [{provider: fixture, model: one}]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relay, err := modelRelayRegistryHandler(path, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(proof, payload string, headers map[string]string, status int, providerCalls int32) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		if proof != "" {
+			req.Header.Set(contract.ModelServiceTokenHeader, proof)
+		}
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		out := httptest.NewRecorder()
+		relay.ServeHTTP(out, req)
+		if out.Code != status || calls.Load() != providerCalls {
+			t.Fatalf("model service status=%d provider_calls=%d, want %d/%d", out.Code, calls.Load(), status, providerCalls)
+		}
+	}
+	for _, proof := range []string{"", "forged", foreignToken, wrongToken, expiredToken} {
+		check(proof, body, map[string]string{"Authorization": "Bearer synthetic-model"}, http.StatusForbidden, 0)
+	}
+	check(token, body+" ", nil, http.StatusForbidden, 0)
+	check(token, body, map[string]string{api.HeaderRunID: "run-other"}, http.StatusForbidden, 0)
+	check(token, body, nil, http.StatusOK, 1)
+	monitorDenied.Store(true)
+	check(token, body, nil, http.StatusForbidden, 1)
+	monitorDenied.Store(false)
+	active.Store(contract.PolicyDigest([]byte("changed policy")))
+	check(token, body, nil, http.StatusForbidden, 1)
+}
+
+func modelFixtureSigner(t *testing.T, authority *modelPolicyAuthority) func(contract.SigningPurpose, any) string {
+	t.Helper()
 	privateKeys := map[contract.SigningPurpose]ed25519.PrivateKey{}
-	mint := func(purpose contract.SigningPurpose, claims any) string {
+	return func(purpose contract.SigningPurpose, claims any) string {
 		t.Helper()
 		private := privateKeys[purpose]
 		if private == nil {
@@ -76,6 +185,12 @@ func TestModelRelayRequiresExactSignedRunBeforeProvider(t *testing.T) {
 		signingInput := encode(header) + "." + encode(body)
 		return signingInput + "." + encode(ed25519.Sign(private, []byte(signingInput)))
 	}
+}
+
+func TestModelRelayRequiresExactSignedRunBeforeProvider(t *testing.T) {
+	dir := t.TempDir()
+	authority := modelPolicyAuthority{}
+	mint := modelFixtureSigner(t, &authority)
 	const actor = "agent:alice:default"
 	template := contract.AgentTemplate{Space: "alice", SpaceKind: "private", Restrictions: contract.Restrictions{Mode: "ask"},
 		Subject: contract.Principal{ID: "alice", Kind: contract.Human}, Actor: contract.Principal{ID: actor, Kind: contract.Agent, OwnerID: "alice"}}

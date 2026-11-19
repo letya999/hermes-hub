@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	task "github.com/letya999/hermes-hub/contracts/task/v1"
 )
 
 // A burst of related incidents for one scope must collapse into a single
@@ -505,35 +509,67 @@ func TestSupervisorDecisionsAudited(t *testing.T) {
 // The production decider posts the allowlisted request to the managed relay
 // and parses a strict JSON decision; a malformed reply fails closed.
 func TestSupervisorRelayDecide(t *testing.T) {
-	var sawBody []byte
-	var sawAuth string
+	ctx := t.Context()
+	registry, _ := fixtureIdentity(t)
+	if err := registry.EnsureSigningKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bundle := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: "r-personal", Passports: map[string]json.RawMessage{}}
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		bundle.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-personal"},"allow":{"models":["use"],"agents":["monitor_self"]}}`, name))
+	}
+	signed, err := registry.StagePassports(ctx, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ActivatePassports(ctx, bundle.Space, bundle.Environment, "", signed.Digest); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := registry.SigningKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const controlAuth = "synthetic-control"
+	m := &Manager{cfg: Config{Identity: registry, Environment: "dev", RuntimeAuth: controlAuth}}
+	control := httptest.NewServer(m.Handler())
+	defer control.Close()
+	reader := contract.NewServicePassportsReader(control.URL, task.VerificationCredential(controlAuth), control.Client())
+	if digest, err := reader.ActiveServicePassports(ctx, "alice", "dev"); err != nil || digest != signed.Digest {
+		t.Fatal("verification peer could not fetch the active publication")
+	}
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		sawBody = body
-		sawAuth = r.Header.Get("Authorization")
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		scope := contract.ServiceRequest{Space: bundle.Space, Environment: bundle.Environment, PolicyRevision: signed.Digest, RequestDigest: contract.PolicyDigest(body)}
+		if err != nil || !strings.Contains(string(body), "sup-small") || r.Header.Get("Authorization") != "" ||
+			contract.VerifyServiceToken(r.Header.Get(contract.ModelServiceTokenHeader), contract.PersonalModelAudience, contract.PersonalModelPrincipal, scope, keys, time.Now()) != nil {
+			t.Error("personal review did not carry an exact service proof")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": `{"action":"renew","lease_id":"l1","renew_until":"2030-01-01T00:00:00Z"}`}}}})
 	}))
 	defer server.Close()
 	t.Setenv("HUB_MANAGED_MODEL_URL", server.URL)
 	t.Setenv("HUB_PERSONAL_MODEL", "sup-small")
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	decision, err := relayDecide(context.Background(), PersonalRequest{PrincipalID: "alice", Generation: "gen-1"})
+	request := PersonalRequest{PrincipalID: "alice", ContextID: "alice", Generation: "gen-1"}
+	decision, err := m.relayDecide(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decision.Action != "renew" || decision.LeaseID != "l1" {
 		t.Fatalf("decision=%+v", decision)
 	}
-	if !strings.Contains(string(sawBody), "sup-small") {
-		t.Fatal("model not sent to relay")
+	if err := registry.DeactivateHumanAsOperator(ctx, "alice"); err != nil {
+		t.Fatal(err)
 	}
-	if sawAuth != "Bearer test-key" {
-		t.Fatalf("relay auth missing: %q", sawAuth)
+	if _, err := reader.ActiveServicePassports(ctx, "alice", "dev"); err == nil {
+		t.Fatal("deactivated principal retained a service publication")
 	}
-	server.Close()
-	_, err = relayDecide(context.Background(), PersonalRequest{PrincipalID: "alice"})
-	if err == nil {
-		t.Fatal("unreachable relay must fail closed")
+	if _, err := m.relayDecide(ctx, request); err == nil || calls.Load() != 1 {
+		t.Fatal("deactivated principal reached the relay")
 	}
 }
 

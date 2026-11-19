@@ -157,8 +157,11 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   at 150s and per-runtime locks serialize remediation against Ensure.
 - `HUB_MAX_RUNTIMES_PER_PRINCIPAL` caps live runtimes one principal may own;
   unset means the global `MaxConcurrent` semaphore is the only cap.
-- Personal supervisor (#328): opt-in via `HUB_PERSONAL_MODEL` +
-  `HUB_MANAGED_MODEL_URL` (+ `OPENAI_API_KEY` bearer). Incident recording
+- Personal supervisor (#328): opt-in via `HUB_PERSONAL_MODEL` and
+  `HUB_MANAGED_MODEL_URL`. The URL may contain `%s` for the reviewed space.
+  Hub control signs the exact model request for that space and environment.
+  The active signed passport must grant `agents.monitor_self` and
+  `models.use`. The personal supervisor receives no model bearer. Incident recording
   queues one coalesced wake per scope on a notify channel; `personalLoop`
   drains it — no retained resource, no actionable incident means no model
   call and no polling. One in-flight `Decide` per scope; the request carries

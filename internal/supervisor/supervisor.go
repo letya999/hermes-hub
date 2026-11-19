@@ -607,10 +607,10 @@ func New(cfg Config) (*Manager, error) {
 	}
 	// The personal supervisor is opt-in: a configured model name activates
 	// the relay decider; without it the machinery never calls a model.
-	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
-		cfg.Decide = relayDecide
-	}
 	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), scriptSem: make(chan struct{}, min(2, cfg.MaxConcurrent)), recoverySem: make(chan struct{}, recoveryWorkers), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	if m.cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
+		m.cfg.Decide = m.relayDecide
+	}
 	m.backend = cfg.Backend
 	if m.backend == nil {
 		if m.usingKubernetes() {

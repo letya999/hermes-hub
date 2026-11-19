@@ -24,9 +24,10 @@ const MemoryCaptureServiceAssertionPath = "/v1/identity/memory-capture-service-t
 
 // ServiceRequest limits one service bearer to the exact request bytes.
 type ServiceRequest struct {
-	Space         string `json:"space"`
-	Environment   string `json:"environment"`
-	RequestDigest string `json:"request_digest"`
+	Space          string `json:"space"`
+	Environment    string `json:"environment"`
+	RequestDigest  string `json:"request_digest"`
+	PolicyRevision string `json:"policy_revision,omitempty"`
 }
 
 type ServiceClaims struct {
@@ -38,7 +39,8 @@ type ServiceClaims struct {
 }
 
 func (r ServiceRequest) Valid() bool {
-	return primitive.ValidID(r.Space) && (r.Environment == "dev" || r.Environment == "prod") && ValidPolicyDigest(r.RequestDigest)
+	return primitive.ValidID(r.Space) && (r.Environment == "dev" || r.Environment == "prod") && ValidPolicyDigest(r.RequestDigest) &&
+		(r.PolicyRevision == "" || ValidPolicyDigest(r.PolicyRevision))
 }
 
 func VerifyServiceToken(token, audience, service string, request ServiceRequest, keys []PublicSigningKey, now time.Time) error {

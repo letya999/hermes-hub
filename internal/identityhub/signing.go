@@ -54,6 +54,22 @@ func (r *Registry) IssueMemoryCaptureService(ctx context.Context, request contra
 	return r.issueService(ctx, "system:communication-hub", contract.MemoryCaptureServiceAudience, request)
 }
 
+func (r *Registry) IssuePersonalModelService(ctx context.Context, request contract.ServiceRequest) (string, error) {
+	if !request.Valid() || request.PolicyRevision != "" {
+		return "", contract.ErrInvalid
+	}
+	digest, err := r.ActiveServicePassports(ctx, request.Space, request.Environment)
+	if err != nil {
+		return "", err
+	}
+	policy, err := r.verifiedPolicy(ctx, digest, request.Space, request.Environment)
+	if err != nil || policy.Identity != nil || !policy.HasPassportRight("agents", "monitor_self") || !policy.HasPassportRight("models", "use") {
+		return "", contract.ErrForbidden
+	}
+	request.PolicyRevision = digest
+	return r.issueService(ctx, contract.PersonalModelPrincipal, contract.PersonalModelAudience, request)
+}
+
 func (r *Registry) issueService(ctx context.Context, service, audience string, request contract.ServiceRequest) (string, error) {
 	if !request.Valid() {
 		return "", contract.ErrInvalid
@@ -184,6 +200,16 @@ func (r *Registry) StagePassports(ctx context.Context, bundle contract.PolicyBun
 func (r *Registry) ActivePassports(ctx context.Context, space, environment string) (string, error) {
 	var digest string
 	err := r.db.QueryRowContext(ctx, "SELECT digest FROM active_passport_bundles WHERE space=? AND environment=?", space, environment).Scan(&digest)
+	return digest, storeError(err)
+}
+
+func (r *Registry) ActiveServicePassports(ctx context.Context, space, environment string) (string, error) {
+	var digest string
+	err := r.db.QueryRowContext(ctx, `SELECT b.digest FROM active_passport_bundles b
+ WHERE b.space=? AND b.environment=? AND (
+ EXISTS(SELECT 1 FROM spaces s JOIN principals h ON h.id=s.human WHERE s.id=b.space AND h.kind='human' AND h.enabled=1)
+ OR EXISTS(SELECT 1 FROM shared_spaces s WHERE s.id=b.space AND s.enabled=1)
+ OR EXISTS(SELECT 1 FROM organizations o WHERE o.shared_space=b.space))`, space, environment).Scan(&digest)
 	return digest, storeError(err)
 }
 

@@ -518,7 +518,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"HUB_IDENTITY_LINK_AUTH":    "${HUB_IDENTITY_LINK_AUTH:-}",
 			"HUB_PERSONAL_MODEL":        "${HUB_PERSONAL_MODEL:-}",
 			"HUB_MANAGED_MODEL_URL":     "${HUB_MANAGED_MODEL_URL:-}",
-			"OPENAI_API_KEY":            "${OPENAI_API_KEY:-}",
 			// Run-budget knobs are operator-tunable for drills and squeeze
 			// tests; empty resolves to the code defaults (30m / 60s).
 			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",

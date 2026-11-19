@@ -93,10 +93,13 @@ func TestComposeSupervisorForwardsOptInAuthorities(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	env := Compose(s, t.TempDir(), dir)["services"].(M)["supervisor"].(M)["environment"].(M)
-	for _, key := range []string{"HUB_SUPERVISOR_ADMIN_AUTH", "HUB_PERSONAL_MODEL", "HUB_MANAGED_MODEL_URL", "OPENAI_API_KEY", "HUB_RUN_BUDGET", "HUB_STREAM_IDLE"} {
+	for _, key := range []string{"HUB_SUPERVISOR_ADMIN_AUTH", "HUB_PERSONAL_MODEL", "HUB_MANAGED_MODEL_URL", "HUB_RUN_BUDGET", "HUB_STREAM_IDLE"} {
 		if _, ok := env[key]; !ok {
 			t.Fatalf("opt-in %s not forwarded to supervisor env", key)
 		}
+	}
+	if _, ok := env["OPENAI_API_KEY"]; ok {
+		t.Fatal("model caller credential projected to personal supervisor")
 	}
 }
 

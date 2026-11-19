@@ -37,6 +37,7 @@ func (s *runtimeHTTP) modelRunProxy(target *url.URL) http.Handler {
 		runID := r.Header.Get(hermesModelRunHeader)
 		r.Header.Del(hermesModelRunHeader)
 		r.Header.Del(contract.RunTokenHeader)
+		r.Header.Del(contract.ModelServiceTokenHeader)
 		r.Header.Del(contract.MemoryRunTokenHeader)
 		r.Header.Del(contract.EgressRunTokenHeader)
 		r.Header.Del(contract.CommunicationRunTokenHeader)

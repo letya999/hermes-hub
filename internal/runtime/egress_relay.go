@@ -131,6 +131,7 @@ func signedEgressRelayHandler(allow map[string]bool, connectTarget, owner string
 		out.Header.Del(identity.EgressRunTokenHeader)
 		out.Header.Del(identity.MemoryRunTokenHeader)
 		out.Header.Del(identity.CommunicationRunTokenHeader)
+		out.Header.Del(identity.ModelServiceTokenHeader)
 		out.Header.Del(RunDeliveryHeader)
 		out.Header.Del(api.HeaderJobID)
 		if r.URL.Host != "communication-hub:8081" {
