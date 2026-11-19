@@ -28,7 +28,7 @@ func (a agentRunRecord) Run(_ context.Context, job string) (task.RunRecord, erro
 	return a.value, nil
 }
 
-func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) {
+func TestDelegatedCommunicationBindsRoutesToLiveRun(t *testing.T) {
 	ctx := t.Context()
 	registry, err := identityhub.Open(filepath.Join(t.TempDir(), "identity.sqlite"))
 	if err != nil {
@@ -44,7 +44,7 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 	}
 	policy := contract.PolicyBundle{Space: "alice", Environment: "dev", PassportRevision: "r-1", Passports: map[string]json.RawMessage{}}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
-		policy.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"goals":["read"],"skills":["list"]}}`, name))
+		policy.Passports[name] = json.RawMessage(fmt.Sprintf(`{"kind":%q,"metadata":{"space":"alice","environment":"dev","revision":"r-1"},"allow":{"goals":["read"],"skills":["list"],"sessions":["list"],"channels":["send_voice"]}}`, name))
 	}
 	base, err := registry.StagePassports(ctx, policy)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &Gateway{config: Config{Identity: registry, Runs: agentRunRecord{record}, ControlAuth: "synthetic-runtime", Users: users, Environment: "dev", SkillsStore: t.TempDir()}}
+	g := &Gateway{now: time.Now, config: Config{Identity: registry, Runs: agentRunRecord{record}, ControlAuth: "synthetic-runtime", AutomationAuth: "synthetic-runtime", Users: users, Environment: "dev", SkillsStore: t.TempDir()}}
 	request := func(bearer, principal, conversation string) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/v1/goals", strings.NewReader(`{"op":"status","conversation_id":"`+conversation+`"}`))
 		r.Header.Set("Authorization", "Bearer synthetic-runtime")
@@ -97,6 +97,7 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 		{"/v1/credential-forms", `{"service":"skill:sample","keys":["EXAMPLE_KEY"]}`},
 		{"/v1/skill-drafts", `{"skill_name":"sample","draft_id":"draft-1"}`},
 		{"/v1/skill-git", `{"action":"update","name":"sample"}`},
+		{"/v1/sessions", `{"action":"create","title":"denied"}`},
 	} {
 		for _, proof := range []string{"", "forged", token} {
 			r := httptest.NewRequest(http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
@@ -121,5 +122,45 @@ func TestDelegatedGoalRejectsBodyConversationAndAssertedPrincipal(t *testing.T) 
 	g.Handler().ServeHTTP(out, sources)
 	if out.Code != http.StatusOK {
 		t.Fatalf("signed skill listing failed: status=%d", out.Code)
+	}
+
+	g.spool, err = NewSpool(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.spool.Enqueue(Job{Envelope: caller, ID: record.JobID, OrganizationID: "personal", UserID: "alice",
+		ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: record.JobID,
+		ChatID: 7, Text: "synthetic message"}); err != nil {
+		t.Fatal(err)
+	}
+	g.synthesizer = stubTTS{}
+	handler := g.Handler()
+	post := func(path, body, proof string, want int) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer synthetic-runtime")
+		r.Header.Set("X-Hub-Principal", "alice")
+		r.Header.Set(contract.RunTokenHeader, proof)
+		r.Header.Set(api.HeaderRunID, record.RunID)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Fatalf("%s status=%d, want %d", path, w.Code, want)
+		}
+	}
+	speech := func(jobID, conversation string) string {
+		return fmt.Sprintf(`{"job_id":%q,"conversation_id":%q,"delivery_id":"synthetic-speech","text":"synthetic text"}`, jobID, conversation)
+	}
+	post("/v1/sessions", `{"action":"list"}`, "", http.StatusUnauthorized)
+	post("/v1/sessions", `{"action":"list"}`, token, http.StatusOK)
+	post("/v1/media/speak", speech(record.JobID, caller.ConversationID), "", http.StatusUnauthorized)
+	post("/v1/media/speak", speech("another-job", caller.ConversationID), token, http.StatusForbidden)
+	post("/v1/media/speak", speech(record.JobID, "telegram-other"), token, http.StatusForbidden)
+	if d, err := g.spool.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("denied speech reached the delivery store")
+	}
+	post("/v1/media/speak", speech(record.JobID, caller.ConversationID), token, http.StatusOK)
+	if d, err := g.spool.ClaimDelivery(); err != nil || d == nil || d.OwnerPrincipalID != caller.PrincipalID || d.ConversationID != caller.ConversationID {
+		t.Fatal("signed speech did not queue for its verified run")
 	}
 }

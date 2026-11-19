@@ -10,11 +10,13 @@ import (
 	"strings"
 	"time"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func (g *Gateway) callCommunication(ctx context.Context, auth identity.Envelope, method, path string, payload, out any) int {
-	if g.ControlToken == "" || !identity.ValidID(auth.PrincipalID) {
+	if !identity.ValidID(auth.PrincipalID) {
 		return 0
 	}
 	base, err := url.Parse(strings.TrimRight(g.CommunicationURL, "/"))
@@ -33,8 +35,23 @@ func (g *Gateway) callCommunication(ctx context.Context, auth identity.Envelope,
 	if err != nil {
 		return 0
 	}
-	req.Header.Set("Authorization", "Bearer "+g.ControlToken)
-	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
+	correlation := api.CallCorrelationFrom(ctx)
+	if delegated := correlation.Delegation; delegated != nil {
+		if delegated.Communication == "" || delegated.RunID == "" || delegated.RunID != correlation.HermesRunID {
+			return http.StatusUnauthorized
+		}
+		req.Header.Set(contract.RunTokenHeader, delegated.Communication)
+		req.Header.Set(api.HeaderRunID, delegated.RunID)
+	} else {
+		if g.RunIdentity != nil {
+			return http.StatusUnauthorized
+		}
+		if g.ControlToken == "" {
+			return 0
+		}
+		req.Header.Set("Authorization", "Bearer "+g.ControlToken)
+		req.Header.Set("X-Hub-Principal", auth.PrincipalID)
+	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

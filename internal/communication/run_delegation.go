@@ -13,33 +13,34 @@ import (
 )
 
 func (g *Gateway) authorizeAgentControl(r *http.Request) (identity.Envelope, *contract.PolicyBundle, bool) {
-	token := r.Header.Get(contract.RunTokenHeader)
-	if token == "" {
-		if g.config.Runs == nil {
-			auth, ok := g.authorizeControl(r)
-			return auth, nil, ok
-		}
-		return identity.Envelope{}, nil, false
+	if g.config.Runs == nil && len(r.Header.Values(contract.RunTokenHeader)) == 0 {
+		auth, ok := g.authorizeControl(r)
+		return auth, nil, ok
 	}
+	record, policy, ok := g.authorizeAgentRun(r)
+	return record.Envelope, policy, ok
+}
+
+func (g *Gateway) authorizeAgentRun(r *http.Request) (task.RunRecord, *contract.PolicyBundle, bool) {
 	if r.Header.Get("Origin") != "" || len(r.Header.Values(contract.RunTokenHeader)) != 1 || len(r.Header.Values(api.HeaderRunID)) != 1 {
-		return identity.Envelope{}, nil, false
+		return task.RunRecord{}, nil, false
 	}
 	authority := g.config.Runs
 	if authority == nil && g.config.Supervised && g.config.RuntimeURL != "" {
 		authority = task.NewHTTPClient(g.config.RuntimeURL, g.config.RuntimeAuth, nil)
 	}
-	record, policy, err := task.AuthorizeRun(r.Context(), g.config.Identity, authority, token, contract.CommunicationAudience,
+	record, policy, err := task.AuthorizeRun(r.Context(), g.config.Identity, authority, r.Header.Get(contract.RunTokenHeader), contract.CommunicationAudience,
 		g.config.Environment, r.Header.Get(api.HeaderRunID), time.Now())
 	if err != nil || !g.user(record.Envelope.PrincipalID).Enabled {
-		return identity.Envelope{}, nil, false
+		return task.RunRecord{}, nil, false
 	}
 	if record.Assignment && (g.config.AssignmentAuthority == nil || g.config.AssignmentAuthority.AuthorizeAssignmentJob(r.Context(), record.JobID) != nil) {
-		return identity.Envelope{}, nil, false
+		return task.RunRecord{}, nil, false
 	}
 	if principal := r.Header.Get("X-Hub-Principal"); principal != "" && principal != record.Envelope.PrincipalID {
-		return identity.Envelope{}, nil, false
+		return task.RunRecord{}, nil, false
 	}
-	return record.Envelope, &policy, true
+	return record, &policy, true
 }
 
 func agentOperationAllowed(policy *contract.PolicyBundle, capability, operation string, write bool) bool {

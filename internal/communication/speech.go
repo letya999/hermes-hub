@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/locale"
 )
@@ -14,8 +15,18 @@ func (g *Gateway) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !g.serviceControlTokenAccepted(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
-		w.WriteHeader(http.StatusUnauthorized)
+	principal := r.Header.Get("X-Hub-Principal")
+	var jobID, conversationID string
+	if g.config.Runs != nil || len(r.Header.Values(contract.RunTokenHeader)) != 0 {
+		run, policy, ok := g.authorizeAgentRun(r)
+		if !ok || !agentOperationAllowed(policy, "channels", "send_voice", true) {
+			denyAgentOperation(w, r)
+			return
+		}
+		principal = run.Envelope.PrincipalID
+		jobID, conversationID = run.JobID, run.Envelope.ConversationID
+	} else if !g.serviceControlTokenAccepted(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+		denyAgentOperation(w, r)
 		return
 	}
 	var in struct {
@@ -29,7 +40,10 @@ func (g *Gateway) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	principal := r.Header.Get("X-Hub-Principal")
+	if jobID != "" && (in.JobID != jobID || in.ConversationID != conversationID) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	mapping, found, err := g.spool.Mapping(in.JobID)
 	if err != nil || !found || mapping.PrincipalID != principal || mapping.ConversationID != in.ConversationID || !g.user(principal).Enabled || (mapping.Channel != "telegram_bot" && mapping.Channel != "mock") || g.authorizeGroupMapping(mapping) != nil {
 		w.WriteHeader(http.StatusForbidden)

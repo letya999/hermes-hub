@@ -28,9 +28,9 @@ type sessionControl struct {
 }
 
 func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, policy, ok := g.authorizeAgentControl(r)
 	if !ok || r.Method != http.MethodPost {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		denyAgentOperation(w, r)
 		return
 	}
 	user := g.user(caller.PrincipalID)
@@ -41,6 +41,21 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 	var in sessionControl
 	if decodeJSON(r, &in) != nil || len(in.Query) > 256 || len(in.ID) > 80 || len(in.Title) > 80 || in.Offset < 0 || in.Offset > 100000 || in.Limit < 0 || in.Limit > 100 {
 		http.Error(w, "invalid session request", http.StatusBadRequest)
+		return
+	}
+	right, mutates := in.Action, false
+	switch in.Action {
+	case "list", "search", "read":
+	case "switch":
+		mutates = true
+	case "create", "edit", "remove":
+		right, mutates = "manage", true
+	default:
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	if !agentOperationAllowed(policy, "sessions", right, mutates) {
+		denyAgentOperation(w, r)
 		return
 	}
 	if in.Limit == 0 {
@@ -123,8 +138,7 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session id required", http.StatusBadRequest)
 		return
 	}
-	if in.Action != "read" && in.Action != "switch" && in.Action != "edit" && in.Action != "remove" ||
-		in.Action == "edit" && in.EditAction != "archive" && in.EditAction != "restore" {
+	if in.Action == "edit" && in.EditAction != "archive" && in.EditAction != "restore" {
 		http.Error(w, "invalid action", http.StatusBadRequest)
 		return
 	}
