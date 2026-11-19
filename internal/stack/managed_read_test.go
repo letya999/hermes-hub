@@ -630,6 +630,14 @@ func TestManagedConnectorsProjectRawMCP(t *testing.T) {
 	if m, _ := cfg.(M); m["url"] != "https://mcp.example.com/gitea" {
 		t.Fatalf("rendered connector lost its url: %+v", cfg)
 	}
+	if servers := Config(s)["mcp_servers"].(M); servers["gitea"] != nil {
+		t.Fatal("a published declaration gave a supervised runtime a direct MCP route")
+	}
+	server.Headers = map[string]string{"Authorization": "Bearer ${SYNTHETIC_RAW_MCP_TOKEN}"}
+	s.MCP["gitea"] = server
+	if slices.Contains(runtimeSelfEnvKeys(s), "SYNTHETIC_RAW_MCP_TOKEN") || skillCapabilities(dir, s).Connectors["gitea"] {
+		t.Fatal("the supervised runtime inherited raw MCP authority")
+	}
 }
 
 func TestPassportRemovalRevokesRawMCPSelection(t *testing.T) {

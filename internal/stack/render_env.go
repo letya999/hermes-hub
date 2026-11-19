@@ -308,7 +308,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
 		managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
 		managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
-		if s.Has("browser") {
+		if !s.supervisedRuntime() && s.Has("browser") {
 			// The browser MCP sidecar is internal like the relays:
 			// proxying it through egress breaks the streamable-HTTP
 			// handshake (the relay rightly refuses arbitrary forwards).

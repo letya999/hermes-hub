@@ -585,6 +585,12 @@ Connector verbs run identically on three surfaces — `connector_*` tools,
 and `POST /v1/connectors:*` on the control listener — all through
 `ControlPlane.InvokeConnector`, one journal.
 
+For supervised spaces, `user_mcp` and `org_mcp` declarations do not launch a
+server in Hermes. Enroll a reviewed ToolHub connection for a remote server
+or approve a managed workload for a local command. Move its credentials
+through the connection's protected setup and remove the legacy selection
+after the new binding is ready.
+
 Against a running ToolHub prefer `hubctl connector <verb> --service`: it posts
 the verb to `/v1/connectors:invoke` so the live listener owns the store write
 and the CLI never trips the save-side stale fence. The bearer resolves from
@@ -1195,22 +1201,19 @@ role tags and fails the build when `devcheck image-budget` finds a role
 over its SPEC-0082 size ceiling or carrying a forbidden artifact.
 
 The browser sidecar is a warm resource, not resident infrastructure
-(SPEC-0083): capped at `cpus 2.0 / mem_limit 3g / pids_limit 256` (its 1 GB
+(SPEC-0083): capped at `cpus 2.0 / mem_limit 3g / pids_limit 512` (its 1 GB
 shm counts against the memory limit), it sleeps once its space has no live
 runtime — spawned or a compose `hermes-runtime` — for
 `hub-supervisor -browser-idle-ttl` (default 15m). `docker stop` is a
 graceful SIGTERM so Chromium flushes `connections/browser`; `unless-stopped`
 honours the stop and the next spawn's `docker start` (issued by `Ensure` for
 browser/meet spaces before readiness) revives it transparently — profile,
-cookies and logins survive. `hubctl up` re-raises it as usual. Expected
-noise: the runtime's container healthcheck probes CDP whenever the browser
-marker is set, so the runtime shows `unhealthy` while its sidecar is
-asleep or restarting — transient, clears on wake. Managed runtimes get
-their `browser`/`browser_guest` MCP servers rendered directly into the
-managed config from the reviewed `browser`/`browser_act` capability
-(same `hub:browser`/`hub:browser_guest` governance gate, no connector
-or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
-in-container materialization so the attested config matches.
+cookies and logins survive. `hubctl up` re-raises it as usual. A supervised
+space keeps the headed session on a dedicated network for authenticated
+noVNC on host loopback. Its runtime has no direct CDP, Playwright MCP or
+native Meet route to the sidecar. Agent browser tools use ToolHub's
+prepared browser workloads and run authorization. Static legacy runtimes
+still use their private sidecar network and CDP health probe.
 Managed `browser_open` creates its own Playwright tab in the chosen profile;
 `browser_act action=close` closes that tab. `action=wait` uses `value` as
 visible text or, when numeric, seconds in the interval (0, 30]. Captures

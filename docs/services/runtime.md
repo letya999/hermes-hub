@@ -75,10 +75,11 @@ token to requests sent through its configured proxy. Clients with no run
 correlation fail at that relay, including native callers that still need a
 run-scoped transport.
 
-The private tools-daemon executes admitted `web_search` calls through the
-pinned Hermes web sidecar and `browser_*` through the owner's Playwright
-sidecar. Managed Hermes does not expose either sidecar as a direct model MCP
-server; ToolHub remains the admission point.
+The private tools-daemon executes ToolHub-admitted `web_search` calls through
+the pinned Hermes web sidecar and `browser_*` through a prepared Playwright
+workload. Supervised Hermes obtains these tools through the authenticated
+ToolHub run route. The legacy headed browser sidecar for human noVNC access
+does not share the supervised runtime's network.
 
 Interrupted runs keep artifact attribution via the
 `/state/runstarts/<runID>` marker whose mtime preserves the artifact scan

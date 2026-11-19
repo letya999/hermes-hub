@@ -38,10 +38,11 @@ hand-edited — into immutable release directories:
   `telegram_user` — `kind: connector`, `via: mcp`,
   members projected dynamically by the connector owner), the raw-MCP
   surfaces `user_mcp`/`org_mcp` (`kind: connector`, `via: mcp-raw`,
-  `uncurated`, extended-only), and the upstream/pseudo vocabulary under
+  `uncurated`, extended-only for static legacy runtimes), and the upstream/pseudo vocabulary under
   `native:<name>` (`via: native`, `carveout` marks managed re-enablement).
   Denied-by-design upstream names carry no section and no `via`; an ad-hoc
   `mcp-raw:<server>` is never a toolset — it cannot mint a section.
+  Supervised runtimes use approved ToolHub connections for custom MCP tools.
 - `platform/catalogs/<release>/services.yaml` — `features:` (owner-enabled
   connectors: requires/depends_on/self_service) and `infra:` platform service
   kinds with instance cardinality and allowed dependency edges.

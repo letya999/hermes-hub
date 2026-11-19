@@ -297,6 +297,28 @@ func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 	}
 }
 
+func TestSupervisedBrowserSidecarIsHumanOnly(t *testing.T) {
+	_, s := browserSpace(t, "browser", "meet")
+	s.PassportServices = map[string]string{"hermes-runtime": "supervised", "browser": "per-space"}
+	root, dir := t.TempDir(), t.TempDir()
+	services := Compose(s, root, dir)["services"].(M)
+	runtimeEnv := RuntimeService(s, root, dir)["environment"].(M)
+	if runtimeEnv["BROWSER_CDP_URL"] != nil || runtimeEnv["HUB_BROWSER"] != "false" || runtimeEnv["HUB_MEET"] != "false" {
+		t.Fatal("supervised runtime can still address the legacy browser or meet service")
+	}
+	browser, ok := services["browser-"+s.User].(M)
+	if !ok {
+		t.Fatal("supervised space lost its human browser")
+	}
+	nets := browser["networks"].(M)
+	if len(nets) != 1 || nets["browser-publish"] == nil {
+		t.Fatal("browser sidecar shares a network with agent workloads")
+	}
+	if !slices.Equal(browser["ports"].([]string), []string{"127.0.0.1:6080:6080"}) {
+		t.Fatal("headful browser access escaped its loopback noVNC port")
+	}
+}
+
 // Managed runtimes read managed/<env>/workspace, not <space>/workspace —
 // screenshots and downloads the sidecar writes under /workspace must land on
 // the same tree or delivery can never see them.

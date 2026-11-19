@@ -305,8 +305,10 @@ func skillCapabilities(dir string, s Settings) skillstore.Capabilities {
 	for _, name := range s.NativeCarveouts() {
 		caps.Toolsets[name] = true
 	}
-	for name := range s.MCP {
-		caps.Connectors[name] = true
+	if !s.supervisedRuntime() {
+		for name := range s.MCP {
+			caps.Connectors[name] = true
+		}
 	}
 	// Script execution rides the caller's grants only: the terminal carveout
 	// is the documented exec surface, off by default (R7.5).

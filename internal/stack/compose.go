@@ -110,6 +110,7 @@ func ManagedAgentNetwork(s Settings) string { return managedAgentNetwork(s) }
 
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
+	supervised := s.supervisedRuntime()
 	// The workspace is a durable bind, not tmpfs: admitted file, document,
 	// image and artifact writes must survive runtime respawns, which are the
 	// supervisor's normal lifecycle.
@@ -212,9 +213,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
 	}
 	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
-	if s.Has("browser") || s.Has("meet") {
-		// R4.3: the browser lives in the per-space sidecar; the runtime's
-		// browser_cdp tool and health probe attach over the internal alias.
+	if supervised {
+		// Agent browser calls use ToolHub's prepared browser workloads.
+		runtimeEnv["HUB_BROWSER"] = "false"
+		runtimeEnv["HUB_MEET"] = "false"
+	} else if s.Has("browser") || s.Has("meet") {
 		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
 	}
 	if s.ScopeKind == string(GroupScope) {
@@ -362,10 +365,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	services := M{"hermes-runtime": runtimeService}
 	var composeSecrets M
-	// SPEC-0082 R4: the per-space browser sidecar owns the headed-Chromium
-	// display stack. CDP binds inside the container and is reachable only on
-	// the space network through the browser-<user> alias; the sole published
-	// port is authenticated noVNC on host loopback.
+	// The per-space sidecar owns the headed-Chromium display stack. The sole
+	// published port is authenticated noVNC on host loopback.
 	if s.Has("browser") || s.Has("meet") {
 		browserService := cloneMap(common)
 		browserService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-browser"
@@ -403,14 +404,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "meet-node-token.json")), "target": "/state/hermes/workspace/meetings/node_token.json", "read_only": true})
 		}
 		browserService["volumes"] = browserVolumes
-		// Runtimes spawn onto the private per-space agent network; CDP stays
-		// reachable only through it. Internal networks silently drop
-		// published ports, so the sidecar also joins a dedicated publishable
-		// network (nothing else attaches) for the loopback noVNC port.
-		browserService["networks"] = M{
-			managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}},
-			"browser-publish":      M{},
+		nets := M{"browser-publish": M{}}
+		if !supervised {
+			nets[managedAgentNetwork(s)] = M{"aliases": []string{"browser-" + s.User}}
 		}
+		browserService["networks"] = nets
 		services["browser-"+s.User] = browserService
 	}
 	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per

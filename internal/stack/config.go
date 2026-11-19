@@ -323,11 +323,13 @@ func selfEnvKeys(s Settings) []string {
 	if s.Has("slack") && s.toolEntry("slack").Access != ToolAccessRO && (!s.OrgScoped() || s.AllowsOrgAction("slack.write")) {
 		keys["SLACK_MCP_ADD_MESSAGE_TOOL"] = true
 	}
-	for _, server := range s.MCP {
-		for _, values := range []map[string]string{server.Headers, server.Env} {
-			for _, value := range values {
-				for _, match := range envReferencePattern.FindAllStringSubmatch(value, -1) {
-					keys[match[1]] = true
+	if !s.supervisedRuntime() {
+		for _, server := range s.MCP {
+			for _, values := range []map[string]string{server.Headers, server.Env} {
+				for _, value := range values {
+					for _, match := range envReferencePattern.FindAllStringSubmatch(value, -1) {
+						keys[match[1]] = true
+					}
 				}
 			}
 		}
@@ -361,6 +363,10 @@ func (s Settings) imageCredential() string {
 // project); only explicitly secondary spaces opt out.
 func (s Settings) RendersInfra() bool       { return s.Infra == nil || *s.Infra }
 func (s Settings) DiagnosticsEnabled() bool { return s.Diagnostics == nil || *s.Diagnostics }
+
+func (s Settings) supervisedRuntime() bool {
+	return s.ExecutionMode == "supervisor" || s.PassportServices["hermes-runtime"] == "supervised"
+}
 
 func (s Settings) Validate() error {
 	seenRegistries := map[string]bool{}

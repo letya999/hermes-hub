@@ -1400,7 +1400,7 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	}
 }
 
-func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
+func TestSupervisedRenderNoProxyOmitsHumanBrowserSidecar(t *testing.T) {
 	dir, root := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
 		t.Fatal(err)
@@ -1444,12 +1444,13 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	if err := RenderEnvironment(dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	env, err := os.ReadFile(filepath.Join(dir, "managed-runtime.prod.env"))
+	env, err := ReadSecrets(filepath.Join(dir, "managed-runtime.prod.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(env), "NO_PROXY=") || !strings.Contains(string(env), "browser-alice") {
-		t.Fatalf("managed NO_PROXY must keep browser-alice sidecar direct: %q", env)
+	hosts := strings.Split(env["NO_PROXY"], ",")
+	if !slices.Contains(hosts, "toolhub") || slices.Contains(hosts, "browser-alice") {
+		t.Fatal("supervised NO_PROXY must include ToolHub and exclude the human browser")
 	}
 }
 

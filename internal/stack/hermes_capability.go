@@ -186,11 +186,7 @@ func managedHermesConfig(s Settings) M {
 		// SOUL still injects — exactly once, from a read-only mount.
 		"gateway": M{"platforms": M{"api_server": M{"skip_context_files": true}}},
 		"agent":   managedAgentSection(s),
-		// Hub-owned MCP endpoints render directly like the model relay: the
-		// browser sidecar is reviewed infrastructure, not a model-selectable
-		// connector. via: mcp-raw selections (organization-provided servers)
-		// join them; every connector still goes through the ToolHub
-		// projection.
+		// Supervised connectors are projected by ToolHub after run admission.
 		"mcp_servers": managedMCPServers(s),
 		"timeouts":    M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}},
 		"plugins":     M{"enabled": []string{}},
@@ -273,13 +269,12 @@ type BrowserGrant struct {
 	Act        bool `json:"act,omitempty"`
 }
 
-// Managed browser calls enter through ToolHub and the private tools-daemon;
-// exposing the Playwright MCP endpoint here would bypass per-call admission.
+// Supervised calls enter through ToolHub, which verifies the live run.
 func managedMCPServers(s Settings) M {
-	servers := rawMCPServers(s)
-	// M32/#520: no open_knowledge entry — same retirement as the unmanaged
-	// render; a managed runtime may not dial the vault directly either.
-	return servers
+	if s.supervisedRuntime() {
+		return M{}
+	}
+	return rawMCPServers(s)
 }
 
 // managedBrowserGrant resolves the render-time browser admission on the
