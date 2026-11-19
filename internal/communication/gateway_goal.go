@@ -216,46 +216,49 @@ func (g *Gateway) goalAfterJob(ctx context.Context, job Job, response string) {
 	if err != nil {
 		return
 	}
-	goal.LastVerdict = result.Verdict
-	goal.LastReason = result.Reason
-	if result.TurnsUsed > 0 {
-		// Native evaluations carry upstream's authoritative counters —
-		// mirror them instead of keeping a second, diverging count.
-		goal.TurnsUsed = result.TurnsUsed
-		if result.MaxTurns > 0 {
-			goal.MaxTurns = result.MaxTurns
+	// The evaluation was a network round trip: an owner /goal clear, pause or
+	// newer epoch may have landed meanwhile. UpdateGoal re-reads the record
+	// under the spool lock and refuses rather than saving this stale snapshot.
+	goal, err = g.spool.UpdateGoal(job.UserID, taskConversation(job.ChatID, job.TaskID), job.GoalEpoch, func(goal *Goal) {
+		goal.LastVerdict = result.Verdict
+		goal.LastReason = result.Reason
+		if result.TurnsUsed > 0 {
+			// Native evaluations carry upstream's authoritative counters —
+			// mirror them instead of keeping a second, diverging count.
+			goal.TurnsUsed = result.TurnsUsed
+			if result.MaxTurns > 0 {
+				goal.MaxTurns = result.MaxTurns
+			}
+		} else {
+			goal.TurnsUsed++
 		}
-	} else if job.Trigger == "goal" {
-		goal.TurnsUsed++
-	}
-	if result.TransportFailure {
-		goal.ConsecTransport++
-	} else {
-		goal.ConsecTransport = 0
-	}
-	if goal.ConsecTransport >= 3 {
-		goal.Status = "paused"
-		_ = g.spool.SaveGoal(goal)
+		if result.TransportFailure {
+			goal.ConsecTransport++
+		} else {
+			goal.ConsecTransport = 0
+		}
+		switch {
+		case goal.ConsecTransport >= 3:
+			goal.Status = "paused"
+		case result.Verdict == "blocked":
+			goal.Status = "blocked"
+		case result.Verdict == "done":
+			goal.Status = "done"
+		case goal.TurnsUsed >= goal.MaxTurns:
+			goal.Status = "stopped"
+		}
+	})
+	if err != nil {
 		return
 	}
-	if result.Verdict == "blocked" {
-		goal.Status = "blocked"
-		_ = g.spool.SaveGoal(goal)
-		return
-	}
-	if result.Verdict == "done" {
-		goal.Status = "done"
-		_ = g.spool.SaveGoal(goal)
+	if goal.Status == "done" {
 		suffix := "-done-" + strconv.Itoa(goal.TurnsUsed) + "-e" + strconv.FormatInt(goal.Epoch, 10) + "-" + strconv.FormatInt(g.now().UnixNano(), 36)
 		_ = g.spool.EnqueueDelivery(Delivery{ID: "goal-" + job.TaskID + suffix, IdempotencyKey: "goal-" + job.TaskID + suffix, OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "goal.achieved", goal.Text, result.Reason, result.Evidence), CreatedAt: g.now().UTC()})
 		return
 	}
-	if goal.TurnsUsed >= goal.MaxTurns {
-		goal.Status = "stopped"
-		_ = g.spool.SaveGoal(goal)
+	if goal.Status != "active" {
 		return
 	}
-	_ = g.spool.SaveGoal(goal)
 	user := g.user(job.UserID)
 	task, terr := g.spool.TaskByID(user, job.ChatID, job.TaskID)
 	if terr != nil {
