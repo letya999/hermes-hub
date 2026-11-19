@@ -301,7 +301,6 @@ func Project(root string) error {
 	// never by bumping the date alone.
 	verifiedDriftAllowlist := map[string]bool{
 		"docs/ai-stp-compatibility.md":      true,
-		"docs/architecture.md":              true,
 		"docs/capability-boundary-audit.md": true,
 		"docs/channels.md":                  true,
 		"docs/ci-latency.md":                true,
@@ -319,7 +318,6 @@ func Project(root string) error {
 	}
 	// Legacy oversize entries allowed until CHG-0136 phase 3 splits them.
 	oversizeAllowlist := map[string]bool{
-		"docs/architecture.md":        true,
 		"docs/integrations.md":        true,
 		"docs/operations.md":          true,
 		"docs/prepared-connectors.md": true,
