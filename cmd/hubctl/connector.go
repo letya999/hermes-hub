@@ -81,7 +81,7 @@ func runConnector(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		var config toolhub.GenericControllerConfig
+		var config api.GenericControllerConfig
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&config) != nil || decoder.Decode(new(any)) != io.EOF {

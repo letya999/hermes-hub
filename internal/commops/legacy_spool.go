@@ -1,4 +1,4 @@
-package automation
+package commops
 
 import (
 	"database/sql"
@@ -13,17 +13,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// LegacySpoolReader reads the retired gateway substrate without mutation.
+type LegacySpoolReader struct{ Root string }
+
 // The gateway may already have moved its records into spool.db. Keep its
 // current substrate authoritative; substrate-backup is never a read source.
-func (b legacyBindings) database() (*sql.DB, error) {
-	marker, err := os.Lstat(filepath.Join(b.root, "records.activated"))
+func (b LegacySpoolReader) Database() (*sql.DB, error) {
+	marker, err := os.Lstat(filepath.Join(b.Root, "records.activated"))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil || !marker.Mode().IsRegular() {
 		return nil, errors.New("automation: unsafe spool activation marker")
 	}
-	path := filepath.Join(b.root, "spool.db")
+	path := filepath.Join(b.Root, "spool.db")
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("automation: activated spool database unavailable")
@@ -46,8 +49,8 @@ func (b legacyBindings) database() (*sql.DB, error) {
 	return db, nil
 }
 
-func (b legacyBindings) entries(path string) ([]string, error) {
-	db, err := b.database()
+func (b LegacySpoolReader) Entries(path string) ([]string, error) {
+	db, err := b.Database()
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +66,7 @@ func (b legacyBindings) entries(path string) ([]string, error) {
 		return names, nil
 	}
 	defer db.Close()
-	rel, err := filepath.Rel(b.root, path)
+	rel, err := filepath.Rel(b.Root, path)
 	if err != nil || !filepath.IsLocal(rel) {
 		return nil, errors.New("automation: invalid spool directory")
 	}
@@ -90,8 +93,8 @@ func (b legacyBindings) entries(path string) ([]string, error) {
 	return names, rows.Err()
 }
 
-func (b legacyBindings) readJSON(path string, out any) error {
-	db, err := b.database()
+func (b LegacySpoolReader) ReadJSON(path string, out any) error {
+	db, err := b.Database()
 	if err != nil {
 		return err
 	}
@@ -110,7 +113,7 @@ func (b legacyBindings) readJSON(path string, out any) error {
 		return json.Unmarshal(body, out)
 	}
 	defer db.Close()
-	rel, err := filepath.Rel(b.root, path)
+	rel, err := filepath.Rel(b.Root, path)
 	if err != nil || !filepath.IsLocal(rel) {
 		return errors.New("automation: invalid spool record path")
 	}

@@ -19,9 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -201,7 +199,7 @@ func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
 	v.StateDir = t.TempDir()
 	restarted := false
 	v.Restart = func() error { restarted = true; return nil }
-	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil || !strings.Contains(err.Error(), "managed mode") {
+	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatal("managed legacy enable must fail before asking for credentials", err)
 	}
 	if restarted {
@@ -218,176 +216,6 @@ func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
 		if item["self_service"] != false || item["status"] != "host-managed" {
 			t.Fatal("managed legacy service advertised as mutable", item)
 		}
-	}
-}
-
-func TestToolHubManifestCatalogEnableDisableIsOptIn(t *testing.T) {
-	state := t.TempDir()
-	storePath := filepath.Join(state, "toolhub", "store.json")
-	store := toolhub.NewStore()
-	grant := api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")
-	if err := api.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PutGrant(grant); err != nil {
-		t.Fatal(err)
-	}
-	definition := api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: api.RemoteMCP,
-		Source:    api.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
-		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
-		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-scoped test"},
-		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
-		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
-	}
-	if err := store.RegisterDefinition(definition); err != nil {
-		t.Fatal(err)
-	}
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "test", DeliveryTargetID: "test", PolicyVersion: "policy-1"}
-	binding, err := store.Enable(auth, definition.DefinitionID, definition.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(storePath); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_STATE", state)
-	t.Setenv("HUB_TOOLHUB_STORE", storePath)
-	t.Setenv("HUB_PRINCIPAL_ID", "alice")
-	t.Setenv("HUB_CONTEXT_ID", "alice")
-	t.Setenv("HUB_RUNTIME_ID", "alice")
-	v, err := Open(t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	out, err := v.ServiceCatalog()
-	if err != nil || out["source"] != "toolhub-manifest" || out["secret_values_included"] != false {
-		t.Fatal(out, err)
-	}
-	if disabled, err := v.ServiceDisable(Input{Service: "demo@1.0.0"}); err != nil || disabled["enabled"] != false {
-		t.Fatal(disabled, err)
-	}
-	enabled, err := v.ServiceEnable(Input{Service: "demo"})
-	if err != nil || enabled["enabled"] != true || enabled["binding_id"] != binding.ToolBindingID {
-		t.Fatal(enabled, err)
-	}
-	missingDefinition := api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: "needs", Version: "1.0.0", Transport: api.RemoteMCP,
-		Source: api.DefinitionSource{URL: "https://needs.example/mcp", TLSMode: "required"}, Tools: []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}},
-		Credentials: []api.CredentialInput{{Name: "NEEDS_TOKEN", Required: true}}, Workload: api.WorkloadPolicy{Class: api.PerUser, Rationale: "credential test"},
-		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"needs.example"}}, Health: api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
-	}
-	if err := v.ToolHub.RegisterDefinition(missingDefinition); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.ToolHub.Save(storePath); err != nil {
-		t.Fatal(err)
-	}
-	missing, err := v.ServiceEnable(Input{Service: "needs"})
-	if err != nil || missing["enabled"] != false || len(missing["missing_credentials"].([]string)) != 1 {
-		t.Fatal(missing, err)
-	}
-	if _, err := v.ServiceEnable(Input{Service: "unknown"}); err == nil {
-		t.Fatal("unknown ToolHub manifest accepted")
-	}
-	t.Setenv("HUB_TOOLHUB_STORE", "")
-	legacy := fixture(t)
-	if _, err := legacy.ServiceDisable(Input{Service: "demo"}); err == nil {
-		t.Fatal("legacy service_disable accepted")
-	}
-	if _, err := os.Stat(filepath.Join(state, api.ReconnectMarkerName)); err != nil {
-		t.Fatal("reconnect marker missing after catalog mutation:", err)
-	}
-	reloaded, err := toolhub.Load(storePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed, err := reloaded.ListProjectedTools(auth)
-	if err != nil || len(listed) == 0 {
-		t.Fatalf("persisted enable missing after reload: %+v err=%v", listed, err)
-	}
-}
-
-func TestToolHubOpenRejectsInvalidIdentityAndOrganizationMutation(t *testing.T) {
-	state := t.TempDir()
-	storePath := filepath.Join(state, "store.json")
-	if err := toolhub.NewStore().Save(storePath); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_STATE", state)
-	t.Setenv("HUB_TOOLHUB_STORE", storePath)
-	t.Setenv("HUB_PRINCIPAL_ID", "")
-	t.Setenv("HUB_USER_ID", "")
-	if _, err := Open(t.TempDir(), t.TempDir()); err == nil {
-		t.Fatal("invalid ToolHub identity accepted")
-	}
-	t.Setenv("HUB_PRINCIPAL_ID", "alice")
-	t.Setenv("HUB_CONTEXT_ID", "alice")
-	t.Setenv("HUB_RUNTIME_ID", "alice")
-	v, err := Open(t.TempDir(), t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	if _, err := v.ServiceEnable(Input{Service: "missing"}); err == nil {
-		t.Fatal("organization ToolHub enable accepted")
-	}
-}
-
-func TestToolHubOrganizationCanDisableButNotEnable(t *testing.T) {
-	state := t.TempDir()
-	storePath := filepath.Join(state, "toolhub", "store.json")
-	store := toolhub.NewStore()
-	grant := api.OperatorGrant(api.GrantDefinition, "alice", "demo", "1.0.0")
-	if err := api.Confirm(&grant, "", time.Unix(1, 0).UTC()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PutGrant(grant); err != nil {
-		t.Fatal(err)
-	}
-	definition := api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: "demo", Version: "1.0.0", Transport: api.RemoteMCP,
-		Source:    api.DefinitionSource{URL: "https://example.invalid/mcp", TLSMode: "required"},
-		Tools:     []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
-		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-scoped test"},
-		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"example.invalid"}},
-		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
-	}
-	if err := store.RegisterDefinition(definition); err != nil {
-		t.Fatal(err)
-	}
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "test", DeliveryTargetID: "test", PolicyVersion: "policy-1"}
-	if _, err := store.Enable(auth, definition.DefinitionID, definition.Version); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(storePath); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HUB_STATE", state)
-	t.Setenv("HUB_TOOLHUB_STORE", storePath)
-	t.Setenv("HUB_PRINCIPAL_ID", "alice")
-	t.Setenv("HUB_CONTEXT_ID", "alice")
-	t.Setenv("HUB_RUNTIME_ID", "alice")
-	v, err := Open(t.TempDir(), t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	if _, err := v.ServiceEnable(Input{Service: "demo"}); err == nil {
-		t.Fatal("organization ToolHub enable accepted")
-	}
-	disabled, err := v.ServiceDisable(Input{Service: "demo@1.0.0"})
-	if err != nil || disabled["enabled"] != false {
-		t.Fatalf("organization ToolHub disable rejected: %+v err=%v", disabled, err)
-	}
-	reloaded, err := toolhub.Load(storePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed, err := reloaded.ListProjectedTools(auth)
-	if err != nil || len(listed) != 0 {
-		t.Fatalf("org disable did not persist: %+v err=%v", listed, err)
 	}
 }
 

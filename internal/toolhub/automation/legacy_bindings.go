@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,38 +17,38 @@ import (
 
 // legacyBindings reads communication-owned task and interactive-job bindings
 // in place. Automation records remain exclusively in the ToolHub owner tree.
-type legacyBindings struct{ root string }
+type legacyBindings struct{ commops.LegacySpoolReader }
 
 func (b legacyBindings) directory(parts ...string) (string, error) {
-	if info, err := os.Lstat(b.root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(b.Root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("automation: binding directory unavailable")
 	}
-	db, err := b.database()
+	db, err := b.Database()
 	if err != nil {
 		return "", err
 	}
 	if db != nil {
 		_ = db.Close()
-		return filepath.Join(append([]string{b.root}, parts...)...), nil
+		return filepath.Join(append([]string{b.Root}, parts...)...), nil
 	}
 	for depth := 0; depth <= len(parts); depth++ {
-		path := filepath.Join(append([]string{b.root}, parts[:depth]...)...)
+		path := filepath.Join(append([]string{b.Root}, parts[:depth]...)...)
 		info, err := os.Lstat(path)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", errors.New("automation: binding directory unavailable")
 		}
 	}
-	return filepath.Join(append([]string{b.root}, parts...)...), nil
+	return filepath.Join(append([]string{b.Root}, parts...)...), nil
 }
 
 func (b legacyBindings) taskPath(principal, taskID string) string {
 	hash := sha256.Sum256([]byte(principal + "\x00" + taskID))
-	return filepath.Join(b.root, "tasks", hex.EncodeToString(hash[:])+".json")
+	return filepath.Join(b.Root, "tasks", hex.EncodeToString(hash[:])+".json")
 }
 
 func (b legacyBindings) topicPath(principal string, chatID, topicID int64) string {
 	hash := sha256.Sum256([]byte(principal + "\x00" + strconv.FormatInt(chatID, 10) + "\x00" + strconv.FormatInt(topicID, 10)))
-	return filepath.Join(b.root, "tasks", "topic", hex.EncodeToString(hash[:])+".json")
+	return filepath.Join(b.Root, "tasks", "topic", hex.EncodeToString(hash[:])+".json")
 }
 
 func (b legacyBindings) loadTask(principal, taskID string) (commodel.Task, error) {
@@ -58,7 +59,7 @@ func (b legacyBindings) loadTask(principal, taskID string) (commodel.Task, error
 		return commodel.Task{}, err
 	}
 	var task commodel.Task
-	if err := b.readJSON(b.taskPath(principal, taskID), &task); err != nil {
+	if err := b.ReadJSON(b.taskPath(principal, taskID), &task); err != nil {
 		return commodel.Task{}, err
 	}
 	if task.PrincipalID != principal || task.TaskID != taskID {
@@ -75,7 +76,7 @@ func (b legacyBindings) listTasks(principal string) ([]commodel.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := b.entries(dir)
+	entries, err := b.Entries(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +86,7 @@ func (b legacyBindings) listTasks(principal string) ([]commodel.Task, error) {
 			continue
 		}
 		var task commodel.Task
-		if err := b.readJSON(filepath.Join(dir, entry), &task); err != nil {
+		if err := b.ReadJSON(filepath.Join(dir, entry), &task); err != nil {
 			return nil, err
 		}
 		if task.PrincipalID != principal {
@@ -110,7 +111,7 @@ func (b legacyBindings) topicTask(principal string, chatID, topicID int64) (stri
 	var pointer struct {
 		TaskID string `json:"task_id"`
 	}
-	if err := b.readJSON(b.topicPath(principal, chatID, topicID), &pointer); err != nil {
+	if err := b.ReadJSON(b.topicPath(principal, chatID, topicID), &pointer); err != nil {
 		return "", err
 	}
 	if pointer.TaskID == "" {
@@ -126,9 +127,9 @@ func (b legacyBindings) loadMapping(id string) (commodel.JobMapping, error) {
 	if _, err := b.directory("mappings"); err != nil {
 		return commodel.JobMapping{}, err
 	}
-	path := filepath.Join(b.root, "mappings", commodel.FileID(id)+".json")
+	path := filepath.Join(b.Root, "mappings", commodel.FileID(id)+".json")
 	var mapping commodel.JobMapping
-	if err := b.readJSON(path, &mapping); err != nil {
+	if err := b.ReadJSON(path, &mapping); err != nil {
 		return commodel.JobMapping{}, err
 	}
 	if mapping.JobID != id {

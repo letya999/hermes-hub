@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,35 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+func TestRenderDoesNotOpenToolHubStore(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("synthetic persona"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	store := filepath.Join(dir, "runtime", "toolhub", "store.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("not a ToolHub store\n")
+	if err := os.WriteFile(store, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+		t.Fatalf("renderer consulted another module's store: %v", err)
+	}
+	got, err := os.ReadFile(store)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatal("renderer changed another module's store")
+	}
+}
 
 // SPEC-0053 R1.4/D6: render emits generated/tool-manifest.<env>.json naming
 // the expected tool surface per context — hub-projected capabilities under

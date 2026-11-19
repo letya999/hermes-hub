@@ -379,9 +379,6 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = writeToolPolicySnapshot(dir, s); err != nil {
 		return err
 	}
-	if err = migrateToolhubBindings(dir, s); err != nil {
-		return err
-	}
 	if err = writeToolManifest(dir, s); err != nil {
 		return err
 	}

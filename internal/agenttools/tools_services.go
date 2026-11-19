@@ -8,7 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,17 +80,6 @@ func envUpdateNextStep(path string) string {
 }
 
 func (t *Tools) ServiceCatalog() (map[string]any, error) {
-	if t.ToolHub != nil {
-		entries, err := t.ToolHub.Catalog(t.ToolHubAuth)
-		if err != nil {
-			return nil, err
-		}
-		services := make([]any, len(entries))
-		for i, entry := range entries {
-			services[i] = entry
-		}
-		return map[string]any{"services": services, "source": "toolhub-manifest", "secret_values_included": false}, nil
-	}
 	self, err := t.selfServices()
 	if err != nil {
 		return nil, err
@@ -126,11 +115,8 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 }
 
 func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
-	if t.ToolHub != nil {
-		return t.toolHubServiceEnable(r)
-	}
 	if t.ToolPolicy != nil {
-		return nil, errors.New("legacy service_enable is unavailable in managed mode; use ToolHub discover/prepare_source/confirm/enable")
+		return nil, fmt.Errorf("%w: %s", api.ErrUnauthorized, locale.T(locale.LangOf(os.Getenv("HUB_WORKSPACE")), "tools.legacy-service-enable-unavailable"))
 	}
 	name := strings.TrimSpace(r.Service)
 	info, ok := stack.ServiceInfoByName(name)
@@ -211,58 +197,8 @@ func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
 	return out, nil
 }
 
-func (t *Tools) ServiceDisable(r Input) (map[string]any, error) {
-	if t.ToolHub == nil {
-		return nil, errors.New("service_disable requires the ToolHub manifest catalog")
-	}
-	name, version, err := t.toolHubManifest(r.Service)
-	if err != nil {
-		return nil, err
-	}
-	if err := t.ToolHub.Disable(t.ToolHubAuth, name, version); err != nil {
-		return nil, err
-	}
-	return map[string]any{"service": name, "version": version, "enabled": false, "restart_required": true, "restart_scheduled": false, "secret_values_included": false}, nil
-}
-
-func (t *Tools) toolHubServiceEnable(r Input) (map[string]any, error) {
-	if t.OrgScoped {
-		return nil, fmt.Errorf("service changes are host-managed in organization scope")
-	}
-	name, version, err := t.toolHubManifest(r.Service)
-	if err != nil {
-		return nil, err
-	}
-	binding, err := t.ToolHub.Enable(t.ToolHubAuth, name, version)
-	if err != nil {
-		entries, _ := t.ToolHub.Catalog(t.ToolHubAuth)
-		for _, entry := range entries {
-			if entry.Name == name && entry.Version == version && len(entry.MissingCredentials) > 0 {
-				return map[string]any{"service": name, "version": version, "enabled": false, "missing_credentials": entry.MissingCredentials, "input": "required_credentials", "next_step": "call required_credentials for the protected form or OAuth URL", "secret_values_included": false}, nil
-			}
-		}
-		return nil, err
-	}
-	return map[string]any{"service": name, "version": version, "binding_id": binding.ToolBindingID, "projection_revision": binding.ProjectionRevision, "enabled": true, "restart_required": true, "restart_scheduled": false, "secret_values_included": false}, nil
-}
-
-func (t *Tools) toolHubManifest(raw string) (string, string, error) {
-	name, version, hasVersion := strings.Cut(strings.TrimSpace(raw), "@")
-	entries, err := t.ToolHub.Catalog(t.ToolHubAuth)
-	if err != nil {
-		return "", "", err
-	}
-	found := []toolhub.CatalogEntry{}
-	for _, entry := range entries {
-		if entry.Name == name && (!hasVersion || entry.Version == version) {
-			found = append(found, entry)
-		}
-	}
-	if len(found) == 0 {
-		return "", "", fmt.Errorf("unknown ToolHub manifest %q; call service_catalog first", raw)
-	}
-	slices.SortFunc(found, func(a, b toolhub.CatalogEntry) int { return strings.Compare(a.Version, b.Version) })
-	return found[len(found)-1].Name, found[len(found)-1].Version, nil
+func (t *Tools) ServiceDisable(Input) (map[string]any, error) {
+	return nil, fmt.Errorf("%w: %s", api.ErrUnauthorized, locale.T(locale.LangOf(os.Getenv("HUB_WORKSPACE")), "tools.legacy-service-disable-unavailable"))
 }
 
 func missingEnv(keys []string) []string {

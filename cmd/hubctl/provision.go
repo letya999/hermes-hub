@@ -571,7 +571,7 @@ func provisionBrokerVolumes(ctx context.Context, dir, env string) error {
 // provisionComposeUp starts the space's compose on existing images — the
 // fast path `up --no-build` takes, without the build stage.
 func provisionComposeUp(ctx context.Context, dir, root, env string) error {
-	if err := stack.RenderEnvironment(dir, root, env); err != nil {
+	if err := renderEnvironment(dir, root, env); err != nil {
 		return err
 	}
 	abs, err := filepath.Abs(dir)

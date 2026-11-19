@@ -3,6 +3,7 @@ package automation
 import (
 	"database/sql"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +25,7 @@ func TestActivatedLegacySpoolUsesCurrentRowsAndKeepsOwnerBoundary(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte(`{"version":1}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	b := legacyBindings{root: root}
+	b := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: root}}
 	put := func(path string, value any) {
 		t.Helper()
 		body, err := json.Marshal(value)
@@ -46,7 +47,7 @@ func TestActivatedLegacySpoolUsesCurrentRowsAndKeepsOwnerBoundary(t *testing.T) 
 	put(b.topicPath("alice", 11, 5), map[string]string{"task_id": alice.TaskID})
 	put(filepath.Join(root, "mappings", "job-a.json"), commodel.JobMapping{JobID: "job-a", PrincipalID: "alice"})
 	put(filepath.Join(root, "running", "job-a.json"), commodel.Job{ID: "job-a", Trigger: "message"})
-	if err := ValidateLegacySpool(root); err != nil {
+	if err := commops.ValidateLegacySpool(root); err != nil {
 		t.Fatal(err)
 	}
 	if task, err := b.loadTask("alice", alice.TaskID); err != nil || task.PrincipalID != "alice" {
@@ -69,17 +70,17 @@ func TestActivatedLegacySpoolUsesCurrentRowsAndKeepsOwnerBoundary(t *testing.T) 
 		t.Fatal("rebound task accepted")
 	}
 	put(filepath.Join(root, "running", "job-a.json"), commodel.Job{ID: "job-a", Trigger: "cron"})
-	if err := ValidateLegacySpool(root); err == nil {
+	if err := commops.ValidateLegacySpool(root); err == nil {
 		t.Fatal("legacy cron accepted")
 	}
 	if _, err := db.Exec("DELETE FROM rec WHERE path = 'running/job-a.json'"); err != nil {
 		t.Fatal(err)
 	}
 	put(filepath.Join(root, "schedules", "nested", "old.json"), map[string]string{"id": "old"})
-	if err := ValidateLegacySpool(root); err == nil {
+	if err := commops.ValidateLegacySpool(root); err == nil {
 		t.Fatal("nested legacy schedule accepted")
 	}
-	reader, err := b.database()
+	reader, err := b.Database()
 	if err != nil {
 		t.Fatal(err)
 	}

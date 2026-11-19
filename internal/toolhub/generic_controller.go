@@ -20,28 +20,7 @@ import (
 // workload manager; this process only turns an approved plan into a bounded
 // ToolHive invocation and checks Docker's returned profile before admission.
 
-type GenericControllerConfig struct {
-	HostingFleetRoot    string                    `json:"hosting_fleet_root,omitempty"`
-	HostingHelperVolume string                    `json:"hosting_helper_volume,omitempty"`
-	HostingOnly         bool                      `json:"hosting_only,omitempty"`
-	HostingCellInit     string                    `json:"hosting_cell_init,omitempty"`
-	Hosting             map[string]HostingProfile `json:"hosting,omitempty"`
-	StateRoot           string                    `json:"state_root"`
-	ToolHiveBinary      string                    `json:"toolhive_binary"`
-	SeccompProfile      string                    `json:"seccomp_profile"`
-	DockerFallback      bool                      `json:"docker_fallback,omitempty"`
-	BridgeBinary        string                    `json:"bridge_binary,omitempty"`
-	CredentialMountRoot string                    `json:"credential_mount_root,omitempty"`
-	Definition          api.ToolDefinition        `json:"definition"`
-	DynamicDefinitions  bool                      `json:"dynamic_definitions,omitempty"`
-	Budget              *api.WorkloadBudget       `json:"-"`
-	MaxActive           int                       `json:"max_active"`
-	IdleTTLSeconds      int                       `json:"idle_ttl_seconds"`
-	// CLI configures bounded-cli admission: the executor container the
-	// process lands in is inspected per call and only approved plans are
-	// admitted. Nil disables the CLI path entirely.
-	CLI *api.CLIControllerConfig `json:"cli,omitempty"`
-}
+type GenericControllerConfig = api.GenericControllerConfig
 
 type genericWorkload struct {
 	plan           api.ControllerPlan

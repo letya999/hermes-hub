@@ -2,9 +2,6 @@ package stack
 
 import (
 	"encoding/json"
-	"fmt"
-	"github.com/letya999/hermes-hub/internal/toolhub"
-	"os"
 	"path/filepath"
 	"slices"
 )
@@ -21,11 +18,11 @@ type ToolManifest struct {
 	Direct        []string `json:"direct"`
 }
 
-// toolManifest classifies every enabled tools entry: toolhub always projects;
+// ExpectedToolManifest classifies every enabled tools entry: toolhub always projects;
 // builtin MCP connectors project only under managed mode, where ToolHub fronts
 // them (unmanaged render attaches a local server directly); native sets and
 // user-declared MCP servers stay direct; off entries appear in neither list.
-func toolManifest(s Settings) ToolManifest {
+func ExpectedToolManifest(s Settings) ToolManifest {
 	contextID := s.User
 	if s.OrgScoped() {
 		contextID = s.Organization
@@ -52,7 +49,7 @@ func toolManifest(s Settings) ToolManifest {
 // writeToolManifest materializes the manifest beside the other generated
 // contracts so runtime readiness can load the expectation read-only.
 func writeToolManifest(dir string, s Settings) error {
-	body, err := json.MarshalIndent(toolManifest(s), "", "  ")
+	body, err := json.MarshalIndent(ExpectedToolManifest(s), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -63,40 +60,6 @@ func writeToolManifest(dir string, s Settings) error {
 	// bind — the manifest rides inside the view (SPEC-0092 R5.2).
 	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
 		return atomicMode(filepath.Join(view, "tool-manifest.json"), append(body, '\n'), 0640)
-	}
-	return nil
-}
-
-// migrateToolhubBindings rolls this space's active ToolHub bindings and
-// capability profiles onto the policy version this render computed
-// (SPEC-0053 R1.2): a rights-hash change must not orphan grants the operator
-// never revoked. The migration scans live state rather than trusting the
-// previous manifest's `from` — envelopes are minted at the rendered hash, so
-// entities pinned at a version no manifest recorded still brick the
-// projection (the CHG-0230 live outage). Migration runs at render time so the
-// deploy that follows already finds matching state.
-func migrateToolhubBindings(dir string, s Settings) error {
-	manifest := toolManifest(s)
-	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
-	if _, err := os.Stat(storePath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	store, err := toolhub.Load(storePath)
-	if err != nil {
-		return fmt.Errorf("toolhub store: %w", err)
-	}
-	report, err := toolhub.MigrateProjection(store, s.User, manifest.Context, s.User, manifest.PolicyVersion)
-	if err != nil {
-		return fmt.Errorf("toolhub policy-version migration -> %s: %w", manifest.PolicyVersion, err)
-	}
-	if report.BindingsMoved > 0 {
-		fmt.Fprintf(os.Stderr, "hubctl: migrated %d toolhub binding(s) -> %s\n", report.BindingsMoved, manifest.PolicyVersion)
-	}
-	for _, id := range report.ProfilesBlocked {
-		fmt.Fprintf(os.Stderr, "hubctl: capability profile %s pinned at a stale policy — republish it (--kind profile --confirm) or the projection stays denied\n", id)
 	}
 	return nil
 }

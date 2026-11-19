@@ -20,6 +20,35 @@ func writeBoundaryFile(t *testing.T, path, writable string) {
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "revision"), []byte("r-1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceBoundaryCannotLoseRevisionFenceThroughEnv(t *testing.T) {
+	t.Setenv("HUB_PASSPORT_REVISION", "")
+	for _, marker := range []string{"", "r-foreign"} {
+		t.Run("marker="+marker, func(t *testing.T) {
+			workspace := t.TempDir()
+			root, err := os.OpenRoot(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			boundary := filepath.Join(t.TempDir(), "workspace.yaml")
+			writeBoundaryFile(t, boundary, "/workspace/work")
+			if err := os.WriteFile(filepath.Join(filepath.Dir(boundary), "revision"), []byte(marker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tools := &Tools{Workspace: root, BoundaryPath: boundary}
+			if _, err := tools.File("write", Input{Path: "work/refused.txt", Text: "synthetic"}); err == nil {
+				t.Fatal("missing env claim disabled the passport revision fence")
+			}
+			if _, err := os.Stat(filepath.Join(workspace, "work", "refused.txt")); !os.IsNotExist(err) {
+				t.Fatal("refused write touched the workspace")
+			}
+		})
+	}
 }
 
 // A narrowed published boundary applies to the next file_write in the same

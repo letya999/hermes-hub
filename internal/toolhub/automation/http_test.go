@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -49,7 +50,7 @@ func TestAutomationControlHTTPPinsPrincipalAndRights(t *testing.T) {
 		return resp.StatusCode, result.Bytes()
 	}
 	item := draft("rt-http", alice)
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	var created commodel.Schedule
 	if err := client.Call(context.Background(), alice, "schedule.create", map[string]any{"schedule": item}, &created); err != nil || created.ScheduleID != item.ScheduleID {
 		t.Fatalf("control client create: %+v, %v", created, err)
@@ -143,7 +144,7 @@ func TestAutomationControlHTTPReportsBoundResult(t *testing.T) {
 	h.comm.down.Store(true)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	request := map[string]any{"job_id": job.ID, "status": "completed", "text": "done"}
 	for i := 0; i < 2; i++ {
 		if err := client.Call(context.Background(), alice, "result.report", request, nil); err != nil {
@@ -167,7 +168,7 @@ func TestAutomationControlHTTPReadsAndEditsOwnedSchedule(t *testing.T) {
 	host := h.host(t)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	created, err := host.CreateSchedule(context.Background(), alice, draft("rt-edit-http", alice), "")
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +224,7 @@ func TestAutomationProgressRequiresLiveBoundSupervisorCall(t *testing.T) {
 	}
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	request := map[string]any{"id": assignment.AssignmentID, "expected_revision": assignment.Revision, "job_id": "unknown", "summary": "found the answer"}
 	if err := client.Call(context.Background(), alice, "assignment.progress", request, nil); err == nil {
 		t.Fatal("unbound progress accepted")
@@ -285,7 +286,7 @@ func TestAutomationControlHTTPIntakesOwnedHook(t *testing.T) {
 	}
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	request := map[string]any{"id": created.ScheduleID, "body": []byte(`{"event":"one"}`)}
 	if err := client.Call(context.Background(), bob, "hook.intake", request, nil); err == nil {
 		t.Fatal("foreign hook intake was accepted")

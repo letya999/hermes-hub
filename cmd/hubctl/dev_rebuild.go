@@ -72,7 +72,7 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	if _, present := services[service]; !present && !(service == "hermes-runtime" && settings.ExecutionMode == "supervisor") {
 		return fmt.Errorf("service %q is not in this dev stack", service)
 	}
-	if err := stack.RenderEnvironment(dirAbs, rootAbs, "dev"); err != nil {
+	if err := renderEnvironment(dirAbs, rootAbs, "dev"); err != nil {
 		return err
 	}
 	if err := refreshDevSiblingTokens(dirAbs); err != nil {

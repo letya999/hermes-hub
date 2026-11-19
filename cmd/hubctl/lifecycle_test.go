@@ -154,7 +154,8 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if run(context.Background(), []string{"chat", "--dir", d}) == nil {
 		t.Fatal("two agents sharing one home")
 	}
-	for _, args := range [][]string{{"exec", "--dir", d}, {"doctor", "--dir", "missing"}, {"build", "--dir", "missing"}, {"chat", "--dir", "missing"}, {"companion", "--config", "missing"}, {"tools", "--workspace", "missing"}, {"init", "--env", "staging"}, {"init", "--bad-flag"}, {"doctor build"}} {
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, args := range [][]string{{"exec", "--dir", d}, {"doctor", "--dir", missing}, {"build", "--dir", missing}, {"chat", "--dir", missing}, {"companion", "--config", missing}, {"tools", "--workspace", missing}, {"init", "--env", "staging"}, {"init", "--bad-flag"}, {"doctor build"}} {
 		if run(context.Background(), args) == nil {
 			t.Fatal("invalid command accepted", args)
 		}

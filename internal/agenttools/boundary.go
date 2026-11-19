@@ -32,14 +32,10 @@ func (t *Tools) boundary() (*workspaceBoundary, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024*1024 {
 		return nil, invalid
 	}
-	managed := os.Getenv("HUB_PASSPORT_REVISION") != ""
 	marker := filepath.Join(filepath.Dir(t.BoundaryPath), "revision")
-	var revision []byte
-	if managed {
-		revision, err = os.ReadFile(marker)
-		if err != nil || len(revision) == 0 || len(revision) > 128 {
-			return nil, invalid
-		}
+	revision, err := os.ReadFile(marker)
+	if err != nil || len(revision) == 0 || len(revision) > 128 {
+		return nil, invalid
 	}
 	body, err := os.ReadFile(t.BoundaryPath)
 	if err != nil {
@@ -50,11 +46,9 @@ func (t *Tools) boundary() (*workspaceBoundary, error) {
 		return nil, invalid
 	}
 	doc := decoded.(*passportview.WorkspaceDoc)
-	if managed {
-		after, err := os.ReadFile(marker)
-		if err != nil || !bytes.Equal(revision, after) || strings.TrimSpace(string(revision)) != doc.Metadata.Revision {
-			return nil, invalid
-		}
+	after, err := os.ReadFile(marker)
+	if err != nil || !bytes.Equal(revision, after) || strings.TrimSpace(string(revision)) != doc.Metadata.Revision {
+		return nil, invalid
 	}
 	return &workspaceBoundary{writable: doc.Writable, readOnly: doc.ReadOnly}, nil
 }

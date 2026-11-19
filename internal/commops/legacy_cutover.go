@@ -1,4 +1,4 @@
-package automation
+package commops
 
 import (
 	"errors"
@@ -20,8 +20,8 @@ func ValidateLegacySpool(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("automation: legacy spool unavailable or unsafe")
 	}
-	bindings := legacyBindings{root: root}
-	db, err := bindings.database()
+	bindings := LegacySpoolReader{Root: root}
+	db, err := bindings.Database()
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func ValidateLegacySpool(root string) error {
 		if !activated && (err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errors.New("automation: unsafe legacy automation records")
 		}
-		entries, err := bindings.entries(path)
+		entries, err := bindings.Entries(path)
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ func ValidateLegacySpool(root string) error {
 		if !activated && (err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errors.New("automation: unsafe legacy job directory")
 		}
-		entries, err := bindings.entries(path)
+		entries, err := bindings.Entries(path)
 		if err != nil {
 			return err
 		}
@@ -77,7 +77,7 @@ func ValidateLegacySpool(root string) error {
 			}
 			jobPath := filepath.Join(path, entry)
 			var job commodel.Job
-			if bindings.readJSON(jobPath, &job) != nil {
+			if bindings.ReadJSON(jobPath, &job) != nil {
 				return errors.New("automation: unsafe legacy job record")
 			}
 			if job.Trigger == "cron" || job.AssignmentID != "" {

@@ -27,7 +27,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 type Gateway struct {
@@ -102,11 +101,11 @@ type Gateway struct {
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
-	return (automation.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth}).Call(ctx, caller, operation, payload, out)
+	return (commops.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth}).Call(ctx, caller, operation, payload, out)
 }
 
 func automationStatus(err error) int {
-	var control automation.ControlError
+	var control commops.ControlError
 	if errors.As(err, &control) {
 		return control.StatusCode
 	}
@@ -129,7 +128,7 @@ func New(config Config) (*Gateway, error) {
 		return nil, errors.New("TELEGRAM_BOT_TOKEN is required")
 	}
 	if _, err := os.Lstat(config.SpoolDir); err == nil {
-		if err := automation.ValidateLegacySpool(config.SpoolDir); err != nil {
+		if err := commops.ValidateLegacySpool(config.SpoolDir); err != nil {
 			return nil, err
 		}
 	} else if !os.IsNotExist(err) {

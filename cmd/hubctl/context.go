@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
 
@@ -775,7 +775,7 @@ func runRoutine(ctx context.Context, args []string) error {
 	// spool: the operator route is the same service-only control surface the
 	// gateway uses.
 	caller := identity.TelegramEnvelope(opts.profile, opts.chatID, opts.runtimeID, opts.policy)
-	client := automation.ControlClient{URL: opts.toolhubURL, Token: opts.token}
+	client := commops.ControlClient{URL: opts.toolhubURL, Token: opts.token}
 	switch sub {
 	case "list":
 		var items []commodel.Schedule

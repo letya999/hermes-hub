@@ -2,6 +2,7 @@ package automation
 
 import (
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,7 +125,7 @@ func (h *Host) deliveryHistory(principal string) (map[string]deliveryHistory, er
 		return id
 	}
 	if h.cfg.LegacySpoolDir != "" {
-		bindings := legacyBindings{root: h.cfg.LegacySpoolDir}
+		bindings := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: h.cfg.LegacySpoolDir}}
 		if _, err := bindings.directory("outbox"); err != nil {
 			return nil, errors.New("automation: gateway outbox unavailable for compaction")
 		}
@@ -132,7 +133,7 @@ func (h *Host) deliveryHistory(principal string) (map[string]deliveryHistory, er
 			name, status string
 		}{{"pending", "pending"}, {"sending", "pending"}, {"done", "delivered"}, {"failed", "uncertain"}} {
 			root := filepath.Join(h.cfg.LegacySpoolDir, "outbox", dir.name)
-			entries, err := bindings.entries(root)
+			entries, err := bindings.Entries(root)
 			if os.IsNotExist(err) {
 				continue
 			}
@@ -144,7 +145,7 @@ func (h *Host) deliveryHistory(principal string) (map[string]deliveryHistory, er
 					continue
 				}
 				var d commodel.Delivery
-				if bindings.readJSON(filepath.Join(root, entry), &d) != nil {
+				if bindings.ReadJSON(filepath.Join(root, entry), &d) != nil {
 					return nil, errors.New("automation: invalid delivery history")
 				}
 				id := ownerID(d)

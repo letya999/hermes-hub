@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http/httptest"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestAutomationControlPausesAllPrincipalSchedules(t *testing.T) {
 	host := h.host(t)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	ctx := context.Background()
 	for _, item := range []commodel.Schedule{draft("rt-alice-1", alice), draft("rt-alice-2", alice), draft("rt-bob", bob)} {
 		if err := client.Call(ctx, item.Envelope, "schedule.create", map[string]any{"schedule": item}, &item); err != nil {
@@ -55,7 +56,7 @@ func TestAutomationControlPauseAllSkipsNeverOnboardedPrincipal(t *testing.T) {
 	host := h.host(t)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	var paused struct {
 		Schedules int `json:"schedules"`
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -104,7 +105,7 @@ func (p ChannelPolicy) taskOwned(job commodel.Job) bool {
 	if job.TaskID == "" || job.TaskID == commodel.DefaultTaskID {
 		return true
 	}
-	bindings := legacyBindings{root: p.LegacyRoot}
+	bindings := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: p.LegacyRoot}}
 	task, err := bindings.loadTask(job.PrincipalID, job.TaskID)
 	if err != nil || task.Archived || task.ContextID != job.ContextID || task.ChatID != job.ChatID || task.TopicID != job.TopicID {
 		return false

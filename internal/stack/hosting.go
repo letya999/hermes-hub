@@ -8,7 +8,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/hosting"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -55,7 +54,7 @@ func writeHostingFiles(dir string, s Settings) error {
 		if err := ensureContainerTokenFile(filepath.Join(dir, "runtime", "hosting-controller."+s.Environment+".key")); err != nil {
 			return err
 		}
-		controller := toolhub.GenericControllerConfig{Hosting: hostingControllerSection(s), HostingOnly: true, HostingFleetRoot: "/fleet", HostingHelperVolume: hostingVolume(s) + "-controller", HostingCellInit: "/usr/local/bin/cellinit", StateRoot: "/state", ToolHiveBinary: "/usr/local/bin/thv", SeccompProfile: "/opt/hub/seccomp/seccomp-mcp-runtime.json", DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 1800}
+		controller := api.GenericControllerConfig{Hosting: hostingControllerSection(s), HostingOnly: true, HostingFleetRoot: "/fleet", HostingHelperVolume: hostingVolume(s) + "-controller", HostingCellInit: "/usr/local/bin/cellinit", StateRoot: "/state", ToolHiveBinary: "/usr/local/bin/thv", SeccompProfile: "/opt/hub/seccomp/seccomp-mcp-runtime.json", DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 1800}
 		data, err := json.MarshalIndent(controller, "", "  ")
 		if err != nil {
 			return err
@@ -185,11 +184,11 @@ func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEn
 	}
 
 }
-func hostingControllerSection(s Settings) map[string]toolhub.HostingProfile {
+func hostingControllerSection(s Settings) map[string]api.HostingProfile {
 	if !s.Has("hosting") || s.Hosting.Image == "" {
 		return nil
 	}
-	return map[string]toolhub.HostingProfile{s.User + "/" + s.Environment: {AdmissionDigest: hostingAdmissionDigest(s), Owner: s.User, Environment: s.Environment, Volume: hostingVolume(s), Image: s.Hosting.Image, Runtime: s.Hosting.Runtime}}
+	return map[string]api.HostingProfile{s.User + "/" + s.Environment: {AdmissionDigest: hostingAdmissionDigest(s), Owner: s.User, Environment: s.Environment, Volume: hostingVolume(s), Image: s.Hosting.Image, Runtime: s.Hosting.Runtime}}
 }
 
 func hostingAdmissionDigest(s Settings) string {

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http"
 	"os"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 // Exercise the real gateway -> ToolHub -> durable owner engine without Docker.
@@ -24,7 +24,7 @@ func TestM32AssignmentReconcileAndRecovery(t *testing.T) {
 	h := newM32Lifecycle(t, t.Context(), "", "prod", f)
 	stop := h.startToolHub(t, t.Context())
 	t.Cleanup(func() { stop() })
-	control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	items := make([]commodel.Assignment, len(f.Users))
 	for i, user := range f.Users {
 		plan := commodel.AssignmentPlan{Revision: 1, Sources: []commodel.AssignmentSource{{Name: "reminder", Schedule: commodel.RoutineDraft{Channel: "telegram_bot", ChatID: int64(11 + i), Timezone: "UTC", Expression: "0 0 1 1 *", JobKind: "reminder", Input: "M32 future assignment"}}}}
@@ -93,7 +93,7 @@ func TestM32AssignmentReconcileAndRecovery(t *testing.T) {
 
 func (h *m32Lifecycle) assignmentWatchExecution(t *testing.T, ctx context.Context, restartToolHub func()) {
 	t.Helper()
-	control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	items := make([]commodel.Assignment, len(h.f.Users))
 	watchIDs := make([]string, len(h.f.Users))
 	before := map[string]bool{}

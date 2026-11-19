@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/letya999/hermes-hub/internal/commops"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,7 +12,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 // The same authored bootstrap and production service startup as the Docker leg,
@@ -22,7 +22,7 @@ func TestM32ToolHubStartupAndRecovery(t *testing.T) {
 	h := newM32Lifecycle(t, t.Context(), "", "prod", f)
 	stop := h.startToolHub(t, t.Context())
 	t.Cleanup(func() { stop() })
-	client := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	client := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	items := make([]commodel.Schedule, len(f.Users))
 	assignments := make([]commodel.Assignment, len(f.Users))
 	for i, user := range f.Users {

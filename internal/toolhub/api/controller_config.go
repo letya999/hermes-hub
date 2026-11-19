@@ -61,3 +61,37 @@ type CLIControllerConfig struct {
 	WarmMaxAgeSeconds int `json:"warm_max_age_seconds,omitempty"`
 	WarmMaxReuse      int `json:"warm_max_reuse,omitempty"`
 }
+
+// GenericControllerConfig is the operator-owned workload-controller input.
+type GenericControllerConfig struct {
+	HostingFleetRoot    string                    `json:"hosting_fleet_root,omitempty"`
+	HostingHelperVolume string                    `json:"hosting_helper_volume,omitempty"`
+	HostingOnly         bool                      `json:"hosting_only,omitempty"`
+	HostingCellInit     string                    `json:"hosting_cell_init,omitempty"`
+	Hosting             map[string]HostingProfile `json:"hosting,omitempty"`
+	StateRoot           string                    `json:"state_root"`
+	ToolHiveBinary      string                    `json:"toolhive_binary"`
+	SeccompProfile      string                    `json:"seccomp_profile"`
+	DockerFallback      bool                      `json:"docker_fallback,omitempty"`
+	BridgeBinary        string                    `json:"bridge_binary,omitempty"`
+	CredentialMountRoot string                    `json:"credential_mount_root,omitempty"`
+	Definition          ToolDefinition            `json:"definition"`
+	DynamicDefinitions  bool                      `json:"dynamic_definitions,omitempty"`
+	Budget              *WorkloadBudget           `json:"-"`
+	MaxActive           int                       `json:"max_active"`
+	IdleTTLSeconds      int                       `json:"idle_ttl_seconds"`
+	// CLI configures bounded-cli admission: the executor container the
+	// process lands in is inspected per call and only approved plans are
+	// admitted. Nil disables the CLI path entirely.
+	CLI *CLIControllerConfig `json:"cli,omitempty"`
+}
+
+// HostingProfile is operator-owned; agents never choose deployment inputs.
+type HostingProfile struct {
+	AdmissionDigest string `json:"admission_digest,omitempty"`
+	Owner           string `json:"owner"`
+	Environment     string `json:"environment"`
+	Volume          string `json:"volume"`
+	Image           string `json:"image"`
+	Runtime         string `json:"runtime"`
+}

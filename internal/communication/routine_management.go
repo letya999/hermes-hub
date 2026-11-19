@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http"
 	"slices"
 	"sort"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/routines"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 var ErrRoutineRevision = routines.ErrRoutineRevision
@@ -142,7 +142,7 @@ func (g *Gateway) writeRoutineCard(w http.ResponseWriter, ctx context.Context, i
 func (g *Gateway) getRoutineCard(ctx context.Context, id string, caller identity.Envelope) (RoutineCard, error) {
 	var card RoutineCard
 	err := g.automationCall(ctx, caller, "schedule.card", map[string]any{"id": id}, &card)
-	var control automation.ControlError
+	var control commops.ControlError
 	if errors.As(err, &control) && control.StatusCode == http.StatusNotFound {
 		return RoutineCard{}, ErrRoutineNotOwned
 	}

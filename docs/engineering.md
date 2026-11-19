@@ -1,6 +1,6 @@
 ---
 description: Engineering rules — Go conventions, gates, pins, change process, boundaries on dependencies.
-last_verified: 2026-11-08
+last_verified: 2026-11-19
 ---
 
 # Engineering rules
@@ -15,7 +15,7 @@ a separate copied Go module (MIT) kept out of the flatten.
 
 ## Gates
 
-- `just check` before delivery: format, docs (numbering/index/verified/size), vet.
+- `just check` before delivery: format, docs (numbering/index/verified/size), dependency gate, vet.
   Run affected packages with `just test <packages>`; concurrency changes also need
   targeted race tests. One repo-wide check at a time across local worktrees.
 - CI owns full race/shuffle tests, actionlint, static/security analysis, deployment
@@ -56,6 +56,20 @@ a separate copied Go module (MIT) kept out of the flatten.
   first, then the implementation.
 
 ## Dependency and code hygiene
+
+`devcheck deps` checks every binary's transitive dependency closure from
+`go list -deps`, including paths through shared helpers. Runtime, supervisor
+and communication cannot reach `internal/toolhub` or its automation server.
+Contracts may reach only stdlib, other contracts and the identity primitives;
+third-party imports and graph-load failures are errors too.
+
+`internal/devcheck/deps-baseline.txt` records the remaining module-local
+closure. New dependencies and stale baseline entries both fail. After a
+reviewed change, use `go run ./cmd/devcheck deps-baseline` to regenerate it;
+generation refuses hard forbidden edges. `hubctl` owns operator store
+migration after render; stack rendering and agent-tools never open ToolHub's
+store. The HTTP automation client and read-only legacy-spool bridge live in
+`commops`, apart from the automation engine.
 
 - No unsolicited framework/database/queue dependencies; stdlib first.
 - Never commit deployments, tokens, browser profiles, transcripts or real

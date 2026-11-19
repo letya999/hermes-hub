@@ -625,7 +625,7 @@ func run(ctx context.Context, args []string) error {
 		defer t.Close()
 		return t.Server().Run(ctx, &mcp.StdioTransport{})
 	case "render":
-		return stack.RenderEnvironment(*dir, *root, *environment)
+		return renderEnvironment(*dir, *root, *environment)
 	case "trace":
 		explicitUser := ""
 		f.Visit(func(fl *flag.Flag) {
@@ -723,7 +723,7 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	if op == "build" || op == "up" {
-		if err := stack.RenderEnvironment(*dir, *root, *environment); err != nil {
+		if err := renderEnvironment(*dir, *root, *environment); err != nil {
 			return err
 		}
 	}
@@ -1089,7 +1089,7 @@ func brokerStoreCommand(ctx context.Context, dir, root, env, op string) error {
 	if err != nil {
 		return err
 	}
-	if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
+	if err := renderEnvironment(abs, rootAbs, env); err != nil {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+env+".yaml")

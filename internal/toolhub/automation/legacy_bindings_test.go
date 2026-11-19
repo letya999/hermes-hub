@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 
 func TestLegacyBindingsReadInPlaceAndEnforceOwner(t *testing.T) {
 	root := t.TempDir()
-	b := legacyBindings{root: root}
+	b := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: root}}
 	for _, dir := range []string{"tasks/topic", "mappings"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
 			t.Fatal(err)
@@ -87,7 +88,7 @@ func TestHostCreateScheduleResolvesCommunicationOriginWithoutCopy(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	b := legacyBindings{root: legacy}
+	b := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: legacy}}
 	user := commodel.User{ID: "alice", Enabled: true, RuntimeID: "rt-alice", PolicyVersion: "policy-1", TelegramIDs: []int64{11}}
 	auth := identity.TelegramEnvelope("alice", 11, "rt-alice", "policy-1")
 	task := commodel.Task{TaskID: "task-origin", PrincipalID: "alice", ContextID: auth.ContextID, Channel: "telegram_bot", ChatID: 11, TopicID: 5, ConversationID: commodel.TaskConversation(11, "task-origin")}
@@ -118,7 +119,7 @@ func TestHostCreateScheduleResolvesCommunicationOriginWithoutCopy(t *testing.T) 
 	}
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	var destinations routines.RoutineDestinationPage
 	if err := client.Call(context.Background(), auth, "schedule.destinations", map[string]any{"limit": 20}, &destinations); err != nil || len(destinations.Items) != 2 || destinations.Items[1].TaskID != task.TaskID {
 		t.Fatalf("service destination listing: %+v, %v", destinations, err)

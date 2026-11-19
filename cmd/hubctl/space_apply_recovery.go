@@ -19,7 +19,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/reconcile"
-	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 // Its presence means an apply has not succeeded. Settings edits also retain
@@ -159,7 +158,7 @@ func restoreApplyState(dir, root string, record applyJournal) error {
 		return err
 	}
 	if record.Previous != "" {
-		if err := stack.RenderEnvironment(dir, root, record.Environment); err != nil {
+		if err := renderEnvironment(dir, root, record.Environment); err != nil {
 			return err
 		}
 	}

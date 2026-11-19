@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 func TestM32ReminderClockAndDeferredDelivery(t *testing.T) {
@@ -43,7 +43,7 @@ func (h *m32Lifecycle) dueWorkRecovery(t *testing.T, ctx context.Context, restar
 	if h.image != "" {
 		clock = time.Now().Add(15 * time.Second)
 	}
-	control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	for i, user := range h.f.Users {
 		allowed, err := (api.DecideClient{URL: h.toolURL, Token: h.control, Principal: user, Environment: h.environment}).GrantsRight(ctx, "channels", "send", "telegram_bot")
 		m32Require(t, err)
@@ -164,7 +164,7 @@ func (h *m32Lifecycle) dueWorkRecovery(t *testing.T, ctx context.Context, restar
 
 func (h *m32Lifecycle) pendingDeliveryFences(t *testing.T, ctx context.Context, restartToolHub func()) {
 	t.Helper()
-	control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	h.communicationOnline.Store(false)
 	defer h.communicationOnline.Store(true)
 	ids := make([]string, len(h.f.Users))

@@ -261,7 +261,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	applyStep("prepare")
 	// Reconcile acts on generated compose files — they must describe the
 	// revision just published, or rebuild/recreate hit "no such service".
-	if err := stack.RenderRevisionEnvironment(abs, rootAbs, env, rev.ID); err != nil {
+	if err := renderRevisionEnvironment(abs, rootAbs, env, rev.ID); err != nil {
 		return fail("render", err)
 	}
 	if err := advance("rendered"); err != nil {
@@ -455,7 +455,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 				// Shared services render in the infra space's project.
 				infraDir := stack.InfraSpaceDir(dir)
 				if service == "toolhub" && infraDir != dir {
-					if err := stack.RenderEnvironment(infraDir, filepath.Dir(filepath.Dir(dir)), env); err != nil {
+					if err := renderEnvironment(infraDir, filepath.Dir(filepath.Dir(dir)), env); err != nil {
 						return err
 					}
 				}

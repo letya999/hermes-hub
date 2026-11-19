@@ -17,6 +17,7 @@ default:
 check:
     go run ./cmd/devcheck format
     go run ./cmd/devcheck docs
+    go run ./cmd/devcheck deps
     go vet -p=2 ./...
 
 # Run the affected packages explicitly; the full suite runs in CI.

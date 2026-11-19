@@ -8,7 +8,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/sshcap"
-	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"os"
@@ -188,8 +187,6 @@ type Tools struct {
 	// the managed mount.
 	ToolPolicy        *api.ToolPolicySnapshot
 	StateDir          string
-	ToolHub           *toolhub.Store
-	ToolHubAuth       identity.Envelope
 	SSH               *sshcap.Service
 	SSHGrants         sshcap.Grants
 	sshErr            error
@@ -259,17 +256,6 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	if stateDir == "" {
 		stateDir = "/state"
 	}
-	toolHubStore, toolHubAuth, err := loadToolHub(stateDir)
-	if err != nil {
-		_ = w.Close()
-		if a != nil {
-			_ = a.Close()
-		}
-		if o != nil {
-			_ = o.Close()
-		}
-		return nil, err
-	}
 	communicationAuth := os.Getenv("HUB_COMMUNICATION_AUTH")
 	if communicationAuth == "" {
 		communicationAuth = os.Getenv("HUB_RUNTIME_AUTH")
@@ -303,7 +289,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 			boundaryPath = ""
 		}
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if _, err := t.boundary(); err != nil {
 		t.Close()
 		return nil, err
@@ -346,25 +332,6 @@ func loadToolPolicy() (*api.ToolPolicySnapshot, error) {
 		return nil, fmt.Errorf("tool policy: %w", err)
 	}
 	return policy, nil
-}
-
-func loadToolHub(stateDir string) (*toolhub.Store, identity.Envelope, error) {
-	path := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_STORE"))
-	if path == "" {
-		return nil, identity.Envelope{}, nil
-	}
-	store, err := toolhub.Load(path)
-	if err != nil {
-		return nil, identity.Envelope{}, fmt.Errorf("load ToolHub catalog: %w", err)
-	}
-	auth := runtimeEnvelope()
-	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
-		return nil, identity.Envelope{}, fmt.Errorf("ToolHub identity: %w", err)
-	}
-	store.Reconnect = &toolhub.ReconnectController{Store: store, Auth: auth, OnChange: func(change api.ProjectionChange) error {
-		return api.WriteReconnectMarker(stateDir, change)
-	}}
-	return store, auth, nil
 }
 
 func toolHubEnvOr(name, fallback string) string {

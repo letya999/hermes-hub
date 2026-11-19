@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"io"
 	"net/http"
 	"os"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/devcheck"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 func TestM32GatewayControlPrincipalIsolation(t *testing.T) {
@@ -24,7 +24,7 @@ func TestM32GatewayControlPrincipalIsolation(t *testing.T) {
 	h := newM32Lifecycle(t, ctx, "", "prod", f)
 	stop := h.startToolHub(t, ctx)
 	t.Cleanup(stop)
-	control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+	control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 	for i, user := range f.Users {
 		item := commodel.Schedule{ScheduleID: "m32-control-" + user, Envelope: f.Auth[user], OrganizationID: "personal", UserID: user, ActorID: user, ScopeID: "user:" + user, Channel: "telegram_bot", ChatID: int64(11 + i), Timezone: "UTC", Expression: "0 0 1 1 *", Input: "M32 future control isolation", JobKind: "reminder", Enabled: true}
 		m32Require(t, control.Call(ctx, f.Auth[user], "schedule.create", map[string]any{"schedule": item}, nil))

@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0330
 title: Enforce module boundaries with versioned contracts
 status: in_progress
-branch: feature/m40-v1-platform
+branch: feat/m40-v1-platform
 updated: 2026-11-19
-phase: design-complete
+phase: implementation
 adr: ADR-0105
 spec: SPEC-0100
 requirements: [R1.3, R2.1, R2.2, R2.3, R2.4, R2.5, R3.1, R3.2, R3.3, R4.3]
@@ -12,20 +12,45 @@ depends_on: [CHG-0328, CHG-0329]
 github_milestone: M40 - v1.0 Proactive Agent Platform
 github_issue: 574
 design_status: accepted
-implementation_status: not_started
+implementation_status: in_progress
 slices:
-  S2.1-contracts: not_started
-  S2.2-dependency-gate: not_started
-  S2.3-no-inprocess-store: not_started
+  S2.1-contracts: red
+  S2.2-dependency-gate: green
+  S2.3-no-inprocess-store: green
   S2.4-dto-moves: not_started
-  S2.5-docs: not_started
+  S2.5-docs: green
   S2.6-hub-binary: not_started
 validation:
-  documents: pending
-  just_check: not_run
+  documents: passed
+  just_check: passed
+  affected_packages: passed
   docker_check: not_run
-  red_team: not_started
+  red_team: local_regressions_passed
   live_acceptance: not_applicable
-evidence: []
-remaining: []
-limitations: []
+evidence:
+  - "Source base: 3955d88b plus local CHG-0330 diff; no published SHA/run URL."
+  - "TestContractDependenciesCannotBeSkipped: red before fixing discarded external imports and hidden go-list failures, green afterward."
+  - "TestExecutorNeverOpensToolHubStore and TestRenderDoesNotOpenToolHubStore: corrupt-store regression red before isolation, green afterward."
+  - "TestOperatorRenderKeepsToolHubMigration passed: pure rendering ignores the store; the operator path still validates/migrates it after rendering."
+  - "TestWorkspaceBoundaryCannotLoseRevisionFenceThroughEnv: missing and foreign activation markers were accepted without the env claim before the fix, refused after it without creating a file."
+  - "TestRuntimeDoesNotLinkToolHub passed for cmd/runtime, cmd/supervisor and cmd/communication."
+  - "Automation HTTP client and read-only legacy-spool bridge moved into commops; old cutover and readonly SQLite tests retained."
+  - "Generated shrink-only baseline after hard edges were removed; deps caught a stale cmd/hubctl automation edge, which was deleted. devcheck deps passed."
+  - "No model tool name/schema/effect/result changed: removed store branches were unreachable in managed runtime wiring and legacy service operations are not cataloged."
+  - "Scoped go vet passed for commops, communication, toolhub and cmd/hubctl after transient Windows launch refusals."
+  - "Test side artifacts from the existing lifecycle fixture were moved, without reading content, into ignored .work/tmp/chg0330-test-artifacts. Missing-path fixture now uses t.TempDir."
+  - "Task contract and wire transport inherited from the prior session; TestBearerSchemeRequired exposed raw-token acceptance (HTTP 200, backend_calls=1), then passed with refusal before backend."
+  - "just check passed with dependency gate enabled."
+  - "Full affected just test passed: contracts, devcheck, agenttools, stack, commops, communication, runtime, supervisor, toolhub/api/automation, locale, cmd/hubctl/toolhub/communication."
+  - "Final review added TestOperatorMigrationRejectsRenderedPolicyDrift: migration returned nil before the fence; now it returns conflict without changing the store."
+  - "Gitleaks over the complete staged checkpoint, including new files: no leaks."
+  - "go test -short -race -run TestOperatorMigrationRejectsRenderedPolicyDrift ./cmd/hubctl passed; this is a local synthetic drift test, not live deployment acceptance."
+  - "Final operator-fence source: just check passed; just test ./cmd/hubctl ./internal/locale passed. All other affected packages retain the preceding full passing receipt."
+remaining:
+  - "Finish task/v1 supervisor server and ToolHub consumer, identity/v1 and toolsurface/v1 with real-owner conformance."
+  - "Move RunContext DTO and classification methods; keep remaining api logic on the baseline for CHG-0337."
+  - "Add hub serve --zone control|agent|edge and thin legacy entrypoints."
+  - "New contracts and cmd/hub will require a reviewed baseline update."
+limitations:
+  - "Live stack unchanged; Docker/CI acceptance is not claimed."
+  - "Windows sometimes refuses freshly built compile/test executables; no safety check was disabled."

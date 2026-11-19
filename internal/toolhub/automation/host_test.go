@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -404,7 +405,7 @@ func TestSampleWatchUsesOwnerHostWithoutAdvancingCursor(t *testing.T) {
 	}
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	var result watchSample
 	if err := client.Call(context.Background(), bob, "schedule.sample", map[string]any{"id": schedule.ScheduleID}, &result); err == nil {
 		t.Fatal("foreign owner sampled watch")
@@ -2334,7 +2335,7 @@ func TestAuthorizeOccurrenceReauthorizesAtSendTime(t *testing.T) {
 	host := h.host(t)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	item := draft("rem-fence", alice)
 	item.JobKind = "reminder"
 	item.Expression = "once:" + h.now.Add(time.Minute).Format(time.RFC3339)
@@ -2452,7 +2453,7 @@ func TestAuthorizeOccurrenceAuthorizesSettledFailureNotice(t *testing.T) {
 	host := h.host(t)
 	server := httptest.NewServer(host.ControlHandler("control"))
 	defer server.Close()
-	client := ControlClient{URL: server.URL, Token: "control"}
+	client := commops.ControlClient{URL: server.URL, Token: "control"}
 	host.cfg.Fetch = func(context.Context, string) ([]byte, error) {
 		return nil, errors.New("source exploded")
 	}

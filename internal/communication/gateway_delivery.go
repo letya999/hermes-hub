@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"log"
 	"os"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 // editThrottle bounds status-message edits to one per interval per chat
@@ -276,7 +276,7 @@ func (g *Gateway) routineJobLive(job Job) (bool, error) {
 		Allow bool `json:"allow"`
 	}
 	err := g.automationCall(context.Background(), caller, "occurrence.authorize", map[string]any{"id": job.ID, "kind": "job"}, &reply)
-	var control automation.ControlError
+	var control commops.ControlError
 	switch {
 	case err == nil:
 		return reply.Allow, nil
@@ -313,7 +313,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			Allow bool `json:"allow"`
 		}
 		err := g.automationCall(ctx, caller, "occurrence.authorize", map[string]any{"id": delivery.OccurrenceID, "kind": delivery.Kind}, &reply)
-		var control automation.ControlError
+		var control commops.ControlError
 		switch {
 		case err == nil && reply.Allow:
 		case err == nil, errors.As(err, &control) && control.StatusCode >= 400 && control.StatusCode < 500:

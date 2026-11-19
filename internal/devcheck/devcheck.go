@@ -97,6 +97,11 @@ func mainModule() string {
 	if err != nil {
 		return ""
 	}
+	return mainModuleAt(dir)
+}
+
+func mainModuleAt(dir string) string {
+	dir, _ = filepath.Abs(dir)
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err == nil {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"io"
 	"net"
 	"net/http"
@@ -305,7 +306,7 @@ func TestM32DreamingRelayIsolationAndRecovery(t *testing.T) {
 		if len(schedules) != 0 {
 			t.Fatal("protected dreaming or its intent leaked into ordinary schedules")
 		}
-		control := automation.ControlClient{URL: h.toolURL, Token: h.control}
+		control := commops.ControlClient{URL: h.toolURL, Token: h.control}
 		if err := control.Call(ctx, f.Auth[user], "schedule.pause", map[string]any{"id": "system-dreaming", "expected_revision": 1}, nil); err == nil {
 			t.Fatal("ordinary ToolHub control paused the protected system routine")
 		}

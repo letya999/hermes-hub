@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/commops"
 	"log"
 	"os"
 	"path/filepath"
@@ -213,7 +214,7 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 	loadMapping := func(id string) (commodel.JobMapping, error) { return h.queue.loadMapping(principal, id) }
 	loadTask, listTasks, topicTask := h.tasks.load, h.tasks.list, h.tasks.topic
 	if h.cfg.LegacySpoolDir != "" {
-		bindings := legacyBindings{root: h.cfg.LegacySpoolDir}
+		bindings := legacyBindings{LegacySpoolReader: commops.LegacySpoolReader{Root: h.cfg.LegacySpoolDir}}
 		loadTask, listTasks, topicTask = bindings.loadTask, bindings.listTasks, bindings.topicTask
 		loadMapping = func(id string) (commodel.JobMapping, error) {
 			mapping, err := h.queue.loadMapping(principal, id)
@@ -1223,7 +1224,7 @@ func (h *Host) loadEngines() error {
 // clock is enabled. Recover repeats it before writing durable state.
 func (h *Host) ValidateStorage() error {
 	if h.cfg.LegacySpoolDir != "" {
-		if err := ValidateLegacySpool(h.cfg.LegacySpoolDir); err != nil {
+		if err := commops.ValidateLegacySpool(h.cfg.LegacySpoolDir); err != nil {
 			return err
 		}
 	}

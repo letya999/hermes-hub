@@ -18,14 +18,7 @@ import (
 )
 
 // HostingProfile is operator-owned; agents never choose images, volumes or runtimes.
-type HostingProfile struct {
-	AdmissionDigest string `json:"admission_digest,omitempty"`
-	Owner           string `json:"owner"`
-	Environment     string `json:"environment"`
-	Volume          string `json:"volume"`
-	Image           string `json:"image"`
-	Runtime         string `json:"runtime"`
-}
+type HostingProfile = api.HostingProfile
 
 func (c *genericController) hostingProfile(w hosting.Workload) (HostingProfile, error) {
 	p, ok := c.config.Hosting[w.Binding.Owner+"/"+w.Binding.Environment]

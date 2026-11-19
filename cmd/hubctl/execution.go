@@ -81,7 +81,7 @@ func selectExecution(ctx context.Context, dir, sourceRoot, spool string, selecti
 	// Rendering is explicit and reversible. A failure leaves the gateway stopped
 	// with the durable selection/report available for repair, never half-executed work.
 	if apply {
-		if err := stack.RenderEnvironment(dir, sourceRoot, selection.Environment); err != nil {
+		if err := renderEnvironment(dir, sourceRoot, selection.Environment); err != nil {
 			return fmt.Errorf("selection saved; render failed with services stopped: %w", err)
 		}
 	}
