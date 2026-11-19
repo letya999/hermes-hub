@@ -1,143 +1,93 @@
 ---
-description: v1 proactive-engine - listeners and a durable event inbox, one object model (Watch, Routine, Assignment), a seven-stage pipeline, task and progress ledgers per assignment, and an attention inbox with message budgets.
-last_verified: 2026-11-19
+description: v1 proactive-engine - the only owner of what wakes the agent (Routine, Occurrence, Assignment, Goal, Watch), deterministic occurrence ids, identity and grants resolved at fire time, jobs only through task-engine with origin unprompted; listeners, ledgers and attention are M41.
+last_verified: 2026-11-20
 ---
-# ADR-0108: Proactive engine - listeners, one object model, ledgers, attention
+# ADR-0108: Proactive engine
 
-Status: accepted direction (M40, owner issue #572). Date: 2026-11-19.
-Delivery: CHG-0344 (proactive-engine extraction and migration), CHG-0345
-(listeners and event inbox), CHG-0346 (pipeline, ledgers, report protocol),
-CHG-0347 (attention), CHG-0349 (adaptive planning), CHG-0352 (eval gate).
+Status: proposed. Aligned 2026-11-20 with the simplified v1 plan (M40.1
+#599, CHG-0334); the 2026-11-19 text was never merged to `dev`. Record text
+awaits owner review. M40 delivers the extraction (D1-D5); the M41 section
+records the direction for later work without adding its concepts to M40
+code (rule S3, [engineering.md](../engineering.md)).
+Delivery: M40.10 (#608). Later: M41 items 1-6.
 Supersedes: ADR-0041 (proactive automation on the occurrence pipeline).
-Partly supersedes: ADR-0082 (standing assignments: the state machine D1 and
-materialization D2 are replaced; acquisition sharing D5 and re-validation D4
-are kept), ADR-0075 (goal mode becomes an Assignment with criteria; the
-compaction half stays), ADR-0095 (automation ownership moves from ToolHub to
-proactive-engine). Prior art: CHG-0328 `research.md`.
+Partly supersedes: ADR-0082 (standing assignments: state machine and
+materialization replaced; re-validation D4 and acquisition sharing D5
+kept), ADR-0075 (goal mode moves to proactive-engine; the compaction half
+stays), ADR-0095 (automation ownership moves from ToolHub).
 
 ## Context
 
-v0 proactive behaviour is spread over five object kinds in four packages:
-routines and occurrences (`internal/routines`), ToolHub automation
-(dispatch, outbox, assignments, watches, dreaming), commodel routine and
-assignment records, communication goal/watcher code and the runtime goal
-judge. Each has its own clock or trigger, its own delivery path and its own
-notion of "done". Event subscriptions poll connector read tools; nothing
-receives pushed events. The owner cannot see why the agent did or did not
-message them, and there is no shared budget for interruptions.
+v0 proactive behaviour is spread over routines and occurrences
+(`internal/routines`), ToolHub automation (dispatch, outbox, event batches,
+dreaming), communication goals and watchers, the runtime goal judge and
+agent-tool routes. Each has its own clock, delivery path and notion of
+"done". The 2026-11-19 audits found wedges in this code (dreaming
+occurrence, event batch after a schedule edit, paused assignment apply,
+goal lost update); M40.0 (CHG-0333) fixes them in place and M40.10 folds the
+fixes into the new machines ([state-machines.md](../state-machines.md)).
 
 ## Decisions
 
-1. **proactive-engine owns proactive state.** One control-zone module owns
-   listeners, the event inbox, Watch/Routine/Assignment records, their
-   ledgers and the attention inbox. It submits all execution to task-engine
-   (ADR-0107 D5) and never spawns or calls runtimes itself. Its clock is the
-   only proactive clock.
-2. **Listeners and a durable event inbox.** A listener is a declared source
-   adapter: `poll` (connector read tool or HTTP on an interval, with
-   `ETag`/`Last-Modified` reuse from ADR-0082 D5), `push` (signed webhook
-   received at hub-edge), or `stream` (bounded long-lived subscription). Every
-   event is written to the inbox before any processing, keyed by
-   `(listener, source_event_id)` for dedupe, with a per-listener cursor.
-   Event content is untrusted data, never instructions (CaMeL-style split:
-   triage may read it, it cannot widen grants or choose tools).
-3. **Three object kinds, one model.**
-   - *Watch* - a deterministic condition over inbox events that produces a
-     notice candidate. No model call unless its `escalate` step is set.
-   - *Routine* - clock-triggered work (reminder, digest, check, script,
-     brief). Deterministic kinds never wake a model (ADR-0107 D5).
-   - *Assignment* - a long-running owner intent with acceptance criteria,
-     budget (wakes, tokens, wall time) and a deadline. It may own Watches and
-     Routines it materializes, and carries the two ledgers (D5).
-   All three share owner, agent profile, grants (subset of the profile),
-   action mode (ADR-0109), revision fence and lifecycle (D6).
-4. **Seven-stage pipeline.** Every proactive unit of work passes the same
-   stages; each stage writes its outcome before the next starts:
+1. **proactive-engine owns what wakes the agent.** Routine, Occurrence,
+   Assignment, Goal and Watch live in `proactive.db`. Its clock is the only
+   proactive clock. It submits all execution to task-engine and never
+   spawns or calls runtimes itself.
+2. **One state machine per kind,** each a table in the service README and
+   in [state-machines.md](../state-machines.md), with a deadline and
+   sweeper for every non-final state (ADR-0111). A failed occurrence
+   settles `failed` after its attempt limit; it never blocks the next one.
+3. **Deterministic occurrence id** from (tenant, routine, slot). It is the
+   idempotency key of the job it creates, so a repeated wake collapses.
+4. **Identity and grants resolve at fire time,** not at creation. A routine
+   whose owner lost the right does not fire.
+5. **Jobs only through task-engine,** with `origin=unprompted`. Unprompted
+   runs are read-only by default; anything beyond write-local needs an
+   OwnerDecision (ADR-0109). Agent paths may create drafts only;
+   activation, widening and budget extension are owner actions (ADR-0082
+   D4 kept).
 
-   | Stage | Does | May call a model |
-   |---|---|---|
-   | 1 ingest | listener writes the event to the inbox | no |
-   | 2 normalize | parse to a typed event, bound size, strip active content | no |
-   | 3 dedupe | drop repeats by key and by content digest window | no |
-   | 4 match | route to Watches/Assignments whose filters match | no |
-   | 5 triage | deterministic filters first, then a bounded model judgment for the remaining candidates | yes (quarantined, read-only) |
-   | 6 act | create a task-engine job under the owner's profile, grants and mode | yes (in runtime) |
-   | 7 report | write a report record through the report protocol to attention | no |
+## Later (M41)
 
-   A unit can stop at any stage with a recorded reason (`no_match`,
-   `filtered`, `below_threshold`, `budget_exhausted`, ...). Stage records are
-   the answer to "why didn't you tell me".
-5. **Task ledger and progress ledger per Assignment** (Magentic-One).
-   The *task ledger* holds facts given, facts to look up, facts derived,
-   the current plan and the acceptance criteria. The *progress ledger* is
-   appended after every act step: `criteria_met`, `progress_made`,
-   `loop_detected`, `blocked_on`, `next_step`. Two consecutive steps without
-   progress, or a detected loop, trigger a replan; three replans without
-   progress move the Assignment to `waiting_owner` with the ledger excerpt as
-   evidence. The judge never marks criteria met without evidence references
-   (ledger entries or artifacts).
-6. **Lifecycle (all three kinds).**
+Recorded so M40 code leaves room for them; none of these concepts enters
+M40 code:
 
-   | From | Event | To |
-   |---|---|---|
-   | - | owner creates (or agent drafts) | draft |
-   | draft | owner confirms | active |
-   | active | budget or deadline reached | waiting_owner |
-   | active | owner decision required (ADR-0109) | waiting_owner |
-   | waiting_owner | owner extends, answers or edits | active |
-   | active, waiting_owner | owner pauses | paused |
-   | paused | owner resumes | active |
-   | active | criteria met with evidence (Assignment) or end of schedule | completed |
-   | active | unrecoverable error | failed |
-   | any non-terminal | owner cancels or grant revoked | cancelled |
-
-   Agent paths can create `draft` only; activation, widening and budget
-   extension are owner actions (ADR-0082 D4 kept).
-7. **Report protocol.** Act results reach the owner only as report records:
-   `{source, severity (info|attention|urgent), summary, evidence_refs,
-   proposed_actions, dedupe_key}`. A runtime cannot message the owner
-   directly from proactive work; it emits a report.
-8. **Attention inbox and budgets.** Reports land in a per-owner attention
-   inbox. A deterministic policy decides `interrupt` (send now), `digest`
-   (batch into the next digest) or `log` (visible on request only) from
-   severity, owner rules, quiet hours and a daily interrupt budget per owner
-   and per Assignment. `urgent` bypasses quiet hours but not the budget
-   ceiling set by the owner; over-budget reports degrade to digest with a
-   counter. Every decision is recorded with its reason.
+- Event sources and watches: poll first, push through ingress-gateway
+  webhooks; a watch keeps a baseline and calls the model only on change;
+  silent result by default. Heartbeat is a routine kind.
+- Assignments with task and progress ledgers; stall detection, replan,
+  `waiting_owner` after repeated stalls.
+- Attention: notices with class `log | digest | interrupt`, a `why` built
+  from data, quiet hours and an interrupt budget in the `config` passport.
+- Modes and standing approvals over the M40 effect vocabulary (ADR-0109).
+- Evaluation gate for proactivity and memory.
 
 ## Boundary crossings
 
 | Crossing | Allowed | Refused |
 |---|---|---|
-| source -> listener | signed push (hub-edge verifies), polls through egress-gateway under the owner's grants | unsigned push, polls with another owner's connection |
-| event -> triage model | event as quarantined data, read-only tools | tool grants, destination choice, grant changes derived from content |
-| proactive-engine -> task-engine | jobs as the owner's agent profile with `initiator=system:proactive-engine` | jobs as a system principal with user credentials |
-| runtime -> owner (proactive) | report records only | direct channel sends bypassing attention |
-| agent -> Assignment | draft creation, ledger append inside its run | activation, budget extension, grant widening |
+| proactive-engine -> task-engine | jobs as the owner's agent with `origin=unprompted` and the occurrence id as key | jobs as a system principal with user credentials |
+| proactive-engine -> runtime | nothing | direct runtime calls |
+| agent -> routine or assignment | drafts through tool-hub | activation, budget extension, grant widening |
+| event or tool content -> authority | data for the run | changing grants, modes or destinations |
 
 ## Alternatives
 
-- **Keep routines in ToolHub and add listeners there.** Rejected: tool
-  admission and proactive state have different owners and failure modes
-  (ADR-0105 naming rule).
-- **Model-only triage.** Rejected: deterministic filters first keep cost and
-  false alarms bounded (ADR-0082 D6 evidence).
-- **Free-form agent messages to the owner.** Rejected: no budget, no
-  dedupe, no audit of why.
+- **Keep automation inside ToolHub.** Rejected: tool admission and
+  proactive state have different owners and failure modes (ADR-0105).
+- **Build listeners, pipeline and attention in M40.** Moved to M41: M40
+  keeps every existing proactive feature and adds no new one.
 
 ## Preserved v0 invariants
 
-- Default-deny: an object's grants are a subset of its profile's.
-- Fail-closed passports: a revoked or stale revision fences queued work
-  (ADR-0082 D4).
-- Uncertain outcomes are never retried; reports state uncertainty.
-- Credentials never enter the model plane: listeners use connection
-  references; injection happens at egress-gateway.
+- Default-deny: a routine's grants are a subset of its owner's.
+- Fail-closed passports: a revoked or stale revision fences queued work.
+- Uncertain outcomes are never retried.
 - Deterministic routines never wake a model.
+- Credentials never enter the model plane.
 
 ## Migration
 
-CHG-0344 converts existing routines, assignments, watches, goals and the
-dreaming schedule into the new records losslessly (every field mapped or
-explicitly retained as `legacy`), with a dry-run report and a refusal on
-any unmapped record. No v0 record is deleted by the migration.
+M40.10 imports per-user JSON stores, event state, occurrences, dreaming
+days and communication goals into `proactive.db` with a dry-run report and
+a refusal on any unmapped record. No v0 record is deleted by the import.

@@ -1,156 +1,116 @@
 ---
-description: v1 identity - identity-hub owns principals and channel identities, layers platform -> org -> user with agent profiles as user sub-entities and system principals, signed run tokens on every agent call, signed policy bundles as the only authority.
-last_verified: 2026-11-19
+description: v1 identity - identity-hub owns principals, orgs, roles, channel links and run tokens; layers platform -> org -> user -> agent live in the six passports held by spawn-controller; one signed run token per run with an aud list.
+last_verified: 2026-11-20
 ---
-# ADR-0106: Identity, layers, run tokens and policy bundles
+# ADR-0106: Identity, layers in passports, one run token per run
 
-Status: accepted direction (M40, owner issue #572). Date: 2026-11-19.
-Delivery: CHG-0331 (identity-hub), CHG-0332 (run tokens and policy bundles).
+Status: proposed. Rewritten 2026-11-20 for the simplified v1 plan (M40.1
+#599, CHG-0334); direction agreed with the owner on 2026-11-20, record text
+awaits owner review. The 2026-11-19 version (layers, profiles and
+break-glass inside identity-hub, signed policy bundles) was never merged to
+`dev` and is replaced.
+Delivery: M40.5 (identity-hub, #603), M40.3 (layer passports in
+spawn-controller, #601), M40.14 (run tokens, #612).
 Builds on ADR-0011 (stable identifiers) and ADR-0100 (verified-principal
-envelope); both stay in force. Revisits the "no new tokens" scope recorded in
-#397 (D4 below); required by #401 (tenant identity propagation).
+envelope); both stay in force.
 
 ## Context
 
-- The verified edge mints `identity.Envelope` (ADR-0100), but downstream
-  calls are trusted by headers: `internal/runtime/mcp_proxy.go` stamps
-  `X-Hub-Job-ID`/`X-Hub-Run-ID`, and ToolHub verifies them by looking up the
-  supervisor's durable job record (`api.RunAuthority`, #397). That lookup
-  works only for a caller that can reach the job store synchronously; the
-  model-gateway, memory-hub and egress-gateway of ADR-0105 cannot, and a
-  shared relay cannot tell tenants apart by which container received the
-  request (#401).
-- Principals live in three places: `communication.users.yaml`,
-  `TELEGRAM_ALLOWED_USERS` and the optional bundled ZITADEL issuer
-  (`identity-hub` container, ADR-0100 appendix A).
-- Policy authority is a set of generated files on a shared volume selected
-  by `generated/passports/current`; every reader re-validates digests on its
-  own.
-- Proactive work (routines, assignments, watchers) runs "as the user" with
-  no record that the platform, not the user, initiated it.
+- Downstream calls are trusted by headers: the runtime MCP proxy stamps
+  `X-Hub-Job-ID`/`X-Hub-Run-ID` and ToolHub looks the run up in the
+  supervisor's job store (`RunAuthority`, #397). Services that cannot reach
+  that store cannot verify a caller, and a shared relay cannot tell tenants
+  apart (#401).
+- Principals lived in three places (`communication.users.yaml`,
+  `TELEGRAM_ALLOWED_USERS`, the optional ZITADEL issuer). CHG-0331 built a
+  control-zone registry and cut the gateway over to it.
+- The first token work (CHG-0332) signed run tokens, policy bundles and
+  several per-purpose service tokens inside the v0 topology (identity in
+  the supervisor, `cmd/hub`). It is parked: committed slices stay on this
+  branch, the unfinished part is commit `6e6b53c6` on
+  `chore/park-chg-0332-run-tokens`. M40.14 redoes it on the v1 services and
+  reuses its tests and verifier.
 
 ## Decisions
 
-1. **identity-hub owns principals and channel identities.** One registry in
-   the control zone holds principals, layers, agent profiles and verified
-   channel identities. `communication.users.yaml` and
-   `TELEGRAM_ALLOWED_USERS` become import sources, read once by a migration,
-   then retired. The bundled or external OIDC issuer (ADR-0100 appendix A)
-   is an authentication source that links to a principal; it is not the
-   registry.
-2. **Three layers, narrowing only.** `platform -> org -> user`. The platform
-   layer (operator) publishes catalogs and ceilings; an org layer narrows
-   them; a user layer narrows the org. Effective rights are the intersection;
-   no lower layer can widen a higher one. A user without an org inherits the
-   platform layer directly. Each layer supplies skills, guardrail policies
-   and memory scopes to spawn-controller templates. The company brain belongs
-   to the org layer and its shared space, under the same narrowing rules.
-3. **Principal kinds.**
-   - *human* - a user principal (stable opaque id, ADR-0011).
-   - *agent profile* - a named sub-entity of exactly one user (for example
-     `research`, `inbox`), with its own action-mode default and a grant set
-     that is a subset of the user's. It never exists without its user and is
-     deleted with it. Credentials stay the user's; the profile only narrows.
-   - *system principal* - `system:<service>` for platform-initiated work
-     (proactive-engine clock, watchdog). A system principal holds no user
-     credentials and no user grants. Work done for a user is executed as that
-     user's agent profile; the initiating system principal is recorded as
-     `initiator`, never as the acting principal.
-4. **Run tokens replace header trust.** The token service in identity-hub
-   signs tokens (Ed25519, compact JWS) for an admitted run. Token kinds are
-   `run`, `link` and `service`, with distinct verification purposes. Run
-   claims are `sub`, `act`, `org`, `space`, `conversation` or `assignment`,
-   `task`, `run`, `gen`, `policy_rev`, `origin`, `mode` and `exp`; issuer,
-   audience and key id bind the token to its issuing service, recipient and
-   signing key. Expiry is bounded by the run deadline. The runtime receives the token
-   through its private `/v1/jobs` contract and attaches it to every agent
-   call; it never mints or edits one. Verifiers (tool-hub, memory-hub,
-   model-gateway, egress-gateway) verify signature, audience and expiry
-   locally. RunAuthority remains the check for live generation and
-   revocation, reached through `task/v1` rather than direct store access.
-   The durable job record stays the authority for run state; a signed token
-   cannot keep a terminated, revoked or superseded run alive.
-5. **Refusals happen before any backend.** A missing, unsigned, expired,
-   wrong-audience, cross-space, run-aliased (token `run` differs from the
-   call's run) or stale-generation token is refused with a typed error and an
-   allowlisted audit record. There is no fallback to headers and no default
-   tenant.
-6. **Signed policy bundles.** The publisher compiles the six passports plus
-   the org and platform layers into one immutable bundle: canonical JSON,
-   digest = policy version, signed with the hub-control policy key. Every
-   consumer loads a bundle by digest, verifies the signature and refuses an
-   unknown, unsigned or mismatched bundle. `generated/passports/current`
-   becomes a pointer to a bundle digest; the shared-volume files stay a cache,
-   never authority.
-7. **Key custody.** identity-hub's token service generates and retains
-   run, link, service and policy signing keys in the control zone. Only public keys
-   leave hub-control (identity contract, key id in every token). Keys rotate
-   with an overlap window of one maximum run budget. They are never delivered
-   to a runtime, a worker or the model; credential-broker remains the only
-   authority for user and connector credentials (ADR-0105 D7).
-8. **Explicit membership and administration.** Minimal roles are
-   `platform-admin`, `org-admin` and `member`, scoped to their platform or
-   organization. System principals receive rights only through explicit
-   grants. Super-admin authority is an audited, scoped break-glass grant,
-   never a principal kind or an implicit authorization bypass.
-
-## Lifecycles
-
-Channel identity link (identity-hub):
-
-| From | Event | To |
-|---|---|---|
-| - | owner starts a link (code, OIDC, operator import) | pending |
-| pending | proof verified (channel echo, OIDC `sub`) | verified |
-| pending | proof expired or rejected | gone |
-| verified | owner or operator revokes | revoked |
-| verified | principal deleted | gone |
-
-Only `verified` maps a transport id to a principal; `revoked` and `gone`
-deny and are kept for audit.
-
-Run token (per run): `issued -> presented* -> expired`; a generation bump
-or run termination makes every outstanding token stale at once.
+1. **identity-hub owns who is who.** Principal (human, agent, system),
+   Org, roles, ChannelLink, signing keys and run tokens, in `identity.db`.
+   `communication.users.yaml` and `TELEGRAM_ALLOWED_USERS` are import
+   sources, read once by a migration, then deleted. An OIDC issuer is an
+   authentication source linked to a principal, not the registry; the
+   bundled ZITADEL container is renamed `oidc-provider`.
+2. **Layers live in passports.** Layers are `platform -> org -> user ->
+   agent` (a special agent or a subagent). Each layer carries all or part
+   of the same six passports (`stack`, `config`, `models`, `workspace`,
+   `tools`, `grants`); a lower layer only narrows. spawn-controller stores
+   the layer passports and computes the effective spec with the existing
+   passport compiler, plus a digest. identity-hub only knows membership and
+   roles. Editors: platform-admin, org-admin, the user, and the user for
+   their own agents. The layer, profile and break-glass APIs of the
+   CHG-0331 registry are deleted in M40.5.
+3. **Principal kinds.** *human* (stable opaque id, ADR-0011); *agent*,
+   owned by one human, never holding credentials of its own; *system*
+   (`system:<service>`) for platform-initiated work, holding no user
+   credentials. Group-chat participants other than the space owner are
+   *guests*: opaque ids, untrusted input, never approvers, no grants.
+4. **Channel links need in-channel proof.** A link is `pending` until the
+   observed sender echoes the code in that channel; only then is it
+   `verified`. An OIDC callback leaves the link pending. Enrolment hints are
+   sent only in private chats. Only `verified` maps a transport id to a
+   principal (state machine: [state-machines.md](../state-machines.md)).
+5. **One run token per run.** identity-hub signs (Ed25519, compact JWS) one
+   token per run with claims `sub`, `agent`, `space`, `run`, `parent_run`,
+   `gen`, `policy_digest`, `origin` (`owner|unprompted`), `aud` (the list
+   of services this run may call) and `exp`. task-engine requests it at
+   admission, spawn-controller delivers it to the runtime session, the
+   runtime attaches it and never mints one. A subagent run gets its own
+   token with `parent_run`.
+6. **Verification.** Each verifier (tool-hub, memory-hub, model-gateway,
+   channel-hub, egress-gateway, proactive-engine) checks the signature, its
+   own name in `aud` and expiry locally, then generation and revocation at
+   task-engine (cached per run). Missing, forged, expired, wrong-audience,
+   foreign-space, run-aliased, stale-generation or policy-mismatched tokens
+   are refused before any backend. There is no header identity and no
+   unsigned admission.
+7. **No signed policy bundles.** A policy slice is read by digest over an
+   authenticated call to spawn-controller; the digest in the token binds
+   the run to it. The signed-bundle machinery of CHG-0332 is not carried
+   into v1.
+8. **Key custody.** Signing keys live in `identity.db` and never leave
+   identity-hub; public keys are published through the identity contract
+   and cached by verifiers. Keys rotate with an overlap of one maximum run
+   budget.
+9. **Administration.** Roles `platform-admin`, `org-admin`, `member`,
+   scoped to their platform or org. Operator deactivation goes through an
+   audited role, never a bearer bypass.
 
 ## Boundary crossings
 
 | Crossing | Allowed | Refused |
 |---|---|---|
-| channel -> identity-hub | verified transport id resolves to one principal | unknown id, revoked link, display name or email as key |
-| runtime -> agent zone | calls with a valid run token for that audience | everything in D5 |
-| agent profile -> grants | subset of its user's effective grants | widening, another user's credentials |
-| system principal -> work | creating jobs for a user through an assignment the user owns | acting with user credentials directly, impersonating the user as `sub` |
-| principal -> administration | current scoped membership or explicit audited break-glass grant | system principal without a grant, implicit super-admin bypass |
-| consumer -> policy bundle | signed bundle by digest | unsigned file, pointer without bundle, foreign space bundle |
+| channel -> identity-hub | verified transport id resolves to one principal | unknown id, pending or revoked link, display name or email as key |
+| runtime -> any verifier | calls with a valid run token naming that verifier in `aud` | everything in D6 |
+| agent -> rights | the narrowed agent layer of its user's passports | widening, another user's credentials |
+| system principal -> work | jobs for a user through a routine or assignment the user owns, `origin=unprompted` | acting with user credentials, appearing as the user in `sub` |
+| guest -> decisions | messages as untrusted data | approving, granting, raising a mode |
 
 ## Alternatives
 
-- **Header assertions backed only by `RunAuthority` (#397).** Rejected:
-  shared relays need a signed identity carrier (#401). RunAuthority is kept
-  for generation and revocation; it does not replace signature verification.
-- **HMAC tokens with a cluster key.** Rejected: every verifier would hold a
-  signing secret; asymmetric keys keep signing in hub-control.
-- **mTLS per space as tenant identity.** Deferred: it proves the network
-  peer, not the run; it can be added under tokens later without contract
-  change.
-- **ZITADEL as the principal registry.** Rejected: an external issuer is
-  optional (ADR-0100); the registry must work in local mode.
+- **Header assertions backed only by `RunAuthority`.** Rejected: services
+  without the job store need a signed carrier; RunAuthority remains the
+  generation and revocation check at task-engine.
+- **Several per-purpose service tokens and token exchange.** Rejected for
+  v1: one run token with an `aud` list covers every caller; token exchange
+  and `act` chains are not needed without a second use.
+- **Signed policy bundles.** Rejected: digest plus authenticated read gives
+  the same integrity with less machinery.
+- **Layers inside identity-hub.** Rejected: layers are passports; keeping
+  them in two places is the drift the passports removed.
 
 ## Preserved v0 invariants
 
-- Default-deny: tokens carry no grants; grants come from the bundle.
-- Fail-closed passports: a missing or foreign bundle denies.
+- Default-deny: tokens carry no grants; grants come from the effective spec.
+- Fail-closed passports: a missing or foreign digest denies.
 - Uncertain outcomes are never retried; a token does not authorize replay.
-- Credentials never enter the model plane: tokens carry ids, never secrets,
-  and runtimes cannot mint them.
+- Credentials never enter the model plane: tokens carry ids, never secrets.
 - ADR-0100 D1: transport ids never become routing or authorization keys.
-
-## Appendix A: Legacy shared-space migration (2026-11-19)
-
-Legacy dedicated group spaces remain shared resources and preserve their
-explicit member ACLs. Empty member lists freeze the existing enabled Telegram
-membership. Channel-only members receive no private home or org role.
-Disabled or retired identities cannot reappear through a guest alias. Tokens
-distinguish the verified human `sub`, its owned agent `act`, and the shared
-target `space`. The shared passport and credential namespace and existing
-session IDs remain stable.

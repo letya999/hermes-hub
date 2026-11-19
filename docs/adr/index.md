@@ -1,16 +1,19 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: "2026-11-19"
+last_verified: "2026-11-20"
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
-| [ADR-0109](ADR-0109-action-modes-owner-decisions.md) | Accepted direction — M40 (CHG-0348 pending): action modes read-only/plan/ask/ask-critical/full-access over declared effect classes, always-ask list, durable owner decisions; replaces the M34 proposal names |
-| [ADR-0108](ADR-0108-proactive-engine.md) | Accepted direction — M40 (CHG-0344..0347 pending): proactive-engine with listeners and event inbox, Watch/Routine/Assignment, seven-stage pipeline, task and progress ledgers, attention budgets; supersedes ADR-0041, partly supersedes ADR-0075/0082/0095 |
-| [ADR-0107](ADR-0107-execution-spawn-task-runtime.md) | Accepted direction — M40 (CHG-0333..0336, 0351 pending): spawn-controller as single container authority, instant spaces, one task-engine ledger with classes and lanes, harness-runtime isolation, browser tab leases; supersedes ADR-0040, partly supersedes ADR-0090 |
-| [ADR-0106](ADR-0106-identity-layers-run-tokens.md) | Accepted direction — M40 (CHG-0331..0332 pending): identity-hub registry, platform/org/user layers with agent profiles and system principals, signed run tokens, signed policy bundles; revisits #397 |
-| [ADR-0105](ADR-0105-v1-topology.md) | Accepted direction — M40 (CHG-0329/0330 in progress): five trust zones, five hub processes, naming rule, modules vs processes, versioned contracts, dependency gate, fail-closed configuration, service extraction map; supersedes ADR-0046/0095, partly supersedes ADR-0026/0094 |
+| [ADR-0112](ADR-0112-v1-secrets.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.13: credential-broker the only secret owner, refs in runtimes and workers, boundary injection by cred-proxy or egress-gateway |
+| [ADR-0111](ADR-0111-v1-state-machines.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.2 and each service: one `Transition` in shared/fsm, history in the same transaction, deadline and sweeper per non-final state, `uncertain` never retried, no stored flag beside a state |
+| [ADR-0110](ADR-0110-v1-storage.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.2..M40.15: one database per service, SQLite default and Postgres by connection string, migrations under a lock, every row tenant-scoped, no `.json`/`.jsonl` state; amends ADR-0091 |
+| [ADR-0109](ADR-0109-action-modes-owner-decisions.md) | Proposed - aligned 2026-11-20 by CHG-0334, owner review pending; delivery M40.7: effects read/write-local/write-external/critical, one allow/ask/deny evaluator, run origin owner/unprompted, OwnerDecision replacing five confirmation mechanisms; action modes moved to M41 |
+| [ADR-0108](ADR-0108-proactive-engine.md) | Proposed - aligned 2026-11-20 by CHG-0334, owner review pending; delivery M40.10: proactive-engine owns Routine/Occurrence/Assignment/Goal/Watch, deterministic occurrence ids, jobs only through task-engine; listeners, ledgers and attention moved to M41; supersedes ADR-0041, partly supersedes ADR-0075/0082/0095 |
+| [ADR-0107](ADR-0107-execution-spawn-task-runtime.md) | Proposed - aligned 2026-11-20 by CHG-0334, owner review pending; delivery M40.3/M40.4/M40.6: spawn-controller single container authority with warm pool, task-engine one job ledger, harness-runtime session slots and own workspace only; supersedes ADR-0040, partly supersedes ADR-0090 |
+| [ADR-0106](ADR-0106-identity-layers-run-tokens.md) | Proposed - rewritten 2026-11-20 by CHG-0334, owner review pending; delivery M40.3/M40.5/M40.14: identity-hub owns principals, orgs, roles, channel links and run tokens; layers live in passports; one run token per run with `aud`; no signed policy bundles |
+| [ADR-0105](ADR-0105-v1-topology.md) | Proposed - rewritten 2026-11-20 by CHG-0334, owner review pending; delivery M40.2..M40.13: v1 service model - one binary per service, core plus optional services with native fallback, zones as network and secret rules, profiles, launch backends, `trusted` flag; supersedes ADR-0046/0095, partly supersedes ADR-0026/0094 |
 | [ADR-0104](ADR-0104-external-firecracker-runtime.md) | Accepted — delivered M9 (CHG-0322): external Firecracker microVM backend behind an Uno-style control plane; relays stay host-side, state rides a per-box share disk |
 | [ADR-0103](ADR-0103-optional-sandbox-runtime.md) | Accepted — delivered M9 (CHG-0320): optional runc/runsc/Kata selection, private relay discovery and no downgrade; Kata qualification remains node-specific |
 | [ADR-0102](ADR-0102-kubernetes-managed-network-boundary.md) | Accepted — delivered M9 (CHG-0319): managed Kubernetes preflight with applied-policy receipt and separate relay Pod network boundary |
@@ -20,11 +23,11 @@ last_verified: "2026-11-19"
 | [ADR-0098](ADR-0098-durable-connector-state.md) | Accepted: canonical onboarding, Broker event reconciliation, versioned durable notices and incremental SQLite registry commits |
 | [ADR-0097](ADR-0097-m32-bounded-delivery.md) | Accepted — delivered M32: m32 bounded delivery; 2026-11-05 amendment replaces foundation stage with verified direct merge to dev; one automation ownership switch |
 | [ADR-0096](ADR-0096-authored-passport-authority.md) | Accepted — delivered M32: six authored passports as sole space configuration; independent tool selection and grants; no legacy config readers |
-| [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md) | Superseded by ADR-0105/ADR-0108 (v1 direction; v0 code implements it until CHG-0342/0344) — delivered M32: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains channel transport and delivery |
+| [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md) | Superseded by ADR-0105/ADR-0108 (v1 direction, proposed; v0 code implements it until M40.9/M40.10) - delivered M32: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains channel transport and delivery |
 | [ADR-0094](ADR-0094-consolidated-model-tool-surface.md) | Partly superseded by ADR-0105 (ToolHub as implementation owner of every family; catalog vocabulary kept) — accepted direction: catalog r5 — 20 first-party families + pinned platform under logical names, via/executor two-level routing, model\|internal\|operator audiences, fail-closed requires (M31) |
 | [ADR-0093](ADR-0093-imperative-passports-capability-grants.md) | Accepted — delivered M30: passports are the imperative sole input to build/spawn/admission; agent capability grants (PDP/PEP) instead of tool ids; effect classes live/respawn/recreate/rebuild; amends ADR-0092 D1–D3, D6 (M30) |
 | [ADR-0092](ADR-0092-six-passport-space-contract.md) | Accepted — delivered M29/M30, amended by ADR-0093/0094/0096: six effective per-space passports, versioned platform catalogs/templates, grant ceilings and verified migration (M29) |
-| [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted — delivered (CHG-0215–0226): SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion; answers ADR-0038 D12b |
+| [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted - delivered (CHG-0215–0226): SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion; answers ADR-0038 D12b; amended by ADR-0110 (v1 one database per service, proposed) |
 | [ADR-0090](ADR-0090-conversation-parallel-lanes.md) | Partly superseded by ADR-0107 (lane owner moves to task-engine; lane key and fairness kept) — accepted: parallel sessions inside one context — lane key (principal, context, conversation), fairness per context, per-context cap below upstream; amends ADR-0025 (CHG-0234) |
 | [ADR-0089](ADR-0089-live-tool-inventory.md) | Accepted: live caller-scoped tool inventory — `tools_list` on the store path plus managed-profile `invoke`; no prompt catalog, deferred hydration or vMCP boundary (CHG-0233) |
 | [ADR-0088](ADR-0088-bounded-control-journals.md) | Accepted — delivered (CHG-0215–0226): bounded file journals/receipts, typed cursors, safe audit and diagnostics |
@@ -70,13 +73,13 @@ last_verified: "2026-11-19"
 | [ADR-0049](ADR-0049-broker-only-credential-intake.md) | Accepted: credential intake only via Broker or runtime self-env; legacy gateway surface removed |
 | [ADR-0048](ADR-0048-routines-package.md) | Accepted: internal/routines leaf owns routine semantics and engine behind a Deps seam |
 | [ADR-0047](ADR-0047-channel-contract.md) | Accepted: 12-method Channel contract, Caps flags, deps-injected adapters, registry dispatch and conformance suite |
-| [ADR-0046](ADR-0046-comm-plane-zone-map.md) | Superseded by ADR-0105 (hub-edge zone; v0 code implements it until CHG-0343) — accepted: comm-plane zone map — commodel/channel/routines/commops/serviceauth owners, fixed import direction |
+| [ADR-0046](ADR-0046-comm-plane-zone-map.md) | Superseded by ADR-0105 (channel-hub and ingress-gateway; v0 code implements it until M40.8) - accepted: comm-plane zone map - commodel/channel/routines/commops/serviceauth owners, fixed import direction |
 | [ADR-0045](ADR-0045-watcher-probe-pipeline.md) | Accepted: watcher probe = fetch + deterministic extract pipeline; isolated script/command probes; snapshotted recipes |
 | [ADR-0044](ADR-0044-routine-destinations.md) | Accepted: verified task destinations and per-run origin for routine delivery |
 | [ADR-0043](ADR-0043-compact-routine-tools.md) | Accepted: five public routine tools; lifecycle operations retained internally |
 | [ADR-0042](ADR-0042-routine-lifecycle.md) | Accepted direction: routine lifecycle, revision fences and interval windows |
-| [ADR-0041](ADR-0041-proactive-automation.md) | Superseded by ADR-0108 (v0 code implements it until CHG-0344..0347) — accepted: proactive automation on the occurrence pipeline — bounded follow-up retry, quiet/cap/escalation policy, control-plane tool calls, owner brief, event subscriptions (M12) |
-| [ADR-0040](ADR-0040-single-stack-supervisor.md) | Superseded by ADR-0107 (v0 code implements it until CHG-0333) — accepted direction: one Compose supervisor using the existing control image; container deployment verified live in CHG-0097 |
+| [ADR-0041](ADR-0041-proactive-automation.md) | Superseded by ADR-0108 (v0 code implements it until M40.10) - accepted: proactive automation on the occurrence pipeline - bounded follow-up retry, quiet/cap/escalation policy, control-plane tool calls, owner brief, event subscriptions (M12) |
+| [ADR-0040](ADR-0040-single-stack-supervisor.md) | Superseded by ADR-0107 (v0 code implements it until M40.3) - accepted direction: one Compose supervisor using the existing control image; container deployment verified live in CHG-0097 |
 | [ADR-0039](ADR-0039-hermes-pin-raise.md) | Proposed: conditional Hermes pin raise — review trigger is the upstream MCP breaker merge or next pin bump (D12c) |
 | [ADR-0038](ADR-0038-embedded-store.md) | Answered: embedded single-writer store — measured evidence kept files for supervisor/spool; SQLite direction adopted separately via ADR-0091 (D12b) |
 | [ADR-0037](ADR-0037-supervisor-in-linux-container.md) | Superseded by ADR-0040: containerized supervisor via the ToolHub socket proxy (D12a) — answered by ADR-0040's simpler accepted direction |
@@ -90,7 +93,7 @@ last_verified: "2026-11-19"
 | [ADR-0029](ADR-0029-bounded-pdf-office-webp.md) | Accepted: bounded pdf, xlsx, pptx, and webp stay in the hub process; Word and a user zip tool stay out |
 | [ADR-0028](ADR-0028-configurable-image-capability.md) | Accepted: image capability selects provider, model, and delivery; CLIProxy is the default, Fal stays external |
 | [ADR-0027](ADR-0027-workspace-document-image-profile.md) | Accepted: hub document and image tools; separate credentials, workspace artifacts, native vision and image_gen omitted |
-| [ADR-0026](ADR-0026-shared-control-plane.md) | Partly superseded by ADR-0105 (infra render split replaced by zone processes) — accepted: one shared ToolHub/broker/controller on `hermes-hub-runtime`; multi-token endpoint, `infra` render split |
+| [ADR-0026](ADR-0026-shared-control-plane.md) | Partly superseded by ADR-0105 (infra render split replaced by per-service binaries) - accepted: one shared ToolHub/broker/controller on `hermes-hub-runtime`; multi-token endpoint, `infra` render split |
 | [ADR-0025](ADR-0025-context-parallel-gateway-workers.md) | Accepted: bounded worker pool; FIFO claim skips busy context keys, serial per context — amended by ADR-0090 (parallel lanes inside a context) |
 | [ADR-0024](ADR-0024-toolhive-local-vmcp.md) | Accepted: defer ToolHive local vMCP as the stable endpoint after failed dynamic-rebind evidence |
 | [ADR-0023](ADR-0023-optional-mcp-images.md) | Accepted: optional Google/Atlassian/Telegram Python MCP trees are dedicated images, not the hub runtime |
