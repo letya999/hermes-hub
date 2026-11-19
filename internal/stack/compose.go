@@ -537,6 +537,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/.local/diagnostics"}}
+		svc["env_file"] = []any{M{"path": filepath.ToSlash(communicationServiceAuthPath(dir, s.Environment)), "format": "raw"}}
 		svc["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
 		// Operator-side apply/respawn reaches the supervisor from the host;
 		// container IPs are not routable there (Docker Desktop, WSL), so the
@@ -1068,6 +1069,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_RUN_VERIFY_URL"] = supervisorURL
 			gatewayEnvironment["HUB_RUN_VERIFY_AUTH"] = "${HUB_RUN_VERIFY_AUTH:-}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(communicationServiceAuthPath(InfraSpaceDir(dir), s.Environment)), "format": "raw"})
 		}
 		// The skillgit ExecCell posts to the controller /cli-exec derived
 		// from this endpoint; toolhub.auth carries the admission token.

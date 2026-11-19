@@ -21,6 +21,7 @@ func init() {
 		"communication.identity-endpoint-required":       "Требуется адрес identity-hub с аутентификацией",
 		"communication.identity-link-authority-required": "Для привязки через OIDC требуется отдельный ключ входного канала identity-hub",
 		"supervisor.identity-link-auth-distinct":         "Ключ входного канала identity-hub должен отличаться от ключа service-control",
+		"supervisor.communication-service-auth-distinct": "Для выдачи служебных разрешений Communication нужен отдельный ключ",
 		"supervisor.identity-unavailable":                "Реестр идентификации недоступен",
 		"supervisor.identity-upkeep-pending":             "Обслуживание реестра идентификации ожидает повтора",
 

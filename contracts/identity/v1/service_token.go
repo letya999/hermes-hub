@@ -16,6 +16,7 @@ import (
 )
 
 const AutomationServiceAssertionPath = "/v1/identity/automation-service-token"
+const CommunicationServiceAuthEnv = "HUB_COMMUNICATION_SERVICE_AUTH"
 const AutomationServiceAudience = "tool-hub-automation"
 const MemoryContextServiceAudience = "tool-hub-memory-context"
 const MemoryCaptureServiceAudience = "tool-hub-memory-capture"
@@ -51,19 +52,19 @@ func VerifyServiceToken(token, audience, service string, request ServiceRequest,
 	return nil
 }
 
-func AutomationServiceCredential(controlCredential string) string {
-	return serviceCredential(controlCredential, "hub-service-token/communication-automation/v1")
+func AutomationServiceCredential(serviceRoot string) string {
+	return serviceCredential(serviceRoot, "hub-service-token/communication-automation/v1")
 }
 
-func MemoryCaptureServiceCredential(controlCredential string) string {
-	return serviceCredential(controlCredential, "hub-service-token/communication-memory-capture/v1")
+func MemoryCaptureServiceCredential(serviceRoot string) string {
+	return serviceCredential(serviceRoot, "hub-service-token/communication-memory-capture/v1")
 }
 
-func serviceCredential(controlCredential, scope string) string {
-	if controlCredential == "" {
+func serviceCredential(serviceRoot, scope string) string {
+	if serviceRoot == "" {
 		return ""
 	}
-	mac := hmac.New(sha256.New, []byte(controlCredential))
+	mac := hmac.New(sha256.New, []byte(serviceRoot))
 	_, _ = io.WriteString(mac, scope)
 	return hex.EncodeToString(mac.Sum(nil))
 }

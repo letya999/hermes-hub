@@ -44,6 +44,7 @@ type Config struct {
 	IdentityURL         string                           `yaml:"-" json:"-"`
 	IdentityAuth        string                           `yaml:"-" json:"-"`
 	IdentityLinkAuth    string                           `yaml:"-" json:"-"`
+	ServiceAuth         string                           `yaml:"-" json:"-"`
 	Supervised          bool                             `yaml:"-"`
 	Environment         string                           `yaml:"-"`
 	OrganizationID      string                           `yaml:"organization_id"`
@@ -491,6 +492,7 @@ func workersFromEnv() int {
 }
 
 func fillChannelSecrets(config *Config) {
+	config.ServiceAuth = strings.TrimSpace(os.Getenv(identitycontract.CommunicationServiceAuthEnv))
 	config.IdentityURL = strings.TrimSpace(os.Getenv("HUB_IDENTITY_URL"))
 	if origin := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_URL")); origin != "" {
 		key := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_AUTH"))

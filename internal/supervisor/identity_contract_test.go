@@ -32,6 +32,32 @@ func TestControlHostsIdentityContract(t *testing.T) {
 	}, contract.ChannelIdentity{Channel: contract.Telegram, ID: "7"}, contract.Principal{ID: "alice", Kind: contract.Human})
 }
 
+func TestServiceIssuanceRejectsSharedControlCredential(t *testing.T) {
+	registry, _ := fixtureIdentity(t)
+	if err := registry.EnsureSigningKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	const control, issuer = "synthetic-shared-control", "independent-service-issuer"
+	m := &Manager{cfg: Config{Identity: registry, RuntimeAuth: control, CommunicationServiceAuth: issuer, Environment: "dev"}}
+	server := httptest.NewServer(m.Handler())
+	defer server.Close()
+	scope := contract.ServiceRequest{Space: "alice", Environment: "dev", RequestDigest: contract.PolicyDigest([]byte("synthetic request"))}
+	for _, bootstrap := range []string{control, contract.AutomationServiceCredential(control), contract.MemoryCaptureServiceCredential(control), contract.MemoryCaptureServiceCredential(issuer)} {
+		client := contract.NewAutomationServiceSigner(server.URL, bootstrap)
+		if _, err := client.IssueAutomationService(t.Context(), scope); !errors.Is(err, contract.ErrForbidden) {
+			t.Fatalf("invalid bootstrap reached automation issuance: %v", err)
+		}
+	}
+	automation := contract.NewAutomationServiceSigner(server.URL, contract.AutomationServiceCredential(issuer))
+	if _, err := automation.IssueAutomationService(t.Context(), scope); err != nil {
+		t.Fatalf("independent automation issuer rejected: %v", err)
+	}
+	capture := contract.NewMemoryCaptureServiceSigner(server.URL, contract.MemoryCaptureServiceCredential(issuer))
+	if _, err := capture.IssueMemoryCaptureService(t.Context(), scope); err != nil {
+		t.Fatalf("independent capture issuer rejected: %v", err)
+	}
+}
+
 func TestControlIdentityRouteWithoutRegistryFailsClosed(t *testing.T) {
 	m := &Manager{cfg: Config{RuntimeAuth: "identity-token"}}
 	srv := httptest.NewServer(m.Handler())

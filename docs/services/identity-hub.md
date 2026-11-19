@@ -115,6 +115,13 @@ admission if its base policy is replaced. After a durable Hermes admission
 the private runtime delivery route receives separate audience tokens. The
 read credential for relay verification exposes signing keys, policy bundles
 and job authorization records. It cannot dispatch jobs or change policy.
+The automation and memory-capture issuers derive separate proofs from
+`HUB_COMMUNICATION_SERVICE_AUTH`. Only supervisor and Communication receive
+this independent credential. Compose provisions a private
+`communication-service.<env>.auth` in the infra space. A host supervisor must
+use the credential for its own environment. Helm reads `communication-service-token`
+from the control Secret. Signed `hubctl routine` uses the same environment variable.
+
 The remaining service-token and deployment acceptance work is tracked in
 [CHG-0332](../../.work/in-progress/CHG-0332-run-tokens/plan.md).
 

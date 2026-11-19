@@ -46,6 +46,7 @@ services:
       HUB_SUPERVISOR_AUTH: {name: hermes-hub-control, key: supervisor-token}
       HUB_COMMUNICATION_AUTH: {name: hermes-hub-control, key: communication-token}
       HUB_AUTOMATION_AUTH: {name: hermes-hub-control, key: supervisor-token}
+      HUB_COMMUNICATION_SERVICE_AUTH: {name: hermes-hub-control, key: communication-service-token}
     mounts:
       - {claim: spaces, path: /data}
       - {claim: spool, path: /spool}
@@ -59,6 +60,7 @@ services:
     env: {}
     secretEnv:
       HUB_SUPERVISOR_AUTH: {name: hermes-hub-control, key: supervisor-token}
+      HUB_COMMUNICATION_SERVICE_AUTH: {name: hermes-hub-control, key: communication-service-token}
     mounts:
       - {claim: spaces, path: /data}
     resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}

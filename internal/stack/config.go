@@ -287,7 +287,7 @@ func ModelRelaySecretKeys() []string {
 }
 
 func GatewayOwnedSecret(key string) bool {
-	return slices.Contains(GatewaySecretKeys(), key) || slices.Contains(ModelRelaySecretKeys(), key)
+	return key == identitycontract.CommunicationServiceAuthEnv || slices.Contains(GatewaySecretKeys(), key) || slices.Contains(ModelRelaySecretKeys(), key)
 }
 
 func selfEnvKeys(s Settings) []string {

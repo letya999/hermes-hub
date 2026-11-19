@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
+
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 )
 
 func TestComposeContainerSupervisorIsSinglePrivateControlService(t *testing.T) {
@@ -94,5 +97,43 @@ func TestComposeSupervisorForwardsOptInAuthorities(t *testing.T) {
 		if _, ok := env[key]; !ok {
 			t.Fatalf("opt-in %s not forwarded to supervisor env", key)
 		}
+	}
+}
+
+func TestCommunicationServiceAuthIsEnvironmentScopedAndProjectedOnlyToIssuers(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876", Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	var keys []string
+	for _, environment := range []string{"dev", "prod", "dev"} {
+		if err := ensureCommunicationServiceAuth(dir, environment); err != nil {
+			t.Fatal(err)
+		}
+		file := communicationServiceAuthPath(dir, environment)
+		values, err := ReadSecrets(file)
+		key := values[contract.CommunicationServiceAuthEnv]
+		if err != nil || len(key) != 64 {
+			t.Fatal("service issuer credential not provisioned")
+		}
+		keys = append(keys, key)
+		s.Environment = environment
+		for name, raw := range Compose(s, root, dir)["services"].(M) {
+			service := raw.(M)
+			envFiles, _ := service["env_file"].([]any)
+			projected := slices.ContainsFunc(envFiles, func(entry any) bool {
+				fileSpec, _ := entry.(M)
+				return fileSpec["path"] == filepath.ToSlash(file)
+			})
+			if projected != (name == "supervisor" || name == "communication-hub") {
+				t.Errorf("unexpected service issuer credential projection for %s/%s", environment, name)
+			}
+		}
+	}
+	if keys[0] == keys[1] || keys[0] != keys[2] || !GatewayOwnedSecret(contract.CommunicationServiceAuthEnv) {
+		t.Fatal("service issuer secret is shared across environments, rotated during render, or exposed to runtime")
 	}
 }

@@ -94,8 +94,10 @@ type LeaseConsumer struct {
 const DefaultWarmTTL = 30 * time.Minute
 
 type Config struct {
-	Identity         identitycontract.Client
-	IdentityLinkAuth string
+	Identity                 identitycontract.Client
+	IdentityLinkAuth         string
+	CommunicationServiceAuth string
+
 	ExecutionBackend string
 	ContainerRuntime string
 	Kubernetes       KubernetesConfig
@@ -587,6 +589,12 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.IdentityLinkAuth != "" && cfg.IdentityLinkAuth == cfg.RuntimeAuth {
 		return nil, errors.New(locale.T(locale.Operator(), "supervisor.identity-link-auth-distinct"))
+	}
+	if cfg.CommunicationServiceAuth == "" {
+		cfg.CommunicationServiceAuth = strings.TrimSpace(os.Getenv(identitycontract.CommunicationServiceAuthEnv))
+	}
+	if auth := cfg.CommunicationServiceAuth; auth != "" && (auth == cfg.RuntimeAuth || auth == cfg.AdminAuth || auth == cfg.IdentityLinkAuth) {
+		return nil, errors.New(locale.T(locale.Operator(), "supervisor.communication-service-auth-distinct"))
 	}
 	if cfg.BackupEvery == 0 {
 		cfg.BackupEvery = backupDurationEnv("HUB_BACKUP_EVERY", 24*time.Hour)

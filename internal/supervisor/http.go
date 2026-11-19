@@ -27,7 +27,7 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
 			return
 		}
-		identitycontract.MemoryCaptureServiceHandler(signer, identitycontract.MemoryCaptureServiceCredential(m.cfg.RuntimeAuth), m.environment()).ServeHTTP(w, r)
+		identitycontract.MemoryCaptureServiceHandler(signer, identitycontract.MemoryCaptureServiceCredential(m.cfg.CommunicationServiceAuth), m.environment()).ServeHTTP(w, r)
 		return
 	}
 	if r.URL.Path == identitycontract.AutomationServiceAssertionPath {
@@ -36,7 +36,7 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": identitycontract.ErrUnavailable.Error()})
 			return
 		}
-		identitycontract.AutomationServiceHandler(signer, identitycontract.AutomationServiceCredential(m.cfg.RuntimeAuth), m.environment()).ServeHTTP(w, r)
+		identitycontract.AutomationServiceHandler(signer, identitycontract.AutomationServiceCredential(m.cfg.CommunicationServiceAuth), m.environment()).ServeHTTP(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/v1/identity/links/") {

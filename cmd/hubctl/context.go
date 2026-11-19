@@ -774,7 +774,7 @@ func runRoutine(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if opts.toolhubURL == "" || opts.token == "" {
+	if opts.toolhubURL == "" || (opts.issuerURL == "" && opts.token == "") {
 		return fmt.Errorf("routine requires --toolhub-url and --token (or HUB_TOOLHUB_URL/HUB_COMMUNICATION_AUTH)")
 	}
 	if sub != "list" && (opts.chatID <= 0 || !identity.ValidID(opts.organization) || !identity.ValidID(opts.runtimeID) || !identity.ValidID(opts.policy)) {
@@ -786,7 +786,11 @@ func runRoutine(ctx context.Context, args []string) error {
 	caller := identity.TelegramEnvelope(opts.profile, opts.chatID, opts.runtimeID, opts.policy)
 	client := commops.ControlClient{URL: opts.toolhubURL, Token: opts.token, Environment: opts.environment}
 	if opts.issuerURL != "" {
-		client.Signer = identitycontract.NewAutomationServiceSigner(opts.issuerURL, identitycontract.AutomationServiceCredential(opts.token))
+		bootstrap := strings.TrimSpace(os.Getenv(identitycontract.CommunicationServiceAuthEnv))
+		if bootstrap == "" {
+			return errors.New(locale.T(locale.Operator(), "supervisor.communication-service-auth-distinct"))
+		}
+		client.Signer = identitycontract.NewAutomationServiceSigner(opts.issuerURL, identitycontract.AutomationServiceCredential(bootstrap))
 	}
 	switch sub {
 	case "list":

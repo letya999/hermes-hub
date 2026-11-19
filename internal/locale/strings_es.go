@@ -21,6 +21,7 @@ func init() {
 		"communication.identity-endpoint-required":       "Se requiere un endpoint de identity-hub autenticado",
 		"communication.identity-link-authority-required": "La vinculación OIDC requiere una credencial de entrada independiente de identity-hub",
 		"supervisor.identity-link-auth-distinct":         "Las credenciales de entrada de identity-hub y de service-control deben ser distintas",
+		"supervisor.communication-service-auth-distinct": "La emisión para Communication requiere una credencial independiente",
 		"supervisor.identity-unavailable":                "El registro de identidad no está disponible",
 		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
 

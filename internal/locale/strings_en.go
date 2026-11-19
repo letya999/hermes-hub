@@ -21,6 +21,7 @@ func init() {
 		"communication.identity-endpoint-required":       "An authenticated identity-hub endpoint is required",
 		"communication.identity-link-authority-required": "OIDC linking requires a separate identity-hub ingress credential",
 		"supervisor.identity-link-auth-distinct":         "Identity ingress and service-control credentials must differ",
+		"supervisor.communication-service-auth-distinct": "Communication service issuance needs an independent credential",
 		"supervisor.identity-unavailable":                "Identity registry is unavailable",
 		"supervisor.identity-upkeep-pending":             "Identity upkeep is pending",
 

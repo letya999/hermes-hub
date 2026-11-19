@@ -8,13 +8,27 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 )
 
 func ensureRuntimeAuth(path string) error {
+	return ensureServiceAuthFile(path, "HUB_RUNTIME_AUTH")
+}
+
+func communicationServiceAuthPath(dir, environment string) string {
+	return filepath.Join(dir, "communication-service."+environment+".auth")
+}
+
+func ensureCommunicationServiceAuth(dir, environment string) error {
+	return ensureServiceAuthFile(communicationServiceAuthPath(dir, environment), identitycontract.CommunicationServiceAuthEnv)
+}
+
+func ensureServiceAuthFile(path, key string) error {
 	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("runtime auth must be a regular file")
+			return fmt.Errorf("%s: %w", key, os.ErrInvalid)
 		}
 		return nil
 	}
@@ -25,11 +39,11 @@ func ensureRuntimeAuth(path string) error {
 	if _, err = rand.Read(value); err != nil {
 		return err
 	}
-	content := []byte("HUB_RUNTIME_AUTH=" + hex.EncodeToString(value) + "\n")
+	content := []byte(key + "=" + hex.EncodeToString(value) + "\n")
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600) // #nosec G703 -- path under the stack render dir
 	if err != nil {
 		if os.IsExist(err) {
-			return ensureRuntimeAuth(path)
+			return ensureServiceAuthFile(path, key)
 		}
 		return err
 	}

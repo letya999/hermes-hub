@@ -573,9 +573,9 @@ func TestManagedCaptureRequiresSignedCommunicationEvent(t *testing.T) {
 	if err := registry.EnsureSigningKeys(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	const controlSecret, verifier = "comm-token", "synthetic-read-verifier"
+	const controlSecret, verifier, serviceSecret = "comm-token", "synthetic-read-verifier", "synthetic-communication-service"
 	mux := http.NewServeMux()
-	mux.Handle(contract.MemoryCaptureServiceAssertionPath, contract.MemoryCaptureServiceHandler(registry, contract.MemoryCaptureServiceCredential(controlSecret), "dev"))
+	mux.Handle(contract.MemoryCaptureServiceAssertionPath, contract.MemoryCaptureServiceHandler(registry, contract.MemoryCaptureServiceCredential(serviceSecret), "dev"))
 	mux.Handle("/v1/identity/", contract.Handler(registry, verifier))
 	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+verifier {
@@ -596,6 +596,7 @@ func TestManagedCaptureRequiresSignedCommunicationEvent(t *testing.T) {
 	cfg := baseTestConfig(t)
 	cfg.ToolHubURL, cfg.Supervised, cfg.RuntimeURL, cfg.RuntimeAuth = f.server.URL, true, control.URL, controlSecret
 	cfg.Environment = "dev"
+	cfg.ServiceAuth = serviceSecret
 	cfg.Runs = task.NewHTTPClient(control.URL, verifier, nil)
 	g := f.gateway(t, cfg)
 	job := captureJob(g, "alice", "job-signed-capture")
@@ -607,7 +608,7 @@ func TestManagedCaptureRequiresSignedCommunicationEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := contract.ServiceRequest{Space: "alice", Environment: "dev", RequestDigest: contract.PolicyDigest(body)}
-	automationSigner := contract.NewMemoryCaptureServiceSigner(control.URL, contract.AutomationServiceCredential(controlSecret))
+	automationSigner := contract.NewMemoryCaptureServiceSigner(control.URL, contract.AutomationServiceCredential(serviceSecret))
 	if _, err := automationSigner.IssueMemoryCaptureService(t.Context(), scope); err == nil {
 		t.Fatal("automation bootstrap minted a capture permission")
 	}

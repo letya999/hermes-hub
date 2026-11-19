@@ -203,6 +203,11 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = allowServiceGroupRead(filepath.Join(dir, "runtime.auth")); err != nil {
 		return err
 	}
+	if s.ExecutionMode == "supervisor" && s.RendersInfra() {
+		if err = ensureCommunicationServiceAuth(dir, s.Environment); err != nil {
+			return err
+		}
+	}
 	if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
 		return err
 	}

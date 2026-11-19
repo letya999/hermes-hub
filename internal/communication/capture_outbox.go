@@ -354,7 +354,7 @@ func (g *Gateway) postCapture(ctx context.Context, base, token, header string, e
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if g.config.Runs != nil {
-		signer := contract.NewMemoryCaptureServiceSigner(g.config.RuntimeURL, contract.MemoryCaptureServiceCredential(token))
+		signer := contract.NewMemoryCaptureServiceSigner(g.config.RuntimeURL, contract.MemoryCaptureServiceCredential(g.config.ServiceAuth))
 		scope := contract.ServiceRequest{Space: ev.UserID, Environment: g.config.Environment, RequestDigest: contract.PolicyDigest(body)}
 		token, err = signer.IssueMemoryCaptureService(reqCtx, scope)
 		if err != nil {
