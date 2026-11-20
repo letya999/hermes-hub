@@ -29,6 +29,8 @@ non-JSON POST 415. `/healthz` stays open for the launcher probe.
 
 ## State machines
 
+The HTTP path still runs the in-memory skeleton machine:
+
 | From | Event | To | Deadline / sweeper |
 |---|---|---|---|
 | - | ensure | starting | 10s healthz deadline, spawn fails |
@@ -36,11 +38,20 @@ non-JSON POST 415. `/healthz` stays open for the launcher probe.
 | running | child exit | exited | removed from registry |
 | running | stop / shutdown | - | SIGTERM or CTRL_BREAK, 10s WaitDelay |
 
+The durable v1 machines exist in `internal/spawn` on `shared/fsm` —
+`PassportRevisionMachine` (draft, validated, active, superseded, rejected),
+`RuntimeMachine` (starting, warm, busy, draining, failed, quarantined,
+missing, absent) and `WorkerMachine` (the runtime table without warm).
+They match the target tables in `docs/state-machines.md`, carry a deadline
+per non-final state and are not yet wired to HTTP (S4).
+
 ## Tables
 
-None yet. The runtime registry is in process memory in this skeleton;
-`spawn-controller.db` is reserved by the descriptor for the durable Runtime
-record that arrives with M40.3.
+`internal/spawn/migrations` creates `spawn-controller.db` on open:
+`spaces`, `passport_revisions` + `_history`, `runtimes` + `_history`
+(with `generation`), `leases`, `workers` + `_history`, `image_pins`; every
+table carries `org` and `owner`. The store is durable and tenant-scoped,
+but the HTTP path does not read or write it yet (S4).
 
 ## Environment
 

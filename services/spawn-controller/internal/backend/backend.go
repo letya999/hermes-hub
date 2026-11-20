@@ -1,4 +1,6 @@
-package main
+// Package backend owns compute for space workloads: the interface every
+// launch backend implements plus the first provider, process.
+package backend
 
 import (
 	"context"
@@ -40,6 +42,22 @@ type Backend interface {
 	Stop(context.Context, string) error
 	Inspect(context.Context, string) (Runtime, error)
 	List(context.Context) []Runtime
+}
+
+// NewProcess returns the process backend: it starts service binaries from
+// binDir as local child processes under this process's group. env names the
+// operator variables a child may inherit; token is the shared service
+// credential the child must serve and callers must present.
+func NewProcess(binDir, dataDir string, env []string, token string, ctx context.Context, group *proctree.Group) Backend {
+	return &processBackend{
+		binDir:   binDir,
+		dataDir:  dataDir,
+		env:      env,
+		token:    token,
+		ctx:      ctx,
+		group:    group,
+		children: map[string]*childRuntime{},
+	}
 }
 
 // processBackend starts service binaries from the controller's own binary

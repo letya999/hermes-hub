@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -9,21 +9,23 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 )
 
 // fakeBackend records spawns without launching processes; children it
 // "starts" stay listed so the controller's limit and auth paths run for real.
 type fakeBackend struct {
 	mu      sync.Mutex
-	started []SpawnSpec
+	started []backend.SpawnSpec
 	stopped []string
 }
 
-func (f *fakeBackend) Start(_ context.Context, spec SpawnSpec) (Runtime, error) {
+func (f *fakeBackend) Start(_ context.Context, spec backend.SpawnSpec) (backend.Runtime, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, spec)
-	return Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running", Address: "http://127.0.0.1:1"}, nil
+	return backend.Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running", Address: "http://127.0.0.1:1"}, nil
 }
 
 func (f *fakeBackend) Stop(_ context.Context, id string) error {
@@ -33,29 +35,29 @@ func (f *fakeBackend) Stop(_ context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeBackend) Inspect(_ context.Context, id string) (Runtime, error) {
+func (f *fakeBackend) Inspect(_ context.Context, id string) (backend.Runtime, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, spec := range f.started {
 		if spec.Key == id {
-			return Runtime{ID: id, State: "running"}, nil
+			return backend.Runtime{ID: id, State: "running"}, nil
 		}
 	}
-	return Runtime{}, nil
+	return backend.Runtime{}, nil
 }
 
-func (f *fakeBackend) List(context.Context) []Runtime {
+func (f *fakeBackend) List(context.Context) []backend.Runtime {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	list := make([]Runtime, 0, len(f.started))
+	list := make([]backend.Runtime, 0, len(f.started))
 	for _, spec := range f.started {
-		list = append(list, Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running"})
+		list = append(list, backend.Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running"})
 	}
 	return list
 }
 
 func controllerForTest(token string, max int) *Controller {
-	return &Controller{backend: &fakeBackend{}, token: token, max: max, ensured: map[string]Runtime{}, client: &http.Client{Timeout: time.Second}}
+	return &Controller{backend: &fakeBackend{}, token: token, max: max, ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: time.Second}}
 }
 
 // The service surface refuses what a stray browser or a leaked port could
@@ -147,40 +149,4 @@ func TestControllerRefusesBeyondRuntimeLimit(t *testing.T) {
 	}
 }
 
-// Handler goroutines list and inspect while spawns write the map: run under
-// -race the unlocked reads were a fatal concurrent map access.
-func TestBackendMapAccessIsSynchronized(t *testing.T) {
-	b := &processBackend{children: map[string]*childRuntime{}}
-	for i := range 4 {
-		done := make(chan struct{})
-		close(done)
-		key := "rt-" + string(rune('a'+i))
-		b.children[key] = &childRuntime{rt: Runtime{ID: key, State: "running"}, done: done}
-	}
-	var wg sync.WaitGroup
-	for range 3 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 50 {
-				_ = b.List(context.Background())
-				_, _ = b.Inspect(context.Background(), "rt-a")
-				_ = b.Stop(context.Background(), "rt-nothing")
-			}
-		}()
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := range 50 {
-			key := "rt-x" + string(rune('a'+i%3))
-			done := make(chan struct{})
-			close(done)
-			b.mu.Lock()
-			b.children[key] = &childRuntime{rt: Runtime{ID: key}, done: done}
-			b.mu.Unlock()
-			b.remove(key)
-		}
-	}()
-	wg.Wait()
-}
+

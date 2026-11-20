@@ -1,4 +1,6 @@
-package main
+// Package api is the spawn-controller HTTP surface: runtime ensure and the
+// message path, plus the service bootstrap that wires them.
+package api
 
 import (
 	"bytes"
@@ -18,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 	"github.com/letya999/hermes-hub/shared/proctree"
 )
 
@@ -25,11 +28,11 @@ import (
 // space traffic to it. Runtimes are looked up, never created twice; max
 // bounds how many may run at once.
 type Controller struct {
-	backend Backend
+	backend backend.Backend
 	token   string
 	max     int
 	mu      sync.Mutex
-	ensured map[string]Runtime
+	ensured map[string]backend.Runtime
 	client  *http.Client
 }
 
@@ -39,7 +42,7 @@ func runtimeKey(space, agent string) string {
 }
 
 // ensure returns the runtime for (space, agent), starting it on first use.
-func (c *Controller) ensure(ctx context.Context, space, agent string) (Runtime, error) {
+func (c *Controller) ensure(ctx context.Context, space, agent string) (backend.Runtime, error) {
 	key := runtimeKey(space, agent)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -50,11 +53,11 @@ func (c *Controller) ensure(ctx context.Context, space, agent string) (Runtime, 
 		delete(c.ensured, key)
 	}
 	if c.max > 0 && len(c.backend.List(ctx)) >= c.max {
-		return Runtime{}, errors.New("runtime limit reached")
+		return backend.Runtime{}, errors.New("runtime limit reached")
 	}
-	rt, err := c.backend.Start(ctx, SpawnSpec{Key: key, Space: space, Agent: agent})
+	rt, err := c.backend.Start(ctx, backend.SpawnSpec{Key: key, Space: space, Agent: agent})
 	if err != nil {
-		return Runtime{}, err
+		return backend.Runtime{}, err
 	}
 	c.ensured[key] = rt
 	return rt, nil
@@ -152,9 +155,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 const defaultMaxRuntimes = 32
 
-// serve runs the controller until ctx ends. Untrusted installations or a
+// Serve runs the controller until ctx ends. Untrusted installations or a
 // missing service token are refused before any socket or child exists.
-func serve(ctx context.Context) error {
+func Serve(ctx context.Context) error {
 	if os.Getenv("HUB_TRUSTED") != "true" {
 		return errors.New("untrusted installation")
 	}
@@ -187,16 +190,12 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	defer group.Close()
-	backend := &processBackend{
-		binDir:   filepath.Dir(executable),
-		dataDir:  dataDir,
-		env:      []string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
-		token:    token,
-		ctx:      ctx,
-		group:    group,
-		children: map[string]*childRuntime{},
-	}
-	controller := &Controller{backend: backend, token: token, max: max, ensured: map[string]Runtime{}, client: &http.Client{Timeout: 60 * time.Second}}
+	be := backend.NewProcess(
+		filepath.Dir(executable), dataDir,
+		[]string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
+		token, ctx, group,
+	)
+	controller := &Controller{backend: be, token: token, max: max, ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: 60 * time.Second}}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
@@ -207,8 +206,8 @@ func serve(ctx context.Context) error {
 		_ = server.Shutdown(context.Background())
 	}()
 	err = server.Serve(listener)
-	for _, child := range backend.List(context.Background()) {
-		_ = backend.Stop(context.Background(), child.ID)
+	for _, child := range be.List(context.Background()) {
+		_ = be.Stop(context.Background(), child.ID)
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
