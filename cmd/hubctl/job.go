@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/shared/locale"
@@ -81,10 +82,23 @@ func runJobResolve(ctx context.Context, out io.Writer, opts jobResolveOptions) e
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	reason, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s", locale.T(lang, "hubctl.job-resolve-failed", opts.JobID, resp.StatusCode))
+		return fmt.Errorf("%s", jobResolveFailure(lang, opts.JobID, resp.StatusCode, reason))
 	}
 	_, err = fmt.Fprintln(out, locale.T(lang, "hubctl.job-resolved", opts.JobID, opts.Status))
 	return err
+}
+
+// jobResolveFailure localizes the operator-facing failure: the gateway returns
+// two different 409 bodies (not uncertain vs still observing) that a bare
+// status code cannot tell apart.
+func jobResolveFailure(lang locale.Lang, jobID string, code int, body []byte) string {
+	switch strings.TrimSpace(string(body)) {
+	case "job is not uncertain":
+		return locale.T(lang, "hubctl.job-resolve-not-uncertain", jobID)
+	case "job is being observed":
+		return locale.T(lang, "hubctl.job-resolve-observing", jobID)
+	}
+	return locale.T(lang, "hubctl.job-resolve-failed", jobID, code)
 }

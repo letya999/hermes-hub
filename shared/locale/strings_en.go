@@ -597,9 +597,11 @@ func init() {
 		"cred.failed":                   "The check failed. %s",
 		"cred.tools-empty":              "The server did not answer with the tools list.",
 
-		"hubctl.job-resolve-usage":  "Usage: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
-		"hubctl.job-resolve-auth":   "communication service-control bearer unavailable; pass --gateway-auth or configure the space auth files",
-		"hubctl.job-resolve-failed": "job %s not resolved: HTTP %d",
-		"hubctl.job-resolved":       "job %s resolved as %s; its conversation lane is free",
+		"hubctl.job-resolve-usage":         "Usage: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":          "communication service-control bearer unavailable; pass --gateway-auth or configure the space auth files",
+		"hubctl.job-resolve-failed":        "job %s not resolved: HTTP %d",
+		"hubctl.job-resolve-not-uncertain": "job %s is not uncertain; nothing to resolve",
+		"hubctl.job-resolve-observing":     "job %s is still being observed; retry after the observation settles",
+		"hubctl.job-resolved":              "job %s resolved as %s; its conversation lane is free",
 	})
 }

@@ -596,9 +596,11 @@ func init() {
 		"task.session-ref":              "Sesión: %s.",
 		"task.current":                  "Sesión actual: %s.",
 
-		"hubctl.job-resolve-usage":  "Uso: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
-		"hubctl.job-resolve-auth":   "Bearer de service-control de communication no disponible; pase --gateway-auth o configure los archivos auth del espacio",
-		"hubctl.job-resolve-failed": "Tarea %s no resuelta: HTTP %d",
-		"hubctl.job-resolved":       "Tarea %s resuelta como %s; su carril de conversación queda libre",
+		"hubctl.job-resolve-usage":         "Uso: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":          "Bearer de service-control de communication no disponible; pase --gateway-auth o configure los archivos auth del espacio",
+		"hubctl.job-resolve-failed":        "Tarea %s no resuelta: HTTP %d",
+		"hubctl.job-resolve-not-uncertain": "La tarea %s no está uncertain; no hay nada que resolver",
+		"hubctl.job-resolve-observing":     "La tarea %s sigue en observación; reintente cuando termine",
+		"hubctl.job-resolved":              "Tarea %s resuelta como %s; su carril de conversación queda libre",
 	})
 }

@@ -595,9 +595,11 @@ func init() {
 		"cred.failed":                   "Проверка не прошла. %s",
 		"cred.tools-empty":              "Сервер не ответил списком инструментов.",
 
-		"hubctl.job-resolve-usage":  "Использование: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
-		"hubctl.job-resolve-auth":   "Service-control bearer communication недоступен; передайте --gateway-auth или настройте auth-файлы пространства",
-		"hubctl.job-resolve-failed": "Задача %s не закрыта: HTTP %d",
-		"hubctl.job-resolved":       "Задача %s закрыта со статусом %s; полоса разговора свободна",
+		"hubctl.job-resolve-usage":         "Использование: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":          "Service-control bearer communication недоступен; передайте --gateway-auth или настройте auth-файлы пространства",
+		"hubctl.job-resolve-failed":        "Задача %s не закрыта: HTTP %d",
+		"hubctl.job-resolve-not-uncertain": "Задача %s не в состоянии uncertain; закрывать нечего",
+		"hubctl.job-resolve-observing":     "Задача %s ещё наблюдается; повторите после завершения наблюдения",
+		"hubctl.job-resolved":              "Задача %s закрыта со статусом %s; полоса разговора свободна",
 	})
 }
