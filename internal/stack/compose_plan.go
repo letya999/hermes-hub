@@ -64,6 +64,12 @@ func newComposePlan(s Settings) *composePlan {
 			}
 		}
 	}
+	// M40.3 S7a: spawn-controller rides the supervisor's declaration — the
+	// v1 container authority is its emission companion, so stack.yaml needs
+	// no separate service entry for it.
+	if _, ok := p.local["supervisor"]; ok {
+		p.local["spawn-controller"] = "spawn-controller"
+	}
 	return p
 }
 

@@ -8,6 +8,7 @@ COPY services/credential-broker/go.mod ./services/credential-broker/
 # Module files belong to an exported layer: GHA does not persist cache mounts.
 RUN go mod download && cd services/credential-broker && go mod download
 COPY services/credential-broker ./services/credential-broker
+COPY services/spawn-controller ./services/spawn-controller
 COPY cmd ./cmd
 COPY contracts ./contracts
 COPY shared ./shared
@@ -20,6 +21,9 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-media ./cmd/hub-media
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
+# spawn-controller ships inside the shared core/control image — the v1
+# container authority rides the same image the supervisor service runs.
+RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /spawn-controller ./services/spawn-controller
 
 # Broker's activated store requires SQLCipher; a non-CGO binary refuses it.
 FROM golang:1.27.4-bookworm AS broker_build
@@ -88,7 +92,7 @@ FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c
 # the vault writer's commit backend (SPEC-0085 R1): the communication gateway
 # mounts the memory vault and lands governed writes as git commits.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
-COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /hub-media /cellinit /usr/local/bin/
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /hub-media /cellinit /spawn-controller /usr/local/bin/
 COPY --from=broker_build /credential-broker /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/

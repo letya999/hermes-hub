@@ -534,7 +534,60 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// control endpoint publishes on loopback like toolhub and the broker.
 		svc["ports"] = []string{"127.0.0.1:8876:8876"}
 		svc["stop_grace_period"] = "30s"
+		// The S7c cutover claims runtimes through this client; wired into
+		// the environment now so the switch needs no compose change then.
+		svc["environment"].(M)["HUB_SPAWN_URL"] = "http://spawn-controller:8877"
+		svc["environment"].(M)["HUB_SPAWN_TOKEN"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 		services["supervisor"] = svc
+		// spawn-controller (M40.3 S7a) rides the supervisor's topology:
+		// wherever the supervisor renders, the v1 container authority runs
+		// beside it — same control image, same bootstrap hardening, docker
+		// socket as its compute backend. The spaces bind is read-only: it
+		// feeds the one-time v0 importer and the cells' spaces root.
+		spawn := cloneMap(controlCommon)
+		spawn["user"] = fmt.Sprintf("0:%d", max(0, os.Getgid()))
+		spawn["cap_add"] = []string{"SETUID", "SETGID", "SETPCAP", "FOWNER"}
+		spawn["build"] = imageBuild(s.Environment + "-control")
+		spawn["entrypoint"] = []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--groups", dockerGroup, "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "spawn-controller"}
+		spawn["environment"] = M{
+			"HUB_LISTEN":        "0.0.0.0:8877",
+			"HUB_DATA_DIR":      "/data",
+			"HUB_DATABASE_URL":  "sqlite:///data/spawn-controller.db",
+			"HUB_SERVICE_TOKEN": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}",
+			"HUB_TRUSTED":       "${HUB_TRUSTED:-true}",
+			// docker is the launch backend here: runtimes become durable
+			// containers on the shared OCI runtime (runsc when the stack
+			// runs untrusted).
+			"HUB_BACKEND":           "docker",
+			"HUB_RUNTIME_IMAGE":     "hermes-hub:0.5.0-" + s.Environment,
+			"HUB_CONTAINER_RUNTIME": "${HUB_CONTAINER_RUNTIME:-runc}",
+			"HUB_CELL_RUNTIME":      "${HUB_CONTAINER_RUNTIME:-runc}",
+			"HUB_CELL_TOOLS_IMAGE":  "hermes-hub-cli-tools:0.5.0-" + s.Environment,
+			"HUB_CELL_PROXY_IMAGE":  "hermes-hub-cell-proxy:0.5.0-" + s.Environment,
+			"HUB_CELLINIT":          "/usr/local/bin/cellinit",
+			"HUB_CELL_SECCOMP":      "/opt/hub/seccomp/seccomp-mcp-runtime.json",
+			"HUB_CELL_ENV":          s.Environment,
+			"HUB_CELL_STATE_ROOT":   "/cellstate",
+			"HUB_SPACES_ROOT":       "/spaces",
+			// The importer consumes the supervisor's control dir and the
+			// spaces root once, before the socket opens — both read-only.
+			"HUB_IMPORT_V0_DIR":     "/spaces/.control",
+			"HUB_IMPORT_SPACES_DIR": "/spaces",
+			// Cell/workspace binds a spec names translate through the host
+			// roots — the same mechanism ToolHub uses (dockerhost.go).
+			"HUB_DOCKER_HOST_ROOT": "/cellstate=" + filepath.ToSlash(filepath.Join(dir, "spawn-controller")) +
+				",/spaces=" + filepath.ToSlash(filepath.Dir(dir)),
+			"HOME": "/tmp",
+			"TZ":   s.Timezone,
+		}
+		spawn["volumes"] = []any{dockerSock,
+			M{"type": "volume", "source": "spawn-controller-data", "target": "/data"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "spawn-controller")), "target": "/cellstate"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces", "read_only": true}}
+		spawn["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
+		spawn["ports"] = []string{"127.0.0.1:8877:8877"}
+		spawn["stop_grace_period"] = "30s"
+		services["spawn-controller"] = spawn
 	}
 	egressHosts := managedEgressHosts(s, dir)
 	exposureRelay := managedExposureRelay(s, dir)
@@ -641,6 +694,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		} else {
 			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = "http://hermes-runtime:8080"
 			toolhubEnv["HUB_AUTOMATION_JOB_PATH"] = "/v1/execute"
+		}
+		if containerSupervisor {
+			// S7a makes the S6 cells path live: CLI cells claim workers
+			// through the v1 spawn-controller contract (generic_controller).
+			toolhubEnv["HUB_SPAWN_URL"] = "http://spawn-controller:8877"
+			toolhubEnv["HUB_SPAWN_TOKEN"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 			toolhubEnv[key] = value
@@ -1345,6 +1404,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// compose-owned label conflicts.
 	result["networks"] = M{sharedNetworkName: M{"name": sharedNetworkName, "external": true}}
 	if containerSupervisor {
+		// The spawn-controller's durable store — its own volume beside the
+		// service, declared only when the service renders.
+		volumes["spawn-controller-data"] = M{}
 		result["networks"].(M)["supervisor-control"] = M{"name": "hermes-hub-control", "internal": true}
 	}
 	result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
