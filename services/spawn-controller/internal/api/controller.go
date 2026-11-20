@@ -62,7 +62,13 @@ func (c *Controller) ensure(ctx context.Context, space, agent string) (backend.R
 	if c.max > 0 && len(c.backend.List(ctx)) >= c.max {
 		return backend.Runtime{}, errors.New("runtime limit reached")
 	}
-	rt, err := c.backend.Start(ctx, backend.SpawnSpec{Key: key, Space: space, Agent: agent})
+	// Until S4 the spec is thin: the store-backed tenant, policy digest and
+	// mounts land with the runtime rows. The process backend applies only
+	// key, space, agent and image.
+	rt, err := c.backend.Start(ctx, backend.Spec{
+		Key: key, Org: "local", Owner: space, Space: space, Agent: agent,
+		Image: "harness-runtime", OCIRuntime: "runc",
+	})
 	if err != nil {
 		return backend.Runtime{}, err
 	}
@@ -232,7 +238,7 @@ func Serve(ctx context.Context) error {
 	be := backend.NewProcess(
 		filepath.Dir(executable), dataDir,
 		[]string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
-		token, ctx, group,
+		token, os.Getenv("HUB_TRUSTED") == "true", ctx, group,
 	)
 	serviceStore, err := store.Open(ctx, databaseURL, migrations.FS)
 	if err != nil {

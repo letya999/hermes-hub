@@ -17,11 +17,11 @@ import (
 // "starts" stay listed so the controller's limit and auth paths run for real.
 type fakeBackend struct {
 	mu      sync.Mutex
-	started []backend.SpawnSpec
+	started []backend.Spec
 	stopped []string
 }
 
-func (f *fakeBackend) Start(_ context.Context, spec backend.SpawnSpec) (backend.Runtime, error) {
+func (f *fakeBackend) Start(_ context.Context, spec backend.Spec) (backend.Runtime, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, spec)

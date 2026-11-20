@@ -108,9 +108,13 @@ controller's own binary.
 
 ## Extension point
 
-`Backend` (`Start(spec)`, `Stop(id)`, `Inspect(id)`, `List()`); first
-provider is `process` (trusted single-user dev). Docker, Kubernetes and
-firecracker backends arrive with M40.3/M40.15.
+`Backend` (`Start(spec)`, `Stop(id)`, `Inspect(id)`, `List()`) on a resolved
+`Spec` (tenant, image, command, mounts, env, network edges, limits, OCI
+runtime); backends apply the Spec or refuse it, they never decide policy.
+Providers: `process` (trusted single-user dev, wired to the message path)
+and `docker` (docker CLI on the same Spec, moved from the v0 supervisor;
+the shared conformance suite lives in `internal/backend/backendtest`).
+Kubernetes and firecracker arrive with M40.15.
 
 ## When a dependency is disabled
 
