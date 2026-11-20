@@ -3,6 +3,7 @@ package communication
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -188,6 +189,17 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		werr = g.spool.CreateGoal(goal)
 	}
 	if errors.Is(werr, errGoalSuperseded) {
+		// The local record lost the race, but the native engine's set already
+		// landed upstream — without a compensating clear, upstream keeps a
+		// goal the user can neither see nor remove. Hub engine holds no
+		// upstream state, so only native needs the compensation.
+		if result.Engine == "native" {
+			clearReq := request
+			clearReq.Op, clearReq.Text = "clear", ""
+			if _, cerr := runner.Goal(ctx, clearReq); cerr != nil {
+				log.Printf("goal native compensation failed: clearing upstream goal after lost CAS: %v", cerr)
+			}
+		}
 		return reply(locale.T(lang, "goal.none"))
 	}
 	if werr != nil {

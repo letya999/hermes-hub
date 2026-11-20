@@ -1402,6 +1402,55 @@ func TestGoalSetCannotUndoClearDuringRoundTrip(t *testing.T) {
 	}
 }
 
+// A native set that loses the local CAS has already landed upstream: the
+// gateway must compensate with an upstream clear, or the owner keeps an
+// invisible goal. The hub engine holds no upstream state and skips it.
+func TestGoalSetLostRaceCompensatesNativeUpstream(t *testing.T) {
+	c := testConfig(t)
+	g, err := newTestGateway(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.user("alice")
+	task, err := g.spool.ResolveTask(user, 11, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "old", Engine: "native", Status: "active", MaxTurns: 3, Epoch: 4}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &goalLoopRunner{result: hubruntime.GoalResult{Engine: "native", MaxTurns: 5, KickoffPrompt: "start"}}
+	var once sync.Once
+	var duringErr error
+	g.api = &fakeAPI{}
+	g.runner = goalHookRunner{goalLoopRunner: runner, during: func() {
+		// Only the set round trip races the clear; the compensating clear
+		// call must not trigger the hook a second time.
+		once.Do(func() { duringErr = g.spool.ClearGoal(user.ID, task.ConversationID) })
+	}}
+	answer, err := g.goalVerb(context.Background(), user, task, 11, "telegram_bot", 11, "set", "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duringErr != nil {
+		t.Fatal(duringErr)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var ops []string
+	for _, ev := range runner.evals {
+		ops = append(ops, ev.Op)
+	}
+	if len(ops) != 2 || ops[0] != "set" || ops[1] != "clear" {
+		t.Fatalf("upstream calls = %v, want [set clear] — a lost CAS must undo the landed native set", ops)
+	}
+	if found, ferr := func() (bool, error) { _, f, e := g.spool.GoalForTask(user.ID, task.ConversationID); return f, e }(); ferr != nil {
+		t.Fatal(ferr)
+	} else if found {
+		t.Fatalf("cleared goal resurrected locally (answer %q)", answer)
+	}
+}
+
 // Resume and pause only move a goal from the statuses the verb allows:
 // a terminal or already-active goal cannot flip back to active.
 func TestGoalVerbsCheckSourceStatus(t *testing.T) {

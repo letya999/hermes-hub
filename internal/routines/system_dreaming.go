@@ -78,15 +78,23 @@ var dreamingRunTimeout = 10 * time.Minute
 
 var errDreamingTimeout = errors.New("dreaming run timed out")
 
+// errDreamingBusy means a previous run of the same schedule has not
+// returned: starting a second one would run two dreaming passes over the
+// same data concurrently. It consumes an attempt like a timeout does, so a
+// permanently wedged run still fails its night in bounded passes.
+var errDreamingBusy = errors.New("previous dreaming run still in flight")
+
 // runBounded executes the occurrence operation under a deadline. A run that
 // ignores cancellation still leaks its goroutine but no longer blocks the
 // proactive pass; the parent's own cancellation passes through so a host
 // shutdown leaves the night pending instead of burning an attempt.
-func runBounded(ctx context.Context, run func(context.Context, commodel.RoutineOccurrence) error, o commodel.RoutineOccurrence) error {
+// onFinish runs when the run actually returns — even past the timeout — so
+// the caller can keep a "still in flight" marker honest.
+func runBounded(ctx context.Context, run func(context.Context, commodel.RoutineOccurrence) error, o commodel.RoutineOccurrence, onFinish func()) error {
 	runCtx, cancel := context.WithTimeout(ctx, dreamingRunTimeout)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(runCtx, o) }()
+	go func() { defer onFinish(); done <- run(runCtx, o) }()
 	select {
 	case err := <-done:
 		return err
@@ -121,7 +129,25 @@ func (e *Engine) RunDueDreaming(ctx context.Context, now time.Time, authorize fu
 		if o.RetryAfter.After(now) {
 			return
 		}
-		if err := runBounded(ctx, run, o); err != nil {
+		key := o.ScheduleID
+		e.mu.Lock()
+		if e.dreamingRunning == nil {
+			e.dreamingRunning = map[string]bool{}
+		}
+		busy := e.dreamingRunning[key]
+		if !busy {
+			e.dreamingRunning[key] = true
+		}
+		e.mu.Unlock()
+		err := errDreamingBusy
+		if !busy {
+			err = runBounded(ctx, run, o, func() {
+				e.mu.Lock()
+				delete(e.dreamingRunning, key)
+				e.mu.Unlock()
+			})
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				// Host shutdown, not a failure: keep the night pending for
 				// the next pass rather than spend one of its attempts.

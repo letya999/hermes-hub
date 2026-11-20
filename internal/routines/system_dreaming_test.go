@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,9 +65,11 @@ func TestFailedDreamingNightDoesNotBlockNextNight(t *testing.T) {
 }
 
 // A run that never returns — even one ignoring ctx entirely — must not hold
-// the schedule's oldest slot: each call hits the bounded run, the timeout
-// counts as an attempt, and the night settles failed instead of wedging
-// every later night behind it.
+// the schedule's oldest slot and must never be entered a second time: the
+// first call hits the bounded run, the timeout counts as an attempt, and
+// every later pass sees the still-live goroutine and burns an attempt
+// instead of starting a concurrent run. The night settles failed in bounded
+// passes and the run function is invoked exactly once.
 func TestDreamingRunTimeoutCountsAsAttempt(t *testing.T) {
 	e := testEngine(t)
 	old := dreamingRunTimeout
@@ -80,9 +83,9 @@ func TestDreamingRunTimeoutCountsAsAttempt(t *testing.T) {
 	}
 	release := make(chan struct{})
 	defer close(release)
-	runs := 0
+	var runs atomic.Int32
 	wedged := func(context.Context, commodel.RoutineOccurrence) error {
-		runs++
+		runs.Add(1)
 		<-release // ignores ctx entirely — the bounded run still returns
 		return nil
 	}
@@ -100,8 +103,8 @@ func TestDreamingRunTimeoutCountsAsAttempt(t *testing.T) {
 		}
 		now = now.Add(10 * time.Minute)
 	}
-	if runs != dreamingAttempts {
-		t.Fatalf("wedged run attempts = %d, want %d", runs, dreamingAttempts)
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("wedged run re-entered while still in flight: runs = %d, want 1", got)
 	}
 	var live commodel.RoutineOccurrence
 	body, err := os.ReadFile(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"))
@@ -110,6 +113,63 @@ func TestDreamingRunTimeoutCountsAsAttempt(t *testing.T) {
 	}
 	if live.State != "failed" || live.RetryCount != dreamingAttempts {
 		t.Fatalf("wedged night settled %+v, want failed after %d attempts", live, dreamingAttempts)
+	}
+}
+
+// Once the in-flight run actually returns, the schedule marker clears and
+// the next due night runs normally — the guard bounds concurrency, not
+// recovery.
+func TestDreamingRunningMarkerClearsWhenRunReturns(t *testing.T) {
+	e := testEngine(t)
+	old := dreamingRunTimeout
+	dreamingRunTimeout = 20 * time.Millisecond
+	defer func() { dreamingRunTimeout = old }()
+	due := time.Date(2026, 3, 8, 3, 0, 0, 0, time.UTC)
+	first := commodel.RoutineOccurrence{ScheduleID: SystemDreamingID, Revision: 1, DueAt: due, JobKind: "dreaming", State: "dreaming",
+		Job: commodel.Job{Envelope: assignmentCaller(), Channel: "system", Trigger: "cron"}}
+	second := first
+	second.DueAt = due.Add(24 * time.Hour)
+	for _, o := range []commodel.RoutineOccurrence{first, second} {
+		if err := e.atomicJSON(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := make(chan struct{})
+	var runs atomic.Int32
+	blocked := func(context.Context, commodel.RoutineOccurrence) error {
+		runs.Add(1)
+		<-release
+		return nil
+	}
+	allow := func(commodel.Job) error { return nil }
+	now := second.DueAt
+	// First pass times the first night out; the goroutine stays blocked.
+	_ = e.RunDueDreaming(context.Background(), now, allow, blocked)
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("runs = %d, want 1", got)
+	}
+	close(release)
+	// Let the goroutine return and clear the marker.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		e.mu.Lock()
+		busy := e.dreamingRunning[SystemDreamingID]
+		e.mu.Unlock()
+		if !busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Retry the failed night plus the next one: both must run now.
+	for i := 0; i < 10 && runs.Load() < 3; i++ {
+		_ = e.RunDueDreaming(context.Background(), now, allow, func(context.Context, commodel.RoutineOccurrence) error {
+			runs.Add(1)
+			return nil
+		})
+		now = now.Add(10 * time.Minute)
+	}
+	if got := runs.Load(); got != 3 {
+		t.Fatalf("runs after the marker cleared = %d, want 3 (wedged + 2 fresh)", got)
 	}
 }
 

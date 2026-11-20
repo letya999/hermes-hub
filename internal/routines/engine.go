@@ -131,6 +131,10 @@ type Engine struct {
 	deps Deps
 	// proactiveFlight bounds one in-flight probe/script per schedule.
 	proactiveFlight map[string]bool
+	// dreamingRunning marks a schedule whose bounded run goroutine has not
+	// returned yet — cleared only when the run actually finishes, so a run
+	// that outlives its timeout never overlaps the next attempt.
+	dreamingRunning map[string]bool
 	// mappingDriftReported warns once per process about a corrupt active
 	// occurrence binding.
 	mappingDriftReported map[string]bool
