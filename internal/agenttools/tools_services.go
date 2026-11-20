@@ -40,7 +40,7 @@ func restartRuntime(stateDir string) error {
 
 func (t *Tools) EnvUpdate(r Input) (map[string]any, error) {
 	if t.CommunicationURL != "" {
-		return nil, errors.New("connector credentials require the protected form; call service_enable")
+		return nil, errors.New("connector credentials are managed through the ToolHub connector flow")
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -78,10 +78,6 @@ func envUpdateNextStep(path string) string {
 }
 
 func (t *Tools) ServiceCatalog() (map[string]any, error) {
-	self, err := t.selfServices()
-	if err != nil {
-		return nil, err
-	}
 	base := map[string]bool{}
 	for _, name := range strings.Split(os.Getenv("HUB_FEATURES"), ",") {
 		if name = strings.TrimSpace(name); name != "" {
@@ -90,7 +86,7 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 	}
 	services := make([]map[string]any, 0)
 	for _, info := range stack.ServiceCatalog() {
-		enabled := base[info.Name] || self[info.Name]
+		enabled := base[info.Name]
 		missing := missingEnv(info.Requires)
 		status := "available"
 		if !info.SelfService {
@@ -128,45 +124,6 @@ func missingEnv(keys []string) []string {
 		}
 	}
 	return missing
-}
-
-func (t *Tools) selfServices() (map[string]bool, error) {
-	path := filepath.Join(t.StateDir, "self-services.json")
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]bool{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("self-services must be a regular file")
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > 64*1024 {
-		return nil, errors.New("self-services file is too large")
-	}
-	var state struct {
-		Features []string `json:"features"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		return nil, fmt.Errorf("invalid self-services file: %w", err)
-	}
-	result := map[string]bool{}
-	for _, name := range state.Features {
-		info, ok := stack.ServiceInfoByName(name)
-		if !ok || !info.SelfService {
-			return nil, fmt.Errorf("service %q is not self-service", name)
-		}
-		if result[name] {
-			return nil, fmt.Errorf("duplicate service %q", name)
-		}
-		result[name] = true
-	}
-	return result, nil
 }
 
 func (t *Tools) allowsAction(action string) bool { return !t.OrgScoped || t.OrgActions[action] }

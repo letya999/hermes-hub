@@ -17,7 +17,7 @@ const toolSnapshotPath = "internal/devcheck/testdata/tool-catalog.snapshot"
 
 func toolCatalogSnapshot() ([]byte, error) {
 	definition := agenttools.HubToolsDefinition()
-	lines := []string{"# " + definition.DefinitionID + "@" + definition.Version, "# name schema_sha256 effect required_rights"}
+	lines := []string{"# " + definition.DefinitionID + "@" + definition.Version, "# name schema_sha256 desc_sha256 effect required_rights"}
 	tools := slices.Clone(definition.Tools)
 	slices.SortFunc(tools, func(a, b api.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	for _, tool := range tools {
@@ -33,7 +33,7 @@ func toolCatalogSnapshot() ([]byte, error) {
 		}
 		rights := slices.Clone(tool.Requires)
 		slices.Sort(rights)
-		lines = append(lines, fmt.Sprintf("%s %x %s %s", tool.Name, sha256.Sum256(canonical), tool.Effect, strings.Join(rights, ",")))
+		lines = append(lines, fmt.Sprintf("%s %x %x %s %s", tool.Name, sha256.Sum256(canonical), sha256.Sum256([]byte(tool.Description)), tool.Effect, strings.Join(rights, ",")))
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
 }

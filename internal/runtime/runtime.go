@@ -116,7 +116,6 @@ func Prepare(roots []string, uid, gid int, chown func(string, int, int) error) e
 		privateFiles[filepath.Join(glabDir, "config.yml")] = true
 		privateFiles[filepath.Join(glabDir, "aliases.yml")] = true
 		privateFiles[filepath.Join(root, "self-env.json")] = true
-		privateFiles[filepath.Join(root, selfServicesFile)] = true
 	}
 	for _, root := range roots {
 		if err := os.MkdirAll(root, 0770); err != nil {

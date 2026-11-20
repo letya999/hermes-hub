@@ -278,7 +278,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 
 // materializeHermesConfig renders the effective Hermes config on the host so
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
-// runtime contract: secrets.<env>.env endpoint override and self-services.
+// runtime contract: secrets.<env>.env endpoint override.
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
 	// A spawned runtime is configured by the published revision alone —
 	// missing, corrupt or foreign revisions deny the materialization

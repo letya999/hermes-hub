@@ -222,48 +222,6 @@ func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
 	}
 }
 
-func TestSelfServicesValidationAndDependencies(t *testing.T) {
-	state := t.TempDir()
-	t.Setenv("HUB_STATE", state)
-	v := fixture(t)
-	for _, body := range [][]byte{
-		[]byte(`{"features":["gitlab"]}`),
-		[]byte(`{"features":["gitlab","gitlab"]}`),
-		[]byte(`{"features":["workspace"]}`),
-		[]byte(`not-json`),
-	} {
-		if err := os.WriteFile(filepath.Join(state, "self-services.json"), body, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := v.ServiceCatalog(); err == nil && string(body) != `{"features":["gitlab"]}` {
-			t.Fatal("invalid self-services accepted", string(body))
-		}
-	}
-	if err := os.WriteFile(filepath.Join(state, "self-services.json"), []byte(`{"features":["google_write"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := v.ServiceCatalog(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := v.ServiceEnable(Input{Service: "unknown"}); err == nil {
-		t.Fatal("unknown service accepted")
-	}
-	if _, err := v.ServiceEnable(Input{Service: "browser"}); err == nil {
-		t.Fatal("host-managed service accepted")
-	}
-	t.Setenv("GITLAB_TOKEN", "pat")
-	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
-		t.Fatal("missing restart was accepted")
-	}
-	v.Restart = func() error { return fmt.Errorf("restart failed") }
-	if _, err := v.ServiceEnable(Input{Service: "gitlab"}); err == nil {
-		t.Fatal("restart failure was hidden")
-	}
-	if info, err := v.ServiceCatalog(); err != nil || info["services"] == nil {
-		t.Fatal(info, err)
-	}
-}
-
 func TestRestartRuntimeValidation(t *testing.T) {
 	state := t.TempDir()
 	if err := restartRuntime(state); err == nil {

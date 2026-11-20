@@ -76,10 +76,6 @@ func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(zero)
-	services := filepath.Join(dir, "self-services.json")
-	if err := os.WriteFile(services, []byte(`{"features":["github"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	opts := MaterializeOptions{ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true}
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
 		t.Fatal(err)

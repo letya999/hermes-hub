@@ -22,17 +22,27 @@ func TestToolCatalogSnapshotUnchanged(t *testing.T) {
 	}
 	// PR checkouts include the target parent. Source archives have no Git
 	// history; they still run the exact catalog/snapshot equality above.
+	probe := exec.Command("git", "rev-parse", "--git-dir")
+	probe.Dir = "../.."
+	if probe.Run() != nil {
+		return // source archive without Git metadata
+	}
+	checked := false
 	for _, ref := range []string{"origin/dev", "HEAD^"} {
 		cmd := exec.Command("git", "show", ref+":"+toolSnapshotPath)
 		cmd.Dir = "../.."
 		previous, err := cmd.Output()
 		if err != nil {
 			continue
-		} // initial snapshot or source archive
+		}
+		checked = true
 		if !bytes.Equal(previous, want) && snapshotVersion(previous) == snapshotVersion(want) {
 			t.Fatal("snapshot differs from the integration baseline without a catalog version bump")
 		}
 		break
+	}
+	if !checked {
+		t.Fatal("git history present but no snapshot baseline at origin/dev or HEAD^")
 	}
 }
 
