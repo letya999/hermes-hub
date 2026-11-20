@@ -34,7 +34,11 @@ func (m *Manager) ensure(ctx context.Context, binding Binding, hold *Lease) (Run
 		for _, entry := range m.items {
 			if _, ok := entry.leases[hold.ID]; ok {
 				delete(entry.leases, hold.ID)
-				_ = m.persistLocked()
+				if persistErr := m.persistLocked(); persistErr != nil {
+					// The row is gone in memory but may still pin the runtime
+					// on disk — surface it instead of swallowing the cleanup.
+					log.Printf("supervisor ensure cleanup hold_id=%q persistence failed: %v", hold.ID, persistErr)
+				}
 			}
 		}
 		m.mu.Unlock()

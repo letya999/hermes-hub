@@ -67,6 +67,9 @@ func TestLeaseGenerationFence(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil || len(listed) != 1 || len(listed[0].Consumers) != 1 || listed[0].Consumers[0].ID != lease.ID {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
+	if listed[0].Leases != 1 {
+		t.Fatalf("listed[0].Leases=%d, want 1 (older hubctl reads the count)", listed[0].Leases)
+	}
 	before := lease.ExpiresAt
 	m.mu.Lock()
 	m.cfg.Now = func() time.Time { return time.Unix(100, 0).Add(time.Minute) }

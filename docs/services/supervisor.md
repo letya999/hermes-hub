@@ -130,10 +130,14 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   malformed or oversized answer — injects the explicit
   "Memory context unavailable" marker, never a local vault read.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
-  kind, owner class, expiry) and `wait_reason` for expected waits — parked
-  approvals/streams are reported, not remediated. Genuine anomalies append
-  one bounded line per class to `signals.jsonl` under the supervisor state
-  dir and keep a persisted per-runtime incident record.
+  kind, owner class, expiry), a computed `leases` count for older hubctl
+  clients, and `wait_reason` for expected waits — parked approvals/streams
+  are reported, not remediated. Genuine anomalies append one bounded line
+  per class to `signals.jsonl` under the supervisor state dir and keep a
+  persisted per-runtime incident record. `Ensure` reference holds are
+  anonymous lease rows owned by `supervisor` with a claim deadline: a
+  holder that died is expired by the stale-lease sweep instead of pinning
+  the runtime, and a failed Ensure removes the row it may have added.
 - The per-space supervision policy `runtime.<env>.policy.json` (rendered
   from `config.supervision`) is re-read on every decision: `idle_stop`
   bounds warm idle retention at lease release and the stale-lease sweep,

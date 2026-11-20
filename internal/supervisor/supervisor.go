@@ -224,9 +224,11 @@ type Runtime struct {
 	LastUsed      time.Time `json:"last_used"`
 	IdleDeadline  time.Time `json:"idle_deadline,omitempty"`
 	Managed       bool      `json:"managed,omitempty"`
-	// Consumers and WaitReason are read projections, never persisted state:
-	// they describe live demand at read time and stay empty on disk.
+	// Consumers, Leases and WaitReason are read projections, never persisted
+	// state: they describe live demand at read time and stay empty on disk.
+	// Leases is the count older hubctl still reads, derived from lease rows.
 	Consumers  []LeaseConsumer `json:"consumers,omitempty"`
+	Leases     int             `json:"leases"`
 	WaitReason string          `json:"wait_reason,omitempty"`
 	// Resource counters sampled once per watchdog sweep; reporting only, they
 	// never feed remediation decisions.
@@ -859,6 +861,7 @@ func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
 	for _, item := range m.items {
 		runtime := item.Runtime
 		runtime.Consumers = item.consumers()
+		runtime.Leases = len(item.leases)
 		runtime.WaitReason = m.expectedWaitLocked(item)
 		values = append(values, runtime)
 	}
