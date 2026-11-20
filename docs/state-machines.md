@@ -119,6 +119,7 @@ crash counters.
 | starting | `ready` (probe passes) | warm | idle TTL 15m, deadline `drain`; sweeper |
 | starting | `fail` (budget exceeded or probe fails) | failed | retention 24h, deadline `removed`; sweeper (operator or reconciler) |
 | warm | `lease` (lease row created) | busy | hold bound 2h, deadline `drain`; sweeper |
+| busy | `renew` (lease heartbeat) | busy | re-arms the 2h hold bound |
 | busy | `unlease` (last lease row removed) | warm | idle TTL 15m, deadline `drain`; sweeper |
 | warm | `drain` (idle TTL or policy digest revoked) | draining | stop budget 30s, deadline `quarantine`; backend confirms stop, sweeper backstop |
 | busy | `drain` (hold bound passed) | draining | stop budget 30s, deadline `quarantine`; sweeper |
@@ -132,32 +133,40 @@ lease count is the number of lease rows. Worker follows the same table
 without `warm`: `ready` lands `busy`, `unlease` and `drain` both leave
 `busy` for `draining`.
 
-S1 implementation notes (`services/spawn-controller/internal/spawn`,
-verified 2026-11-20): `absent` is final per generation — a claim creates
+S4 implementation notes (`services/spawn-controller/internal/spawn`,
+verified 2026-11-21): `absent` is final per generation — a claim creates
 a new-generation row in `starting`, it is not an edge out of `absent`.
 "any" fans out to every non-final state except the edge's own target. A
 `busy` hold that outlives its bound drains — the timed-out hold's runtime
-is reclaimed, not returned dirty to the warm pool; S4 makes lease renewal
-re-arm the bound and draining remove the lease rows in the same
-transaction.
+is reclaimed, not returned dirty to the warm pool. `renew` is the lease
+heartbeat (`POST /v1/leases/{id}/renew`): a `busy` self-loop that re-arms
+the hold bound, so an actively renewed hold never drains. Every move out
+of the leasable states (`warm`, `busy`) deletes the runtime's lease rows
+in the same transaction — a draining, missing or quarantined row can
+never carry a hold into its next generation. The claim binds tenant,
+policy digest and image digest to the row (Decision 10): warm reuse is
+exact-key only, and activation drains every runtime bound to the old
+digest in the activation transaction.
 
-### v1 skeleton (spawn-controller)
+### v1 live (spawn-controller)
 
-The M40.2 process-mode skeleton keeps the registry in memory
-(`services/spawn-controller`, `processBackend.children`) and implements a
-subset of the target table:
+S4 (M40.3) wires the durable target table to HTTP: `RuntimeMachine`
+drives the `runtimes` rows the message path claims — `POST /v1/messages`
+is claim -> acquire lease -> forward -> release, `GET /v1/runtimes`
+lists the tenant's rows, `POST /v1/leases/{id}/renew` fires `renew`. The
+sweeper (`HUB_SWEEP_INTERVAL`, default 5s) fires the deadline events and
+then, outside any transaction, applies the backend effects: `draining`
+rows get a confirmed `Stop` before `stopped`, an unconfirmed stop stays
+for the `quarantine` deadline, and a `failed` row's half-started workload
+is stopped. The same pass reconciles rows against a successful backend
+`List` — absent workloads become `missing` and labeled workloads without
+rows (orphans of a crashed controller) are stopped; a `List` error marks
+nothing.
 
-| From | Event | To | Deadline / sweeper |
-|---|---|---|---|
-| - | ensure (claim for a space+agent) | starting | 10s healthz deadline; spawn fails |
-| starting | healthz ok | running | runtime serves |
-| running | child exit | exited | removed from registry |
-| running | stop / shutdown | - | SIGTERM or CTRL_BREAK, 10s WaitDelay |
-
-Registry access is mutex-guarded; children are bound to a process group
-(Unix) or Job Object (Windows) so a controller death cannot orphan them.
-The durable Runtime row and the warm/draining/quarantined states land
-with M40.3.
+Children are bound to a process group (Unix) or Job Object (Windows) so
+a controller death cannot orphan them; a restarted controller recovers
+its runtimes from the rows and reconciles the backend at boot before
+serving.
 
 ## PassportRevision
 
