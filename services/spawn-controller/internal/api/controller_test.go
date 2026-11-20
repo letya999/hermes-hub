@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
@@ -98,7 +99,11 @@ func controllerForTest(t *testing.T, token string, max int, runtimeURL string) (
 	st := storetest.Open(t, storetest.SQLiteURL(t), migrations.FS)
 	be := &fakeBackend{address: runtimeURL}
 	rts := &spawn.Runtimes{Store: st, Backend: be, Image: "harness-runtime", MaxLive: max}
-	return &Controller{runtimes: rts, token: token, client: &http.Client{Timeout: time.Second}}, st, be
+	return &Controller{
+		runtimes: rts, token: token,
+		spaces: spawnv1.Handler(Contract{Runtimes: rts}, token),
+		client: &http.Client{Timeout: time.Second},
+	}, st, be
 }
 
 // plantSpace writes the space row claim reads: for the api surface a
@@ -268,7 +273,7 @@ func TestMessageClaimsHoldsAndReleases(t *testing.T) {
 	}
 	body, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if !strings.Contains(string(body), `"space_id":"s1"`) || !strings.Contains(string(body), `"state":"warm"`) {
+	if !strings.Contains(string(body), `"space":"s1"`) || !strings.Contains(string(body), `"state":"warm"`) {
 		t.Fatalf("runtimes inventory: %s", body)
 	}
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/v1/runtimes?org=org-a&owner=bob", nil)
@@ -279,7 +284,7 @@ func TestMessageClaimsHoldsAndReleases(t *testing.T) {
 	}
 	body, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if strings.Contains(string(body), `"space_id":"s1"`) {
+	if strings.Contains(string(body), `"space":"s1"`) {
 		t.Fatalf("foreign tenant saw alice's runtime: %s", body)
 	}
 }
@@ -326,12 +331,15 @@ func TestLeaseRenewEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := c.runtimes.Acquire(ctx, testTenant, rt.ID, "ls-test"); err != nil {
+	// The contract surface takes the tenant in the renew body and lease
+	// ids of the ls-xxxxxxxxxxxxxxxx shape.
+	if err := c.runtimes.Acquire(ctx, testTenant, rt.ID, "ls-0000000000000001"); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	post := func(path string) (int, []byte) {
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, nil)
+	post := func(path, body string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer service-token")
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -340,17 +348,17 @@ func TestLeaseRenewEndpoint(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, raw
 	}
-	status, body := post("/v1/leases/ls-test/renew?org=org-a&owner=alice")
+	status, body := post("/v1/leases/ls-0000000000000001/renew", `{"org":"org-a","owner":"alice"}`)
 	if status != http.StatusOK {
 		t.Fatalf("renew: status %d body %s", status, body)
 	}
 	if got := runtimeState(t, st, testTenant, rt.ID); got != "busy" {
 		t.Fatalf("renewed runtime is %s", got)
 	}
-	if status, _ := post("/v1/leases/ls-ghost/renew?org=org-a&owner=alice"); status != http.StatusNotFound {
+	if status, _ := post("/v1/leases/ls-0000000000000000/renew", `{"org":"org-a","owner":"alice"}`); status != http.StatusNotFound {
 		t.Fatalf("missing lease renew: %d", status)
 	}
-	if status, _ := post("/v1/leases/ls-test/renew?org=org-a&owner=bob"); status != http.StatusNotFound {
+	if status, _ := post("/v1/leases/ls-0000000000000001/renew", `{"org":"org-a","owner":"bob"}`); status != http.StatusNotFound {
 		t.Fatalf("foreign tenant renew: %d", status)
 	}
 }

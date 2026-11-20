@@ -352,6 +352,28 @@ func (r *Runtimes) Release(ctx context.Context, t store.Tenant, runtimeID, lease
 	})
 }
 
+// ReleaseLease drops a hold by lease id alone — the contract's DELETE
+// route carries only the lease, so the runtime it hangs on is resolved
+// in the same transaction. A lease the drain already removed is a no-op:
+// releasing is always safe.
+func (r *Runtimes) ReleaseLease(ctx context.Context, t store.Tenant, leaseID string) error {
+	return r.Store.Tx(ctx, func(tx *store.Tx) error {
+		q := tx.Scoped(t)
+		var runtimeID string
+		err := q.QueryRow("SELECT runtime_id FROM leases WHERE {tenant} AND id = ?", leaseID).Scan(&runtimeID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := ReleaseLease(q, runtimeID, leaseID, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		return nil
+	})
+}
+
 // Renew re-arms a held runtime's busy bound (the busy -> busy renew
 // edge): the lease row must still exist and the runtime must still be
 // busy. Returns the runtime for the caller's bookkeeping.

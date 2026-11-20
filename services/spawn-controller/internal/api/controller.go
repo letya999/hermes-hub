@@ -143,42 +143,12 @@ func (c *Controller) routes() *http.ServeMux {
 	if c.spaces != nil {
 		mux.Handle("/v1/spaces", c.guard(c.spaces.ServeHTTP))
 		mux.Handle("/v1/spaces/", c.guard(c.spaces.ServeHTTP))
+		// The contract's runtime surface — claim, inventory and the lease
+		// lifecycle — is served by the same contract handler that owns the
+		// spaces routes; only the process-mode first message stays here.
+		mux.Handle("/v1/runtimes", c.guard(c.spaces.ServeHTTP))
+		mux.Handle("/v1/leases/", c.guard(c.spaces.ServeHTTP))
 	}
-	mux.HandleFunc("/v1/runtimes", c.guard(func(w http.ResponseWriter, r *http.Request) {
-		t, err := requestTenant(r)
-		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
-			return
-		}
-		list, err := c.runtimes.List(r.Context(), t)
-		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"runtimes": list})
-	}))
-	mux.HandleFunc("/v1/leases/", c.guard(func(w http.ResponseWriter, r *http.Request) {
-		id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/leases/"), "/renew")
-		if !ok || id == "" || strings.Contains(id, "/") {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
-			return
-		}
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-			return
-		}
-		t, err := requestTenant(r)
-		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
-			return
-		}
-		rt, err := c.runtimes.Renew(r.Context(), t, id)
-		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"runtime": rt})
-	}))
 	mux.HandleFunc("/v1/messages", c.guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -251,8 +221,31 @@ func catalogLoader(load func() (catalog.Docs, error)) func() (catalog.Docs, erro
 // Serve runs the controller until ctx ends. Untrusted installations or a
 // missing service token are refused before any socket or child exists.
 func Serve(ctx context.Context) error {
-	if os.Getenv("HUB_TRUSTED") != "true" {
-		return errors.New("untrusted installation")
+	// The launch backend selects where runtimes execute: process mode is
+	// the trusted developer default — it offers no isolation, so an
+	// untrusted installation is refused outright; docker is the compose
+	// stack's container authority, where an untrusted installation must
+	// run every workload on runsc (X6).
+	launchMode := os.Getenv("HUB_BACKEND")
+	if launchMode == "" {
+		launchMode = "process"
+	}
+	trusted := os.Getenv("HUB_TRUSTED") == "true"
+	ociRuntime := os.Getenv("HUB_CONTAINER_RUNTIME")
+	if ociRuntime == "" {
+		ociRuntime = "runc"
+	}
+	switch launchMode {
+	case "process":
+		if !trusted {
+			return errors.New("untrusted installation")
+		}
+	case "docker":
+		if !trusted && ociRuntime != "runsc" {
+			return errors.New("untrusted installation requires the runsc OCI runtime")
+		}
+	default:
+		return fmt.Errorf("unknown HUB_BACKEND %q", launchMode)
 	}
 	listen := os.Getenv("HUB_LISTEN")
 	if listen == "" {
@@ -286,36 +279,47 @@ func Serve(ctx context.Context) error {
 		}
 		sweepEvery = parsed
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return err
+	// The state root hosts the seeded cellinit, the docker backend's staged
+	// sidecar payloads and — for docker-mode runtimes — its scratch files.
+	stateRoot := os.Getenv("HUB_CELL_STATE_ROOT")
+	if stateRoot == "" {
+		stateRoot = filepath.Join(dataDir, "cells")
 	}
-	group, err := proctree.NewGroup()
-	if err != nil {
-		return err
+	var be backend.Backend
+	if launchMode == "docker" {
+		be = backend.NewDocker(backend.DockerConfig{Trusted: trusted, StateRoot: stateRoot})
+	} else {
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		group, err := proctree.NewGroup()
+		if err != nil {
+			return err
+		}
+		defer group.Close()
+		be = backend.NewProcess(
+			filepath.Dir(executable), dataDir,
+			[]string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
+			token, trusted, ctx, group,
+		)
 	}
-	defer group.Close()
-	be := backend.NewProcess(
-		filepath.Dir(executable), dataDir,
-		[]string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
-		token, os.Getenv("HUB_TRUSTED") == "true", ctx, group,
-	)
 	serviceStore, err := store.Open(ctx, databaseURL, migrations.FS)
 	if err != nil {
 		return err
 	}
 	defer serviceStore.Close()
+	image := os.Getenv("HUB_RUNTIME_IMAGE")
+	if image == "" {
+		image = runtimeDefaultImage
+	}
 	runtimes := &spawn.Runtimes{
 		Store: serviceStore, Backend: be,
-		Image: runtimeDefaultImage, OCIRuntime: "runc", MaxLive: max,
+		Image: image, OCIRuntime: ociRuntime, MaxLive: max,
 	}
 	// Cells are the operator-opt-in worker surface (V5): enabled only when
 	// the tools image and the shipped cellinit binary are configured —
 	// every other input has a safe default or refuses at spec time.
-	stateRoot := os.Getenv("HUB_CELL_STATE_ROOT")
-	if stateRoot == "" {
-		stateRoot = filepath.Join(dataDir, "cells")
-	}
 	cells := &spawn.Cells{
 		ToolsImage:      os.Getenv("HUB_CELL_TOOLS_IMAGE"),
 		ProxyImage:      os.Getenv("HUB_CELL_PROXY_IMAGE"),
@@ -345,7 +349,7 @@ func Serve(ctx context.Context) error {
 	workerBackend := backend.NewDocker(backend.DockerConfig{
 		ContainerPrefix: "hermes-hub-wk-",
 		NetworkPrefix:   "hermes-hub-wn-",
-		Trusted:         true, // Serve refuses untrusted installs before this point
+		Trusted:         trusted, // untrusted installs reach here only on runsc
 		StateRoot:       stateRoot,
 	})
 	workers := &spawn.Workers{
@@ -383,7 +387,7 @@ func Serve(ctx context.Context) error {
 	go sweeper.Run(sweepCtx, sweepEvery)
 	controller := &Controller{
 		runtimes: runtimes, token: token,
-		spaces: spawnv1.Handler(Contract{Revisions: revisions, Workers: workers}, token),
+		spaces: spawnv1.Handler(Contract{Revisions: revisions, Workers: workers, Runtimes: runtimes}, token),
 		client: &http.Client{Timeout: 60 * time.Second},
 	}
 	listener, err := net.Listen("tcp", listen)
@@ -396,9 +400,14 @@ func Serve(ctx context.Context) error {
 		_ = server.Shutdown(context.Background())
 	}()
 	err = server.Serve(listener)
-	if children, lerr := be.List(context.Background()); lerr == nil {
-		for _, child := range children {
-			_ = be.Stop(context.Background(), child.ID)
+	// Process-mode children die with their controller; docker runtimes are
+	// durable containers — the next boot's reconcile re-anchors them, so a
+	// service restart never stops live runtime workloads.
+	if launchMode == "process" {
+		if children, lerr := be.List(context.Background()); lerr == nil {
+			for _, child := range children {
+				_ = be.Stop(context.Background(), child.ID)
+			}
 		}
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {

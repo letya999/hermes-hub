@@ -15,12 +15,64 @@ import (
 	"github.com/letya999/hermes-hub/contracts/spawn/v1/conformance"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/api"
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
 	"github.com/letya999/hermes-hub/shared/store/storetest"
+	"github.com/letya999/hermes-hub/shared/testkit"
 )
 
 var contractTenant = spawnv1.Tenant{Org: "org-a", Owner: "alice"}
+
+// stubBackend satisfies backend.Backend without touching the host: Start
+// answers a ready workload whose address is keyed by the spec's content
+// identity; Inspect/List serve the recorded specs.
+type stubBackend struct{ specs map[string]backend.Spec }
+
+func (s *stubBackend) Start(_ context.Context, spec backend.Spec) (backend.Runtime, error) {
+	if s.specs == nil {
+		s.specs = map[string]backend.Spec{}
+	}
+	s.specs[spec.Key] = spec
+	return backend.Runtime{
+		ID: spec.Key, Space: spec.Space, Agent: spec.Agent,
+		State: "ready", Address: "stub://" + spec.Key + ":8080",
+	}, nil
+}
+
+func (s *stubBackend) Stop(_ context.Context, id string) error {
+	delete(s.specs, id)
+	return nil
+}
+
+func (s *stubBackend) Inspect(_ context.Context, id string) (backend.Runtime, error) {
+	spec, ok := s.specs[id]
+	if !ok {
+		return backend.Runtime{}, backend.ErrNotFound
+	}
+	return backend.Runtime{
+		ID: spec.Key, Space: spec.Space, Agent: spec.Agent,
+		State: "ready", Address: "stub://" + spec.Key + ":8080",
+	}, nil
+}
+
+func (s *stubBackend) List(ctx context.Context) ([]backend.Runtime, error) {
+	out := []backend.Runtime{}
+	for id := range s.specs {
+		rt, err := s.Inspect(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rt)
+	}
+	return out, nil
+}
+
+func (s *stubBackend) Exec(context.Context, string, backend.ExecSpec) (backend.ExecResult, error) {
+	return backend.ExecResult{}, nil
+}
+
+func (s *stubBackend) VerifyWorker(context.Context, string, backend.Spec) error { return nil }
 
 func contractServer(t *testing.T, url string) api.Contract {
 	t.Helper()
@@ -29,11 +81,106 @@ func contractServer(t *testing.T, url string) api.Contract {
 		t.Fatalf("catalog generate: %v", err)
 	}
 	clock := time.Unix(1_800_000_000, 0)
-	return api.Contract{Revisions: &spawn.Revisions{
-		Store:   storetest.Open(t, url, migrations.FS),
-		Catalog: docs,
-		Now:     func() time.Time { clock = clock.Add(time.Second); return clock },
-	}}
+	now := func() time.Time { clock = clock.Add(time.Second); return clock }
+	st := storetest.Open(t, url, migrations.FS)
+	return api.Contract{
+		Revisions: &spawn.Revisions{Store: st, Catalog: docs, Now: now},
+		Runtimes: &spawn.Runtimes{
+			Store: st, Backend: &stubBackend{}, Image: "harness-runtime",
+			Now: now, OCIRuntime: "runc",
+		},
+	}
+}
+
+// activateFixture runs the full space lifecycle — create, submit the
+// fixture layers, validate, activate — so the space's effective digest is
+// stored and runtime claims resolve.
+func activateFixture(t *testing.T, client spawnv1.Client, tenant spawnv1.Tenant, space, keyPrefix string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{
+		Org: tenant.Org, Owner: tenant.Owner, ID: space, Environment: "dev", IdempotencyKey: keyPrefix + "-create",
+	}); err != nil {
+		t.Fatalf("create space: %v", err)
+	}
+	ids := map[string]string{}
+	fresh := map[string]bool{}
+	for _, layer := range spawnv1.Layers {
+		docs, ok := fixtureLayers()[layer]
+		if !ok {
+			continue
+		}
+		rev, err := client.SubmitRevision(ctx, space, layer, spawnv1.SubmitRevisionRequest{
+			Org: tenant.Org, Owner: tenant.Owner, Documents: docs, IdempotencyKey: keyPrefix + "-s-" + layer,
+		})
+		if err != nil {
+			t.Fatalf("submit %s: %v", layer, err)
+		}
+		fresh[layer] = rev.State == "draft"
+		ids[layer] = rev.ID
+	}
+	var all []string
+	for _, layer := range spawnv1.Layers {
+		id, ok := ids[layer]
+		if !ok {
+			continue
+		}
+		if fresh[layer] {
+			if _, err := client.ValidateRevision(ctx, space, id, spawnv1.RevisionRequest{
+				Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: keyPrefix + "-v-" + layer,
+			}); err != nil {
+				t.Fatalf("validate %s: %v", layer, err)
+			}
+		}
+		all = append(all, id)
+	}
+	if _, err := client.ActivateRevisions(ctx, space, spawnv1.ActivationRequest{
+		Org: tenant.Org, Owner: tenant.Owner, Revisions: all, IdempotencyKey: keyPrefix + "-a-all",
+	}); err != nil {
+		t.Fatalf("activate set: %v", err)
+	}
+}
+
+// Tenant isolation on the real service: identical space ids and agent
+// names under different tenants never resolve to the same runtime row,
+// and a foreign tenant cannot touch the owner's lease.
+func TestRuntimeClaimNeverCrossesTenants(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		server := contractServer(t, url)
+		testkit.Transports(t, spawnv1.NewInProc(server), spawnv1.Handler(server, "tok"),
+			func(u string, hc *http.Client) spawnv1.Client { return spawnv1.NewHTTPClient(u, "tok", hc) },
+			func(t *testing.T, client spawnv1.Client) {
+				ctx := context.Background()
+				foreign := spawnv1.Tenant{Org: "org-b", Owner: "mallory"}
+				activateFixture(t, client, contractTenant, "alice", "k1")
+				activateFixture(t, client, foreign, "alice", "k2")
+				mine, err := client.ClaimRuntime(ctx, "alice", spawnv1.ClaimRuntimeRequest{
+					Org: contractTenant.Org, Owner: contractTenant.Owner, Agent: "main",
+				})
+				if err != nil {
+					t.Fatalf("owner claim: %v", err)
+				}
+				theirs, err := client.ClaimRuntime(ctx, "alice", spawnv1.ClaimRuntimeRequest{
+					Org: foreign.Org, Owner: foreign.Owner, Agent: "main",
+				})
+				if err != nil {
+					t.Fatalf("foreign claim: %v", err)
+				}
+				if mine.Runtime.ID == theirs.Runtime.ID || mine.Lease == theirs.Lease {
+					t.Fatalf("identical space+agent under different tenants must not share a runtime or lease: %s %s",
+						mine.Runtime.ID, mine.Lease)
+				}
+				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); !errors.Is(err, spawnv1.ErrNotFound) {
+					t.Fatalf("foreign renew: want not_found, got %v", err)
+				}
+				if err := client.ReleaseLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); err != nil {
+					t.Fatalf("foreign release must be a no-op: %v", err)
+				}
+				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: contractTenant.Org, Owner: contractTenant.Owner}); err != nil {
+					t.Fatalf("owner renew after foreign release: %v", err)
+				}
+			})
+	})
 }
 
 // fixtureLayers mirrors the normative passport fixture: a managed space
