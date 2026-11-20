@@ -147,10 +147,18 @@ func Handle(token string, fn func(*http.Request) (any, error)) http.HandlerFunc 
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		out, err := fn(r)
 		if err != nil {
-			var typed *Error
+			// Refusals travel as fmt.Errorf("%w: <detail>", kind), so the
+			// typed sentinel alone carries no message — strip the code
+			// prefix from the wrapped chain instead of losing the detail.
+			// Untyped failures keep the empty body of before: their text
+			// is internal, not a contract detail.
 			message := ""
+			var typed *Error
 			if errors.As(err, &typed) {
-				message = typed.Message
+				message = strings.TrimPrefix(err.Error(), typed.Code+": ")
+				if message == typed.Code {
+					message = ""
+				}
 			}
 			write(w, statusOf(err), map[string]string{"error": message})
 			return
@@ -188,14 +196,20 @@ func Copy[T any](v T) (T, error) {
 }
 
 // Normalize gives the in-process transport the HTTP error semantics: a typed
-// error keeps its code, anything else becomes unavailable.
+// error keeps its code and wrapped detail, anything else becomes unavailable.
 func Normalize(err error) error {
 	var typed *Error
 	if err == nil {
 		return err
 	}
 	if errors.As(err, &typed) {
-		return typed
+		// fmt.Errorf("%w: <detail>", kind) chains through the in-process
+		// leg before the wire writer runs — carry the detail forward.
+		msg := strings.TrimPrefix(err.Error(), typed.Code+": ")
+		if msg == typed.Code {
+			msg = ""
+		}
+		return &Error{Code: typed.Code, Message: msg}
 	}
 	return ErrUnavailable
 }
