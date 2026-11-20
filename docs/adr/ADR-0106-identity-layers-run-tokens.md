@@ -28,7 +28,7 @@ envelope); both stay in force.
   several per-purpose service tokens inside the v0 topology (identity in
   the supervisor, `cmd/hub`). It is parked: committed slices stay on this
   branch, the unfinished part is commit `6e6b53c6` on
-  `chore/park-chg-0332-run-tokens`. M40.14 redoes it on the v1 services and
+  `wip/chg-0332-run-tokens`. M40.14 redoes it on the v1 services and
   reuses its tests and verifier.
 
 ## Decisions

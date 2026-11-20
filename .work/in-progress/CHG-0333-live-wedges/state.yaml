@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0333
 title: Live-stack wedges and lost updates
-status: done
-branch: fix/live-wedges
+status: in_progress
+branch: feat/m40-v1-platform
 updated: 2026-11-20
-phase: done
+phase: implemented
 github_issue: 598
 github_milestone: M40 - v1 Service Split
 implementation_status: implemented
@@ -30,6 +30,7 @@ evidence:
   - "docs/runtime-sandbox.md rechecked against compose, Kubernetes runtime-class and sandbox validation paths; freshness corrected from the pre-existing stale date. docs/routines.md compacted to satisfy the 500-line limit."
   - "Lease regression red on 56106e46: Ensure consumers empty; green on 71942292."
   - "Named communication and supervisor regressions passed. Resolve localized in en/ru/kk/es."
+  - "Merge d18034ac: fix/live-wedges merged into feat/m40-v1-platform; all 17 named milestone tests green on the merged tree (10 wedge + 7 skeleton). Review findings reopened as Phase A defects; record returned to in-progress until the milestone branch merges into dev."
 remaining:
   - "Owner review, live-smoke decision and remote publication remain separate acceptance actions."
 limitations:

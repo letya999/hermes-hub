@@ -18,6 +18,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0335](in-progress/CHG-0335-v1-skeleton/plan.md) | M40.2 (#600): shared infrastructure, trusted process launcher and test base; real minimal message topology pending M40.3/M40.4 |
 | [CHG-0334](in-progress/CHG-0334-v1-rules/plan.md) | M40.1 (#599): v1 rulebook, architecture, state-machine catalog, service README template with devcheck rule, ADR-0105..0112 and SPEC-0100 rewrite; owner review pending |
+| [CHG-0333](in-progress/CHG-0333-live-wedges/plan.md) | M40.0 (#598): live-stack wedge and lost-update fixes merged into feat/m40-v1-platform; review defects reopened as Phase A work; awaits dev merge and live smoke |
 
 ## Done — M40 v1 platform
 
@@ -134,7 +135,7 @@ Implementation incomplete, blocked or deferred to a backlog milestone; records p
 | [CHG-0314](done/CHG-0314-rights-derive-in-writer/plan.md) | Deferred 2026-11-18 — rights derivation inside the ToolHub writer (derive/restore under its write lock so apply/recovery stops racing store.db); all slices pending — design accepted, implementation not started; incident context in CHG-0313 |
 | [CHG-0315](done/CHG-0315-sso-gated-bearer-links/plan.md) | Deferred 2026-11-18 — SSO-gated bearer links: minted interactive links bound to verified principal via shared-HMAC session cookie; all slices pending — base IAM delivered by CHG-0313 |
 | [CHG-0316](done/CHG-0316-user-provisioning-command/plan.md) | Deferred 2026-11-18 — `hubctl provision` one-command onboarding: s1–s8 done (profile assets, capability bundle, command+preflight, recovery gate, warnings, foreign-commit self-heal, persist-failure rollback; danil_silantyev --confirm live in ~43s); s9 open: automation routing, full users.yaml records, cliproxy model grants in provision flow |
-| [CHG-0332](done/CHG-0332-run-tokens/plan.md) | Deferred 2026-11-20 - old M40.4 (#576) signed run tokens and policy bundles on the v0 topology; committed slices on feat/m40-v1-platform (5e4952d1..380fb5aa), unfinished work parked as 6e6b53c6 on `chore/park-chg-0332-run-tokens`; redone on v1 services in M40.14 (#612) |
+| [CHG-0332](done/CHG-0332-run-tokens/plan.md) | Deferred 2026-11-20 - old M40.4 (#576) signed run tokens and policy bundles on the v0 topology; committed slices on feat/m40-v1-platform (5e4952d1..380fb5aa), unfinished work parked as 6e6b53c6 on `wip/chg-0332-run-tokens`; redone on v1 services in M40.14 (#612) |
 
 ## Abandoned / superseded
 

@@ -30,10 +30,10 @@ earlier M40 records. No service code moves here.
 ## Preconditions and rules
 
 - Work step 1 of the issue (branch hygiene) was done before this CHG: the
-  uncommitted CHG-0332 work is commit `6e6b53c6` on
-  `chore/park-chg-0332-run-tokens`. The issue text says
-  `wip/chg-0332-run-tokens`; the repository hook allows only `main`, `dev`
-  or `<type>/<name>` branches, so the `chore/` prefix was used.
+  uncommitted CHG-0332 work is commit `6e6b53c6`, parked on
+  `wip/chg-0332-run-tokens` — the branch name the issue text requires
+  (the earlier `chore/park-chg-0332-run-tokens` duplicate was removed
+  during milestone branch hygiene).
 - ADR-0105..0109 are not merged to `dev`; the issue allows rewriting them in
   this branch. Accepted ADRs on `dev` are never rewritten.
 - `last_verified` moves to 2026-11-20 only on documents re-read against the
