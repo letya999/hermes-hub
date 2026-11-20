@@ -422,7 +422,7 @@ func run(ctx context.Context, args []string) error {
 		return runProvision(ctx, args[1:])
 	}
 	if op == "explain" {
-		client, err := explainClient()
+		client, err := explainClient(args[1:])
 		if err != nil {
 			return err
 		}

@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -46,13 +49,44 @@ func runExplain(ctx context.Context, w io.Writer, args []string, client spawnv1.
 	return nil
 }
 
-// explainClient resolves the spawn-controller contract client from the
-// environment the launcher exports: HUB_SPAWN_CONTROLLER_URL plus the
-// shared HUB_SERVICE_TOKEN.
-func explainClient() (spawnv1.Client, error) {
-	base := os.Getenv("HUB_SPAWN_CONTROLLER_URL")
+// explainClient resolves the spawn-controller contract client the way the
+// supervisor URL resolves: an explicit HUB_SPAWN_CONTROLLER_URL always
+// wins (process mode exports it); unset means the compose stack's
+// loopback publication. The shared service token is HUB_SERVICE_TOKEN,
+// then the supervisor auth chain — env first, then the infra space's
+// supervisor.auth, the same credential the compose service consumes.
+func explainClient(args []string) (spawnv1.Client, error) {
+	explicit := os.Getenv("HUB_SPAWN_CONTROLLER_URL")
+	base := explicit
 	if base == "" {
+		base = "http://127.0.0.1:8877"
+	}
+	token := os.Getenv("HUB_SERVICE_TOKEN")
+	if token == "" {
+		token = supervisorAuthFromEnv()
+	}
+	if token == "" {
+		dir := filepath.Join("spaces", explainSpaceName(args))
+		if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(dir), "supervisor.auth")); err == nil {
+			token = strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"])
+		}
+	}
+	if token == "" && explicit == "" {
 		return nil, errors.New(locale.T(locale.Operator(), "hubctl.explain-no-controller"))
 	}
-	return spawnv1.NewHTTPClient(base, os.Getenv("HUB_SERVICE_TOKEN"), nil), nil
+	return spawnv1.NewHTTPClient(base, token, nil), nil
+}
+
+// explainSpaceName extracts the positional space argument so the auth
+// lookup knows which spaces root to search — flag values never matter.
+func explainSpaceName(args []string) string {
+	f := flag.NewFlagSet("explain", flag.ContinueOnError)
+	f.SetOutput(io.Discard)
+	_ = f.String("org", "local", "")
+	_ = f.String("owner", "", "")
+	_ = f.Parse(args)
+	if f.NArg() != 1 {
+		return ""
+	}
+	return f.Arg(0)
 }

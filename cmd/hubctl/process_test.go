@@ -504,7 +504,7 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	_ = resp.Body.Close()
 	// The runtime inventory is the durable row: claimed for the message,
 	// released back to warm when the hold ended.
-	if !strings.Contains(string(body), `"space_id":"s1"`) || !strings.Contains(string(body), `"state":"warm"`) {
+	if !strings.Contains(string(body), `"space":"s1"`) || !strings.Contains(string(body), `"state":"warm"`) {
 		t.Fatalf("spawned runtime missing: %s", body)
 	}
 	// The written token file is how local tooling authenticates.
