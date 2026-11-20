@@ -59,7 +59,7 @@
     "action": "Покажи каталог сервисов и какие требуют настройки.",
     "expected": "Имена и состояние реальны; значений токенов нет.",
     "package": "agenttools",
-    "test": "TestToolHubManifestCatalogEnableDisableIsOptIn",
+    "test": "TestManagedLegacyServicesDoNotClaimEnablement",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
@@ -70,9 +70,9 @@
     "name": "service_enable",
     "title": "service_enable",
     "action": "Подключи тестовую интеграцию из подготовленного каталога.",
-    "expected": "При нехватке данных показана защищённая форма; секрет не запрашивается в чате.",
+    "expected": "Legacy-включение отклонено политикой; состояние и runtime не изменены, секреты не запрашиваются.",
     "package": "agenttools",
-    "test": "TestToolHubManifestCatalogEnableDisableIsOptIn",
+    "test": "TestServiceEnableRefusesWithoutPolicy",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
@@ -83,9 +83,9 @@
     "name": "service_disable",
     "title": "service_disable",
     "action": "Отключи только тестовую интеграцию.",
-    "expected": "Она недоступна в текущей MCP-сессии; чужие подключения не изменены.",
+    "expected": "Legacy-отключение отклонено; сохранённое состояние и runtime не изменены.",
     "package": "agenttools",
-    "test": "TestToolHubManifestCatalogEnableDisableIsOptIn",
+    "test": "TestManagedLegacyServicesDoNotClaimEnablement",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"

@@ -200,10 +200,25 @@ func TestManagedLegacyServicesDoNotClaimEnablement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if out["secret_values_included"] != false {
+		t.Fatal("catalog no longer declares credential-free output")
+	}
 	for _, item := range out["services"].([]map[string]any) {
 		if item["self_service"] != false || item["status"] != "host-managed" {
 			t.Fatal("managed legacy service advertised as mutable", item)
 		}
+	}
+	legacy := []byte(`{"schema":1,"enabled":{"gitlab":true}}`)
+	path := filepath.Join(v.StateDir, "self-services.json")
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := v.ServiceDisable(Input{Service: "gitlab"}); !errors.Is(err, api.ErrUnauthorized) || out != nil || restarted {
+		t.Fatalf("retired disable claimed a mutation: %v %v restart=%v", out, err, restarted)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(legacy) {
+		t.Fatal("rejected disable changed legacy state", err)
 	}
 }
 
