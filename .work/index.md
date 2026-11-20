@@ -16,6 +16,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
+| [CHG-0337](in-progress/CHG-0337-harness-runtime/plan.md) | M40.4 (#602): harness-runtime with session slots, own workspace only, spec-only config; blocked on CHG-0336 S7 |
+| [CHG-0336](in-progress/CHG-0336-spawn-controller/plan.md) | M40.3 (#601): spawn-controller owns spaces, layer passports, runtimes, workers, warm pool in one DB with process and docker backends |
 | [CHG-0335](in-progress/CHG-0335-v1-skeleton/plan.md) | M40.2 (#600): shared infrastructure, trusted process launcher and test base; real minimal message topology pending M40.3/M40.4 |
 | [CHG-0334](in-progress/CHG-0334-v1-rules/plan.md) | M40.1 (#599): v1 rulebook, architecture, state-machine catalog, service README template with devcheck rule, ADR-0105..0112 and SPEC-0100 rewrite; owner review pending |
 | [CHG-0333](in-progress/CHG-0333-live-wedges/plan.md) | M40.0 (#598): live-stack wedge and lost-update fixes merged into feat/m40-v1-platform; review defects reopened as Phase A work; awaits dev merge and live smoke |

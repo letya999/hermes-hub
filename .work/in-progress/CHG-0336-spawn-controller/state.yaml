@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0336
+title: Extract spawn-controller - one container authority and owner of passports
+status: in_progress
+branch: feat/m40-v1-platform
+updated: 2026-11-20
+phase: implementation
+adr: ADR-0105
+spec: SPEC-0100
+depends_on: [CHG-0335]
+github_milestone: M40 - v1 Service Split
+github_issue: 601
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-store-and-machines: not_started
+  S2-revisions-and-contract: not_started
+  S3-backends: not_started
+  S4-runtime-lifecycle-and-warm-pool: not_started
+  S5-importer-explain-doctor: not_started
+  S6-workers-and-cells: not_started
+  S7-consumers-cutover: not_started
+  S8-delete-v0: not_started
+  S9-docs-and-acceptance: not_started
+validation:
+  just_check: not_run
+  affected_tests: not_run
+  backend_conformance_process: not_run
+  backend_conformance_docker: not_run
+  tool_snapshot: not_run
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations:
+  - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
