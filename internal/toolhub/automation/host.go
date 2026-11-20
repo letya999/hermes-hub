@@ -745,6 +745,12 @@ func streamOccurrence(schedule commodel.Schedule, due time.Time) commodel.Routin
 	return commodel.RoutineOccurrence{ScheduleID: schedule.ScheduleID, Revision: schedule.Revision, DueAt: due, JobKind: "event", Job: job, CatchUpWindow: schedule.CatchUpWindow}
 }
 
+// skipStream logs one schedule's failure before the tick moves on — a
+// single broken schedule must never wedge the principal's other streams.
+func skipStream(id string, err error) {
+	log.Printf("routine stream %s skipped: %s", safeName(id), strings.Join(strings.Fields(diagnostics.Redact(err.Error())), " "))
+}
+
 func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal string, now time.Time) error {
 	names, err := os.ReadDir(filepath.Join(h.ownerRoot(principal), "schedules"))
 	if err != nil {
@@ -756,14 +762,16 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 		}
 		schedule, err := e.LoadSchedule(strings.TrimSuffix(name.Name(), ".json"))
 		if err != nil {
-			return err
+			skipStream(strings.TrimSuffix(name.Name(), ".json"), err)
+			continue
 		}
 		if schedule.Delivery != "stream" || schedule.JobKind != "event" || schedule.Probe == nil || !schedule.Enabled || schedule.Paused || schedule.BlockedReason != "" || now.Before(schedule.SnoozedUntil) || schedule.Envelope.PrincipalID != principal {
 			continue
 		}
 		o := streamOccurrence(schedule, now.UTC())
 		if err := h.prepareJob(&o.Job); err != nil {
-			return err
+			skipStream(schedule.ScheduleID, err)
+			continue
 		}
 		epoch := o.Job.OperationalEpoch
 		if h.authorizeJob(o.Job) != nil || h.cfg.AuthorizeChannel(ctx, schedule.ScheduleID, o.Job) != nil {
@@ -773,7 +781,8 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 		st, path, err := h.events.load(o)
 		if err != nil {
 			h.events.mu.Unlock()
-			return err
+			skipStream(schedule.ScheduleID, err)
+			continue
 		}
 		if st.Pending != nil && st.Pending.Revision != schedule.Revision {
 			// resume fences a batch from an older schedule revision forever; drop its
@@ -792,8 +801,7 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 		}
 		if err := rebindEventState(&st, schedule); err != nil {
 			h.events.mu.Unlock()
-			// One fenced stream must not stop the principal's other streams.
-			log.Printf("routine stream %s skipped: %s", safeName(schedule.ScheduleID), strings.Join(strings.Fields(diagnostics.Redact(err.Error())), " "))
+			skipStream(schedule.ScheduleID, err)
 			continue
 		}
 		if st.StreamRevision != 0 && st.StreamRevision != schedule.Revision {
@@ -814,7 +822,8 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 			}
 			if readErr != nil && !os.IsNotExist(readErr) {
 				h.events.mu.Unlock()
-				return readErr
+				skipStream(schedule.ScheduleID, readErr)
+				continue
 			}
 			if readErr == nil {
 				st.StreamAt = time.Time{}
@@ -834,13 +843,15 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 			st.StreamAt, st.StreamRevision, st.LastPollAt = due, schedule.Revision, now.UTC()
 			if err := writeJSONAtomic(path, st); err != nil {
 				h.events.mu.Unlock()
-				return err
+				skipStream(schedule.ScheduleID, err)
+				continue
 			}
 		}
 		h.events.mu.Unlock()
 		o.Job.OperationalEpoch = epoch
 		if err := e.PutOccurrence(o, schedule.Envelope); err != nil {
-			return err
+			skipStream(schedule.ScheduleID, err)
+			continue
 		}
 	}
 	return nil

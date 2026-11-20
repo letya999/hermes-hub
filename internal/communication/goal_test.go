@@ -13,7 +13,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
@@ -1320,15 +1319,55 @@ func (f goalHookRunner) Goal(ctx context.Context, request hubruntime.GoalRequest
 	return f.goalLoopRunner.Goal(ctx, request)
 }
 
+// A /goal clear that lands while a native status/pause/resume round trip is
+// in flight must survive: the post-op mirror write re-reads the record under
+// the spool lock and refuses instead of resurrecting the stale snapshot.
+func TestGoalNativeMirrorWriteCannotResurrectClear(t *testing.T) {
+	for _, verb := range []string{"status", "pause", "resume"} {
+		t.Run(verb, func(t *testing.T) {
+			c := testConfig(t)
+			g, err := newTestGateway(t, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeAPI{}
+			user := g.user("alice")
+			task, err := g.spool.ResolveTask(user, 11, 0, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "native", Status: "active", MaxTurns: 20, Epoch: 2}); err != nil {
+				t.Fatal(err)
+			}
+			var duringErr error
+			g.api = fake
+			g.runner = goalHookRunner{goalLoopRunner: &goalLoopRunner{result: hubruntime.GoalResult{Engine: "native", Status: "paused", TurnsUsed: 3, MaxTurns: 5, ContinuationPrompt: "keep going"}}, during: func() {
+				duringErr = g.spool.ClearGoal(user.ID, task.ConversationID)
+			}}
+			if err := g.handleUpdate(context.Background(), taskUpdate(1, 1, "/goal "+verb, 11, 0)); err != nil {
+				t.Fatal(err)
+			}
+			if duringErr != nil {
+				t.Fatal(duringErr)
+			}
+			_, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found {
+				t.Fatalf("cleared goal resurrected by the native %s mirror write", verb)
+			}
+		})
+	}
+}
+
 // A /goal clear (or pause, or epoch bump) that lands while a turn is being
 // evaluated must survive: the post-evaluation write re-reads the record under
 // the spool lock and refuses instead of saving the stale snapshot.
 func TestGoalClearDuringEvaluationIsNotUndone(t *testing.T) {
 	for _, change := range []string{"clear", "pause", "epoch"} {
 		t.Run(change, func(t *testing.T) {
-			cfg := testConfig(t)
-			cfg.Identity = identitycontract.NewHTTPClient("http://127.0.0.1:1", "test-identity", nil)
-			g, err := New(cfg)
+			g, err := newTestGateway(t, testConfig(t))
 			if err != nil {
 				t.Fatal(err)
 			}

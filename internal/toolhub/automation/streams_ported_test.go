@@ -1384,6 +1384,28 @@ func TestScheduleEditDropsPendingBatchAndKeepsOtherStreams(t *testing.T) {
 	}
 }
 
+// A schedule whose durable stream state cannot be read skips only itself:
+// the principal's other streams still materialize instead of wedging the
+// whole tick.
+func TestCorruptStreamStateKeepsOtherStreams(t *testing.T) {
+	f := newEventFixture(t)
+	corrupt := f.create(t, f.streamSchedule("a-corrupt", "watch dms", "notify", &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}))
+	other := f.create(t, f.streamSchedule("b-other", "watch mail", "notify", &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-def"}))
+	path := filepath.Join(f.host.events.dir, safeName("alice"), safeName(corrupt.ScheduleID)+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.host.tickStreams(context.Background(), f.eng, "alice", f.h.now.Add(time.Minute)); err != nil {
+		t.Fatalf("one corrupt stream state wedged the principal's streams: %v", err)
+	}
+	if got := f.state(t, other.ScheduleID); got.StreamAt.IsZero() {
+		t.Fatalf("other stream of the principal was not materialized: %+v", got)
+	}
+}
+
 func TestStreamPauseFencesPendingBatch(t *testing.T) {
 	f := newEventFixture(t)
 	sc := f.create(t, f.streamSchedule("fence-pause", "watch dms", "notify", &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}))

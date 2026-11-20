@@ -345,6 +345,9 @@ func TestRunningJobPastDeadlineBecomesUncertain(t *testing.T) {
 	if record.Status != "uncertain" || record.Response.Status != "uncertain" || record.Response.LastEvent != "run.unknown" {
 		t.Fatalf("stuck running job not named uncertain: status=%s response=%+v", record.Status, record.Response)
 	}
+	if !record.Unconfirmed || record.UnconfirmedSince.IsZero() {
+		t.Fatalf("swept job carries no re-observation marker — reconcileUnconfirmed and ExpireUncertain never see it: %+v", record)
+	}
 	if replay, known, err := m.beginJob(request); err != nil || !known || replay.Status != "uncertain" {
 		t.Fatalf("retry still blocked: replay=%+v known=%v err=%v", replay, known, err)
 	}

@@ -52,9 +52,13 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		}
 		if goal.Engine == "native" {
 			// Upstream is authoritative — refresh the mirror before answering.
+			// The guarded write keeps a clear that landed mid-flight intact.
+			prevEpoch := goal.Epoch
 			if result, rerr := g.goalRuntimeOp(ctx, user, task, sender, channel, chatID, goal, "status"); rerr == nil {
-				goal = mirrorGoalState(goal, result)
-				_ = g.spool.SaveGoal(goal)
+				mirrored := mirrorGoalState(goal, result)
+				if updated, werr := g.spool.UpdateGoalAtEpoch(user.ID, task.ConversationID, prevEpoch, func(rec *Goal) { *rec = mirrored }); werr == nil {
+					goal = updated
+				}
 			}
 		}
 		return reply(locale.T(lang, "goal.status", goal.Text, goal.Status, goal.Engine, goal.TurnsUsed, goal.MaxTurns))
@@ -89,6 +93,7 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		// Hub-engine resumes restate no upstream prompt: the synthesized kick
 		// carries the owner's language hint like every model-facing text.
 		prompt := "Resume the goal and continue working toward it." + modelLangHint(locale.LangOf(user.WorkspaceDir))
+		prevEpoch := goal.Epoch
 		if goal.Engine == "native" {
 			// Upstream is authoritative — the verb moves its record and the
 			// mirrored state (plus resume's continuation prompt) comes back.
@@ -103,7 +108,11 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		} else {
 			goal.Status = map[string]string{"pause": "paused", "resume": "active"}[verb]
 		}
-		if err := g.spool.SaveGoal(goal); err != nil {
+		goal, err = g.spool.UpdateGoalAtEpoch(user.ID, task.ConversationID, prevEpoch, func(rec *Goal) { *rec = goal })
+		if errors.Is(err, errGoalSuperseded) {
+			return reply(locale.T(lang, "goal.none"))
+		}
+		if err != nil {
 			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
 		if verb == "pause" {
@@ -323,9 +332,11 @@ func (g *Gateway) pauseGoalAfterRunFailure(job Job) bool {
 	if err != nil || !found || goal.Status != "active" || goal.Epoch != job.GoalEpoch {
 		return false
 	}
-	goal.Status = "paused"
-	goal.LastReason = "run failed"
-	return g.spool.SaveGoal(goal) == nil
+	_, err = g.spool.UpdateGoal(job.UserID, taskConversation(job.ChatID, job.TaskID), goal.Epoch, func(rec *Goal) {
+		rec.Status = "paused"
+		rec.LastReason = "run failed"
+	})
+	return err == nil
 }
 
 // preemptGoalTurns bumps the record epoch on new owner work; continuations
@@ -336,8 +347,9 @@ func (g *Gateway) preemptGoalTurns(principalID, conversationID string) {
 	if err != nil || !found || goal.Status != "active" {
 		return
 	}
-	goal.Epoch++
-	_ = g.spool.SaveGoal(goal)
+	// A concurrent clear or an earlier preempt supersedes this write; losing
+	// the race is harmless because the record already moved past this epoch.
+	_, _ = g.spool.UpdateGoalAtEpoch(principalID, conversationID, goal.Epoch, func(rec *Goal) { rec.Epoch++ })
 }
 
 func goalFailureText(lang locale.Lang, class string) string {

@@ -87,15 +87,25 @@ func (g *Gateway) worker(ctx context.Context) {
 }
 
 // runClaimedJob executes one claimed job. Every exit that has not handed the
-// job to a durable terminal outcome settles it through FailJob, so a claimed
-// job never stays in running/ with its conversation lane held.
+// job to a durable terminal outcome settles it: before the runner is invoked
+// that is FailJob; once the run reached the runtime a failed terminal write
+// parks the job uncertain instead — marking it failed would lose a completed
+// answer.
 func (g *Gateway) runClaimedJob(ctx context.Context, job *Job) {
 	settled := false
+	runnerInvoked := false
 	defer func() {
-		if !settled {
-			if err := g.spool.FailJob(job.ID); err != nil {
-				log.Printf("gateway job_id=%q status=uncertain reason=settle_failed", job.ID)
-			}
+		if settled {
+			return
+		}
+		var err error
+		if runnerInvoked {
+			err = g.spool.ParkJobUncertain(job.ID)
+		} else {
+			err = g.spool.FailJob(job.ID)
+		}
+		if err != nil {
+			log.Printf("gateway job_id=%q status=uncertain reason=settle_failed", job.ID)
 		}
 	}()
 	admission, found, admissionErr := g.spool.Mapping(job.ID)
@@ -124,6 +134,7 @@ func (g *Gateway) runClaimedJob(ctx context.Context, job *Job) {
 		return
 	}
 	g.busy.Add(1)
+	runnerInvoked = true
 	var response string
 	var outcome RunOutcome
 	var runErr error

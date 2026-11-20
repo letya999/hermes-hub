@@ -266,11 +266,12 @@ func (m *Manager) tryRecoveryWorker() bool {
 }
 
 // sweepStuckRunning names "running" records past the run budget plus one warm
-// TTL of grace uncertain, exactly as a restart does. A failed persist of the
-// uncertain (or terminal) transition rolls the record back to running with
-// Unconfirmed=false; reconcileUnconfirmed and ExpireUncertain never look at
-// such a record, so without this it pins its runtime and blocks every retry
-// of the job until the supervisor restarts.
+// TTL of grace uncertain, exactly as a restart does: Unconfirmed and
+// UnconfirmedSince go on the record so reconcileUnconfirmed re-observes the
+// run and ExpireUncertain can still age it out. A failed persist of the
+// uncertain transition rolls the record back to running; without this sweep
+// the record pins its runtime and blocks every retry of the job until the
+// supervisor restarts.
 func (m *Manager) sweepStuckRunning(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -281,6 +282,7 @@ func (m *Manager) sweepStuckRunning(now time.Time) {
 		previous := record
 		record.Status = "uncertain"
 		record.Response.Status, record.Response.LastEvent = "uncertain", "run.unknown"
+		record.Unconfirmed, record.UnconfirmedSince = true, now.UTC()
 		record.UpdatedAt = now.UTC()
 		m.jobs[key] = record
 		if err := m.persistLocked(); err != nil {

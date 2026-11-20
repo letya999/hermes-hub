@@ -1120,6 +1120,58 @@ func TestUncertainJobReleasesLaneAfterSupervisorSettles(t *testing.T) {
 	}
 }
 
+// A terminal write that fails after the runner already ran must not mark
+// the job failed and drop the runtime answer. The claimed job parks like
+// restart recovery: uncertain mapping, file out of running/, lane held for
+// the observation loop.
+type completedOutcomeRunner struct{ outcome RunOutcome }
+
+func (r completedOutcomeRunner) RunOutcome(context.Context, Job) (RunOutcome, error) {
+	return r.outcome, nil
+}
+func (r completedOutcomeRunner) Run(context.Context, Job, User) (string, error) {
+	return r.outcome.Text, nil
+}
+
+func TestTerminalHandoffFailureParksClaimedJobUncertain(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	var failOnce atomic.Bool
+	failOnce.Store(true)
+	s.onCompleted = func(Job, RunOutcome) error {
+		if failOnce.Swap(false) {
+			return errors.New("injected terminal-handoff failure")
+		}
+		return nil
+	}
+	g := &Gateway{spool: s, api: &fakeAPI{}, runner: completedOutcomeRunner{outcome: RunOutcome{Status: "completed", Text: "answer"}}, config: Config{RuntimeURL: "http://runtime", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	g.runClaimedJob(context.Background(), &job)
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatalf("mapping=%+v found=%v err=%v", mapping, found, err)
+	}
+	if mapping.Status != "uncertain" {
+		t.Fatalf("lost terminal write marked the job %q instead of uncertain — the runtime answer is lost", mapping.Status)
+	}
+	if mapping.UncertainSince.IsZero() {
+		t.Fatal("uncertain job carries no observation window anchor")
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json")); err == nil {
+		t.Fatal("claimed job left in running/")
+	}
+	s.mu.Lock()
+	held := len(s.inFlight)
+	s.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("admitted uncertain job must hold its lane for observation: held=%d", held)
+	}
+}
+
 // The operator resolves an uncertain job the supervisor can no longer settle:
 // the named terminal status goes through the ordinary handoff and frees the
 // conversation lane. Work still under observation is refused.

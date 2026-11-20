@@ -296,25 +296,7 @@ func (s *Spool) recoverJobs() error {
 			return loadErr // Corrupt admission metadata must never make a claimed job retryable.
 		}
 		if loadErr == nil {
-			if terminalStatus(mapping.Status) {
-				dir := "failed"
-				if mapping.Status == "completed" {
-					dir = "done"
-				}
-				if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
-					return err
-				}
-				continue
-			}
-			mapping.Status, mapping.LastKnownEvent, mapping.UpdatedAt = "uncertain", "run.unknown", time.Now().UTC()
-			if err := s.writeMappingLocked(mapping); err != nil {
-				return err
-			}
-			destination := "failed"
-			if mapping.RunID != "" && mapping.SessionID != "" {
-				destination = "pending"
-			} // Observe the admitted run; never resubmit its prompt.
-			if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
+			if err := s.parkClaimedLocked(mapping, "running", name); err != nil {
 				return err
 			}
 			continue
@@ -324,6 +306,48 @@ func (s *Spool) recoverJobs() error {
 		}
 	}
 	return nil
+}
+
+// parkClaimedLocked gives a claimed job whose outcome is unknown the
+// restart-recovery settlement. A durable terminal mapping moves to its
+// terminal dir; otherwise the mapping turns uncertain with the observation
+// window anchored and the file parks in pending/ (an admitted run can still
+// be observed — the prompt is never resubmitted) or failed/ where
+// RequeueObservations scans. The conversation lane stays held.
+func (s *Spool) parkClaimedLocked(mapping JobMapping, fromDir, name string) error {
+	if terminalStatus(mapping.Status) {
+		dir := "failed"
+		if mapping.Status == "completed" {
+			dir = "done"
+		}
+		return s.renameOwned(filepath.Join(s.root, fromDir, name), filepath.Join(s.root, dir, name))
+	}
+	mapping.Status, mapping.LastKnownEvent, mapping.UpdatedAt = "uncertain", "run.unknown", time.Now().UTC()
+	if mapping.UncertainSince.IsZero() {
+		mapping.UncertainSince = mapping.UpdatedAt
+	}
+	if err := s.writeMappingLocked(mapping); err != nil {
+		return err
+	}
+	destination := "failed"
+	if mapping.RunID != "" && mapping.SessionID != "" {
+		destination = "pending"
+	}
+	return s.renameOwned(filepath.Join(s.root, fromDir, name), filepath.Join(s.root, destination, name))
+}
+
+// ParkJobUncertain settles a claimed job the runner already reached but
+// whose terminal write failed — the same settlement restart recovery gives
+// an interrupted claim, so the observation loop, not a false "failed",
+// owns the outcome.
+func (s *Spool) ParkJobUncertain(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mapping, err := s.loadMappingLocked(id)
+	if err != nil {
+		return err
+	}
+	return s.parkClaimedLocked(mapping, "running", spoolFileID(id)+".json")
 }
 
 func (s *Spool) rebuildMappings() error {

@@ -92,6 +92,20 @@ var errGoalSuperseded = errors.New("goal superseded")
 func (s *Spool) UpdateGoal(principal, conversationID string, expectEpoch int64, fn func(*Goal)) (Goal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateGoalLocked(principal, conversationID, expectEpoch, true, fn)
+}
+
+// UpdateGoalAtEpoch applies fn to the durable record under the spool lock
+// with the epoch guard only — for operations that legitimately move status
+// themselves (native control mirrors, turn preemption). A record that is
+// gone or at a different epoch still refuses the write.
+func (s *Spool) UpdateGoalAtEpoch(principal, conversationID string, expectEpoch int64, fn func(*Goal)) (Goal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateGoalLocked(principal, conversationID, expectEpoch, false, fn)
+}
+
+func (s *Spool) updateGoalLocked(principal, conversationID string, expectEpoch int64, requireActive bool, fn func(*Goal)) (Goal, error) {
 	goal, err := s.loadGoalLocked(principal, conversationID)
 	if errors.Is(err, os.ErrNotExist) {
 		return Goal{}, errGoalSuperseded
@@ -99,7 +113,7 @@ func (s *Spool) UpdateGoal(principal, conversationID string, expectEpoch int64, 
 	if err != nil {
 		return Goal{}, err
 	}
-	if goal.Status != "active" || goal.Epoch != expectEpoch {
+	if goal.Epoch != expectEpoch || (requireActive && goal.Status != "active") {
 		return Goal{}, errGoalSuperseded
 	}
 	fn(&goal)
