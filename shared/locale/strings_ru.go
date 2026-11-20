@@ -2,6 +2,12 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"hubctl.run-usage":                   "Использование: hubctl run --mode process --profile minimal|family --trusted [--bin ./bin] [--data ./data]",
+		"hubctl.run-untrusted":               "Режим process требует доверенной установки",
+		"hubctl.run-missing":                 "Не найден обязательный бинарный файл сервиса: %s",
+		"hubctl.run-start":                   "Не удалось запустить сервис: %s",
+		"hubctl.run-health":                  "Сервис не прошёл проверку готовности: %s",
+		"hubctl.run-exit":                    "Сервис завершился; профиль остановлен: %s",
 		"hubctl.routine-token-issuer":        "Адрес supervisor для получения подписанного сервисного разрешения",
 		"run.policy-unavailable":             "Политика запуска недоступна",
 		"run.authorization-denied":           "Запуску отказано в доступе",
@@ -29,7 +35,6 @@ func init() {
 
 		"package.sources-unavailable":              "Исходники для архива недоступны",
 		"package.source-invalid":                   "Архив может содержать только обычные файлы без символических ссылок",
-		"hub.usage":                                "Использование: hub serve --zone control|agent|edge [аргументы зоны]",
 		"hub.agent-usage":                          "Зона agent не принимает аргументы.",
 		"hub.edge-usage":                           "Зона edge принимает только аргументы --script.",
 		"hub.script-failed":                        "Ошибка скрипта.",

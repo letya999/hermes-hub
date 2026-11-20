@@ -2,6 +2,12 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"hubctl.run-usage":                   "Қолдану: hubctl run --mode process --profile minimal|family --trusted [--bin ./bin] [--data ./data]",
+		"hubctl.run-untrusted":               "Process режимі сенімді орнатуды талап етеді",
+		"hubctl.run-missing":                 "Міндетті сервис файлы қолжетімсіз: %s",
+		"hubctl.run-start":                   "Сервис іске қосылмады: %s",
+		"hubctl.run-health":                  "Сервис дайындық тексерісінен өтпеді: %s",
+		"hubctl.run-exit":                    "Сервис аяқталды; профиль тоқтатылды: %s",
 		"hubctl.routine-token-issuer":        "Қол қойылған сервистік рұқсатты алу үшін supervisor мекенжайы",
 		"run.policy-unavailable":             "Іске қосу саясаты қолжетімсіз",
 		"run.authorization-denied":           "Іске қосуға рұқсат берілмеді",
@@ -29,7 +35,6 @@ func init() {
 
 		"package.sources-unavailable":              "Мұрағатқа арналған бастапқы файлдар қолжетімсіз",
 		"package.source-invalid":                   "Мұрағатта символдық сілтемелері жоқ кәдімгі файлдар ғана болуы тиіс",
-		"hub.usage":                                "Қолданылуы: hub serve --zone control|agent|edge [аймақ аргументтері]",
 		"hub.agent-usage":                          "Agent аймағы аргумент қабылдамайды.",
 		"hub.edge-usage":                           "Edge аймағы тек --script аргументтерін қабылдайды.",
 		"hub.script-failed":                        "Скрипт қатесі.",
