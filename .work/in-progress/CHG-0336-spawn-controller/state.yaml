@@ -15,7 +15,7 @@ implementation_status: in_progress
 slices:
   S1-store-and-machines: green
   S2-revisions-and-contract: green
-  S3-backends: not_started
+  S3-backends: green
   S4-runtime-lifecycle-and-warm-pool: not_started
   S5-importer-explain-doctor: not_started
   S6-workers-and-cells: not_started
@@ -25,8 +25,8 @@ slices:
 validation:
   just_check: green
   affected_tests: green
-  backend_conformance_process: not_run
-  backend_conformance_docker: not_run
+  backend_conformance_process: green
+  backend_conformance_docker: green
   tool_snapshot: not_run
   live_acceptance: not_started
 evidence:
@@ -62,6 +62,13 @@ evidence:
   - "4169d150: TestCatalogLoadRetriesAfterFailure red ('retry after failure: transient catalog failure' — sync.Once cached the error forever), green; catalogLoader caches only a successful load, mutex not Once."
   - "4169d150: parseGrantsOps shared between LayeredGrants (bound = ops declared by layers above + agent-may-not-introduce) and CompileAuthoredDocs (bound = the caller's trusted grant ceiling) — different bounds, one parser; README env table documents HUB_CATALOG_ROOT."
   - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl green."
-remaining: []
+  - "482e29f6: TestProcessBackendConformance red ('inspect unknown: unknown runtime, want backend.ErrNotFound'; 'backend accepted network edges it cannot isolate'), green; process backend on the resolved Spec, ErrNotFound for unknown ids, untrusted/edges/runsc refused before disk."
+  - "482e29f6: TestDockerBackendConformance red ('start: docker backend not implemented' on every case), green; docker CLI backend moved from internal/supervisor (argv from Spec, env through the CLI process environment, per-space internal edge networks, label-scoped List)."
+  - "482e29f6: TestOnlyOwnWorkspaceMounted, TestNoSecretInEnvOrArgv, TestNetworkEdgesApplied, TestListReturnsOnlyOwnWorkloads red on the docker leg, green on both legs; TestNetworkEdgesApplied/process red ('backend accepted network edges it cannot isolate'), green."
+  - "482e29f6: TestUntrustedRefusesProcessBackend red (start attempted spawn instead of refusing), green with ErrUntrusted and no disk writes; TestUntrustedDockerRequiresRunsc red, green ('', runc, kata refused; runsc passes the guard)."
+  - "482e29f6: TestDockerRunscSpecStarts skips on this machine: runsc not installed on the daemon (named reason)."
+  - "482e29f6: TestMinimalProfileAnswersMessage green; just check and just test ./services/spawn-controller/... ./cmd/hubctl green; docker ps/networks empty under label hermes.test=chg-0336 after the suite."
+remaining:
+  - "v0 supervisor docker spawn code stays until S8 (it still runs the dev stack): dockerBackend/ComputeBackend (internal/supervisor/backend.go), runArgs/runArgsWithGeneration/managedRunArgs (internal/supervisor/ensure.go), checkContainerRuntime/sandboxRelayHosts (internal/supervisor/sandbox.go), script sandbox argv (internal/supervisor/scripts.go), HUB_CONTAINER_RUNTIME default (internal/supervisor/supervisor.go:472-478)."
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
