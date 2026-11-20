@@ -38,7 +38,10 @@ default route**. `hub-runtime egress-relay` (compose `egress-relay` service,
 alias `egress-relay` on the agent net) is the reviewed allowlisted forward
 proxy: `HUB_EGRESS_RELAY_HOSTS` is the complete host allowlist built by
 `managedEgressHosts`; web/sibling reachability for the runtime goes through
-it and nowhere else.
+it and nowhere else. An allowlist entry matches its host exactly —
+`api.example.com` never admits `attacker.api.example.com`; subdomains
+require an explicit `*.example.com` wildcard entry, which matches that
+suffix at any depth. Malformed or empty allowlists fail closed.
 
 Siblings on the same pattern: `toolhub-relay` (agent-net alias `toolhub`
 bridging to the real ToolHub) and `model-relay` (alias `model-relay-<user>`;

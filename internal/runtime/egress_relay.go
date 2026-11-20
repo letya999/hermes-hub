@@ -154,17 +154,18 @@ func signedEgressRelayHandler(allow map[string]bool, connectTarget, owner string
 	})
 }
 
-// egressAllowed reports whether host is allowlisted: exact match or a
-// `*.suffix` wildcard matching one level down (and deeper).
+// egressAllowed reports whether host is allowlisted: an exact entry matches
+// the listed host only; only an explicit `*.suffix` entry admits subdomains,
+// at any depth below that suffix.
 func egressAllowed(allow map[string]bool, host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
 	}
+	if allow[host] {
+		return true
+	}
 	for {
-		if allow[host] {
-			return true
-		}
 		dot := strings.IndexByte(host, '.')
 		if dot < 0 {
 			return false

@@ -26,6 +26,31 @@ func TestEgressAllowed(t *testing.T) {
 	}
 }
 
+// An exact allowlist entry must not widen to subdomains: only an explicit
+// `*.` entry may admit a suffix walk.
+func TestEgressExactHostDoesNotAllowSubdomains(t *testing.T) {
+	allow := parseEgressHosts("api.example.com")
+	if egressAllowed(allow, "attacker.api.example.com") {
+		t.Fatal("exact host entry admitted a subdomain")
+	}
+	if egressAllowed(allow, "sub.api.example.com") {
+		t.Fatal("exact host entry admitted a nested subdomain")
+	}
+	if !egressAllowed(allow, "api.example.com") {
+		t.Fatal("exact host entry denied")
+	}
+	wildcard := parseEgressHosts("*.example.com")
+	if !wildcard["*.example.com"] {
+		t.Fatal("wildcard entry dropped by parser")
+	}
+	if !egressAllowed(wildcard, "attacker.api.example.com") {
+		t.Fatal("wildcard entry denied a subdomain")
+	}
+	if egressAllowed(wildcard, "example.com") {
+		t.Fatal("wildcard entry admitted the bare apex")
+	}
+}
+
 func TestEgressRelayDeniesUnlisted(t *testing.T) {
 	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts("api.keenable.ai"), ""))
 	defer relay.Close()

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,18 @@ import (
 // The guard is the single egress gate for OAuth discovery and registry
 // fetches: private, loopback, link-local, CGNAT and multicast destinations
 // fail before a single packet leaves.
+
+// Cloud metadata endpoints must stay forbidden even on the transport that
+// admits operator-approved private services: AWS IMDS is ULA, so the
+// private exception alone would admit it.
+func TestApprovedInternalEndpointCannotReachIPv6Metadata(t *testing.T) {
+	if !blocked(netip.MustParseAddr("fd00:ec2::254"), true, true) {
+		t.Fatal("approved internal endpoint admits IPv6 metadata")
+	}
+	if blocked(netip.MustParseAddr("fd00:123::1"), true, true) {
+		t.Fatal("ordinary private IPv6 service endpoint was denied")
+	}
+}
 func TestBlockedDestinationsNeverDialed(t *testing.T) {
 	var hits atomic.Int32
 	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

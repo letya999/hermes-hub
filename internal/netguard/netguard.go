@@ -14,7 +14,12 @@ import (
 	"time"
 )
 
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+var (
+	cgnat = netip.MustParsePrefix("100.64.0.0/10")
+	// AWS IMDS lives inside ULA, so the private-service exception must never
+	// admit it. https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
+	ipv6Metadata = netip.MustParseAddr("fd00:ec2::254")
+)
 
 // Client returns a bounded outbound client. allowLoopback admits
 // 127.0.0.0/8 and ::1 destinations for local development and test fixtures;
@@ -79,7 +84,7 @@ func transport(allowLoopback, allowPrivate bool) http.RoundTripper {
 		}
 		for _, ip := range ips {
 			addr, ok := netip.AddrFromSlice(ip)
-			if !ok || (blocked(addr.Unmap(), allowLoopback) && !(allowPrivate && addr.Unmap().IsPrivate())) {
+			if !ok || blocked(addr.Unmap(), allowLoopback, allowPrivate) {
 				return nil, fmt.Errorf("netguard: %s resolves to blocked address %s", host, ip)
 			}
 		}
@@ -89,9 +94,12 @@ func transport(allowLoopback, allowPrivate bool) http.RoundTripper {
 	return clone
 }
 
-func blocked(ip netip.Addr, allowLoopback bool) bool {
+func blocked(ip netip.Addr, allowLoopback, allowPrivate bool) bool {
+	if ip == ipv6Metadata {
+		return true
+	}
 	if ip.IsLoopback() {
 		return !allowLoopback
 	}
-	return !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || cgnat.Contains(ip)
+	return !ip.IsGlobalUnicast() || (ip.IsPrivate() && !allowPrivate) || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || cgnat.Contains(ip)
 }
