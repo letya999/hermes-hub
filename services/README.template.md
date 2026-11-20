@@ -55,7 +55,7 @@ Every variable the binary reads. An unknown `HUB_*` variable fails startup.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HUB_<SERVICE>_DB` | `sqlite://./data/<service-name>.db` | store connection string |
+| `HUB_DATABASE_URL` | `sqlite://./data/<service-name>.db` | store connection string |
 
 ## Extension point
 

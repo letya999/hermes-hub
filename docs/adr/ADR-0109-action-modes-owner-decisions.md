@@ -102,3 +102,11 @@ None of them enters M40 code.
   retry of an uncertain call.
 - Credentials never enter the model plane: credential grants complete
   outside the model.
+
+## Amendment 2026-11-20 — D3 "read-only" wording
+
+D3's "unprompted runs are read-only by default" is clarified: the
+unprompted *ceiling* sits at write-local, not at read — reads and
+workspace-local writes proceed under `allow`, and only `write-external` and
+`critical` evaluate to `ask`. "Read-only" named the posture toward outside
+effects, not a ban on local writes.

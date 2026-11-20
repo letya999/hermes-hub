@@ -130,6 +130,24 @@ Every `starting` increments the generation (`gen` in run tokens). The
 lease count is the number of lease rows. Worker follows the same table
 without `warm`.
 
+### v1 skeleton (spawn-controller)
+
+The M40.2 process-mode skeleton keeps the registry in memory
+(`services/spawn-controller`, `processBackend.children`) and implements a
+subset of the target table:
+
+| From | Event | To | Deadline / sweeper |
+|---|---|---|---|
+| - | ensure (claim for a space+agent) | starting | 10s healthz deadline; spawn fails |
+| starting | healthz ok | running | runtime serves |
+| running | child exit | exited | removed from registry |
+| running | stop / shutdown | - | SIGTERM or CTRL_BREAK, 10s WaitDelay |
+
+Registry access is mutex-guarded; children are bound to a process group
+(Unix) or Job Object (Windows) so a controller death cannot orphan them.
+The durable Runtime row and the warm/draining/quarantined states land
+with M40.3.
+
 ## PassportRevision
 
 ### v0 today
@@ -279,8 +297,11 @@ schedule.
 | active | deadline passes | failed | final |
 | any non-final | owner cancels or grant revoked | cancelled | final |
 
-Apply and plan update refuse `paused`; the owned schedules' paused state is
-derived from the assignment, not stored on each schedule.
+Apply refuses `paused`; a plan update on a paused assignment is staged —
+the plan revision advances but nothing is reconciled until `resume`, which
+applies the staged plan (new schedules born paused) and then unpauses the
+whole set. The owned schedules' paused state is derived from the
+assignment, not stored on each schedule.
 
 ## Goal
 

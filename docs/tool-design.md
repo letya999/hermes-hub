@@ -1,6 +1,6 @@
 ---
 description: Normative tool-design rules — one catalog, closed verb vocabulary, typed schemas, rights-vs-schema separation, bounded results, context budget, machine-checkable conformance.
-last_verified: "2026-11-19"
+last_verified: "2026-11-20"
 ---
 
 # Tool design charter
@@ -29,7 +29,7 @@ see [tools](tools.md); for placement and budgets see ADR-0092 D6 and
 | `audience` | Who a tool is for: `model` | `internal` | `operator`. Internal operations (e.g. `inbox_fetch`, legacy control ops) execute through ToolHub but never appear on the model surface or in placeable toolsets. |
 | `right` | A `domain.operation` from `rights.yaml` (`workspace.write`, `connectors.enable`). A right is not a tool: each member declares `requires:` rights; a grant satisfies them. |
 | `surface` | A delivery channel: `mcp__toolhub__*` (managed), `mcp__hub__*` (executor stdio), `tool_search`/`tool_call` (extended). A surface is a projection of the catalog, never a second authoring site. |
-| `effect` | `read` or `write` declared on the tool spec; drives MCP annotations, access narrowing and evidence requirements. |
+| `effect` | `read` or `write` declared on the tool spec; drives MCP annotations, access narrowing and evidence requirements. Two other fields share the name on different axes: the governance *section* ceiling is `read\|mutate\|exec\|credential` (`mutate` ≈ "can produce writes"), and the v1 vocabulary (ADR-0109 D1, rule T4) splits spec `write` by destination into `read\|write-local\|write-external\|critical` (lands with M40.7's `TestUnknownToolIsCritical`). |
 
 ## 1. Inventory — one catalog, one author
 

@@ -114,3 +114,24 @@ envelope); both stay in force.
 - Uncertain outcomes are never retried; a token does not authorize replay.
 - Credentials never enter the model plane: tokens carry ids, never secrets.
 - ADR-0100 D1: transport ids never become routing or authorization keys.
+
+## Amendment 2026-11-20 — signed bundles kept for run authorization; system principal wording reconciled
+
+**D7 is amended.** The v1 surface that shipped with M40.2 keeps CHG-0332's
+signed policy bundle on the run-authorization path:
+`contracts/task/v1` `verifyRecordPolicy` fetches `SignedPolicy` and verifies
+its JWS against the published signing keys — the digest pins the revision
+and the signature makes the slice self-authenticating to a stateless
+verifier. The digest-over-authenticated-read shape D7 described exists on
+the model-service path (`ActiveServicePassports` returns a digest pointer).
+Dropping the JWS machinery would break the run-authorization contract, so
+it is kept; the "no signed bundles" clause now scopes only to *new* v1
+paths, which must not invent additional bundle consumers.
+
+**System principal vs owner's agent.** The `system principal -> work` row
+and ADR-0108's boundary name the same rule at different layers: the job's
+*initiator* is the platform plane (`origin=unprompted`, through a routine
+or assignment the user owns), while the run's *acting identity* is the
+owner's agent at the user layer — never the system principal wearing user
+credentials. ADR-0108's refusal of "jobs as a system principal with user
+credentials" is the authoritative statement of that fence.

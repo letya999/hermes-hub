@@ -23,6 +23,10 @@ spawned and supervised by spawn-controller.
 | `GET /healthz` | spawn health probe | read | - |
 | `POST /v1/messages` | answer one user message via the managed model endpoint | write-local | - |
 
+`/v1/*` requires `Authorization: Bearer $HUB_SERVICE_TOKEN` (constant-time
+compare): an `Origin` header is refused 403, missing or wrong bearer 401, a
+non-JSON POST 415. `/healthz` stays open for the launcher probe.
+
 ## State machines
 
 None - a request-scoped service in this skeleton.
@@ -38,9 +42,9 @@ descriptor.
 |---|---|---|
 | `HUB_TRUSTED` | - | must be `true`; the service refuses otherwise |
 | `HUB_LISTEN` | - | `host:port` assigned by spawn-controller |
+| `HUB_SERVICE_TOKEN` | - | bearer token required on `/v1/*`; startup refuses without it |
 | `HUB_MANAGED_MODEL_URL` | - | OpenAI-compatible model endpoint; empty refuses the message |
 | `HUB_MANAGED_MODEL_ID` | - | model name sent in completion requests |
-| `HUB_SPAWN_CONTROLLER_URL` | - | owning controller address (set by spawn-controller) |
 
 ## Extension point
 

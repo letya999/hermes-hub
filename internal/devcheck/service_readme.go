@@ -63,13 +63,27 @@ func serviceReadmes(root string) []string {
 			continue
 		}
 		present := map[string]bool{}
-		for _, line := range markdownLines(readme) {
+		sectionHasContent := map[string]bool{}
+		lines := markdownLines(readme)
+		current := ""
+		for _, line := range lines {
+			if strings.HasPrefix(line, "## ") {
+				current = line
+				continue
+			}
+			if current != "" && strings.TrimSpace(line) != "" {
+				sectionHasContent[current] = true
+			}
+		}
+		for _, line := range lines {
 			present[line] = true
 		}
 		var missing []string
 		for _, h := range headings {
 			if !present[h] {
 				missing = append(missing, h)
+			} else if !sectionHasContent[h] {
+				problems = append(problems, rel+" has empty section \""+h+"\" — write content or \"None.\"")
 			}
 		}
 		if milestone, exempt := serviceReadmeExempt[svc]; exempt {

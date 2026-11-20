@@ -281,8 +281,8 @@ and the `/assignments` `/assignment <id> …` chat commands.
   resurrected. For a one-time first HTTP read, use `watcher` with `deliver_mode=content`; `check expect=unchanged` requires a prior baseline. A completed `once:` schedule may finish its in-flight probe after retirement.
 - Lifecycle propagates to artifacts: pause/resume flip the applied
   schedules, cancel/complete tombstone them and fence the record
-  terminal; apply and plan updates refuse a paused assignment, which leaves
-  pause only through resume; wakes are fenced by the applied plan generation at admission
+  terminal; apply refuses a paused assignment, a plan update on one is
+  staged and resume applies it under the pause fence before unpausing; wakes are fenced by the applied plan generation at admission
   and claim, so a paused or re-planned assignment cannot run a stale job. The completing trigger's confirmed response remains sendable after its own source retires and occurrence moves to archive, while deleting the assignment or revoking delivery rights still blocks it.
   An active owner assignment may use the owner's currently selected and
   granted memory tools under the same `memory.enabled` switch. The exact

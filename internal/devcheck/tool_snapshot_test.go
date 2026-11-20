@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,8 +28,12 @@ func TestToolCatalogSnapshotUnchanged(t *testing.T) {
 	if probe.Run() != nil {
 		return // source archive without Git metadata
 	}
+	// The baseline is the fork point with the integration branch, not HEAD^:
+	// splitting the schema change and the snapshot regen across two commits
+	// leaves HEAD^ already drifted, while the merge-base predates both.
+	refs := snapshotBaselineRefs(t)
 	checked := false
-	for _, ref := range []string{"origin/dev", "HEAD^"} {
+	for _, ref := range refs {
 		cmd := exec.Command("git", "show", ref+":"+toolSnapshotPath)
 		cmd.Dir = "../.."
 		previous, err := cmd.Output()
@@ -42,8 +47,35 @@ func TestToolCatalogSnapshotUnchanged(t *testing.T) {
 		break
 	}
 	if !checked {
-		t.Fatal("git history present but no snapshot baseline at origin/dev or HEAD^")
+		t.Fatal("git history present but no snapshot baseline at merge-base, origin refs or HEAD^")
 	}
+}
+
+// snapshotBaselineRefs orders baseline candidates from most to least
+// authoritative: merge-base with the integration branches (predates every
+// commit in the change), the branch tips, then HEAD^ for history without
+// remote refs.
+func snapshotBaselineRefs(t *testing.T) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var refs []string
+	add := func(ref string) {
+		if ref != "" && !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
+	}
+	for _, branch := range []string{"origin/dev", "origin/main"} {
+		cmd := exec.Command("git", "merge-base", "HEAD", branch)
+		cmd.Dir = "../.."
+		if out, err := cmd.Output(); err == nil {
+			add(strings.TrimSpace(string(out)))
+		}
+	}
+	add("origin/dev")
+	add("origin/main")
+	add("HEAD^")
+	return refs
 }
 
 func TestToolCatalogSnapshotRequiresVersionBump(t *testing.T) {

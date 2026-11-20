@@ -53,6 +53,25 @@ func TestServiceReadmeTemplateHeadings(t *testing.T) {
 		}
 	})
 
+	t.Run("README with an empty section rejected", func(t *testing.T) {
+		root := gateRoot(t)
+		gateWrite(t, root, "services/README.template.md", serviceTemplate)
+		gateWrite(t, root, "services/task-engine/README.md", "# x\n\n## Responsibility\n\nOne sentence.\n\n## Owns\n\n## Does not own\n\n- b\n")
+		err := Project(root)
+		if err == nil || !strings.Contains(err.Error(), "empty section \"## Owns\"") {
+			t.Fatalf("README with an empty template section accepted: %v", err)
+		}
+	})
+
+	t.Run("README with \"None.\" section passes", func(t *testing.T) {
+		root := gateRoot(t)
+		gateWrite(t, root, "services/README.template.md", serviceTemplate)
+		gateWrite(t, root, "services/task-engine/README.md", "# x\n\n## Responsibility\n\nOne sentence.\n\n## Owns\n\nNone.\n\n## Does not own\n\n- b\n")
+		if err := Project(root); err != nil {
+			t.Fatalf("None. section rejected: %v", err)
+		}
+	})
+
 	t.Run("service without README rejected", func(t *testing.T) {
 		root := gateRoot(t)
 		gateWrite(t, root, "services/README.template.md", serviceTemplate)
