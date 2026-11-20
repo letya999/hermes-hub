@@ -344,7 +344,7 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		if err != nil {
 			return err
 		}
-		byLayer, latest, err := activeLayerDocs(q, spaceID)
+		byLayer, atByLayer, err := activeLayerDocs(q, spaceID)
 		if err != nil {
 			return err
 		}
@@ -359,8 +359,16 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 				}
 			}
 			byLayer[layer] = docs
-			if rev.CreatedAt > latest {
-				latest = rev.CreatedAt
+			atByLayer[layer] = rev.CreatedAt
+		}
+		// The spec stamps the would-be set's freshest revision — the
+		// replaced layers' targets, not whatever the superseded rows
+		// carried. A rollback to an older revision must reproduce the
+		// older set's digest exactly.
+		var latest int64
+		for _, at := range atByLayer {
+			if at > latest {
+				latest = at
 			}
 		}
 		reserved, err := reservedPorts(q, spaceID)
@@ -416,6 +424,38 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 				return err
 			}
 		}
+		// Decision 11: the stored pointer is the readers' and claims' only
+		// view of the active policy — it lands in the same transaction as
+		// the revision moves, so a space never points at a spec it does
+		// not serve. Runtime rows bound to another digest drain in the
+		// same cut (Decision 10): a warm or busy runtime on the old policy
+		// never answers under the new one.
+		if _, err := q.Exec("UPDATE spaces SET effective_digest = ? WHERE {tenant} AND id = ?", digest, spaceID); err != nil {
+			return err
+		}
+		rows, err := q.Query("SELECT id FROM runtimes WHERE {tenant} AND space_id = ? AND policy_digest != ? AND state IN ('warm','busy')", spaceID, digest)
+		if err != nil {
+			return err
+		}
+		var stale []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			stale = append(stale, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, id := range stale {
+			if err := runtimeTransition(q, id, "drain", now); err != nil {
+				return err
+			}
+		}
 		for layer := range moved {
 			if err := pruneSuperseded(q, spaceID, layer, now); err != nil {
 				return err
@@ -434,46 +474,33 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 	return out, err
 }
 
-// Effective recomputes the spec from the space's active layers and answers
-// the stored immutable bundle for its digest.
+// Effective answers the space's stored effective spec: the digest
+// activation wrote on the space row plus the immutable effective_specs
+// bundle for it (Decision 11 — the read path never recompiles). A space
+// that never activated answers not_found, like before.
 func (r *Revisions) Effective(ctx context.Context, t store.Tenant, spaceID string) (EffectiveSpec, error) {
 	var out EffectiveSpec
 	err := r.Store.ReadTx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
-		env, err := spaceEnvironment(q, spaceID)
+		var digest string
+		err := q.QueryRow("SELECT effective_digest FROM spaces WHERE {tenant} AND id = ?", spaceID).Scan(&digest)
 		if err != nil {
 			return err
 		}
-		byLayer, latest, err := activeLayerDocs(q, spaceID)
-		if err != nil {
-			return err
-		}
-		if len(byLayer) == 0 {
+		if digest == "" {
 			return store.ErrNotFound
-		}
-		reserved, err := reservedPorts(q, spaceID)
-		if err != nil {
-			return err
-		}
-		cat, err := r.catalogDocs()
-		if err != nil {
-			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
-		}
-		_, canonical, digest, err := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
-		if err != nil {
-			// The active set does not compile — the space has no servable
-			// effective spec until activation restores a coherent set.
-			return fmt.Errorf("%w: effective spec: %v", httpapi.ErrUnavailable, err)
 		}
 		var stored string
 		err = q.QueryRow("SELECT documents FROM effective_specs WHERE {tenant} AND space_id = ? AND id = ?", spaceID, digest).Scan(&stored)
-		switch {
-		case err == nil:
-			canonical = []byte(stored)
-		case !errors.Is(err, store.ErrNotFound):
+		if errors.Is(err, store.ErrNotFound) {
+			// The pointer names a bundle the space does not carry — an
+			// internal inconsistency, not a client miss.
+			return fmt.Errorf("%w: effective spec %s is gone", httpapi.ErrUnavailable, digest)
+		}
+		if err != nil {
 			return err
 		}
-		docs, err := bundlePassports(canonical)
+		docs, err := bundlePassports([]byte(stored))
 		if err != nil {
 			return err
 		}
@@ -573,33 +600,31 @@ func spaceEnvironment(q store.Scoped, spaceID string) (string, error) {
 // activeLayerDocs reads every active layer's stored documents plus the
 // newest created_at — the compile timestamp input that keeps the effective
 // digest content-addressed.
-func activeLayerDocs(q store.Scoped, spaceID string) (map[string]map[string]map[string]any, int64, error) {
+func activeLayerDocs(q store.Scoped, spaceID string) (map[string]map[string]map[string]any, map[string]int64, error) {
 	rows, err := q.Query("SELECT COALESCE(layer, ''), documents, created_at FROM passport_revisions WHERE {tenant} AND space_id = ? AND state = 'active'", spaceID)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := map[string]map[string]map[string]any{}
-	var latest int64
+	at := map[string]int64{}
 	for rows.Next() {
 		var layer string
 		var raw []byte
-		var at int64
-		if err := rows.Scan(&layer, &raw, &at); err != nil {
-			return nil, 0, err
+		var created int64
+		if err := rows.Scan(&layer, &raw, &created); err != nil {
+			return nil, nil, err
 		}
 		var docs map[string]map[string]any
 		if len(raw) != 0 {
 			if err := json.Unmarshal(raw, &docs); err != nil {
-				return nil, 0, err
+				return nil, nil, err
 			}
 		}
 		out[layer] = docs
-		if at > latest {
-			latest = at
-		}
+		at[layer] = created
 	}
-	return out, latest, rows.Err()
+	return out, at, rows.Err()
 }
 
 // knownLayerDocs reads, per layer slot other than skipLayer, the freshest

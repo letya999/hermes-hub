@@ -138,6 +138,9 @@ func (d *dockerBackend) Start(ctx context.Context, spec Spec) (Runtime, error) {
 	if spec.Key == "" || spec.Image == "" {
 		return Runtime{}, errors.New("backend: spec key and image are required")
 	}
+	if err := validateSpec(spec); err != nil {
+		return Runtime{}, err
+	}
 	// Trust guard before any daemon call or bind lookup (X6).
 	if !d.cfg.Trusted && spec.OCIRuntime != "runsc" {
 		return Runtime{}, fmt.Errorf("%w: docker backend requires runsc", ErrUntrusted)
@@ -259,10 +262,12 @@ func (d *dockerBackend) Inspect(ctx context.Context, id string) (Runtime, error)
 	}, nil
 }
 
-func (d *dockerBackend) List(ctx context.Context) []Runtime {
+func (d *dockerBackend) List(ctx context.Context) ([]Runtime, error) {
 	out, err := d.command(ctx, nil, "ps", "-a", "--filter", "label="+dockerManagedLabel, "--format", "{{json .}}")
 	if err != nil {
-		return nil
+		// A daemon error is not an empty daemon: callers must not mark
+		// runtimes missing from a list they never got.
+		return nil, fmt.Errorf("backend: list: %w: %s", err, firstLine(out))
 	}
 	var list []Runtime
 	for _, line := range strings.Split(string(out), "\n") {
@@ -290,7 +295,7 @@ func (d *dockerBackend) List(ctx context.Context) []Runtime {
 		}
 		list = append(list, rt)
 	}
-	return list
+	return list, nil
 }
 
 // isMissingContainer matches the daemon's "no such object/container" reply;

@@ -223,6 +223,7 @@ func TestRuntimeTransitions(t *testing.T) {
 		{nil, "ready", "warm"},
 		{nil, "fail", "failed"},
 		{[]string{"ready"}, "lease", "busy"},
+		{[]string{"ready", "lease"}, "renew", "busy"},
 		{[]string{"ready", "lease"}, "unlease", "warm"},
 		{[]string{"ready", "lease"}, "drain", "draining"},
 		{[]string{"ready"}, "drain", "draining"},

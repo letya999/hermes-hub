@@ -66,6 +66,7 @@ var RuntimeMachine = must(fsm.New(fsm.Machine{
 		{From: "starting", Event: "ready", To: "warm"},
 		{From: "starting", Event: "fail", To: "failed"},
 		{From: "warm", Event: "lease", To: "busy"},
+		{From: "busy", Event: "renew", To: "busy"},
 		{From: "busy", Event: "unlease", To: "warm"},
 		{From: "warm", Event: "drain", To: "draining"},
 		{From: "busy", Event: "drain", To: "draining"},
@@ -89,8 +90,7 @@ var RuntimeMachine = must(fsm.New(fsm.Machine{
 	Deadlines: map[string]fsm.Deadline{
 		"starting":    {After: 30 * time.Second, Event: "fail"},       // start budget; backend probe result
 		"warm":        {After: 15 * time.Minute, Event: "drain"},      // idle TTL; sweeper
-		// S4: lease renewal re-arms this bound; draining a runtime removes its lease rows in the same transaction.
-		"busy":        {After: 2 * time.Hour, Event: "drain"},         // hold bound; sweeper reclaims a stuck busy
+		"busy":        {After: 2 * time.Hour, Event: "drain"},         // hold bound; lease renew re-arms it, a stuck hold drains
 		"draining":    {After: 30 * time.Second, Event: "quarantine"}, // stop budget; unconfirmed stop quarantines
 		"failed":      {After: 24 * time.Hour, Event: "removed"},      // retention; reconciler or operator confirms
 		"quarantined": {After: 24 * time.Hour, Event: "removed"},      // retention; operator confirms

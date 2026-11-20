@@ -33,6 +33,7 @@ func init() {
 		"supervisor.dreaming-service-auth-distinct":      "Dreaming service issuance needs an independent credential",
 		"supervisor.identity-unavailable":                "Identity registry is unavailable",
 		"spawn.revision-rejected":                        "Passport revision did not compile",
+		"spawn.runtime-unavailable":                      "Runtime is unavailable",
 		"supervisor.identity-upkeep-pending":             "Identity upkeep is pending",
 
 		"package.sources-unavailable":              "Package sources are unavailable",

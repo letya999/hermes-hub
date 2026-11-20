@@ -33,6 +33,7 @@ func init() {
 		"supervisor.dreaming-service-auth-distinct":      "La emisión para el procesamiento nocturno requiere una credencial independiente",
 		"supervisor.identity-unavailable":                "El registro de identidad no está disponible",
 		"spawn.revision-rejected":                        "La revisión del pasaporte no compiló",
+		"spawn.runtime-unavailable":                      "El runtime no está disponible",
 		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
 
 		"package.sources-unavailable":              "Las fuentes del paquete no están disponibles",

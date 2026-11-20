@@ -125,6 +125,20 @@ func spawnForeignContainer(t *testing.T) {
 	dockerCLI(t, "run", "-d", "--name", name, "--label", testLabel, "alpine:latest", "sleep", "300")
 }
 
+// TestListReportsDaemonError: a docker CLI that cannot run at all must
+// surface as a List error — a swallowed failure would read as "nothing is
+// running" and let a reconciler tombstone every live runtime row.
+func TestListReportsDaemonError(t *testing.T) {
+	be := backend.NewDocker(backend.DockerConfig{Docker: "hermes-m40-test-nosuch-binary"})
+	list, err := be.List(t.Context())
+	if err == nil {
+		t.Fatalf("list against a missing docker binary: got %v, want an error", list)
+	}
+	if list != nil {
+		t.Fatalf("errored list returned rows: %v", list)
+	}
+}
+
 // runscInstalled reports whether the daemon offers the gVisor runtime.
 func runscInstalled(t *testing.T) bool {
 	t.Helper()

@@ -204,6 +204,55 @@ func effectiveDigest(t *testing.T, revs *spawn.Revisions) string {
 
 func unmarshalDoc(raw json.RawMessage, v any) error { return json.Unmarshal(raw, v) }
 
+// Decision 11: activation stores the effective digest on the space row and
+// readers follow it — Effective answers the stored effective_specs row and
+// never recompiles on the read path. The counting catalog loader proves
+// it: after bootstrap, N Effective calls add zero catalog loads.
+func TestEffectiveDoesNotRecompile(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		docs, err := catalog.Generate()
+		if err != nil {
+			t.Fatalf("catalog generate: %v", err)
+		}
+		var mu sync.Mutex
+		loads := 0
+		clock := time.Unix(1_800_000_000, 0)
+		revs := &spawn.Revisions{
+			Store: storetest.Open(t, url, migrations.FS),
+			LoadCatalog: func() (catalog.Docs, error) {
+				mu.Lock()
+				loads++
+				mu.Unlock()
+				return docs, nil
+			},
+			Now: func() time.Time { clock = clock.Add(time.Second); return clock },
+		}
+		setupSpace(t, revs)
+		mu.Lock()
+		base := loads
+		mu.Unlock()
+		if base == 0 {
+			t.Fatal("the bootstrap compile never loaded the catalog")
+		}
+		var digest string
+		for i := 0; i < 5; i++ {
+			eff, err := revs.Effective(context.Background(), tenant, "alice")
+			if err != nil {
+				t.Fatalf("effective %d: %v", i, err)
+			}
+			digest = eff.Digest
+		}
+		if digest == "" {
+			t.Fatal("effective digest empty")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if loads != base {
+			t.Fatalf("Effective recompiled on read: catalog loads %d -> %d", base, loads)
+		}
+	})
+}
+
 func revisionState(t *testing.T, revs *spawn.Revisions, id string) string {
 	t.Helper()
 	list, err := revs.ListRevisions(context.Background(), tenant, "alice", "")

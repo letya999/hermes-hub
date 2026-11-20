@@ -22,7 +22,7 @@ func TestBackendMapAccessIsSynchronized(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 50 {
-				_ = b.List(context.Background())
+				_, _ = b.List(context.Background())
 				_, _ = b.Inspect(context.Background(), "rt-a")
 				_ = b.Stop(context.Background(), "rt-nothing")
 			}

@@ -144,6 +144,10 @@ func TestListReturnsOnlyOwnWorkloads(t *testing.T) {
 	eachLeg(t, backendtest.ListReturnsOnlyOwnWorkloads)
 }
 
+func TestMountOptionInjectionRefused(t *testing.T) {
+	eachLeg(t, backendtest.MountOptionInjectionRefused)
+}
+
 // TestUntrustedRefusesProcessBackend: X6 — an untrusted installation never
 // gets a child process, and the refusal happens before any directory exists.
 func TestUntrustedRefusesProcessBackend(t *testing.T) {

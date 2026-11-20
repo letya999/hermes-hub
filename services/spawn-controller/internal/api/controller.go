@@ -1,11 +1,13 @@
-// Package api is the spawn-controller HTTP surface: runtime ensure and the
-// message path, plus the service bootstrap that wires them.
+// Package api is the spawn-controller HTTP surface: the durable runtime
+// lifecycle's claim-lease-forward-release message path, the tenant-scoped
+// runtime inventory and the lease heartbeat, plus the service bootstrap
+// that wires them.
 package api
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -25,63 +27,71 @@ import (
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 	"github.com/letya999/hermes-hub/shared/proctree"
 	"github.com/letya999/hermes-hub/shared/store"
 	_ "github.com/letya999/hermes-hub/shared/store/postgres" // pgx for HUB_DATABASE_URL postgres://
 )
 
-// Controller ensures one child runtime per (space, agent) pair and forwards
-// space traffic to it. Runtimes are looked up, never created twice; max
-// bounds how many may run at once.
+// Controller routes space traffic through the durable runtime lifecycle:
+// every message claims the (tenant, space, agent)'s runtime row, holds a
+// lease on it while the call is forwarded and releases the hold after —
+// the in-memory registry this replaced is gone.
 type Controller struct {
-	backend backend.Backend
-	token   string
-	max     int
-	spaces  http.Handler
-	mu      sync.Mutex
-	ensured map[string]backend.Runtime
-	client  *http.Client
+	runtimes *spawn.Runtimes
+	token    string
+	spaces   http.Handler
+	client   *http.Client
 }
 
-func runtimeKey(space, agent string) string {
-	sum := sha256.Sum256([]byte(space + "\x00" + agent))
-	return "rt-" + hex.EncodeToString(sum[:8])
+// requestTenant reads the caller's explicit (org, owner) — the same
+// transport the spawn/v1 contract uses for its trusted control-plane
+// clients; tenant identity is never derived from a header.
+func requestTenant(r *http.Request) (store.Tenant, error) {
+	t := store.Tenant{Org: r.URL.Query().Get("org"), Owner: r.URL.Query().Get("owner")}
+	if t.Org == "" || t.Owner == "" || len(t.Org) > 256 || len(t.Owner) > 256 {
+		return t, httpapi.Errorf(httpapi.ErrInvalid, "tenant query parameters required")
+	}
+	return t, nil
 }
 
-// ensure returns the runtime for (space, agent), starting it on first use.
-func (c *Controller) ensure(ctx context.Context, space, agent string) (backend.Runtime, error) {
-	key := runtimeKey(space, agent)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if rt, ok := c.ensured[key]; ok {
-		if observed, err := c.backend.Inspect(ctx, key); err == nil && observed.State != "exited" {
-			return rt, nil
-		}
-		delete(c.ensured, key)
-	}
-	if c.max > 0 && len(c.backend.List(ctx)) >= c.max {
-		return backend.Runtime{}, errors.New("runtime limit reached")
-	}
-	// Until S4 the spec is thin: the store-backed tenant, policy digest and
-	// mounts land with the runtime rows. The process backend applies only
-	// key, space, agent and image.
-	rt, err := c.backend.Start(ctx, backend.Spec{
-		Key: key, Org: "local", Owner: space, Space: space, Agent: agent,
-		Image: "harness-runtime", OCIRuntime: "runc",
-	})
-	if err != nil {
-		return backend.Runtime{}, err
-	}
-	c.ensured[key] = rt
-	return rt, nil
+// leaseID mints the hold row's provenance label — an id, never a key.
+func leaseID() string {
+	raw := make([]byte, 8)
+	_, _ = rand.Read(raw)
+	return "ls-" + hex.EncodeToString(raw)
 }
 
-// message forwards a user message to the ensured runtime and relays its reply.
-func (c *Controller) message(ctx context.Context, space, agent, text string) (map[string]any, error) {
-	rt, err := c.ensure(ctx, space, agent)
+// statusOf maps the service's typed errors onto the surface's statuses.
+func statusOf(err error) int {
+	switch {
+	case errors.Is(err, httpapi.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, httpapi.ErrConflict):
+		return http.StatusConflict
+	case errors.Is(err, httpapi.ErrForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, httpapi.ErrInvalid):
+		return http.StatusBadRequest
+	default:
+		return http.StatusServiceUnavailable
+	}
+}
+
+// message executes the full message path: claim the runtime bound to the
+// space's stored effective digest, hold a lease on it while the call is
+// forwarded, then release. The lease keeps the runtime out of the idle
+// drain for the call's duration; the release moves it back to warm.
+func (c *Controller) message(ctx context.Context, t store.Tenant, space, agent, text string) (map[string]any, error) {
+	rt, err := c.runtimes.Claim(ctx, t, space, agent)
 	if err != nil {
 		return nil, err
 	}
+	lease := leaseID()
+	if err := c.runtimes.Acquire(ctx, t, rt.ID, lease); err != nil {
+		return nil, err
+	}
+	defer func() { _ = c.runtimes.Release(context.Background(), t, rt.ID, lease) }()
 	body, _ := json.Marshal(map[string]string{"space": space, "agent": agent, "text": text})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.Address+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
@@ -134,7 +144,39 @@ func (c *Controller) routes() *http.ServeMux {
 		mux.Handle("/v1/spaces/", c.guard(c.spaces.ServeHTTP))
 	}
 	mux.HandleFunc("/v1/runtimes", c.guard(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"runtimes": c.backend.List(r.Context())})
+		t, err := requestTenant(r)
+		if err != nil {
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
+			return
+		}
+		list, err := c.runtimes.List(r.Context(), t)
+		if err != nil {
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runtimes": list})
+	}))
+	mux.HandleFunc("/v1/leases/", c.guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/leases/"), "/renew")
+		if !ok || id == "" || strings.Contains(id, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		t, err := requestTenant(r)
+		if err != nil {
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
+			return
+		}
+		rt, err := c.runtimes.Renew(r.Context(), t, id)
+		if err != nil {
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runtime": rt})
 	}))
 	mux.HandleFunc("/v1/messages", c.guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -154,9 +196,14 @@ func (c *Controller) routes() *http.ServeMux {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid message"})
 			return
 		}
-		out, err := c.message(r.Context(), input.Space, input.Agent, input.Text)
+		t, err := requestTenant(r)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "runtime unavailable: " + err.Error()})
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error()})
+			return
+		}
+		out, err := c.message(r.Context(), t, input.Space, input.Agent, input.Text)
+		if err != nil {
+			writeJSON(w, statusOf(err), map[string]any{"error": "runtime unavailable: " + err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -170,7 +217,11 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-const defaultMaxRuntimes = 32
+const (
+	defaultMaxRuntimes  = 32
+	defaultSweepEvery   = 5 * time.Second
+	runtimeDefaultImage = "harness-runtime"
+)
 
 // catalogLoader caches the pinned catalog after the first successful
 // load. The baked tree lives in the image while process-mode children
@@ -226,6 +277,14 @@ func Serve(ctx context.Context) error {
 		}
 		max = parsed
 	}
+	sweepEvery := defaultSweepEvery
+	if raw := os.Getenv("HUB_SWEEP_INTERVAL"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return errors.New("HUB_SWEEP_INTERVAL must be a positive duration")
+		}
+		sweepEvery = parsed
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -245,13 +304,26 @@ func Serve(ctx context.Context) error {
 		return err
 	}
 	defer serviceStore.Close()
+	runtimes := &spawn.Runtimes{
+		Store: serviceStore, Backend: be,
+		Image: runtimeDefaultImage, OCIRuntime: "runc", MaxLive: max,
+	}
+	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be}
+	// Boot recovery is one reconcile pass before the socket opens: runtime
+	// rows this process left behind are re-anchored against the backend.
+	if err := sweeper.Tick(ctx); err != nil {
+		return err
+	}
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	defer stopSweep()
+	go sweeper.Run(sweepCtx, sweepEvery)
 	controller := &Controller{
-		backend: be, token: token, max: max,
+		runtimes: runtimes, token: token,
 		spaces: spawnv1.Handler(Contract{Revisions: &spawn.Revisions{
 			Store:       serviceStore,
 			LoadCatalog: catalogLoader(catalog.LoadPinned),
 		}}, token),
-		ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: 60 * time.Second},
+		client: &http.Client{Timeout: 60 * time.Second},
 	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -263,8 +335,10 @@ func Serve(ctx context.Context) error {
 		_ = server.Shutdown(context.Background())
 	}()
 	err = server.Serve(listener)
-	for _, child := range be.List(context.Background()) {
-		_ = be.Stop(context.Background(), child.ID)
+	if children, lerr := be.List(context.Background()); lerr == nil {
+		for _, child := range children {
+			_ = be.Stop(context.Background(), child.ID)
+		}
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

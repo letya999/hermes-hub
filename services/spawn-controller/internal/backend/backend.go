@@ -70,13 +70,34 @@ var ErrNotFound = errors.New("backend: runtime not found")
 // ErrUntrusted marks refusals the installation trust flag demands (X6).
 var ErrUntrusted = errors.New("backend: refused by installation trust policy")
 
+// ErrSpec refuses a Spec a backend cannot apply without ambiguity: mount
+// sources and targets travel inside the docker --mount CSV grammar, where
+// ',' reads as another option, '=' splits a value and '"' or a newline
+// breaks the flag — carrying one would inject options the caller never
+// declared (mount_option_injection_refused).
+var ErrSpec = errors.New("backend: spec refused")
+
+// validateSpec refuses the parts of a Spec that cannot cross into a
+// backend argv unambiguously. It runs at the top of every Start, before
+// trust guards, disk writes or daemon calls.
+func validateSpec(spec Spec) error {
+	for _, m := range spec.Mounts {
+		if strings.ContainsAny(m.Source, ",=\"\n\r") || strings.ContainsAny(m.Target, ",=\"\n\r") {
+			return fmt.Errorf("%w: mount %q -> %q carries option-breaking characters", ErrSpec, m.Source, m.Target)
+		}
+	}
+	return nil
+}
+
 // Backend owns compute for space workloads: it starts, inspects, lists and
-// stops runtime instances; admission and passports stay elsewhere.
+// stops runtime instances; admission and passports stay elsewhere. List's
+// error is the difference between "nothing is running" and "the daemon did
+// not answer" — a reconciler must never read the latter as the former.
 type Backend interface {
 	Start(context.Context, Spec) (Runtime, error)
 	Stop(context.Context, string) error
 	Inspect(context.Context, string) (Runtime, error)
-	List(context.Context) []Runtime
+	List(context.Context) ([]Runtime, error)
 }
 
 // NewProcess returns the process backend: it starts service binaries from
@@ -143,6 +164,9 @@ func (b *processBackend) envFor(spec Spec, port int) []string {
 // are refused before anything touches disk. Spec mounts are never honoured
 // as binds — the child only ever sees its own data directory.
 func (b *processBackend) Start(ctx context.Context, spec Spec) (Runtime, error) {
+	if err := validateSpec(spec); err != nil {
+		return Runtime{}, err
+	}
 	if !b.trusted {
 		return Runtime{}, fmt.Errorf("%w: process backend", ErrUntrusted)
 	}
@@ -263,7 +287,7 @@ func (b *processBackend) Inspect(_ context.Context, id string) (Runtime, error) 
 	return rt, nil
 }
 
-func (b *processBackend) List(context.Context) []Runtime {
+func (b *processBackend) List(context.Context) ([]Runtime, error) {
 	b.mu.Lock()
 	list := make([]Runtime, 0, len(b.children))
 	for _, child := range b.children {
@@ -275,5 +299,5 @@ func (b *processBackend) List(context.Context) []Runtime {
 			list[i] = rt
 		}
 	}
-	return list
+	return list, nil
 }

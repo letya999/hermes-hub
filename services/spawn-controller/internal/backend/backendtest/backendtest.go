@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -61,6 +62,7 @@ func Suite(t *testing.T, leg Leg) {
 	t.Run("no_secret_in_env_or_argv", func(t *testing.T) { NoSecretInEnvOrArgv(t, leg) })
 	t.Run("network_edges_applied", func(t *testing.T) { NetworkEdgesApplied(t, leg) })
 	t.Run("list_returns_only_own_workloads", func(t *testing.T) { ListReturnsOnlyOwnWorkloads(t, leg) })
+	t.Run("mount_option_injection_refused", func(t *testing.T) { MountOptionInjectionRefused(t, leg) })
 }
 
 func key() string { return "rt-" + rand.Text()[:16] }
@@ -92,7 +94,7 @@ func StartStopInspectList(t *testing.T, leg Leg) {
 	if got.State != "running" {
 		t.Fatalf("state %q, want running", got.State)
 	}
-	if !hasRuntime(be.List(t.Context()), spec.Key) {
+	if !hasRuntime(t, be, spec.Key) {
 		t.Fatal("list misses the started runtime")
 	}
 	if err := be.Stop(t.Context(), spec.Key); err != nil {
@@ -101,7 +103,7 @@ func StartStopInspectList(t *testing.T, leg Leg) {
 	if _, err := be.Inspect(t.Context(), spec.Key); !errors.Is(err, backend.ErrNotFound) {
 		t.Fatalf("inspect stopped: %v, want backend.ErrNotFound", err)
 	}
-	if hasRuntime(be.List(t.Context()), spec.Key) {
+	if hasRuntime(t, be, spec.Key) {
 		t.Fatal("stopped runtime still listed")
 	}
 }
@@ -252,13 +254,66 @@ func ListReturnsOnlyOwnWorkloads(t *testing.T, leg Leg) {
 		t.Fatalf("start: %v", err)
 	}
 	stopOnCleanup(t, be, spec.Key)
-	list := be.List(t.Context())
+	list, err := be.List(t.Context())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	if len(list) != 1 || list[0].ID != spec.Key {
 		t.Fatalf("list %v, want only %q", list, spec.Key)
 	}
 }
 
-func hasRuntime(list []backend.Runtime, id string) bool {
+// MountOptionInjectionRefused: a mount source or target that carries the
+// characters the docker --mount CSV grammar splits on would inject extra
+// mount options — a comma reads as a new option, '=' a value, '"' or a
+// newline breaks the flag. Such a Spec is refused before any daemon call
+// or disk touch, and the backend shows no workload for the key.
+func MountOptionInjectionRefused(t *testing.T, leg Leg) {
+	t.Helper()
+	be := leg.Factory(t)
+	base := t.TempDir()
+	ok := filepath.Join(base, "ok")
+	if err := os.Mkdir(ok, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Sources that exist on disk AND carry option-breaking characters:
+	// docker would parse src=<path>,dst=<tgt> and treat the tail as more
+	// options, so "does not exist" is not the refusal being exercised.
+	evilComma := filepath.Join(base, "src,readonly")
+	evilEquals := filepath.Join(base, "src=x")
+	for _, dir := range []string{evilComma, evilEquals} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range []backend.Mount{
+		{Source: evilComma, Target: "/mnt"},
+		{Source: evilEquals, Target: "/mnt"},
+		{Source: "evil\"quoted", Target: "/mnt"},
+		{Source: "evil\nnewline", Target: "/mnt"},
+		{Source: "evil\rreturn", Target: "/mnt"},
+		{Source: ok, Target: "/m,nt"},
+		{Source: ok, Target: "/m=nt"},
+		{Source: ok, Target: "/mnt\nx"},
+	} {
+		spec := leg.Spec(t, key())
+		spec.Mounts = []backend.Mount{m}
+		if _, err := be.Start(t.Context(), spec); err == nil {
+			_ = be.Stop(t.Context(), spec.Key)
+			t.Fatalf("mount %+v: start succeeded, want option-injection refusal", m)
+		}
+		if _, err := be.Inspect(t.Context(), spec.Key); !errors.Is(err, backend.ErrNotFound) {
+			t.Fatalf("mount %+v: refused start left a workload behind: %v", m, err)
+		}
+	}
+}
+
+func hasRuntime(t *testing.T, be backend.Backend, id string) bool {
+	t.Helper()
+	list, err := be.List(t.Context())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	for _, rt := range list {
 		if rt.ID == id {
 			return true

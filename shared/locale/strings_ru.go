@@ -33,6 +33,7 @@ func init() {
 		"supervisor.dreaming-service-auth-distinct":      "Для служебных разрешений ночной обработки памяти нужен отдельный ключ",
 		"supervisor.identity-unavailable":                "Реестр идентификации недоступен",
 		"spawn.revision-rejected":                        "Ревизия паспорта не скомпилировалась",
+		"spawn.runtime-unavailable":                      "Рантайм недоступен",
 		"supervisor.identity-upkeep-pending":             "Обслуживание реестра идентификации ожидает повтора",
 
 		"package.sources-unavailable":              "Исходники для архива недоступны",

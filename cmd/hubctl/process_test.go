@@ -18,7 +18,142 @@ import (
 
 	"github.com/letya999/hermes-hub/shared/locale"
 	"github.com/letya999/hermes-hub/shared/testkit"
+
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
+
+// fixtureLayers mirrors the normative managed-space layer set the spawn
+// tests bootstrap with — the message path can only run once a space's
+// revisions have been activated into a stored effective digest.
+func fixtureLayers() map[string]map[string]map[string]any {
+	return map[string]map[string]map[string]any{
+		"platform-ceiling": {
+			"stack": {
+				"identity": map[string]any{"user": "alice", "organization": "local"},
+				"services": map[string]any{
+					"hermes-runtime":    map[string]any{"mode": "supervised"},
+					"browser":           map[string]any{"mode": "per-space"},
+					"toolhub":           map[string]any{"mode": "shared"},
+					"model-relay":       map[string]any{"mode": "shared"},
+					"communication-hub": map[string]any{"mode": "shared"},
+					"credential-broker": map[string]any{"mode": "shared"},
+					"supervisor":        map[string]any{"mode": "shared"},
+					"cliproxy":          map[string]any{"mode": "per-space"},
+					"hub-stt":           map[string]any{"mode": "shared"},
+					"hub-tts":           map[string]any{"mode": "shared"},
+				},
+			},
+			"config": {
+				"memory": map[string]any{"backend": []any{"local", "honcho"}},
+			},
+			"tools": {"core": map[string]any{
+				"native:file": map[string]any{"via": "native"},
+				"files":       map[string]any{"via": "toolhub"},
+				"terminal":    map[string]any{"via": "toolhub"},
+			}},
+			"workspace": {
+				"writable":  []any{"/workspace", "/vault"},
+				"read_only": []any{"/config", "/skills", "/shared"},
+			},
+			"models": {
+				"services": map[string]any{
+					"cliproxy":   map[string]any{"via": "cliproxy"},
+					"direct-key": map[string]any{"via": "openai-compatible"},
+				},
+				"routes": map[string]any{
+					"everyday": map[string]any{"ladder": []any{"cliproxy"}},
+				},
+			},
+			"grants": {"allow": []any{"workspace", "tools", "config"}},
+		},
+		"platform-template": {
+			"config": {
+				"memory":  map[string]any{"backend": "local"},
+				"runtime": map[string]any{"timezone": "UTC"},
+			},
+			"tools":     {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
+			"workspace": {"writable": []any{"/workspace"}, "read_only": []any{"/config", "/skills"}},
+			"models": {
+				"default": "everyday",
+				"services": map[string]any{
+					"cliproxy": map[string]any{
+						"via":      "cliproxy",
+						"endpoint": "http://cliproxy:8317/v1",
+						"auth": map[string]any{
+							"upstream":     map[string]any{"kind": "oauth-session", "ref": "cliproxy-main"},
+							"proxy_access": map[string]any{"kind": "broker-key", "ref": "cliproxy"},
+						},
+					},
+				},
+			},
+		},
+		"org-ceiling": {
+			"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
+			"grants": {"allow": []any{"workspace", "tools"}},
+		},
+		"org-template": {
+			"config":    {"memory": map[string]any{"backend": "honcho"}},
+			"workspace": {"writable": []any{"/workspace"}},
+		},
+		"user": {
+			"config": {"memory": map[string]any{"backend": "local"}, "runtime": map[string]any{"timezone": "Europe/Berlin"}},
+			"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
+			"grants": {"allow": map[string]any{
+				"workspace": []any{"read", "write"},
+				"tools":     []any{"list", "use"},
+			}},
+		},
+	}
+}
+
+// bootstrapSpace drives the real v1 path: create the space, submit every
+// layer, validate them, activate the set — the same calls a control-plane
+// client makes before its first message may claim a runtime.
+func bootstrapSpace(t *testing.T, ctx context.Context, client spawnv1.Client, tenant spawnv1.Tenant, space string) {
+	t.Helper()
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{
+		Org: tenant.Org, Owner: tenant.Owner, ID: space, Environment: "dev", IdempotencyKey: "create-" + space,
+	}); err != nil {
+		t.Fatalf("create space: %v", err)
+	}
+	layers := fixtureLayers()
+	ids := map[string]string{}
+	for _, layer := range spawnv1.Layers {
+		docs, ok := layers[layer]
+		if !ok {
+			continue
+		}
+		rev, err := client.SubmitRevision(ctx, space, layer, spawnv1.SubmitRevisionRequest{
+			Org: tenant.Org, Owner: tenant.Owner, Documents: docs, IdempotencyKey: "submit-" + space + "-" + layer,
+		})
+		if err != nil {
+			t.Fatalf("submit %s: %v", layer, err)
+		}
+		ids[layer] = rev.ID
+	}
+	var all []string
+	for _, layer := range spawnv1.Layers {
+		id, ok := ids[layer]
+		if !ok {
+			continue
+		}
+		rev, err := client.ValidateRevision(ctx, space, id, spawnv1.RevisionRequest{
+			Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: "validate-" + space + "-" + layer,
+		})
+		if err != nil {
+			t.Fatalf("validate %s %s: %v", layer, id, err)
+		}
+		if rev.State != "validated" {
+			t.Fatalf("validate %s %s: state %s detail %s", layer, id, rev.State, rev.Detail)
+		}
+		all = append(all, id)
+	}
+	if _, err := client.ActivateRevisions(ctx, space, spawnv1.ActivationRequest{
+		Org: tenant.Org, Owner: tenant.Owner, Revisions: all, IdempotencyKey: "activate-" + space,
+	}); err != nil {
+		t.Fatalf("activate %v: %v", all, err)
+	}
+}
 
 // The helper is a foreign executable fixture for launcher lifecycle tests.
 // It does not stand in for the missing minimal message path.
@@ -249,6 +384,13 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	t.Setenv("HUB_MANAGED_MODEL_URL", model.URL+"/v1")
 	t.Setenv("HUB_MANAGED_MODEL_ID", "fixture-model")
 	t.Setenv("HUB_SERVICE_TOKEN", "test-service-token")
+	// The controller compiles revisions against the pinned catalog — point
+	// its env at the repository tree before the working directory moves.
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_CATALOG_ROOT", repoRoot)
 	services := launchedServices("minimal")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -269,8 +411,32 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	// The launcher's trust gate is covered by its own test; here the process
 	// surface itself must be real. Poll until it answers or the launcher dies.
 	deadline := time.Now().Add(60 * time.Second)
+	healthy := false
+	for !healthy {
+		resp, err := http.Get(base + "/healthz")
+		if err == nil {
+			healthy = resp.StatusCode == http.StatusOK
+			_ = resp.Body.Close()
+		}
+		if !healthy {
+			if time.Now().After(deadline) {
+				t.Fatal("spawn-controller never came up")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("launcher exited: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	// The space the message claims must exist with an activated effective
+	// digest — bootstrap it through the same contract a control-plane
+	// client uses; a message for an unmanaged space is refused, never
+	// spawned.
+	tenant := spawnv1.Tenant{Org: "local", Owner: "alice"}
+	bootstrapSpace(t, ctx, spawnv1.NewHTTPClient(base, "test-service-token", nil), tenant, "s1")
 	post := func(body, token string, headers map[string]string) (int, []byte) {
-		req, _ := http.NewRequest(http.MethodPost, base+"/v1/messages", strings.NewReader(body))
+		req, _ := http.NewRequest(http.MethodPost, base+"/v1/messages?org=local&owner=alice", strings.NewReader(body))
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -328,7 +494,7 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 			}
 		})
 	}
-	req, _ := http.NewRequest(http.MethodGet, base+"/v1/runtimes", nil)
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/runtimes?org=local&owner=alice", nil)
 	req.Header.Set("Authorization", "Bearer test-service-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -336,7 +502,9 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if !strings.Contains(string(body), `"space":"s1"`) || !strings.Contains(string(body), `"state":"running"`) {
+	// The runtime inventory is the durable row: claimed for the message,
+	// released back to warm when the hold ended.
+	if !strings.Contains(string(body), `"space_id":"s1"`) || !strings.Contains(string(body), `"state":"warm"`) {
 		t.Fatalf("spawned runtime missing: %s", body)
 	}
 	// The written token file is how local tooling authenticates.
