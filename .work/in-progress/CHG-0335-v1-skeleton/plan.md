@@ -116,14 +116,26 @@ docs/state-machines.md, ADR-0105..0109, SPEC-0100, services/README.template.md.
   allowed forbidden transitions, or disabled sweep collection: the intended
   assertions failed. All probes restore production bytes before green checks.
 - just security passed (govulncheck + npm audit). Postgres store/FSM suites passed
-  in a uniquely named disposable postgres:17.12-alpine container, then stopped.
-- Real minimal message topology remains unavailable until M40.3/M40.4. The named
-  test skips with that reason; no fixture response is claimed as integration.
+  in a uniquely named disposable postgres:17.12-alpine container, then stopped;
+  re-verified on a recreated postgres:17 container (fa800e71) with the documented
+  hub_test credentials, then removed.
+- 454a003a/fa800e71: the minimal message topology is real.
+  TestMinimalProfileAnswersMessage builds services/spawn-controller and
+  services/harness-runtime, launches the minimal profile through
+  `hubctl run --mode process`, and posts a real message answered through the
+  fake OpenAI-compatible SSE model server. Two live defects were found and
+  fixed in review: request-scoped child lifetime (spawned runtime died when
+  the triggering HTTP request ended — children now bind to the backend
+  context) and Windows orphan cleanup (bare Kill left harness-runtime
+  running — CTRL_BREAK_EVENT in CREATE_NEW_PROCESS_GROUP, SIGTERM on Unix,
+  WaitDelay joins).
+- fa800e71: pgx is isolated in shared/store/postgres; sqlite-only binaries
+  link zero pgx. Store.Open names the driver package in its error.
 
 ## Remaining acceptance
 
-Owner review, minimal real topology, remote Postgres CI, publication and any live
-smoke remain explicit acceptance actions. Keep this CHG in progress while that
+Owner review, remote Postgres CI, publication and any live smoke remain
+explicit acceptance actions. Keep this CHG in progress while that
 acceptance is outstanding. No push, PR, live stack mutation or prune is performed.
 
 Integration: e7b4a881 on feat/m40-v1-platform. Store connection diagnostic red/green

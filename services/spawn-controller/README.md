@@ -37,3 +37,34 @@ Owns space compute in process mode: ensures one harness-runtime child per
 None yet. The runtime registry is in process memory in this skeleton;
 `spawn-controller.db` is reserved by the descriptor for the durable Runtime
 record that arrives with M40.3.
+
+## Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HUB_TRUSTED` | - | must be `true`; the service refuses otherwise |
+| `HUB_LISTEN` | - | `host:port` the controller binds |
+| `HUB_DATA_DIR` | - | own data dir; runtimes spawn under `runtimes/` |
+| `HUB_DATABASE_URL` | `sqlite://<data>/<svc>.db` | reserved store connection string |
+| `HUB_MANAGED_MODEL_URL` | - | passed through to spawned runtimes |
+| `HUB_MANAGED_MODEL_ID` | - | passed through to spawned runtimes |
+| `HUB_FEATURES` | - | passed through to spawned runtimes |
+
+Only these names plus `TZ` reach spawned children; runtime binaries are
+resolved next to the controller's own binary.
+
+## Extension point
+
+`Backend` (`Start(spec)`, `Stop(id)`, `Inspect(id)`, `List()`); first
+provider is `process` (trusted single-user dev). Docker, Kubernetes and
+firecracker backends arrive with M40.3/M40.15.
+
+## When a dependency is disabled
+
+| Dependency | Behaviour when disabled |
+|---|---|
+| harness-runtime | message requests fail `unavailable`; runtimes never start |
+
+## Tools it executes
+
+None.

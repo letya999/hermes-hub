@@ -19,11 +19,11 @@ slices:
   S4-auth-locale-log: green
   S5-descriptor: green
   S6-process-mode: green
-  S7-test-base: partial_topology_gap
+  S7-test-base: green
   S8-deletions: green
   S9-contracts-on-httpapi: green
 validation:
-  postgres_local: passed_disposable_container_stopped
+  postgres_local: passed_disposable_postgres17_removed
   security: passed
   just_check: passed
   root_build: passed
@@ -33,7 +33,7 @@ validation:
   tenant_first: passed_repository_source_roots
   actionlint: passed
   gitlab_deploy_contract: passed_separately
-  minimal_message_topology: unavailable_core_binaries_not_extracted
+  minimal_message_topology: passed_real_process_binaries_fake_model
   postgres_ci: unavailable_unpublished
 evidence:
   - "Code source dd0d473a: just check passed. Broad just test passed shared/*, contracts/*, hubctl, package, agenttools, stack, toolhub/api/automation, identityhub, commops, communication, migration, routines, supervisor; devcheck fixture failure repaired and full cmd/devcheck + internal/devcheck then passed via just test."
@@ -56,8 +56,9 @@ evidence:
   - "Process launcher cancellation and first-child exit tests pass against external fixture executables, including env allowlist, wiring and joining all child exits; not a minimal topology acceptance."
   - "Task and identity contracts already use shared/httpapi after c73e56da; fake task server passes the same in-process and HTTP conformance suite."
   - "rg and go list confirm no production imports of removed cmd/hub, contracts/toolsurface, deps gate, ReadSelfServicesFeatures or HUB_ACTIVE_FEATURES."
+  - "fa800e71: TestMinimalProfileAnswersMessage is real and green — hubctl run launches spawn-controller, which spawns harness-runtime per (space, agent); a real message flows through the fake OpenAI SSE server. Request-scoped child lifetime defect found and fixed; Windows shutdown via CTRL_BREAK_EVENT in a new process group, Unix via signals, WaitDelay joins."
+  - "Postgres leg re-verified on disposable postgres:17 (m40-2-pg, recreated with documented test credentials, removed after): tenant invariants, DueRows/ReadTx, stale and concurrent sweepers green. pgx isolated in shared/store/postgres; zero pgx deps in sqlite-only binaries."
 remaining:
-  - "Real TestMinimalProfileAnswersMessage awaits M40.3/M40.4 core binaries; marked skipped, never green."
   - "Owner review and remote Postgres CI acceptance require separate publication authorization."
 limitations:
   - "No live smoke, push, PR, prune or worktree removal."

@@ -15,9 +15,10 @@ The rules are in [engineering.md](engineering.md), the lifecycles in
 [state-machines.md](state-machines.md), the decisions in
 [ADR-0105](adr/ADR-0105-v1-topology.md)..[ADR-0112](adr/ADR-0112-v1-secrets.md),
 the contract list and acceptance in
-[SPEC-0100](../specs/active/SPEC-0100-v1-contracts.md). The v1 services do
-not exist yet: M40.2 builds the skeleton and M40.3..M40.13 extract them.
-What runs on `dev` today is the v0 system at the end of this page.
+[SPEC-0100](../specs/active/SPEC-0100-v1-contracts.md). M40.2 ships the skeleton
+plus minimal spawn-controller and harness-runtime binaries that carry the
+process-mode message path; M40.3..M40.13 extract the full services and
+contracts. What runs on `dev` today is the v0 system at the end of this page.
 
 ## Services
 

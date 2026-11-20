@@ -31,3 +31,27 @@ None - a request-scoped service in this skeleton.
 
 None yet. `harness-runtime.db` under the spawned data dir is reserved by the
 descriptor.
+
+## Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HUB_TRUSTED` | - | must be `true`; the service refuses otherwise |
+| `HUB_LISTEN` | - | `host:port` assigned by spawn-controller |
+| `HUB_MANAGED_MODEL_URL` | - | OpenAI-compatible model endpoint; empty refuses the message |
+| `HUB_MANAGED_MODEL_ID` | - | model name sent in completion requests |
+| `HUB_SPAWN_CONTROLLER_URL` | - | owning controller address (set by spawn-controller) |
+
+## Extension point
+
+None.
+
+## When a dependency is disabled
+
+| Dependency | Behaviour when disabled |
+|---|---|
+| model endpoint (`HUB_MANAGED_MODEL_URL` empty) | `POST /v1/messages` returns a localized refusal; `/healthz` still answers so the launcher can observe the process |
+
+## Tools it executes
+
+None.

@@ -11,7 +11,7 @@ service-domain behavior. Go internal visibility protects future service internal
 
 | Package | Contract |
 |---|---|
-| shared/store | Open SQLite/Postgres by URL; numbered embedded migrations, transactional migration lock; Tx with scoped statements and tenant-bound inserts |
+| shared/store | Open SQLite/Postgres by URL; numbered embedded migrations, transactional migration lock; Tx with scoped statements and tenant-bound inserts; DueRows + ReadTx for sweepers |
 | shared/fsm | Validated transition tables, compare-and-swap state, history in the caller's transaction, deadline sweeper |
 | shared/httpapi | Former wire transport, typed errors, bounded JSON, bearer authentication and HTTP client |
 | shared/auth | Existing signed run/service token verification; issuing stays in identity-hub; claim format is preserved until M40.14 |
@@ -22,7 +22,9 @@ service-domain behavior. Go internal visibility protects future service internal
 ## Tenant stores
 
 `store.Open(ctx, "sqlite://data/task-engine.db", migrations)` opens a service-owned
-SQLite database; `postgres://...` selects pgx. Never log a connection URL.
+SQLite database; `postgres://...` selects pgx once the binary imports
+`shared/store/postgres` (the driver registers itself; sqlite-only binaries do not
+link it). Never log a connection URL.
 Migrations are an fs.FS (normally go:embed), named 0001_name.sql, 0002_name.sql,
 without gaps. SQLite uses an immediate transaction; Postgres an advisory
 transaction lock. Newer schemas and malformed migration sequences refuse startup.
@@ -33,34 +35,43 @@ use bound `?` arguments. A complete tenant is mandatory. The marker is replaced
 by org/owner predicates and bound values. Comments, multiple statements, joins,
 subqueries, negation of the tenant guard and set operations are refused. This is
 an infrastructure misuse guard for authored SQL, not an endpoint for user SQL.
-Use Scoped.Insert for writes; org/owner always come from the handle. The narrow
-QueryAllTenants read path exists for sweeper key enumeration; subsequent writes
-are scoped again. Return transaction errors rather than committing partial work.
+Use Scoped.Insert for writes; org/owner always come from the handle. Sweepers
+enumerate due keys through the narrow `DueRows(table, deadline, limit)` read and
+scan inside `Store.ReadTx` (read-only on Postgres); each transition then writes
+in its own scoped transaction, so a stale compare-and-swap is a skip, not a
+fatal error. Return transaction errors rather than committing partial work.
 
 `OpenVersioned` retains the v0 stores' schema/application-ID contract until each
 owner is extracted; this does not migrate every service onto the new schema.
 
 ## Trusted process launcher
 
-`hubctl run --mode process --profile minimal --trusted --bin ./bin --data ./data`
+`hubctl run --mode process --profile minimal --bin ./bin --data ./data`
 starts the selected binaries directly. Family is also accepted. Enterprise has a
-service descriptor but process launching it is intentionally refused. Trust defaults
-to false; `--trusted=false` overrides `HUB_TRUSTED=true` and refuses before any
-binary lookup or data creation.
+service descriptor but process launching it is intentionally refused. The
+installation `.env` `HUB_TRUSTED` is authoritative; when the file is absent the
+process environment decides, and anything but `true` refuses before any binary
+lookup or data creation.
 
 The Go descriptor in cmd/hubctl/services.go declares binary, localhost port,
-relative database path, zone, edges, replica class and profile membership. Only
+data directory, zone, edges, replica class and profile membership. Only
 declared environment names, OS bootstrap variables and computed service wiring
-reach children. Databases use `<data>/<svc>.db`. Every binary must exist before
-startup changes disk. The launcher waits for `/healthz`; cancellation, an early
-exit or readiness failure stops and joins all children. Process mode provides no
-network/tenant isolation and is restricted to explicitly trusted installations.
+reach children. Each service gets `<data>/<svc>` and a database at
+`<data>/<svc>.db`. Every binary must exist before startup changes disk. The
+launcher waits for `/healthz`; cancellation, an early exit or readiness failure
+stops and joins all children (SIGTERM on Unix, CTRL_BREAK_EVENT in a dedicated
+console process group on Windows). Process mode provides no network/tenant
+isolation and is restricted to explicitly trusted installations.
 
-The real spawn-controller and harness-runtime binaries are not extracted yet.
-The default minimal/family commands therefore refuse with a named missing binary.
-`TestMinimalProfileAnswersMessage` is skipped with this exact gap. External helper
-executables test launcher lifecycle only; they do not establish message acceptance.
-Browser runtimes and disposable workers are per-space launches, not hub processes.
+services/spawn-controller is the minimal control plane: a Backend interface with
+a process implementation that spawns the harness-runtime binary per (space,
+agent), waits for its `/healthz` and keeps child lifetime bound to the backend,
+not the spawning request. services/harness-runtime answers `POST /v1/messages`
+through the managed model endpoint over the OpenAI SSE contract; both refuse
+untrusted installations. `TestMinimalProfileAnswersMessage` launches the real
+binaries through process mode and posts a real message. Full spawn/runtime
+contracts, richer backends and worker pools arrive with M40.3/M40.4. Browser
+runtimes and disposable workers are per-space launches, not hub processes.
 
 ## Test base and source distribution
 

@@ -1,6 +1,6 @@
 ---
 description: cellinit + cell cred-proxy + egress-relay — the sandboxed cell pid1, brokered-header forward proxy and managed-network egress path.
-last_verified: 2026-11-19
+last_verified: 2026-11-20
 ---
 
 # cell proxy (cellinit, cred-proxy, egress-relay)

@@ -15,7 +15,7 @@ last_verified: 2026-11-20
 | [boundaries.md](boundaries.md) | v1 crossings, per-component v0 walls and system non-goals |
 | [engineering.md](engineering.md) | The v1 rulebook - every rule with its enforcing test or gate; gates, pins, change process |
 | [state-machines.md](state-machines.md) | State-machine catalog - v0 states and known defects, v1 target tables per owning service |
-| [shared.md](shared.md) | Shared infrastructure, trusted process launcher and test fixtures; real minimal topology pending core extraction |
+| [shared.md](shared.md) | Shared infrastructure, trusted process launcher, minimal spawn-controller/harness-runtime topology and test fixtures |
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |

@@ -19,8 +19,8 @@ Each rule has an ID, the rule, and the gate that enforces it.
 
 - A test name with no tag exists today and runs in `just check`,
   `just test` or CI.
-- M40.2 infrastructure tests link to their source. The real minimal message
-  test exists but skips until the M40.3/M40.4 core binaries are extracted.
+- M40.2 infrastructure tests link to their source. The minimal message
+  topology runs real spawn-controller and harness-runtime binaries.
 - A tag such as "(M40.6)" names the milestone issue that adds the gate.
 - "Review" means no automated check exists; the reviewer of the CHG checks
   it. A review-only rule is a candidate for a gate, never an exception.
@@ -43,7 +43,7 @@ Each rule has an ID, the rule, and the gate that enforces it.
 | V2 | A service imports only `shared/*` (infrastructure, no domain rules) and `contracts/*` (DTO, client, fake). Never another service. `shared/*` never imports `services/*` or a domain package. | `devcheck boundaries` / [TestSharedImportBoundary](../internal/devcheck/boundaries_test.go); Go `internal` visibility for service internals. |
 | V3 | One binary per service with its own build and tests. It builds and tests in seconds without Docker. No build on the hot path; images are prebuilt and pinned. | `just test <service package>`; [TestServiceDescriptorIsConsistent](../cmd/hubctl/process_test.go) and [TestProcessModeStartsProfileWithDeclaredEnv](../cmd/hubctl/process_test.go); actual service builds remain per extraction. |
 | V4 | Services talk HTTP+JSON through `contracts/<svc>/v1`: DTOs, one client interface, an in-process and an HTTP transport, and `contracts/<svc>/v1/fake`. The fake passes the same conformance suite as the real handler. | `TestContractConformanceInProcAndHTTP` (task, identity today); [TestFakePassesConformance](../contracts/task/v1/fake/fake_test.go), using [shared/testkit.Transports](../shared/testkit/transport.go). |
-| V5 | A peer address comes from `HUB_<SVC>_URL`. Empty means the service is disabled: the feature falls back to the Hermes native implementation or switches off with a localized message. It never breaks. | [TestMinimalProfileAnswersMessage](../cmd/hubctl/process_test.go) (skipped: core binaries pending M40.3/M40.4); one "dependency disabled" service test per service (M40.3..M40.13). |
+| V5 | A peer address comes from `HUB_<SVC>_URL`. Empty means the service is disabled: the feature falls back to the Hermes native implementation or switches off with a localized message. It never breaks. | [TestMinimalProfileAnswersMessage](../cmd/hubctl/process_test.go) (real binaries, fake model server); one "dependency disabled" service test per service (M40.3..M40.13). |
 | V6 | Every call carries a token. Every call has a timeout. Every write carries an idempotency key. | `TestBearerSchemeRequired` ([shared/httpapi](../shared/httpapi/httpapi_test.go)); run tokens (M40.14); `TestDuplicateWakeCollapses` (M40.6). |
 | V7 | No shared files between services and no message broker. A service reads another service's state only through its contract. | `TestExecutorNeverOpensToolHubStore`, `TestRenderDoesNotOpenToolHubStore` today; "no other process opens `<svc>.db`" acceptance per service (M40.3..M40.13). |
 | V8 | A breaking contract change adds `v2` beside `v1`. `v1` is deleted only when no caller links it. | Conformance suite per version; review. |
@@ -54,7 +54,7 @@ Each rule has an ID, the rule, and the gate that enforces it.
 
 | ID | Rule | Gate |
 |---|---|---|
-| D1 | One database per service. SQLite is the default; Postgres is selected by the same connection string (`sqlite://...`, `postgres://...`). SQL stays portable across both. | Store suite on SQLite every PR; the same suite on Postgres when `HUB_TEST_POSTGRES_URL` is set, [postgres-store CI job](../.github/workflows/ci.yml); requires real Postgres, remote execution pending publication. |
+| D1 | One database per service. SQLite is the default; Postgres is selected by the same connection string (`sqlite://...`, `postgres://...` after importing `shared/store/postgres`). SQL stays portable across both. | Store suite on SQLite every PR; the same suite on Postgres when `HUB_TEST_POSTGRES_URL` is set — green on a disposable postgres:17 container locally, [postgres-store CI job](../.github/workflows/ci.yml) pending publication. |
 | D2 | Migrations are embedded, numbered SQL files applied under a migration lock, so N copies can start at once. | [TestMigrationLockSerializesConcurrentStart](../shared/store/store_test.go). |
 | D3 | No service state in `.json` or `.jsonl` files. Files hold only user data (vault, workspace, sites), input YAML passports, harness session files inside the workspace, and logs go to stdout. | Per-service acceptance "no `.json`/`.jsonl` state written" (M40.3..M40.13). |
 | D4 | Every row carries `org` and `owner`. `shared/store` refuses a query without both predicates (fail closed). A cross-tenant read returns `not_found`. | [TestStoreRefusesUnscopedQuery](../shared/store/store_test.go); [storetest.TenantInvariants](../shared/store/storetest/storetest.go), fresh store per table, runs first in `just test`. |
@@ -119,7 +119,7 @@ Levels in the order they run. Tenant invariants run first and block.
 | Service | black box over HTTP with fakes; behaviour with each dependency disabled | every PR | per service (M40.3..M40.13) |
 | Tool preservation | catalog snapshot: name, schema, effect unchanged; routing test per family | every PR | [TestToolCatalogSnapshotUnchanged](../internal/devcheck/tool_snapshot_test.go), routing (M40.7) |
 | Security | token forge, alias, stale, foreign space; foreign tenant; header injection; workspace isolation; untrusted input cannot approve | every PR | X-rules tests (M40.4..M40.14) |
-| Topology | minimal and family profiles in process mode | every PR | [TestMinimalProfileAnswersMessage](../cmd/hubctl/process_test.go) (skipped: core binaries pending M40.3/M40.4) |
+| Topology | minimal and family profiles in process mode | every PR | [TestMinimalProfileAnswersMessage](../cmd/hubctl/process_test.go) (real spawn-controller + harness-runtime, fake model server) |
 | Backends | one conformance suite: process and docker every PR; kubernetes (kind) and firecracker nightly | PR / nightly | backend conformance (M40.3, M40.15) |
 | Load | N users, parallel sessions, SLOs | release | load harness (M40.16) |
 | Eval | proactive and memory evals | M41 | eval gate (M41) |
@@ -188,5 +188,7 @@ zone multiplexer and toolsurface contract. task/v1 and identity/v1 use
 shared/httpapi; ToolHub keeps its catalog DTOs locally. Existing v0 owners still
 run until their service extraction issues land. shared/auth preserves the old
 claim format; the target aud list and live run authority arrive in M40.14.
-The real minimal message path is unavailable until spawn-controller and
-harness-runtime are extracted. Launcher fixture tests do not close that gap.
+The minimal message path is real: `hubctl run --mode process --profile minimal`
+starts spawn-controller, which spawns harness-runtime per (space, agent) and
+answers a message through the fake model server. The full spawn/runtime
+contracts and richer topologies arrive with the extraction issues.
