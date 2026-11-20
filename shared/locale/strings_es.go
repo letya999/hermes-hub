@@ -37,6 +37,8 @@ func init() {
 		"supervisor.identity-unavailable":                "El registro de identidad no está disponible",
 		"spawn.revision-rejected":                        "La revisión del pasaporte no compiló",
 		"spawn.runtime-unavailable":                      "El runtime no está disponible",
+		"spawn.cells-unavailable":                        "Las celdas no están disponibles en esta instalación",
+		"toolhub.cells-unavailable":                      "Las celdas CLI no están disponibles en esta instalación",
 		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
 
 		"package.sources-unavailable":              "Las fuentes del paquete no están disponibles",

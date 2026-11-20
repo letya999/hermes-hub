@@ -6,92 +6,27 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"hash/fnv"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-// cliCell is one live sandbox container the controller owns.
-type cliCell struct {
-	name            string
-	key             string // warm reuse key; "" for ephemeral and pool cells
-	principal       string
-	bindingID       string
-	jobID           string
-	lifecycle       string
-	image           string // image@digest ref the cell was created from
-	runtime         string // OCI runtime explicitly selected at create
-	workHost        string // host path bound at /work; "" when tmpfs scratch
-	workRW          bool
-	skillsHost      string // host path bound ro at /skills; "" when no mount
-	installPackages bool
-	network         string   // internal egress network name, "" = none
-	sidecars        []string // companion container names (squid, cred-proxy)
-	volumes         []string
-	toolset         []string // toolbox image mounts
-	canary          string
-	created         time.Time
-	lastUse         time.Time
-	uses            int
-	execSlot        chan struct{} // cap-1: one exec per cell at a time
-}
-
-// cellMetrics are the pool/lifecycle counters the acceptance criteria name;
-// every mutating event also writes a controller audit log line.
-type cellMetrics struct {
-	creates     int64
-	reuses      int64
-	canaryFails int64
-	rotations   int64
-	poolHits    int64
-	poolMisses  int64
-	poolClaims  int64
-	// claimWaitNanos accumulates the wall time pool callers spent waiting
-	// for a cell; poolExhaustions counts bounded-wait rejections.
-	claimWaitNanos  int64
-	poolExhaustions int64
-}
-
-type cellRegistry struct {
-	cells map[string]*cliCell // warm key -> cell
-	pool  map[string][]*cliCell
-	// claimedN reserves live-cell slots per image under lock so the pool cap
-	// bounds idle+claimed cells; claimed maps busy cells by name so shutdown
-	// reaps them too.
-	claimedN map[string]int
-	claimed  map[string]*cliCell
-	metrics  cellMetrics
-}
-
-func newCellRegistry() *cellRegistry {
-	return &cellRegistry{cells: map[string]*cliCell{}, pool: map[string][]*cliCell{}, claimedN: map[string]int{}, claimed: map[string]*cliCell{}}
-}
-
+// Cell guest layout — shared with spawn-controller's cell spec builder
+// (the moved v0 constants; the worker side lives in
+// services/spawn-controller/internal/spawn/cells.go, CHG-0336 S6).
 const (
 	cellInitGuest    = "/cellinit"
 	cellWorkGuest    = "/work"
 	cellHomeGuest    = "/cellhome"
 	cellUserTmpGuest = "/usertmp"
-	cellCanaryPath   = "/tmp/.hermes-canary"
-	cellCanaryName   = ".hermes-canary"
 	cellToolsetGuest = "/tools"
-	cellSkillsGuest  = "/skills"
 	credProxyPort    = 3129
 	cellProxyPort    = 3128
 )
 
-func (c *genericController) cells() *cellRegistry {
-	if c.registry == nil {
-		c.registry = newCellRegistry()
-	}
-	return c.registry
-}
-
 // cellWarmKey computes the reuse key a lifecycle tier implies; empty means
-// ephemeral (fresh cell every call). The key embeds every trust boundary —
+// ephemeral (fresh worker every call). The key embeds every trust boundary —
 // principal, binding or job — so reuse can never cross callers.
 func cellWarmKey(lifecycle, principal, bindingID, jobID, image string, toolset []string) string {
 	switch lifecycle {
@@ -203,7 +138,7 @@ func (c *genericController) resolveToolbox(ctx context.Context, id string) ([]st
 }
 
 // evictToolbox drops the cached member resolution for id; a failed cell
-// create can mean a resolved image ID was pruned between resolution and use.
+// claim can mean a resolved image ID was pruned between resolution and use.
 func (c *genericController) evictToolbox(id string) {
 	if id == "" {
 		return
@@ -211,53 +146,6 @@ func (c *genericController) evictToolbox(id string) {
 	c.mu.Lock()
 	delete(c.toolboxes, id)
 	c.mu.Unlock()
-}
-
-// realEgress strips the loopback-only marker hosts; a plan whose egress is
-// only loopback runs with --network none.
-func realEgress(egress []string) []string {
-	out := make([]string, 0, len(egress))
-	for _, host := range egress {
-		h := strings.ToLower(strings.TrimSpace(host))
-		if h == "" || h == "127.0.0.1" || h == "localhost" || h == "::1" {
-			continue
-		}
-		out = append(out, host)
-	}
-	return out
-}
-
-// cellUID picks the cell user: 10001 by default, or a stable per-principal
-// uid (20000+) when the operator opted into uid separation — files a rw cell
-// writes then carry a principal-derived uid on the host.
-func (c *genericController) cellUID(req api.CliExecRequest, rw bool) string {
-	if c.config.CLI.PerPrincipalUID && rw {
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(req.Principal))
-		uid := 20000 + int(h.Sum32()%30000)
-		return strconv.Itoa(uid) + ":" + strconv.Itoa(uid)
-	}
-	return "10001:10001"
-}
-
-// Runtime selection is explicit, including runc, regardless of daemon default.
-func (c *genericController) runtimeFlag(ctx context.Context) (string, error) {
-	runtime := c.config.CLI.Runtime
-	switch runtime {
-	case "", "runc":
-		return "runc", nil
-	case "runsc", "kata":
-	default:
-		return "", fmt.Errorf("%w: unknown cli runtime %q", api.ErrInvalid, runtime)
-	}
-	runtimes, err := c.dockerRuntimes(ctx)
-	if err != nil {
-		return "", err
-	}
-	if !runtimes[runtime] {
-		return "", fmt.Errorf("%w: cli runtime %q is not installed on the daemon", api.ErrIsolation, runtime)
-	}
-	return runtime, nil
 }
 
 func (c *genericController) dockerRuntimes(ctx context.Context) (map[string]bool, error) {

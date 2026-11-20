@@ -51,6 +51,7 @@ type fakeBackend struct {
 	stuck    map[string]bool // Stop is accepted but the workload stays — an unconfirmed stop
 	gate     chan struct{}   // when set, the first Start waits for the test to close it
 	entered  chan struct{}   // closed when the first Start is entered
+	exec     execFunc        // Exec override; nil answers a clean result
 }
 
 func newFakeBackend() *fakeBackend {
@@ -137,6 +138,38 @@ func (f *fakeBackend) plant(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.live[id] = backend.Runtime{ID: id, State: "running"}
+}
+
+// execFunc answers Exec calls when set; the default succeeds silently so
+// the canary/drift probes a claim runs get their clean bill.
+type execFunc func(backend.ExecSpec) (backend.ExecResult, error)
+
+func (f *fakeBackend) Exec(_ context.Context, id string, spec backend.ExecSpec) (backend.ExecResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.live[id]; !ok {
+		return backend.ExecResult{}, fmt.Errorf("%w: %s", backend.ErrNotFound, id)
+	}
+	if f.exec != nil {
+		return f.exec(spec)
+	}
+	return backend.ExecResult{}, nil
+}
+
+// VerifyWorker answers the reuse guard's profile re-check: the workload
+// must still be live, and a spec different from the one Start recorded is
+// a refusal — the worker's isolation claims came from that spec.
+func (f *fakeBackend) VerifyWorker(_ context.Context, id string, spec backend.Spec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.live[id]; !ok {
+		return fmt.Errorf("%w: %s", backend.ErrNotFound, id)
+	}
+	got := f.specs[id]
+	if got.Key != spec.Key || got.Image != spec.Image || len(got.Mounts) != len(spec.Mounts) {
+		return fmt.Errorf("fake backend: worker profile drifted")
+	}
+	return nil
 }
 
 func (f *fakeBackend) alive(id string) bool {

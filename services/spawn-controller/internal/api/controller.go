@@ -309,6 +309,49 @@ func Serve(ctx context.Context) error {
 		Store: serviceStore, Backend: be,
 		Image: runtimeDefaultImage, OCIRuntime: "runc", MaxLive: max,
 	}
+	// Cells are the operator-opt-in worker surface (V5): enabled only when
+	// the tools image and the shipped cellinit binary are configured —
+	// every other input has a safe default or refuses at spec time.
+	stateRoot := os.Getenv("HUB_CELL_STATE_ROOT")
+	if stateRoot == "" {
+		stateRoot = filepath.Join(dataDir, "cells")
+	}
+	cells := &spawn.Cells{
+		ToolsImage:      os.Getenv("HUB_CELL_TOOLS_IMAGE"),
+		ProxyImage:      os.Getenv("HUB_CELL_PROXY_IMAGE"),
+		CellInitSource:  os.Getenv("HUB_CELLINIT"),
+		StateRoot:       stateRoot,
+		SpacesRoot:      os.Getenv("HUB_SPACES_ROOT"),
+		Environment:     os.Getenv("HUB_CELL_ENV"),
+		Runtime:         os.Getenv("HUB_CELL_RUNTIME"),
+		SeccompProfile:  os.Getenv("HUB_CELL_SECCOMP"),
+		PerPrincipalUID: os.Getenv("HUB_CELL_PER_PRINCIPAL_UID") == "true",
+	}
+	if cells.Enabled() {
+		// The state root hosts the seeded cellinit and the docker backend's
+		// staged sidecar payloads; create it only when cells can run.
+		if err := os.MkdirAll(stateRoot, 0o700); err != nil {
+			return err
+		}
+	}
+	maxWorkers := defaultMaxRuntimes * 2
+	if raw := os.Getenv("HUB_MAX_WORKERS"); raw != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(raw, "%d", &parsed); err != nil || parsed < 1 {
+			return errors.New("HUB_MAX_WORKERS must be a positive integer")
+		}
+		maxWorkers = parsed
+	}
+	workerBackend := backend.NewDocker(backend.DockerConfig{
+		ContainerPrefix: "hermes-hub-wk-",
+		NetworkPrefix:   "hermes-hub-wn-",
+		Trusted:         true, // Serve refuses untrusted installs before this point
+		StateRoot:       stateRoot,
+	})
+	workers := &spawn.Workers{
+		Store: serviceStore, Backend: workerBackend,
+		Cells: cells, MaxLive: maxWorkers,
+	}
 	revisions := &spawn.Revisions{
 		Store:       serviceStore,
 		LoadCatalog: catalogLoader(catalog.LoadPinned),
@@ -329,7 +372,7 @@ func Serve(ctx context.Context) error {
 			return err
 		}
 	}
-	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be}
+	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be, WorkerBackend: workerBackend}
 	// Boot recovery is one reconcile pass before the socket opens: runtime
 	// rows this process left behind are re-anchored against the backend.
 	if err := sweeper.Tick(ctx); err != nil {
@@ -340,7 +383,7 @@ func Serve(ctx context.Context) error {
 	go sweeper.Run(sweepCtx, sweepEvery)
 	controller := &Controller{
 		runtimes: runtimes, token: token,
-		spaces: spawnv1.Handler(Contract{Revisions: revisions}, token),
+		spaces: spawnv1.Handler(Contract{Revisions: revisions, Workers: workers}, token),
 		client: &http.Client{Timeout: 60 * time.Second},
 	}
 	listener, err := net.Listen("tcp", listen)

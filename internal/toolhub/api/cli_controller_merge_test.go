@@ -56,7 +56,7 @@ func TestValidateCLIConfigContract(t *testing.T) {
 		{"approval ceiling", func(c *CLIControllerConfig) { c.Approved[0].Execution.TimeoutSeconds = 6000 }},
 		{"user command", func(c *CLIControllerConfig) { c.UserCommands = []string{"/abs/path"} }},
 		{"toolbox member", func(c *CLIControllerConfig) { c.Toolboxes = map[string][]string{"box-1": {"img:latest"}} }},
-		{"pool bounds", func(c *CLIControllerConfig) { c.PoolSize = 17 }},
+		{"pool bounds", func(c *CLIControllerConfig) { c.WarmMaxReuse = 1 << 21 }},
 		{"warm bounds", func(c *CLIControllerConfig) { c.WarmMaxAgeSeconds = 8 * 24 * 3600 }},
 	}
 	for _, tc := range bad {

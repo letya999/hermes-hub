@@ -1,0 +1,79 @@
+package importer
+
+import (
+	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
+	"github.com/letya999/hermes-hub/shared/fsm"
+	"github.com/letya999/hermes-hub/shared/store"
+	"github.com/letya999/hermes-hub/shared/store/storetest"
+)
+
+var t0 = time.Unix(1_800_000_000, 0)
+
+// The importer writes runtime, backup and image-pin rows under the imported
+// tenant directly — the same tables the spawn package covers through its
+// services. The invariants prove a foreign tenant cannot read or write them.
+func TestTenantInvariants(t *testing.T) {
+	readID := func(table string) func(store.Scoped, string) error {
+		return func(q store.Scoped, id string) error {
+			var v string
+			return q.QueryRow("SELECT id FROM "+table+" WHERE {tenant} AND id = ?", id).Scan(&v)
+		}
+	}
+	write := func(table, column string, value any) func(store.Scoped, string) (bool, error) {
+		return func(q store.Scoped, id string) (bool, error) {
+			result, err := q.Exec("UPDATE "+table+" SET "+column+" = ? WHERE {tenant} AND id = ?", value, id)
+			if err != nil {
+				return false, err
+			}
+			n, err := result.RowsAffected()
+			return n > 0, err
+		}
+	}
+	machine := func(m *fsm.Machine) storetest.TenantCase {
+		return storetest.TenantCase{
+			Table:      m.Table,
+			Migrations: migrations.FS,
+			Create: func(q store.Scoped) (string, error) {
+				id := "t1"
+				return id, fsm.Create(q, m, id, t0)
+			},
+			Read:  readID(m.Table),
+			Write: write(m.Table, "state", "probe"),
+		}
+	}
+	history := func(m *fsm.Machine) storetest.TenantCase {
+		return storetest.TenantCase{
+			Table:      m.History,
+			Migrations: migrations.FS,
+			Create: func(q store.Scoped) (string, error) {
+				id := "t1"
+				return id, fsm.Create(q, m, id, t0)
+			},
+			Read:  readID(m.History),
+			Write: write(m.History, "event", "probe"),
+		}
+	}
+	plain := func(table string, columns []string, values ...any) storetest.TenantCase {
+		return storetest.TenantCase{
+			Table:      table,
+			Migrations: migrations.FS,
+			Create: func(q store.Scoped) (string, error) {
+				id := "t1"
+				return id, q.Insert(table, append([]string{"id"}, columns...), append([]any{id}, values...)...)
+			},
+			Read:  readID(table),
+			Write: write(table, columns[0], values[0]),
+		}
+	}
+	now := time.Unix(1_800_000_000, 0).Unix()
+	storetest.TenantInvariants(t,
+		machine(spawn.RuntimeMachine),
+		history(spawn.RuntimeMachine),
+		plain("image_pins", []string{"digest", "created_at"}, "sha256:x", now),
+		plain("backups", []string{"last_success_at", "last_error", "last_archive", "retained", "last_drill_at", "drill_result", "drill_checked"}, now, "", "", 0, 0, "", 0),
+	)
+}

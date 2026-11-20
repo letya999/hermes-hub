@@ -8,10 +8,12 @@ import (
 	"github.com/letya999/hermes-hub/shared/store"
 )
 
-// Contract adapts the durable revision service to the spawn/v1 Client
-// surface: contract DTOs in, store tenants and service calls out.
+// Contract adapts the durable revision and worker services to the
+// spawn/v1 Client surface: contract DTOs in, store tenants and service
+// calls out. Workers is nil when the installation runs no cells (V5).
 type Contract struct {
 	Revisions *spawn.Revisions
+	Workers   *spawn.Workers
 }
 
 func tenantOf(org, owner string) store.Tenant { return store.Tenant{Org: org, Owner: owner} }

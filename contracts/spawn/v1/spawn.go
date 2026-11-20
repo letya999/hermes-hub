@@ -167,6 +167,14 @@ type Client interface {
 	PolicySlice(context.Context, Tenant, string, string, string) (PolicySlice, error)
 	ListRevisions(context.Context, Tenant, string, string) ([]Revision, error)
 	Explain(context.Context, Tenant, string) (ExplainReport, error)
+	// Workers are the disposable-cell surface (decision 12): claim, exec
+	// and the lease lifecycle, plus the identity-selector drain that backs
+	// ToolHub's /cli-release.
+	ClaimWorker(context.Context, string, ClaimWorkerRequest) (ClaimedWorker, error)
+	RenewWorker(context.Context, string, WorkerLeaseRequest) (Worker, error)
+	ReleaseWorker(context.Context, string, WorkerLeaseRequest) error
+	DrainWorkers(context.Context, string, DrainWorkersRequest) (int, error)
+	ExecWorker(context.Context, string, WorkerExecRequest) (WorkerExecResult, error)
 }
 
 func validTenant(t Tenant) bool {
@@ -366,11 +374,14 @@ func tenantQuery(t Tenant) string {
 	return "org=" + url.QueryEscape(t.Org) + "&owner=" + url.QueryEscape(t.Owner)
 }
 
-// Handler serves the eight spawn routes behind the shared bearer check;
-// the policy route's success response is immutable with ETag = digest.
+// Handler serves the spawn routes behind the shared bearer check; the
+// policy route's success response is immutable with ETag = digest.
 func Handler(server Client, token string) http.Handler {
 	inner := httpapi.Handle(token, func(r *http.Request) (any, error) {
 		client := NewInProc(server)
+		if strings.HasPrefix(r.URL.Path, "/v1/workers/") {
+			return handleWorker(client, r)
+		}
 		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/spaces"), "/")
 		// POST /v1/spaces is the only route with an empty segment list.
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/spaces" {
@@ -386,6 +397,22 @@ func Handler(server Client, token string) http.Handler {
 		space := segments[1]
 		rest := segments[2:]
 		switch {
+		case r.Method == http.MethodPost && len(rest) == 1 && rest[0] == "workers":
+			var in ClaimWorkerRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			return client.ClaimWorker(r.Context(), space, in)
+		case r.Method == http.MethodPost && len(rest) == 2 && rest[0] == "workers" && rest[1] == "drain":
+			var in DrainWorkersRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			n, err := client.DrainWorkers(r.Context(), space, in)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]int{"drained": n}, nil
 		case r.Method == http.MethodPost && len(rest) == 3 && rest[0] == "layers" && rest[2] == "revisions":
 			var in SubmitRevisionRequest
 			if err := httpapi.Decode(r, &in); err != nil {

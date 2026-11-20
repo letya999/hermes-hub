@@ -10,10 +10,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 )
@@ -42,7 +44,9 @@ type ContainerInfo struct {
 
 // Leg adapts the shared cases to one provider. Container and NetworkName
 // are set by the docker leg, Self by the process leg; a nil hook selects the
-// generic leg's own assertions instead.
+// generic leg's own assertions instead. ExecArgv is the exec probe argv the
+// leg can run (each leg points it at its own helper); RefusesSidecars marks
+// a backend that must reject sidecar specs.
 type Leg struct {
 	Factory      func(t *testing.T) backend.Backend
 	Spec         func(t *testing.T, key string) backend.Spec
@@ -51,6 +55,21 @@ type Leg struct {
 	SpawnForeign func(t *testing.T)
 	NetworkName  func(space, edge string) string
 	RefusesEdges bool
+	// ExecArgv prints "exec-out" on stdout, "exec-err" on stderr, echoes
+	// $HUB_EXEC_MARK and stdin, then honours $HUB_EXEC_MODE: fail exits 3,
+	// sleep blocks, spam floods stdout.
+	ExecArgv func(t *testing.T, key string) []string
+	// ExecDir is the working dir ExecArgv runs in ("" = backend default).
+	ExecDir string
+	// ExecEnv carries the leg's own probe activation (the process child's
+	// re-exec marker); suite env is appended after it.
+	ExecEnv         []string
+	RefusesSidecars bool
+	// SidecarsOf lists the live container names the key owns, worker and
+	// sidecars alike (docker leg: label filter).
+	SidecarsOf func(t *testing.T, key string) []string
+	// WorkerNetName is the worker's own internal network name.
+	WorkerNetName func(key string) string
 }
 
 // Suite runs every conformance case as a subtest against the leg.
@@ -63,6 +82,9 @@ func Suite(t *testing.T, leg Leg) {
 	t.Run("network_edges_applied", func(t *testing.T) { NetworkEdgesApplied(t, leg) })
 	t.Run("list_returns_only_own_workloads", func(t *testing.T) { ListReturnsOnlyOwnWorkloads(t, leg) })
 	t.Run("mount_option_injection_refused", func(t *testing.T) { MountOptionInjectionRefused(t, leg) })
+	t.Run("exec_argv_env_streams", func(t *testing.T) { ExecArgvEnvStreams(t, leg) })
+	t.Run("exec_timeout_and_output_cap", func(t *testing.T) { ExecTimeoutAndOutputCap(t, leg) })
+	t.Run("sidecars_lifecycle", func(t *testing.T) { SidecarsLifecycle(t, leg) })
 }
 
 func key() string { return "rt-" + rand.Text()[:16] }
@@ -307,6 +329,151 @@ func MountOptionInjectionRefused(t *testing.T, leg Leg) {
 		}
 	}
 }
+
+// ExecArgvEnvStreams covers the exec contract's data plane: argv runs
+// without a shell, env values arrive through the environment, the two
+// streams stay separate and stdin reaches the command.
+func ExecArgvEnvStreams(t *testing.T, leg Leg) {
+	t.Helper()
+	if leg.ExecArgv == nil {
+		t.Skip("leg declares no exec probe")
+	}
+	be := leg.Factory(t)
+	spec := leg.Spec(t, key())
+	if _, err := be.Start(t.Context(), spec); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	stopOnCleanup(t, be, spec.Key)
+	marker := "m40-exec-" + rand.Text()[:12]
+	res, err := be.Exec(t.Context(), spec.Key, backend.ExecSpec{
+		Argv:      leg.ExecArgv(t, spec.Key),
+		Env:       append(slices.Clone(leg.ExecEnv), "HUB_EXEC_MARK="+marker, "HUB_EXEC_MODE=ok"),
+		Dir:       leg.ExecDir,
+		Stdin:     []byte("exec-stdin-probe"),
+		MaxOutput: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	out := string(res.Stdout)
+	if res.ExitCode != 0 {
+		t.Fatalf("exec exit %d, stderr %q", res.ExitCode, res.Stderr)
+	}
+	for _, want := range []string{"exec-out", marker, "exec-stdin-probe"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("exec stdout %q misses %q", out, want)
+		}
+	}
+	if !strings.Contains(string(res.Stderr), "exec-err") {
+		t.Fatalf("exec stderr %q misses %q", res.Stderr, "exec-err")
+	}
+	if res.StdoutTruncated || res.StderrTruncated {
+		t.Fatal("small exec marked truncated")
+	}
+	// A non-zero tool exit is reported, not raised.
+	res, err = be.Exec(t.Context(), spec.Key, backend.ExecSpec{
+		Argv: leg.ExecArgv(t, spec.Key),
+		Env:  append(slices.Clone(leg.ExecEnv), "HUB_EXEC_MODE=fail"),
+	})
+	if err != nil {
+		t.Fatalf("failing exec returned error: %v", err)
+	}
+	if res.ExitCode != 3 {
+		t.Fatalf("exec exit %d, want 3", res.ExitCode)
+	}
+}
+
+// ExecTimeoutAndOutputCap covers the exec contract's bounds: a hanging
+// command dies at Timeout with an error, and a flooding stream is cut at
+// MaxOutput with its truncated flag set.
+func ExecTimeoutAndOutputCap(t *testing.T, leg Leg) {
+	t.Helper()
+	if leg.ExecArgv == nil {
+		t.Skip("leg declares no exec probe")
+	}
+	be := leg.Factory(t)
+	spec := leg.Spec(t, key())
+	if _, err := be.Start(t.Context(), spec); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	stopOnCleanup(t, be, spec.Key)
+	res, err := be.Exec(t.Context(), spec.Key, backend.ExecSpec{
+		Argv:      leg.ExecArgv(t, spec.Key),
+		Env:       append(slices.Clone(leg.ExecEnv), "HUB_EXEC_MODE=spam"),
+		MaxOutput: 4096,
+	})
+	if err != nil {
+		t.Fatalf("spam exec: %v", err)
+	}
+	if !res.StdoutTruncated || int64(len(res.Stdout)) > 4096 {
+		t.Fatalf("output cap: truncated=%v len=%d, want truncated and <=4096", res.StdoutTruncated, len(res.Stdout))
+	}
+	if _, err := be.Exec(t.Context(), spec.Key, backend.ExecSpec{
+		Argv:    leg.ExecArgv(t, spec.Key),
+		Env:     append(slices.Clone(leg.ExecEnv), "HUB_EXEC_MODE=sleep"),
+		Timeout: 200 * time.Millisecond,
+	}); err == nil {
+		t.Fatal("sleeping exec past its timeout returned success")
+	}
+}
+
+// SidecarsLifecycle covers the worker companions: a backend that cannot
+// isolate sidecars refuses the spec; docker creates the companion on the
+// worker's own network and removes it with the worker.
+func SidecarsLifecycle(t *testing.T, leg Leg) {
+	t.Helper()
+	be := leg.Factory(t)
+	spec := leg.Spec(t, key())
+	spec.Sidecars = []backend.SidecarSpec{{
+		Name:    "side",
+		Image:   "alpine:latest",
+		Command: []string{"sleep", "300"},
+		Tmpfs:   []backend.Tmpfs{{Target: "/tmp", Options: "rw,size=16m"}},
+	}}
+	if leg.RefusesSidecars {
+		if _, err := be.Start(t.Context(), spec); err == nil {
+			_ = be.Stop(t.Context(), spec.Key)
+			t.Fatal("backend accepted a sidecar spec it cannot isolate")
+		}
+		return
+	}
+	if leg.SidecarsOf == nil {
+		t.Skip("leg declares no sidecar observation")
+	}
+	if _, err := be.Start(t.Context(), spec); err != nil {
+		t.Fatalf("start with sidecar: %v", err)
+	}
+	stopOnCleanup(t, be, spec.Key)
+	got := leg.SidecarsOf(t, spec.Key)
+	if len(got) != 2 {
+		t.Fatalf("sidecar'd workload shows containers %v, want worker+sidecar", got)
+	}
+	if leg.WorkerNetName != nil {
+		inspect := dockerNetExists(t, leg.WorkerNetName(spec.Key))
+		if !inspect {
+			t.Fatalf("worker net %s missing", leg.WorkerNetName(spec.Key))
+		}
+	}
+	if err := be.Stop(t.Context(), spec.Key); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := leg.SidecarsOf(t, spec.Key); len(got) != 0 {
+		t.Fatalf("sidecars survived the worker stop: %v", got)
+	}
+	if leg.WorkerNetName != nil && dockerNetExists(t, leg.WorkerNetName(spec.Key)) {
+		t.Fatalf("worker net %s survived the stop", leg.WorkerNetName(spec.Key))
+	}
+}
+
+// dockerNetExists asks the daemon about a network by name; only the docker
+// leg registers WorkerNetName, so the CLI probe lives behind the same hook.
+func dockerNetExists(t *testing.T, name string) bool {
+	t.Helper()
+	out, err := runOutput(exec.CommandContext(t.Context(), "docker", "network", "inspect", "--format", "{{.Id}}", name))
+	return err == nil && len(out) > 0
+}
+
+var runOutput = func(cmd *exec.Cmd) ([]byte, error) { return cmd.CombinedOutput() }
 
 func hasRuntime(t *testing.T, be backend.Backend, id string) bool {
 	t.Helper()

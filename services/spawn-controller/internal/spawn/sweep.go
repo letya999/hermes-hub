@@ -16,14 +16,28 @@ import (
 // transaction — a Stop that hangs can never hold a write lock. The pass
 // fails closed on backend failure: a List error marks nothing missing.
 //
-// Runtimes sweep through runtimeSweep, not fsm.Sweep: the runtime
-// machine's deadline events must run through runtimeTransition so a
-// drain leaves no lease rows behind in the same transaction. Workers
-// hold no leases, so the generic sweep serves them.
+// Runtimes sweep through runtimeSweep and workers through workerSweep,
+// not fsm.Sweep: deadline events must run through the lease-aware
+// transition so a drain leaves no lease rows behind in the same
+// transaction. Both tables feed effects and reconcile — a backend
+// workload whose row is not enumerated is an orphan the reconciler
+// stops, so workers are never skipped.
 type Sweeper struct {
 	Store   *store.Store
 	Backend backend.Backend
-	Now     func() time.Time
+	// WorkerBackend is the backend worker rows reconcile against; nil
+	// means workers share Backend (one-backend installations, tests).
+	WorkerBackend backend.Backend
+	Now           func() time.Time
+}
+
+// backendFor returns the backend a row's workload lives on — worker rows
+// on the docker cell backend, runtime rows on the launch backend.
+func (s *Sweeper) backendFor(worker bool) backend.Backend {
+	if worker && s.WorkerBackend != nil {
+		return s.WorkerBackend
+	}
+	return s.Backend
 }
 
 func (s *Sweeper) now() time.Time {
@@ -42,7 +56,7 @@ func (s *Sweeper) Tick(ctx context.Context) error {
 	if err := runtimeSweep(ctx, s.Store, now); err != nil {
 		return err
 	}
-	if _, err := fsm.Sweep(ctx, s.Store, WorkerMachine, now, 1000); err != nil {
+	if err := workerSweep(ctx, s.Store, now); err != nil {
 		return err
 	}
 	if err := s.drainStale(ctx, now); err != nil {
@@ -111,38 +125,93 @@ func runtimeSweep(ctx context.Context, s *store.Store, now time.Time) error {
 	return nil
 }
 
-// liveRuntimeRow is a non-final row seen outside any tenant scope — the
-// sweeper is the one actor allowed to read across tenants.
-type liveRuntimeRow struct {
+// workerSweep is runtimeSweep for the worker machine: deadline events
+// fire through workerTransition so the move out of busy removes its
+// holds in the same transaction.
+func workerSweep(ctx context.Context, s *store.Store, now time.Time) error {
+	var expired []store.DueRow
+	if err := s.ReadTx(ctx, func(tx *store.Tx) error {
+		var err error
+		expired, err = tx.DueRows(WorkerMachine.Table, now.Unix(), 1000)
+		return err
+	}); err != nil {
+		return err
+	}
+	for _, d := range expired {
+		deadline, ok := WorkerMachine.Deadlines[d.State]
+		if !ok {
+			continue
+		}
+		err := s.Tx(ctx, func(tx *store.Tx) error {
+			q := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner})
+			var state string
+			var due *int64
+			err := q.QueryRow("SELECT state, deadline FROM workers WHERE {tenant} AND id = ?", d.ID).Scan(&state, &due)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				return fsm.ErrStale
+			case err != nil:
+				return err
+			case state != d.State, due == nil, *due > now.Unix():
+				return fsm.ErrStale
+			}
+			return workerTransition(q, d.ID, deadline.Event, now)
+		})
+		if errors.Is(err, fsm.ErrStale) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// liveRow is a non-final row seen outside any tenant scope — the
+// sweeper is the one actor allowed to read across tenants. kind picks
+// the machine whose lease-aware transition events go through.
+type liveRow struct {
 	tenant    store.Tenant
 	id        string
 	state     string
 	backendID string
+	worker    bool
 }
 
-// liveRows enumerates the non-final runtime rows: each carries a
-// deadline, so one DueRows batch at the far bound lists the live set.
-// The batch is capped by the store (1000 rows per sweep — a pass always
-// finishes, a bigger fleet is handled across consecutive ticks).
-func liveRows(ctx context.Context, s *store.Store) ([]liveRuntimeRow, error) {
-	var out []liveRuntimeRow
+// transition fires the row's machine event through the lease-aware
+// transition for its table.
+func (r liveRow) transition(q store.Scoped, event string, now time.Time) error {
+	if r.worker {
+		return workerTransition(q, r.id, event, now)
+	}
+	return runtimeTransition(q, r.id, event, now)
+}
+
+// liveRows enumerates the non-final rows of one lifecycle table: each
+// carries a deadline, so one DueRows batch at the far bound lists the
+// live set. The batch is capped by the store (1000 rows per sweep — a
+// pass always finishes, a bigger fleet is handled across consecutive
+// ticks).
+func liveRows(ctx context.Context, s *store.Store, machine *fsm.Machine, worker bool) ([]liveRow, error) {
+	var out []liveRow
 	err := s.ReadTx(ctx, func(tx *store.Tx) error {
-		rows, err := tx.DueRows(RuntimeMachine.Table, math.MaxInt64, 1000)
+		rows, err := tx.DueRows(machine.Table, math.MaxInt64, 1000)
 		if err != nil {
 			return err
 		}
 		for _, d := range rows {
 			var backendID string
 			err := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner}).
-				QueryRow("SELECT backend_id FROM runtimes WHERE {tenant} AND id = ?", d.ID).Scan(&backendID)
+				QueryRow("SELECT backend_id FROM "+machine.Table+" WHERE {tenant} AND id = ?", d.ID).Scan(&backendID)
 			if err != nil {
 				return err
 			}
-			out = append(out, liveRuntimeRow{
+			out = append(out, liveRow{
 				tenant:    store.Tenant{Org: d.Org, Owner: d.Owner},
 				id:        d.ID,
 				state:     d.State,
 				backendID: backendID,
+				worker:    worker,
 			})
 		}
 		return nil
@@ -158,7 +227,7 @@ func liveRows(ctx context.Context, s *store.Store) ([]liveRuntimeRow, error) {
 // transaction so a claim that moved it between the listing and here is
 // left alone.
 func (s *Sweeper) drainStale(ctx context.Context, now time.Time) error {
-	rows, err := liveRows(ctx, s.Store)
+	rows, err := liveRows(ctx, s.Store, RuntimeMachine, false)
 	if err != nil {
 		return err
 	}
@@ -202,7 +271,15 @@ func (s *Sweeper) drainStale(ctx context.Context, now time.Time) error {
 // row's half-started workload is stopped so the start budget's teardown
 // is real, not just a state label.
 func (s *Sweeper) effects(ctx context.Context) error {
-	rows, err := liveRows(ctx, s.Store)
+	runtimes, err := liveRows(ctx, s.Store, RuntimeMachine, false)
+	if err != nil {
+		return err
+	}
+	workers, err := liveRows(ctx, s.Store, WorkerMachine, true)
+	if err != nil {
+		return err
+	}
+	rows := append(runtimes, workers...)
 	if err != nil {
 		return err
 	}
@@ -210,6 +287,7 @@ func (s *Sweeper) effects(ctx context.Context) error {
 		if row.backendID == "" {
 			continue
 		}
+		be := s.backendFor(row.worker)
 		switch row.state {
 		case "draining":
 			if err := s.stopConfirmed(ctx, row); err != nil {
@@ -219,13 +297,13 @@ func (s *Sweeper) effects(ctx context.Context) error {
 			// The start budget fired or Start reported an error while a
 			// workload survived: stop the half-started backend so failed
 			// never leaks a live workload.
-			_, err := s.Backend.Inspect(ctx, row.backendID)
+			_, err := be.Inspect(ctx, row.backendID)
 			switch {
 			case errors.Is(err, backend.ErrNotFound):
 			case err != nil:
 				return err
 			default:
-				_ = s.Backend.Stop(ctx, row.backendID)
+				_ = be.Stop(ctx, row.backendID)
 			}
 		}
 	}
@@ -235,15 +313,16 @@ func (s *Sweeper) effects(ctx context.Context) error {
 // stopConfirmed stops a draining row's workload and fires stopped when
 // the backend confirms it is gone; the row keeps its quarantine bound
 // otherwise.
-func (s *Sweeper) stopConfirmed(ctx context.Context, row liveRuntimeRow) error {
-	if err := s.Backend.Stop(ctx, row.backendID); err != nil && !errors.Is(err, backend.ErrNotFound) {
+func (s *Sweeper) stopConfirmed(ctx context.Context, row liveRow) error {
+	be := s.backendFor(row.worker)
+	if err := be.Stop(ctx, row.backendID); err != nil && !errors.Is(err, backend.ErrNotFound) {
 		return nil // unconfirmed — leave the row for its quarantine deadline
 	}
-	_, err := s.Backend.Inspect(ctx, row.backendID)
+	_, err := be.Inspect(ctx, row.backendID)
 	switch {
 	case errors.Is(err, backend.ErrNotFound):
 		return s.Store.Tx(ctx, func(tx *store.Tx) error {
-			return runtimeTransition(tx.Scoped(row.tenant), row.id, "stopped", s.now())
+			return row.transition(tx.Scoped(row.tenant), "stopped", s.now())
 		})
 	case err != nil:
 		return err
@@ -259,49 +338,85 @@ func (s *Sweeper) stopConfirmed(ctx context.Context, row liveRuntimeRow) error {
 // in-flight Start is not yet in the inventory and must not be declared
 // missing under it.
 func (s *Sweeper) reconcile(ctx context.Context, now time.Time) error {
-	list, err := s.Backend.List(ctx)
-	if err != nil {
+	inventory := func(be backend.Backend) (map[string]bool, []backend.Runtime, error) {
+		list, err := be.List(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		live := map[string]bool{}
+		for _, rt := range list {
+			live[rt.ID] = true
+		}
+		return live, list, nil
+	}
+	// Each table reconciles against its own backend: a failed List marks
+	// nothing missing (the daemon's answer is authoritative only on
+	// success), and each backend's orphans stop through their own backend.
+	type scope struct {
+		live map[string]bool
+		list []backend.Runtime
+		be   backend.Backend
+		rows []liveRow
+	}
+	scopes := map[bool]*scope{false: {be: s.Backend}, true: {be: s.backendFor(true)}}
+	for worker, sc := range scopes {
+		live, list, err := inventory(sc.be)
+		if err != nil {
+			delete(scopes, worker)
+			continue
+		}
+		sc.live, sc.list = live, list
+	}
+	if len(scopes) == 0 {
 		return nil
 	}
-	live := map[string]bool{}
-	for _, rt := range list {
-		live[rt.ID] = true
-	}
-	rows, err := liveRows(ctx, s.Store)
-	if err != nil {
-		return err
-	}
-	known := map[string]bool{}
-	for _, row := range rows {
-		if row.backendID != "" {
-			known[row.backendID] = true
+	if scopes[false] != nil {
+		rows, err := liveRows(ctx, s.Store, RuntimeMachine, false)
+		if err != nil {
+			return err
 		}
-		switch {
-		case row.state == "warm" || row.state == "busy":
-			if row.backendID == "" || live[row.backendID] {
-				continue
+		scopes[false].rows = rows
+	}
+	if scopes[true] != nil {
+		rows, err := liveRows(ctx, s.Store, WorkerMachine, true)
+		if err != nil {
+			return err
+		}
+		scopes[true].rows = rows
+	}
+	for _, sc := range scopes {
+		known := map[string]bool{}
+		for _, row := range sc.rows {
+			if row.backendID != "" {
+				known[row.backendID] = true
 			}
-			err := s.Store.Tx(ctx, func(tx *store.Tx) error {
-				return runtimeTransition(tx.Scoped(row.tenant), row.id, "missing", now)
-			})
-			if err != nil && !errors.Is(err, fsm.ErrForbiddenTransition) && !errors.Is(err, fsm.ErrStale) {
-				return err
-			}
-		case row.state == "draining":
-			if row.backendID != "" && !live[row.backendID] {
-				// The inventory itself confirms the stop.
+			switch {
+			case row.state == "warm" || row.state == "busy":
+				if row.backendID == "" || sc.live[row.backendID] {
+					continue
+				}
 				err := s.Store.Tx(ctx, func(tx *store.Tx) error {
-					return runtimeTransition(tx.Scoped(row.tenant), row.id, "stopped", now)
+					return row.transition(tx.Scoped(row.tenant), "missing", now)
 				})
 				if err != nil && !errors.Is(err, fsm.ErrForbiddenTransition) && !errors.Is(err, fsm.ErrStale) {
 					return err
 				}
+			case row.state == "draining":
+				if row.backendID != "" && !sc.live[row.backendID] {
+					// The inventory itself confirms the stop.
+					err := s.Store.Tx(ctx, func(tx *store.Tx) error {
+						return row.transition(tx.Scoped(row.tenant), "stopped", now)
+					})
+					if err != nil && !errors.Is(err, fsm.ErrForbiddenTransition) && !errors.Is(err, fsm.ErrStale) {
+						return err
+					}
+				}
 			}
 		}
-	}
-	for _, rt := range list {
-		if rt.ID != "" && !known[rt.ID] {
-			_ = s.Backend.Stop(ctx, rt.ID)
+		for _, rt := range sc.list {
+			if rt.ID != "" && !known[rt.ID] {
+				_ = sc.be.Stop(ctx, rt.ID)
+			}
 		}
 	}
 	return nil

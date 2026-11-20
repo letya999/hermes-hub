@@ -52,10 +52,6 @@ type CLIControllerConfig struct {
 	// Toolboxes are operator-pinned toolsets for toolbox-lifecycle cells:
 	// name -> digest-pinned member images mounted read-only at /tools/<i>.
 	Toolboxes map[string][]string `json:"toolboxes,omitempty"`
-	// PoolSize caps live cells (idle + claimed) per stateless pool key;
-	// callers past the cap wait up to PoolClaimWaitSeconds then fail closed.
-	PoolSize             int `json:"pool_size,omitempty"`
-	PoolClaimWaitSeconds int `json:"pool_claim_wait_seconds,omitempty"`
 	// WarmMaxAgeSeconds and WarmMaxReuse bound warm-cell reuse; a cell past
 	// either limit is rotated before another exec claims it.
 	WarmMaxAgeSeconds int `json:"warm_max_age_seconds,omitempty"`

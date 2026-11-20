@@ -37,6 +37,8 @@ func init() {
 		"supervisor.identity-unavailable":                "Реестр идентификации недоступен",
 		"spawn.revision-rejected":                        "Ревизия паспорта не скомпилировалась",
 		"spawn.runtime-unavailable":                      "Рантайм недоступен",
+		"spawn.cells-unavailable":                        "Ячейки недоступны в этой установке",
+		"toolhub.cells-unavailable":                      "CLI-ячейки недоступны в этой установке",
 		"supervisor.identity-upkeep-pending":             "Обслуживание реестра идентификации ожидает повтора",
 
 		"package.sources-unavailable":              "Исходники для архива недоступны",

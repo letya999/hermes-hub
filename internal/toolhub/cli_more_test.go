@@ -6,6 +6,8 @@ package toolhub
 import (
 	"context"
 	"errors"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	spawnfake "github.com/letya999/hermes-hub/contracts/spawn/v1/fake"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"strings"
@@ -159,19 +161,12 @@ func TestCellDaemonFailureModes(t *testing.T) {
 	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
 		t.Fatalf("unresolvable image admitted: %v", err)
 	}
-	// A create that lands nothing fails the pre-start inspect.
+	// A spawn-controller that refuses the claim surfaces as isolation, never
+	// as a local fallback (S6: no docker create happens here anymore).
 	c, fake = cellFixture(t, nil)
-	fake.exec = nil
-	original := fake.run
-	fakeRun := func(ctx context.Context, binary string, args ...string) ([]byte, error) {
-		if len(args) >= 1 && args[0] == "create" && strings.HasPrefix(args[len(args)-2], "sha256:") {
-			return []byte("ok\n"), nil // lie: create returns success but no container
-		}
-		return original(ctx, binary, args...)
-	}
-	c.command = fakeRun
+	fake.Client = spawnv1.NewInProc(&spawnfake.Server{CellsOff: true})
 	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); !errors.Is(err, api.ErrIsolation) {
-		t.Fatalf("phantom create admitted: %v", err)
+		t.Fatalf("unavailable spawn admitted: %v", err)
 	}
 }
 

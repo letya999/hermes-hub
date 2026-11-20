@@ -63,7 +63,7 @@ func (c *genericController) handler(token string) http.Handler {
 		}
 		if r.URL.Path == "/cli-metrics" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(c.cellMetricsSnapshot())
+			_ = json.NewEncoder(w).Encode(c.workerMetricsSnapshot())
 			return
 		}
 		if r.URL.Path == "/cli-release" {
@@ -74,7 +74,7 @@ func (c *genericController) handler(token string) http.Handler {
 				http.Error(w, "invalid cli release", http.StatusForbidden)
 				return
 			}
-			c.releaseCells(r.Context(), release)
+			c.drainWorkers(r.Context(), release)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

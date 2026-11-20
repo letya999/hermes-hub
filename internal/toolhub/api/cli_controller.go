@@ -111,7 +111,7 @@ func ValidateCLIConfig(cfg *CLIControllerConfig) error {
 			}
 		}
 	}
-	if cfg.PoolSize < 0 || cfg.PoolSize > 16 || cfg.PoolClaimWaitSeconds < 0 || cfg.PoolClaimWaitSeconds > 300 || cfg.WarmMaxAgeSeconds < 0 || cfg.WarmMaxAgeSeconds > 7*24*3600 || cfg.WarmMaxReuse < 0 || cfg.WarmMaxReuse > 1<<20 {
+	if cfg.WarmMaxAgeSeconds < 0 || cfg.WarmMaxAgeSeconds > 7*24*3600 || cfg.WarmMaxReuse < 0 || cfg.WarmMaxReuse > 1<<20 {
 		return fmt.Errorf("%w: CLI pool/warm bounds", ErrInvalid)
 	}
 	return nil

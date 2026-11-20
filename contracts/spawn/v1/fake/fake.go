@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,9 +22,14 @@ import (
 )
 
 // Server holds test-supplied state. Services lists the consumer names
-// PolicySlice answers; any other service is not_found.
+// PolicySlice answers; any other service is not_found. CellsOff makes
+// ClaimWorker answer unavailable — the V5 "spawn without cells" fixture.
 type Server struct {
 	Services []string
+	// ExecFunc optionally answers ExecWorker; the default echoes argv on
+	// stdout with exit code 0 so DTO plumbing is exercised on both legs.
+	ExecFunc func(spawn.WorkerExecRequest) (spawn.WorkerExecResult, error)
+	CellsOff bool
 
 	mu        sync.Mutex
 	seq       int
@@ -31,6 +37,16 @@ type Server struct {
 	revisions map[string][]*spawn.Revision
 	docs      map[string]map[string]map[string]any
 	effective map[string]fakeEffective
+	workers   map[string]*fakeWorker
+}
+
+// fakeWorker is the in-memory worker row plus its live lease ids.
+type fakeWorker struct {
+	worker  spawn.Worker
+	claim   spawn.ClaimWorkerRequest
+	leases  map[string]bool
+	binding string
+	job     string
 }
 
 type fakeEffective struct {
@@ -47,6 +63,7 @@ func (s *Server) init() {
 		s.revisions = map[string][]*spawn.Revision{}
 		s.docs = map[string]map[string]map[string]any{}
 		s.effective = map[string]fakeEffective{}
+		s.workers = map[string]*fakeWorker{}
 	}
 }
 
@@ -304,6 +321,165 @@ func (s *Server) Explain(ctx context.Context, t spawn.Tenant, space string) (spa
 		}
 	}
 	return httpapi.Copy(spawn.ExplainReport{Space: space, Digest: eff.digest, Fields: fields})
+}
+
+// workerKey indexes live workers on their claim key — the exact
+// (tenant, space, cell key, image) tuple the service binds at claim.
+func workerKey(t spawn.Tenant, space, cellKey, image string) string {
+	return t.Org + "/" + t.Owner + "/" + space + "/" + cellKey + "/" + image
+}
+
+// workerIDKey finds a live worker by row id under a tenant.
+func (s *Server) workerIDKey(t spawn.Tenant, id string) string {
+	for key, wk := range s.workers {
+		if wk.worker.ID == id && strings.HasPrefix(key, t.Org+"/"+t.Owner+"/") {
+			return key
+		}
+	}
+	return ""
+}
+
+// ClaimWorker mirrors the service claim: an exact-key live worker is
+// reused, anything else claims a fresh generation row that is busy at
+// readiness — cells never warm and never cross tenant or space.
+func (s *Server) ClaimWorker(ctx context.Context, space string, in spawn.ClaimWorkerRequest) (spawn.ClaimedWorker, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.ClaimedWorker{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	if s.CellsOff {
+		return spawn.ClaimedWorker{}, spawn.ErrUnavailable
+	}
+	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
+	key := workerKey(t, space, in.CellKey, in.Image)
+	var wk *fakeWorker
+	if live, ok := s.workers[key]; ok && live.worker.State == "busy" {
+		wk = live
+	} else {
+		s.seq++
+		gen := int64(1)
+		for _, other := range s.workers {
+			if other.worker.Space == space && other.worker.CellKey == in.CellKey && other.worker.ImageDigest == in.Image {
+				gen = other.worker.Generation + 1
+			}
+		}
+		wk = &fakeWorker{
+			worker: spawn.Worker{
+				Org: t.Org, Owner: t.Owner, ID: fmt.Sprintf("wk-%016x", s.seq),
+				Space: space, Agent: in.Agent, Generation: gen, State: "busy",
+				CellKey: in.CellKey, ImageDigest: in.Image,
+			},
+			claim:   in,
+			leases:  map[string]bool{},
+			binding: in.BindingID,
+			job:     in.JobID,
+		}
+		s.workers[key] = wk
+	}
+	s.seq++
+	lease := fmt.Sprintf("wl-%016x", s.seq)
+	wk.leases[lease] = true
+	out := spawn.ClaimedWorker{Worker: wk.worker, Lease: lease}
+	egress := false
+	for _, host := range in.Egress {
+		h := strings.ToLower(strings.TrimSpace(host))
+		if h != "" && h != "127.0.0.1" && h != "localhost" && h != "::1" {
+			egress = true
+		}
+	}
+	name := "hermes-hub-rt-" + wk.worker.ID
+	if egress {
+		out.Proxy = "http://" + name + "-proxy:3128"
+	}
+	if len(in.Brokered) > 0 {
+		out.Cred = name + "-cred"
+	}
+	return httpapi.Copy(out)
+}
+
+// RenewWorker re-arms the busy bound while the lease still holds.
+func (s *Server) RenewWorker(ctx context.Context, id string, in spawn.WorkerLeaseRequest) (spawn.Worker, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.Worker{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	key := s.workerIDKey(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	wk := s.workers[key]
+	if wk == nil || !wk.leases[in.Lease] || wk.worker.State != "busy" {
+		return spawn.Worker{}, spawn.ErrNotFound
+	}
+	return httpapi.Copy(wk.worker)
+}
+
+// ReleaseWorker drops the lease; the last hold drains the worker — a fake
+// drain is immediately absent, matching the confirmed-stop fast path.
+func (s *Server) ReleaseWorker(ctx context.Context, id string, in spawn.WorkerLeaseRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	key := s.workerIDKey(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	wk := s.workers[key]
+	if wk == nil || !wk.leases[in.Lease] {
+		return spawn.ErrNotFound
+	}
+	delete(wk.leases, in.Lease)
+	if len(wk.leases) == 0 {
+		delete(s.workers, key)
+	}
+	return nil
+}
+
+// DrainWorkers kills every live worker of the space matching the claim
+// identity fields; the count mirrors the service's answer.
+func (s *Server) DrainWorkers(ctx context.Context, space string, in spawn.DrainWorkersRequest) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	prefix := in.Org + "/" + in.Owner + "/" + space + "/"
+	n := 0
+	for key, wk := range s.workers {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if in.BindingID != "" && wk.binding != in.BindingID {
+			continue
+		}
+		if in.JobID != "" && wk.job != in.JobID {
+			continue
+		}
+		delete(s.workers, key)
+		n++
+	}
+	return n, nil
+}
+
+// ExecWorker answers through the test's ExecFunc or the argv echo; the
+// lease must still hold and the worker still be busy.
+func (s *Server) ExecWorker(ctx context.Context, id string, in spawn.WorkerExecRequest) (spawn.WorkerExecResult, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.WorkerExecResult{}, err
+	}
+	s.mu.Lock()
+	wk := s.workers[s.workerIDKey(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)]
+	if wk == nil || !wk.leases[in.Lease] || wk.worker.State != "busy" {
+		s.mu.Unlock()
+		return spawn.WorkerExecResult{}, spawn.ErrNotFound
+	}
+	s.mu.Unlock()
+	if s.ExecFunc != nil {
+		return s.ExecFunc(in)
+	}
+	return spawn.WorkerExecResult{ExitCode: 0, Stdout: []byte(strings.Join(in.Argv, " "))}, nil
 }
 
 func flattenFake(node map[string]any, prefix string, out map[string]any) {

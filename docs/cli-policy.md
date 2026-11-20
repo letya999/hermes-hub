@@ -85,7 +85,9 @@ outcome, which translates it to the controller `/cli-release`; callers may
 only release their own principal's jobs. `binding` keys by
 principal+binding, `toolbox` by principal+toolset digest (member images
 mount read-only at `/tools/<i>`, configured via `cli_toolboxes`), and
-`shared-pool` admits `stateless: true` workspace-free definitions only.
+`shared-pool` admits `stateless: true` workspace-free definitions only —
+shared-pool calls get a fresh worker per call; there is no cross-user
+per-image pool anymore.
 Toolbox cells always run the configured tools image as their base — the
 member artifact supplies only its files under `/tools/<i>`, and an ELF
 interpreter resolves against the cell rootfs, so member images may be
@@ -93,12 +95,18 @@ minimal even when the tool binary is dynamically linked. Warm-reuse keys
 include the resolved cell image ID, so a rebuilt artifact or tools image
 never lands a call on a stale cell.
 Disable/revoke of a binding also releases its warm cells through the same
-channel. The pool cap (`pool_size`, default 2) bounds live cells — idle
-plus claimed — so a burst can never exceed it; excess callers wait up to
-`pool_claim_wait_seconds` (default 30, max 300) and then fail closed.
-`POST /cli-metrics` on the controller surfaces creates, reuses, canary
-failures, rotations, pool hits/misses/claims/exhaustions and claim wait
-time (the handler is POST-authenticated like the other control routes).
+channel. `POST /cli-metrics` on the controller surfaces creates, reuses,
+rotations, release failures and claim wait time (the handler is
+POST-authenticated like the other control routes).
+
+Cells execute as spawn-controller workers: ToolHub admits the call, picks
+the lifecycle key and image, then claims a worker through `HUB_SPAWN_URL`
+(bearer `HUB_SPAWN_TOKEN`), execs the tool argv inside it and releases the
+lease. The worker's container, sidecars and reuse checks belong to
+spawn-controller — ToolHub keeps held workers only as leases keyed by the
+lifecycle tier. With `HUB_SPAWN_URL` unset (or a spawn-controller without
+worker support) `/cli-exec` refuses with a localized cells-unavailable
+error while ToolHive MCP workloads keep serving.
 
 ## Onboarding and catalog binding
 

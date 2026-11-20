@@ -1417,7 +1417,6 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 		UserCommands:      []string{"rg", "bash"},
 		WarmMaxAgeSeconds: 24 * 3600,
 		WarmMaxReuse:      256,
-		PoolSize:          2,
 	}
 }
 

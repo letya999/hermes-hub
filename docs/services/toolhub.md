@@ -362,10 +362,11 @@ entire volume and marker disappear, this fence cannot prove prior initialization
 (`http://workload-controller:8545/admit`), `HUB_DOCKER_HOST_ROOT` +
 `HUB_DOCKER_SCOPE` (label-scoped Docker ops), `HUB_CRED_STAGING` +
 `HUB_CRED_STAGING_VOLUME` (per-call `credentials.env`/`<name>.secret` staging
-on the shared `cred-staging` tmpfs, never on the `/state` bind; the volume
-name feeds `DockerBindSource` mountpoint resolution for sibling bind mounts),
-`HUB_CLI_ALLOWLIST` (`rg,bash` —
-owner-registered bounded CLI commands), `HUB_RECIPE_CATALOGS`,
+on the `cred-staging` tmpfs; the volume name feeds `DockerBindSource`
+mountpoint resolution for sibling binds), `HUB_CLI_ALLOWLIST` (owner-registered
+bounded CLI commands), `HUB_SPAWN_URL` + `HUB_SPAWN_TOKEN` (spawn-controller
+worker client for CLI cells; unset refuses `/cli-exec` with a localized
+cells-unavailable error, ToolHive MCP unaffected), `HUB_RECIPE_CATALOGS`,
 `HUB_AGENT_EXEC_MODE=supervisor` (agent-tools exec via docker exec, never the
 agent network), `HUB_CAPABILITY_PROFILE_ID`/`HUB_CAPABILITY_GENERATION`/
 `HUB_CAPABILITY_ENVIRONMENT` (scoped admission),

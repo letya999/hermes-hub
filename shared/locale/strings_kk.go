@@ -37,6 +37,8 @@ func init() {
 		"supervisor.identity-unavailable":                "Сәйкестендіру тізілімі қолжетімсіз",
 		"spawn.revision-rejected":                        "Паспорт ревизиясы компиляциядан өтпеді",
 		"spawn.runtime-unavailable":                      "Рантайм қолжетімсіз",
+		"spawn.cells-unavailable":                        "Бұл орнатуда жасушалар қолжетімсіз",
+		"toolhub.cells-unavailable":                      "Бұл орнатуда CLI жасушалары қолжетімсіз",
 		"supervisor.identity-upkeep-pending":             "Сәйкестендіру тізіліміне қызмет көрсету қайта орындалуды күтуде",
 
 		"package.sources-unavailable":              "Мұрағатқа арналған бастапқы файлдар қолжетімсіз",

@@ -43,8 +43,8 @@ var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 		{From: "superseded", Event: "prune", To: "pruned"},
 	},
 	Deadlines: map[string]fsm.Deadline{
-		"draft":      {After: 10 * time.Minute, Event: "expire"},   // draft TTL; sweeper removes an uncompiled draft
-		"validated":  {After: time.Hour, Event: "expire"},          // activation window on a never-activated revision
+		"draft":      {After: 10 * time.Minute, Event: "expire"},    // draft TTL; sweeper removes an uncompiled draft
+		"validated":  {After: time.Hour, Event: "expire"},           // activation window on a never-activated revision
 		"active":     {After: 30 * 24 * time.Hour, Event: "retain"}, // re-arm only; next actor is a newer activation
 		"superseded": {After: 30 * 24 * time.Hour, Event: "retain"}, // re-arm only; next actor is a rollback
 	},
@@ -59,9 +59,9 @@ var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 // ("stop not confirmed" is never reported as stopped); failed, quarantined
 // and missing carry removal retention before their rows go absent.
 var RuntimeMachine = must(fsm.New(fsm.Machine{
-	Table:    "runtimes",
-	History:  "runtimes_history",
-	Initial:  "starting",
+	Table:   "runtimes",
+	History: "runtimes_history",
+	Initial: "starting",
 	Edges: []fsm.Edge{
 		{From: "starting", Event: "ready", To: "warm"},
 		{From: "starting", Event: "fail", To: "failed"},
@@ -108,6 +108,7 @@ var WorkerMachine = must(fsm.New(fsm.Machine{
 	Edges: []fsm.Edge{
 		{From: "starting", Event: "ready", To: "busy"},
 		{From: "starting", Event: "fail", To: "failed"},
+		{From: "busy", Event: "renew", To: "busy"},
 		{From: "busy", Event: "unlease", To: "draining"},
 		{From: "busy", Event: "drain", To: "draining"},
 		{From: "draining", Event: "stopped", To: "absent"},

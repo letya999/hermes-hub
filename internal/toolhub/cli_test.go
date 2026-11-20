@@ -201,9 +201,9 @@ func TestValidateCLIConfigBounds(t *testing.T) {
 		t.Fatal("unpinned toolbox member accepted")
 	}
 	cfg = valid()
-	cfg.PoolSize = 99
+	cfg.WarmMaxReuse = -1
 	if err := api.ValidateCLIConfig(cfg); err == nil {
-		t.Fatal("unbounded pool accepted")
+		t.Fatal("negative warm bound accepted")
 	}
 }
 

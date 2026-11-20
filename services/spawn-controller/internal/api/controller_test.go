@@ -70,6 +70,24 @@ func (f *fakeBackend) List(context.Context) ([]backend.Runtime, error) {
 	return out, nil
 }
 
+func (f *fakeBackend) Exec(_ context.Context, id string, _ backend.ExecSpec) (backend.ExecResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.live[id]; !ok {
+		return backend.ExecResult{}, fmt.Errorf("%w: %s", backend.ErrNotFound, id)
+	}
+	return backend.ExecResult{}, nil
+}
+
+func (f *fakeBackend) VerifyWorker(_ context.Context, id string, _ backend.Spec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.live[id]; !ok {
+		return fmt.Errorf("%w: %s", backend.ErrNotFound, id)
+	}
+	return nil
+}
+
 var testTenant = store.Tenant{Org: "org-a", Owner: "alice"}
 
 // controllerForTest wires the durable controller over a real store and a
@@ -274,8 +292,8 @@ func TestMessageWithoutEffectiveSpecRefused(t *testing.T) {
 	srv := httptest.NewServer(c.routes())
 	defer srv.Close()
 	for _, path := range []string{
-		"/v1/messages?org=org-a&owner=alice",      // space exists, never activated
-		"/v1/messages?org=org-a&owner=alice",      // space missing entirely
+		"/v1/messages?org=org-a&owner=alice", // space exists, never activated
+		"/v1/messages?org=org-a&owner=alice", // space missing entirely
 	} {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(`{"space":"empty","agent":"a","text":"x"}`))
 		req.Header.Set("Authorization", "Bearer service-token")

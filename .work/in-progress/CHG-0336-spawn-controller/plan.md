@@ -62,6 +62,18 @@ keeps working through the new service.
     generation, and a later claim reuses a warm row only on an exact key
     match. Nothing warm is ever handed to another tenant, space, policy or
     image. A new activation drains every runtime bound to the old digest.
+12. Workers (decided at S6). spawn-controller is the only container
+    authority for cells: create, exec, stop all go through it, so the
+    backend gains `Exec(ctx, id, ExecSpec)` (docker: `docker exec`; process:
+    trusted-only child in the worker dir). Workers follow the Worker table
+    (no warm): a worker is bound to (org, owner, space, cell key, image
+    digest); ToolHub holds and renews a lease while it wants the cell kept,
+    release drains it. The v0 per-image CLI pool that hands cells across
+    users is deleted: no worker is reused across tenants or spaces. Cell
+    sidecars (squid egress, cred-proxy) are part of the worker Spec; the
+    docker backend creates them on the worker's network, the process backend
+    refuses specs with sidecars. ToolHive MCP workloads stay in ToolHub until
+    M40.7.
 11. Effective digest pointer (decided at S4). Activation stores the effective
     digest on the space row in the same transaction; readers and claims use
     the stored digest and never recompile on the hot path.

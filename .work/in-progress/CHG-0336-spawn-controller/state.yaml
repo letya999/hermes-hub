@@ -18,7 +18,7 @@ slices:
   S3-backends: green
   S4-runtime-lifecycle-and-warm-pool: green
   S5-importer-explain-doctor: green
-  S6-workers-and-cells: not_started
+  S6-workers-and-cells: in_progress
   S7-consumers-cutover: not_started
   S8-delete-v0: not_started
   S9-docs-and-acceptance: not_started
@@ -27,7 +27,7 @@ validation:
   affected_tests: green
   backend_conformance_process: green
   backend_conformance_docker: green
-  tool_snapshot: not_run
+  tool_snapshot: green
   live_acceptance: not_started
 evidence:
   - "de1eb7b9: TestPassportRevisionTransitions red (package absent, build failed), green on sqlite leg; every allowed edge writes history, forbidden samples write none."
@@ -92,8 +92,16 @@ evidence:
   - "S5: TestExplainGolden green — hubctl explain <space> prints header + doc.path = value [layer] through the in-proc contract; tenant isolation on --owner mismatch. Explain is a stored-read (attribution column on effective_specs), never a recompile; conformance covers success/stability/foreign-tenant on fake and real transports."
   - "S5 doctor: no authored passport/config shape migration exists — authored passports are already v2 normative bodies and ReadAuthored rejects generated fields; UpdateProvisioningProfile is a profile refresh. No --fix implemented; TestDoctorHasNoShapeMigration pins the flag as rejected and passports byte-identical."
   - "S5 gates: go vet clean; just check green (format, docs, boundaries, vet); just test affected — go test -short -count=1 ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl green (importer 2.2s, spawn 6.4s, api 2.1s, migrations 1.6s, fake 0.05s, passport 3.8s, hubctl 56.8s)."
+  - "S6: WorkerMachine wired to HTTP — POST /v1/spaces/{space}/workers claims (org+owner tenant, space, cell key, image digest -> starting->busy row + lease), POST /v1/workers/{id}/exec (lease-guarded bounded exec), renew/release, POST /v1/spaces/{space}/workers/drain filtered by binding/job. Worker row carries sanitized claim (brokered credential values stripped) + canary; reuse re-runs Cells.spec + Backend.VerifyWorker + canary/procs probes, drift drains and re-plans."
+  - "S6: Backend gains Exec (argv, env, dir, stdin, timeout, max-output, truncated flags; docker exec -e env pairs, process child in the worker dir) and VerifyWorker (docker re-inspects running state, privileged/pid/rootfs/caps/security-opt, seccomp, image, user, OCI runtime, network, labels, exact mount table — the moved cellProfileProblem). Spec gains worker fields (user/entrypoint/workdir/tmpfs/image-mounts/seccomp/Labels) and Sidecars (squid egress + cred proxy, per-worker internal network, stopped with the worker); process backend refuses sidecars/worker fields."
+  - "S6: Cells.spec in internal/spawn/cells.go is the moved cell_argv/cell_binds construction: cellinit bind, workspace (binding containment + principal/skill-source scopes, per-principal uid), skills bind, /tools/<i> image mounts, scratch tmpfs, package-install home/usertmp tmpfs, squid + cred-proxy sidecars, ownership labels."
+  - "S6 named tests green on the real store + recording backend: TestWorkerTransitionsWired (claim->busy->renew/exec->release->draining->absent, lease-guarded exec, re-claim mints gen 2), TestWorkerMountsOnlyOwnSpace, TestWorkerNeverCrossesTenants, TestExecNoSecretInArgv; backend conformance legs cover TestExecNoSecretInArgv/TestExecTimeoutAndOutputCap/TestSidecarsStopWithWorker (docker)/TestProcessBackendRefusesSidecars."
+  - "S6 ToolHub: cell lifecycle removed (cell_lifecycle.go deleted; cell.go/cell_init.go/cell_net.go reduced to shared constants, image/toolbox resolution, warm key and the MCP cred-proxy helpers), execCLI claims/renews/releases through contracts/spawn/v1, held-worker registry replaces the warm registry, ephemeral+shared-pool claim fresh workers per call (cross-user pool and its pool_size/pool_claim_wait_seconds config deleted), /cli-release drains via DrainWorkers, /cli-metrics reports worker counters, HUB_SPAWN_URL+HUB_SPAWN_TOKEN wire the client and TestToolHubCellsUnavailableWithoutSpawn covers the V5 refusal on both nil client and a cells-off server."
+  - "S6 rg evidence: internal/toolhub docker surface for cells is down to `docker image inspect` + `docker info` (cell.go:93,:157 — image/runtime resolution only); the remaining `docker exec -i` in cell_net.go:52 is the MCP cred-proxy rules channel that stays in this milestone. No create/exec/rm for CLI cells anywhere in toolhub; deleted internals (cellUID, cellArgv, cellBinds, cellEgress, cellSquid, cellProfileProblem, cellDrifted, cellRegistry, cliCell, execPooled, claimPoolCell, returnPoolCell, execWarm, execInCell, cellRun, inspectCell, removeCell, cleanupCells, releaseCells, warmCell, createCell) have zero non-test references."
+  - "S6 gates: go vet -p=2 clean on touched packages; just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/toolhub/... ./cmd/hubctl green (toolhub 207.9s, hubctl 127.1s, backend incl. docker legs 81.9s, spawn 6.8s, api 0.3s); just test ./internal/devcheck green. TestGitLabDeployPinsRenderedImages needed Git\\cmd ahead of Git\\mingw64\\bin on PATH (env quirk, unrelated to the slice). TestToolCatalogSnapshotUnchanged green — only the executor moved."
 remaining:
-  - "S5+: WorkerMachine rows are swept but not wired to HTTP; image_pins table exists but the claim stamps the image tag — the real pinned digest lands with image pins (S5/S7)."
+  - "S6 e2e: TestWorkerCellRealDocker skips until hermes-hub-cli-tools:test is built locally; image build + live leg runs after the code commit (RAM-bound host — no parallel builds)."
+  - "S5+: image_pins table exists but the claim stamps the image tag — the real pinned digest lands with image pins (S5/S7)."
   - "S7: /v1/leases/{id}/renew is wired but has no production caller yet — channel-hub's renew heartbeat is the consumer cutover's job."
   - "S4 note: runtime row ids are content-derived per generation (sha256 of tenant+space+agent+generation); backend_id equals the row id so reconcile keys the workload by the row."
   - "v0 supervisor docker spawn code stays until S8 (it still runs the dev stack): dockerBackend/ComputeBackend (internal/supervisor/backend.go), runArgs/runArgsWithGeneration/managedRunArgs (internal/supervisor/ensure.go), checkContainerRuntime/sandboxRelayHosts (internal/supervisor/sandbox.go), script sandbox argv (internal/supervisor/scripts.go), HUB_CONTAINER_RUNTIME default (internal/supervisor/supervisor.go:472-478)."

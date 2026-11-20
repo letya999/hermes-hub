@@ -37,6 +37,8 @@ func init() {
 		"supervisor.identity-unavailable":                "Identity registry is unavailable",
 		"spawn.revision-rejected":                        "Passport revision did not compile",
 		"spawn.runtime-unavailable":                      "Runtime is unavailable",
+		"spawn.cells-unavailable":                        "Cells are unavailable on this installation",
+		"toolhub.cells-unavailable":                      "CLI cells are unavailable on this installation",
 		"supervisor.identity-upkeep-pending":             "Identity upkeep is pending",
 
 		"package.sources-unavailable":              "Package sources are unavailable",

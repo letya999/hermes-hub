@@ -3,8 +3,6 @@ package toolhub
 import (
 	"context"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +12,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // This is the deliberately small generic adapter. ToolHive remains the
@@ -55,10 +57,16 @@ type genericController struct {
 	scope        *api.DockerScope
 	mu           sync.Mutex // ponytail: one controller lock; split only after measured contention.
 	workloads    map[string]genericWorkload
-	registry     *cellRegistry
-	cellInitOK   bool            // cellinit seeded into the state root for sibling binds
-	runtimes     map[string]bool // daemon runtime list, cached after first read
-	runtimesOK   bool
+	// spawn is the spawn-controller client CLI cells run through (S6);
+	// nil when HUB_SPAWN_URL is unset — cells refuse, ToolHive MCP keeps
+	// serving (V5). held maps warm keys to claimed workers whose leases
+	// ToolHub keeps between execs; workerMetrics backs /cli-metrics.
+	spawn         spawnv1.Client
+	held          map[string]*heldWorker
+	workerMetrics workerMetrics
+	cellInitOK    bool            // cellinit seeded into the state root for sibling binds
+	runtimes      map[string]bool // daemon runtime list, cached after first read
+	runtimesOK    bool
 	// toolboxes caches resolveToolbox results: every exec asks for the pin
 	// list, and each member costs a docker inspect round trip. Entries are
 	// evicted when a cell create fails so a pruned image re-resolves.
@@ -209,8 +217,14 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	if api.NoSymlinkPath(config.StateRoot) != nil || api.NoSymlinkPath(config.SeccompProfile) != nil {
 		return nil, api.ErrIsolation
 	}
-	controller := &genericController{siteInput: siteCommandInput, config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, commandStdin: api.LocalCommandInput, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
+	controller := &genericController{siteInput: siteCommandInput, config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, commandStdin: api.LocalCommandInput, workloads: map[string]genericWorkload{}, held: map[string]*heldWorker{}}
 	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
+	// Cells run through spawn-controller when HUB_SPAWN_URL points at one
+	// (V5); the worker contract carries the same bearer token pattern the
+	// controller's own surface uses.
+	if url := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); url != "" {
+		controller.spawn = spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), nil)
+	}
 	return controller, nil
 }
 
@@ -370,11 +384,11 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 				_ = server.Shutdown(shutdown)
 				cancel()
 				c.CleanupIdle(context.Background(), time.Now().Add(365*24*time.Hour))
-				c.releaseAllCells(context.Background(), "controller-shutdown")
+				c.releaseAllHeld("controller-shutdown")
 				return
 			case now := <-ticker.C:
 				c.CleanupIdle(context.Background(), now)
-				c.cleanupCells(context.Background(), now)
+				c.cleanupHeld(context.Background(), now)
 			}
 		}
 	}()

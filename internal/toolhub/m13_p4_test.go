@@ -115,24 +115,23 @@ func TestAdmissionVerifierPostsOwnership(t *testing.T) {
 	}
 }
 
-// S4.1: bounded-cli cells answer the same ownership label query as workload
-// containers — the generic cell.* keys stay for compat.
+// S4.1: bounded-cli claims carry the ownership identity spawn-controller
+// stamps as labels on the worker's container (S6) — org/owner/binding are
+// the same query keys the workload path uses.
 func TestCellStampsOwnershipLabels(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	if _, err := c.execCLI(context.Background(), cliReq("rg", cellExecution())); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
-	var createArgv []string
-	for _, call := range fake.calls {
-		if len(call) > 1 && call[0] == "create" {
-			createArgv = call
-		}
+	fake.mu.Lock()
+	if len(fake.claims) != 1 {
+		fake.mu.Unlock()
+		t.Fatal("no worker claim recorded")
 	}
-	if createArgv == nil {
-		t.Fatal("no cell create call recorded")
-	}
-	if !containsLabel(createArgv, "hermes-hub.owner=alice") || !containsLabel(createArgv, "hermes-hub.binding=bind-1") {
-		t.Fatalf("cell create lacks standard ownership labels: %v", createArgv)
+	claim := fake.claims[0]
+	fake.mu.Unlock()
+	if claim.Owner != "alice" || claim.Org != "local" || claim.BindingID != "bind-1" || claim.Principal != "alice" {
+		t.Fatalf("worker claim lacks standard ownership identity: %+v", claim)
 	}
 }
 

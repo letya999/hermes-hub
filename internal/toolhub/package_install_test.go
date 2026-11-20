@@ -3,11 +3,16 @@ package toolhub
 import (
 	"context"
 	"errors"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
+// TestPackageInstallPrivateCell: the operator/stateless/tier gates are pure
+// admission and unchanged; the private-home isolation itself moved into the
+// worker spec spawn-controller builds (the claim carries the flag, the
+// server mounts the tmpfs home — the spec assertions live in its suite).
 func TestPackageInstallPrivateCell(t *testing.T) {
 	c, fake := cellFixture(t, nil)
 	req := cliReq("rg", cellExecution())
@@ -46,35 +51,24 @@ func TestPackageInstallPrivateCell(t *testing.T) {
 	if err != nil || bob.Receipt.CellID == installed.Receipt.CellID {
 		t.Fatalf("cross-principal reuse: %v", err)
 	}
-	foundHome, foundExec := false, false
-	for _, call := range fake.createCalls() {
-		for _, arg := range call {
-			if strings.HasPrefix(arg, cellHomeGuest+":rw,exec,") {
-				foundHome = true
-			}
-			if strings.Contains(arg, "target="+cellHomeGuest) {
-				t.Fatal("home bind mounted")
-			}
+	// The install flag reached the claim and the exec env carries the
+	// private home + extended PATH — the tmpfs itself is server-side.
+	fake.mu.Lock()
+	var installExec bool
+	for _, call := range fake.execs {
+		if call.Env["HOME"] == cellHomeGuest && strings.HasPrefix(call.Env["PATH"], cellHomeGuest+"/.local/bin:") && call.Env["TMPDIR"] == cellUserTmpGuest {
+			installExec = true
 		}
 	}
-	for _, call := range fake.execCalls {
-		if api.Contains(call, "HOME="+cellHomeGuest) && api.Contains(call, "PATH="+cellHomeGuest+"/.local/bin:"+cellHomeGuest+"/.cargo/bin:"+cellHomeGuest+"/go/bin:/usr/local/bin:/usr/bin:/bin:"+cellToolsetGuest) {
-			foundExec = true
+	var flagged bool
+	for _, claim := range fake.claims {
+		if claim.InstallPackages {
+			flagged = true
 		}
 	}
-	if !foundHome || !foundExec {
-		t.Fatal("private install home or execution PATH missing")
-	}
-	fake.inspectDrift = func(_ string, container *genericContainer) {
-		for i := range container.Mounts {
-			if container.Mounts[i].Destination == cellHomeGuest {
-				container.Mounts[i].Type = "bind"
-			}
-		}
-	}
-	req.Principal, req.ContextID = "alice", "ctx-alice"
-	if _, err := c.execCLI(context.Background(), req); !errors.Is(err, api.ErrIsolation) {
-		t.Fatalf("home drift accepted: %v", err)
+	fake.mu.Unlock()
+	if !installExec || !flagged {
+		t.Fatal("private install claim flag or exec env missing")
 	}
 }
 
@@ -94,35 +88,5 @@ func TestPackageInstallDefinitionContract(t *testing.T) {
 		if err := bad.Validate(); !errors.Is(err, api.ErrInvalid) {
 			t.Fatalf("invalid install definition: %v", err)
 		}
-	}
-}
-
-func TestPackageHomeMustBePresentAndCannotBeSharedTmpfs(t *testing.T) {
-	c, fake := cellFixture(t, func(cfg *api.CLIControllerConfig) { cfg.AllowPackageInstall = true })
-	req := cliReq("rg", cellExecution())
-	req.InstallPackages, req.Lifecycle = true, api.CLILifecycleBinding
-	resp, err := c.execCLI(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cell := c.registry.cells[cellWarmKey(req.Lifecycle, req.Principal, req.BindingID, "", "sha256:"+strings.Repeat("a", 64), nil)+"|install-packages"]
-	container := *fake.containers[resp.Receipt.CellID]
-	var mounts []genericMount
-	for _, mount := range container.Mounts {
-		if mount.Destination != cellHomeGuest && mount.Destination != cellUserTmpGuest {
-			mounts = append(mounts, mount)
-		}
-	}
-	container.Mounts = mounts
-	if got := cellProfileProblem(container, cell, c.config.SeccompProfile, c.config.StateRoot, true); got != "home-mount" {
-		t.Fatalf("missing private home accepted: %s", got)
-	}
-	container.HostConfig.Tmpfs = map[string]string{cellHomeGuest: "rw,exec"}
-	if got := cellProfileProblem(container, cell, c.config.SeccompProfile, c.config.StateRoot, true); got != "" {
-		t.Fatalf("containerd private home rejected: %s", got)
-	}
-	cell.installPackages = false
-	if got := cellProfileProblem(container, cell, c.config.SeccompProfile, c.config.StateRoot, true); got != "tmpfs:"+cellHomeGuest {
-		t.Fatalf("non-install cell carries executable home: %s", got)
 	}
 }

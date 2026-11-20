@@ -4,6 +4,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,13 +23,16 @@ import (
 	"github.com/letya999/hermes-hub/shared/proctree"
 )
 
-// Runtime is one space workload managed by the controller.
+// Runtime is one space workload managed by the controller. Name is the
+// backend's own workload handle (docker: container name) — sidecar
+// endpoints are derived from it.
 type Runtime struct {
 	ID      string `json:"id"`
 	Space   string `json:"space"`
 	Agent   string `json:"agent"`
 	State   string `json:"state"`
 	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
 }
 
 // Mount is one resolved bind: a host source mapped to a target inside the
@@ -40,9 +45,51 @@ type Mount struct {
 
 // Limits caps the workload's resource envelope; zero fields are unset.
 type Limits struct {
-	Memory string
-	CPUs   string
-	PIDs   int
+	Memory     string
+	MemorySwap string
+	CPUs       string
+	PIDs       int
+}
+
+// Tmpfs is one scratch tmpfs mount inside the workload (docker --tmpfs
+// target:opts); workers declare /tmp, /work and the package-install homes
+// this way instead of through bind Mounts.
+type Tmpfs struct {
+	Target  string
+	Options string
+}
+
+// SidecarFile is one payload delivered into a sidecar filesystem. ViaExec
+// writes it through the sidecar's cellinit after start — the only channel
+// for secret material, it never touches argv or the controller disk;
+// otherwise it is docker-cp'd into the created container before start.
+type SidecarFile struct {
+	Target  string
+	Content []byte
+	ViaExec bool
+}
+
+// SidecarSpec is one companion container on the worker's own internal
+// network: same hardening and labels as the worker, created and removed
+// with it (moved from v0 cell_net.go cellSquid/cellCredProxy). Bridge
+// attaches the sidecar to the docker bridge so it can egress; WaitPort
+// probes the sidecar's procfs for the port before Start returns.
+// Volumes are docker volumes (Source is a logical name the backend
+// namespaces per worker); Mounts are binds.
+type SidecarSpec struct {
+	Name       string
+	Image      string
+	User       string
+	Entrypoint string
+	Command    []string
+	Env        []string
+	Mounts     []Mount
+	Volumes    []Mount
+	Tmpfs      []Tmpfs
+	Bridge     bool
+	Files      []SidecarFile
+	WaitPort   int
+	Limits     Limits
 }
 
 // Spec is a fully resolved workload spec: spawn-controller owns all policy,
@@ -62,6 +109,44 @@ type Spec struct {
 	Edges      []string
 	Limits     Limits
 	OCIRuntime string
+	// Worker fields (S6): a cell overrides the image's user/entrypoint,
+	// declares scratch tmpfs and read-only image mounts (toolboxes), may
+	// pin a seccomp profile and own companion sidecars.
+	User           string
+	Entrypoint     string
+	Workdir        string
+	Tmpfs          []Tmpfs
+	ImageMounts    []Mount
+	SeccompProfile string
+	Sidecars       []SidecarSpec
+	// Labels are extra workload labels the caller stamps on top of the
+	// backend's ownership set (e.g. a cell's binding identity).
+	Labels map[string]string
+}
+
+// ExecSpec is one bounded command inside a running workload: argv never
+// passes through a shell, env values travel through the exec's own
+// environment (only names reach argv), Dir stays inside the workload and
+// Stdin/Timeout/MaxOutput bound the call (S6).
+type ExecSpec struct {
+	Argv      []string
+	Env       []string
+	Dir       string
+	Stdin     []byte
+	Timeout   time.Duration
+	MaxOutput int64
+	// Sidecar names the companion the exec targets; "" is the workload.
+	Sidecar string
+}
+
+// ExecResult reports one exec's outcome: the exit code, both streams
+// separately, and whether either was cut at MaxOutput.
+type ExecResult struct {
+	ExitCode        int
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 // ErrNotFound is the typed Inspect/Stop miss S4 maps to `missing`.
@@ -81,23 +166,71 @@ var ErrSpec = errors.New("backend: spec refused")
 // backend argv unambiguously. It runs at the top of every Start, before
 // trust guards, disk writes or daemon calls.
 func validateSpec(spec Spec) error {
+	check := func(what, source, target string) error {
+		if strings.ContainsAny(source, ",=\"\n\r") || strings.ContainsAny(target, ",=\"\n\r") {
+			return fmt.Errorf("%w: %s %q -> %q carries option-breaking characters", ErrSpec, what, source, target)
+		}
+		return nil
+	}
 	for _, m := range spec.Mounts {
-		if strings.ContainsAny(m.Source, ",=\"\n\r") || strings.ContainsAny(m.Target, ",=\"\n\r") {
-			return fmt.Errorf("%w: mount %q -> %q carries option-breaking characters", ErrSpec, m.Source, m.Target)
+		if err := check("mount", m.Source, m.Target); err != nil {
+			return err
+		}
+	}
+	for _, m := range spec.ImageMounts {
+		if err := check("image mount", m.Source, m.Target); err != nil {
+			return err
+		}
+	}
+	for _, t := range spec.Tmpfs {
+		if strings.ContainsAny(t.Target, ":,\"\n\r") || strings.ContainsAny(t.Options, "\"\n\r") {
+			return fmt.Errorf("%w: tmpfs %q carries option-breaking characters", ErrSpec, t.Target)
+		}
+	}
+	for _, s := range spec.Sidecars {
+		if !sidecarNamePattern.MatchString(s.Name) {
+			return fmt.Errorf("%w: sidecar name %q", ErrSpec, s.Name)
+		}
+		for _, m := range s.Mounts {
+			if err := check("sidecar mount", m.Source, m.Target); err != nil {
+				return err
+			}
+		}
+		for _, m := range s.Volumes {
+			if err := check("sidecar volume", m.Source, m.Target); err != nil {
+				return err
+			}
+		}
+		for _, t := range s.Tmpfs {
+			if strings.ContainsAny(t.Target, ":,\"\n\r") || strings.ContainsAny(t.Options, "\"\n\r") {
+				return fmt.Errorf("%w: sidecar tmpfs %q carries option-breaking characters", ErrSpec, t.Target)
+			}
+		}
+		for _, f := range s.Files {
+			if !filepath.IsAbs(f.Target) || strings.ContainsAny(f.Target, ":\"\n\r") {
+				return fmt.Errorf("%w: sidecar file target %q", ErrSpec, f.Target)
+			}
 		}
 	}
 	return nil
 }
 
+var sidecarNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 // Backend owns compute for space workloads: it starts, inspects, lists and
 // stops runtime instances; admission and passports stay elsewhere. List's
 // error is the difference between "nothing is running" and "the daemon did
 // not answer" — a reconciler must never read the latter as the former.
+// Exec runs one bounded command inside a started workload; VerifyWorker
+// re-inspects a live worker against the spec that built it — the reuse
+// guard's proof the cell still carries every isolation claim.
 type Backend interface {
 	Start(context.Context, Spec) (Runtime, error)
 	Stop(context.Context, string) error
 	Inspect(context.Context, string) (Runtime, error)
 	List(context.Context) ([]Runtime, error)
+	Exec(context.Context, string, ExecSpec) (ExecResult, error)
+	VerifyWorker(context.Context, string, Spec) error
 }
 
 // NewProcess returns the process backend: it starts service binaries from
@@ -175,6 +308,14 @@ func (b *processBackend) Start(ctx context.Context, spec Spec) (Runtime, error) 
 	}
 	if spec.OCIRuntime != "" && spec.OCIRuntime != "runc" {
 		return Runtime{}, fmt.Errorf("process backend cannot apply OCI runtime %s", spec.OCIRuntime)
+	}
+	// Cell-only fields are isolation features a plain process cannot apply;
+	// a spec that asks for them is refused rather than silently weakened.
+	if len(spec.Sidecars) > 0 {
+		return Runtime{}, fmt.Errorf("%w: process backend cannot run sidecars", ErrSpec)
+	}
+	if len(spec.Tmpfs) > 0 || len(spec.ImageMounts) > 0 || spec.User != "" || spec.Entrypoint != "" || spec.Workdir != "" || spec.SeccompProfile != "" || spec.Limits.MemorySwap != "" {
+		return Runtime{}, fmt.Errorf("%w: process backend cannot apply worker isolation fields", ErrSpec)
 	}
 	name := spec.Image
 	if name == "" {
@@ -300,4 +441,119 @@ func (b *processBackend) List(context.Context) ([]Runtime, error) {
 		}
 	}
 	return list, nil
+}
+
+// VerifyWorker confirms the process child still runs — a process backend
+// offers no container profile to re-check, so a spec carrying worker
+// isolation fields is refused the same way Start refuses it.
+func (b *processBackend) VerifyWorker(_ context.Context, id string, spec Spec) error {
+	if len(spec.Sidecars) > 0 || len(spec.Tmpfs) > 0 || len(spec.ImageMounts) > 0 || spec.User != "" || spec.Entrypoint != "" || spec.Workdir != "" || spec.SeccompProfile != "" {
+		return fmt.Errorf("%w: process backend cannot apply worker isolation fields", ErrSpec)
+	}
+	b.mu.Lock()
+	child, ok := b.children[id]
+	b.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	select {
+	case <-child.done:
+		return fmt.Errorf("%w: %s exited", ErrNotFound, id)
+	default:
+	}
+	return nil
+}
+
+// bounded captures one output stream up to MaxOutput; beyond it the stream
+// keeps draining (so the child never blocks) while the truncated flag is
+// set — the caller learns output was cut without holding unbounded memory.
+type bounded struct {
+	buf       bytes.Buffer
+	limit     int64
+	truncated bool
+}
+
+func (w *bounded) Write(p []byte) (int, error) {
+	room := w.limit - int64(w.buf.Len())
+	if room > 0 {
+		if int64(len(p)) <= room {
+			_, _ = w.buf.Write(p)
+		} else {
+			_, _ = w.buf.Write(p[:room])
+			w.truncated = true
+		}
+	} else {
+		w.truncated = true
+	}
+	return len(p), nil
+}
+
+// Exec runs one command inside the worker's own data directory — the
+// trusted-only child S6 grants the process backend. The worker must exist
+// (its directory is the proof); argv runs without a shell and Dir may only
+// descend into the worker directory, never escape it. Env values travel
+// through the child's environment, never its argv.
+func (b *processBackend) Exec(ctx context.Context, id string, spec ExecSpec) (ExecResult, error) {
+	if !b.trusted {
+		return ExecResult{}, fmt.Errorf("%w: process backend", ErrUntrusted)
+	}
+	if len(spec.Argv) == 0 {
+		return ExecResult{}, fmt.Errorf("%w: exec argv required", ErrSpec)
+	}
+	b.mu.Lock()
+	_, ok := b.children[id]
+	b.mu.Unlock()
+	if !ok {
+		return ExecResult{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if spec.Sidecar != "" {
+		return ExecResult{}, fmt.Errorf("%w: process backend has no sidecars", ErrSpec)
+	}
+	dir := filepath.Join(b.dataDir, "runtimes", id)
+	if spec.Dir != "" {
+		if filepath.IsAbs(spec.Dir) {
+			return ExecResult{}, fmt.Errorf("%w: exec dir must be relative", ErrSpec)
+		}
+		resolved := filepath.Clean(filepath.Join(dir, spec.Dir))
+		if resolved != dir && !strings.HasPrefix(resolved, dir+string(filepath.Separator)) {
+			return ExecResult{}, fmt.Errorf("%w: exec dir escapes the worker directory", ErrSpec)
+		}
+		dir = resolved
+	}
+	timeout := spec.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	limit := spec.MaxOutput
+	if limit <= 0 {
+		limit = 1 << 20
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, spec.Argv[0], spec.Argv[1:]...) // #nosec G204 -- trusted exec argv from the worker caller
+	proctree.Configure(cmd)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), spec.Env...)
+	if spec.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(spec.Stdin)
+	}
+	stdout := &bounded{limit: limit}
+	stderr := &bounded{limit: limit}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	if callCtx.Err() != nil {
+		return ExecResult{}, fmt.Errorf("exec %s: %w", id, callCtx.Err())
+	}
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return ExecResult{}, fmt.Errorf("exec %s: %w", id, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return ExecResult{
+		ExitCode: code, Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(),
+		StdoutTruncated: stdout.truncated, StderrTruncated: stderr.truncated,
+	}, nil
 }
