@@ -64,8 +64,8 @@ Browser runtimes and disposable workers are per-space launches, not hub processe
 
 ## Test base and source distribution
 
-`just test <packages>` runs TestTenantInvariants first across root-module packages
-and blocks the requested suite on failure. Each table case uses a fresh SQLite
+`just test <packages>` runs TestTenantInvariants first across repository source directories
+(cmd, contracts, internal, shared, services), excludes spaces, and blocks the suite on failure. Each table case uses a fresh SQLite
 store and also a unique Postgres schema when HUB_TEST_POSTGRES_URL is set. CI
 requires tenant-invariants before checks/postgres-store; checks-verify requires
 both jobs. CI execution remains unverified until publication is authorized.

@@ -119,7 +119,7 @@ func TestProjectAndFormat(t *testing.T) {
 	if err := Project(root); err == nil {
 		t.Fatal("bad docs accepted")
 	}
-	for _, folder := range []string{"cmd", "internal"} {
+	for _, folder := range []string{"cmd", "internal", "contracts", "shared"} {
 		if err := os.MkdirAll(filepath.Join(root, folder), 0700); err != nil {
 			t.Fatal(err)
 		}

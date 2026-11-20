@@ -78,13 +78,13 @@ import them through the workspace.
 | Rule | Enforcing test or gate |
 |---|---|
 | Every row carries org and owner; a query without them is refused | `shared/store` TestStoreRefusesUnscopedQuery |
-| Cross-tenant read is not_found, checked first and blocking | `storetest.TenantInvariants` via each package's TestTenantInvariants; `just test` runs `^TestTenantInvariants$` before the rest; CI job `tenant-invariants` |
+| Cross-tenant read is not_found, checked first and blocking | `storetest.TenantInvariants` via each package's TestTenantInvariants; `just test` runs `^TestTenantInvariants$` before the rest; CI job `tenant-invariants`; TestTenantRunnerExcludesUserSpaces |
 | Migrations are numbered, embedded, applied once when N copies start | `shared/store` TestMigrationLockSerializesConcurrentStart, TestMigrationsRejectGapsAndNewerSchema |
 | One DB per service, SQLite default, Postgres by the same URL, portable SQL | `shared/store` and `shared/fsm` suites run on SQLite always and on Postgres when `HUB_TEST_POSTGRES_URL` is set; CI job `postgres-store` |
 | One Transition; history in the same tx; forbidden edge writes nothing | `shared/fsm` TestTransitionRejectsForbiddenAndWritesNothing, TestTransitionWritesStateAndHistory |
 | Deadline + sweeper for every non-final state | `shared/fsm` TestMachineRequiresDeadlinePerNonFinalState, TestSweepMovesExpiredState |
 | shared/* never imports services/* or internal/* | `devcheck boundaries` in `just check`; `internal/devcheck` TestSharedImportBoundary |
-| Contract transports behave the same (in-proc and HTTP); a fake passes the same suite | `shared/testkit.Transports`; `contracts/task/v1` TestContractConformanceInProcAndHTTP, TestFakePassesConformance |
+| Contract transports behave the same (in-proc and HTTP); a fake passes the same suite | `shared/testkit.Transports`; `contracts/task/v1` TestContractConformanceInProcAndHTTP; `contracts/task/v1/fake` TestFakePassesConformance |
 | Every agent tool keeps name/schema/effect/right | `internal/devcheck` TestToolCatalogSnapshotUnchanged (snapshot rewrite refused without a catalog version bump) |
 | Process mode only for trusted installations | `cmd/hubctl` TestProcessModeRefusesUntrusted |
 | Minimal profile answers a message in process mode | `cmd/hubctl` TestMinimalProfileAnswersMessage (skips with a named gap until the core binaries exist, see state.yaml) |
@@ -129,3 +129,8 @@ acceptance is outstanding. No push, PR, live stack mutation or prune is performe
 Integration: e7b4a881 on feat/m40-v1-platform. Store connection diagnostic red/green
 added in 0b3ac931. Native Windows credential-broker compilation is unavailable
 (fs_linux.go only); root module build passed. actionlint on ci.yml passed.
+
+TestTenantRunnerExcludesUserSpaces: real red when ./... ran the synthetic
+spaces test; green with repository source directories only. The table-first
+runner never implicitly selects real user spaces. TestProjectAndFormat fixture
+now creates the contracts/shared directories required by the moved format gate.

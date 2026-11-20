@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+func TestTenantRunnerExcludesUserSpaces(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module tenant-runner-fixture\ngo 1.27.4\n")
+	for _, name := range []string{"cmd", "internal", "contracts", "services"} {
+		write(name+"/fixture/fixture.go", "package fixture\n")
+	}
+	write("shared/fixture/invariant_test.go", `package fixture
+import ("os"; "testing")
+func TestTenantInvariants(t *testing.T) { if err := os.WriteFile("ran",[]byte("yes"),0600); err != nil { t.Fatal(err) } }
+`)
+	write("spaces/alice/private_test.go", `package private
+import "testing"
+func TestTenantInvariants(t *testing.T) { t.Fatal("tenant runner entered a user space") }
+`)
+	cmd := tenantInvariantTest([]string{"test", "-short", "-p=2"})
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tenant runner crossed source boundary: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "shared", "fixture", "ran")); err != nil {
+		t.Fatalf("owned invariant did not run: %v", err)
+	}
+}
+
 func TestGosecScansOnlyModulePackages(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "calls")

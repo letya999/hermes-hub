@@ -142,7 +142,7 @@ func run(args []string) error {
 		if testExec != "" {
 			flags = append(flags, "-exec="+testExec, "-toolexec="+testExec)
 		}
-		invariants := exec.Command("go", append(append([]string{}, flags...), "-run=^TestTenantInvariants$", "./...")...) // #nosec G204 -- fixed Go test selection
+		invariants := tenantInvariantTest(flags)
 		invariants.Stdout, invariants.Stderr = os.Stdout, os.Stderr
 		if err := invariants.Run(); err != nil {
 			return err
@@ -219,6 +219,10 @@ func run(args []string) error {
 		err = fmt.Errorf("usage: devcheck docs|boundaries|tool-catalog-snapshot|catalog-emit|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-publish-to IMAGE TARGET ENV|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|m32-lifecycle IMAGE ENV|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
 	}
 	return err
+}
+
+func tenantInvariantTest(flags []string) *exec.Cmd {
+	return exec.Command("go", append(append([]string{}, flags...), "-run=^TestTenantInvariants$", "./cmd/...", "./contracts/...", "./internal/...", "./shared/...", "./services/...")...) // #nosec G204 -- fixed Go test selection
 }
 
 func parseMinimums(args []string) (float64, float64, error) {
