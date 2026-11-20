@@ -84,6 +84,8 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 	if err != nil || dup.ID != ids["user"] {
 		t.Fatalf("resubmit: %v id %s want %s", err, dup.ID, ids["user"])
 	}
+	// Activation is a set operation: the whole layer set moves in one
+	// call — a bootstrap can never leave the space on a partial spec.
 	for layer, id := range ids {
 		if !fresh[layer] {
 			continue
@@ -97,15 +99,31 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 		if rev.State != "validated" {
 			t.Fatalf("validate %s: state %s", layer, rev.State)
 		}
-		rev, err = client.ActivateRevision(ctx, f.Space, id, spawn.RevisionRequest{
-			Org: f.Tenant.Org, Owner: f.Tenant.Owner, IdempotencyKey: "k-activate-" + layer,
-		})
-		if err != nil {
-			t.Fatalf("activate %s: %v", layer, err)
-		}
+	}
+	all := make([]string, 0, len(ids))
+	for _, id := range ids {
+		all = append(all, id)
+	}
+	activated, err := client.ActivateRevisions(ctx, f.Space, spawn.ActivationRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Revisions: all, IdempotencyKey: "k-activate-all",
+	})
+	if err != nil {
+		t.Fatalf("activate set: %v", err)
+	}
+	if len(activated) != len(all) {
+		t.Fatalf("activate set returned %d rows, want %d", len(activated), len(all))
+	}
+	for _, rev := range activated {
 		if rev.State != "active" {
-			t.Fatalf("activate %s: state %s", layer, rev.State)
+			t.Fatalf("activate set: %s is %s", rev.ID, rev.State)
 		}
+	}
+	// The one-element set is a no-op on an already-active row.
+	one, err := client.ActivateRevisions(ctx, f.Space, spawn.ActivationRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Revisions: []string{ids["user"]}, IdempotencyKey: "k-activate-one",
+	})
+	if err != nil || len(one) != 1 || one[0].State != "active" {
+		t.Fatalf("activate one: %v %+v", err, one)
 	}
 
 	// List: every row present, the layer filter narrows.
@@ -212,8 +230,14 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 			return err
 		},
 		"bad revision": func() error {
-			_, err := client.ActivateRevision(ctx, f.Space, "rev-nope", spawn.RevisionRequest{
-				Org: f.Tenant.Org, Owner: f.Tenant.Owner, IdempotencyKey: "k-bad",
+			_, err := client.ActivateRevisions(ctx, f.Space, spawn.ActivationRequest{
+				Org: f.Tenant.Org, Owner: f.Tenant.Owner, Revisions: []string{"rev-nope"}, IdempotencyKey: "k-bad",
+			})
+			return err
+		},
+		"empty activation": func() error {
+			_, err := client.ActivateRevisions(ctx, f.Space, spawn.ActivationRequest{
+				Org: f.Tenant.Org, Owner: f.Tenant.Owner, IdempotencyKey: "k-empty",
 			})
 			return err
 		},

@@ -118,12 +118,24 @@ type SubmitRevisionRequest struct {
 	IdempotencyKey string                    `json:"idempotency_key"`
 }
 
-// RevisionRequest is the validate/activate body — only the tenant and the
+// RevisionRequest is the validate body — only the tenant and the
 // idempotency key travel; space and revision id are in the path.
 type RevisionRequest struct {
 	Org            string `json:"org"`
 	Owner          string `json:"owner"`
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// ActivationRequest is the set-activation body (POST
+// /v1/spaces/{space}/activations): one or more revision ids, at most one
+// per layer, activated atomically — the cut commits only when the
+// would-be active set compiles, so a space can never lose a serving
+// policy to a partial move.
+type ActivationRequest struct {
+	Org            string   `json:"org"`
+	Owner          string   `json:"owner"`
+	Revisions      []string `json:"revisions"`
+	IdempotencyKey string   `json:"idempotency_key"`
 }
 
 // Client is the spawn-controller surface. Path-shaped arguments come
@@ -133,7 +145,7 @@ type Client interface {
 	CreateSpace(context.Context, CreateSpaceRequest) (Space, error)
 	SubmitRevision(context.Context, string, string, SubmitRevisionRequest) (Revision, error)
 	ValidateRevision(context.Context, string, string, RevisionRequest) (Revision, error)
-	ActivateRevision(context.Context, string, string, RevisionRequest) (Revision, error)
+	ActivateRevisions(context.Context, string, ActivationRequest) ([]Revision, error)
 	Effective(context.Context, Tenant, string) (EffectiveSpec, error)
 	PolicySlice(context.Context, Tenant, string, string, string) (PolicySlice, error)
 	ListRevisions(context.Context, Tenant, string, string) ([]Revision, error)
@@ -142,6 +154,18 @@ type Client interface {
 func validTenant(t Tenant) bool {
 	ok := func(v string) bool { return v != "" && len(v) <= 256 && !strings.ContainsAny(v, "\x00\r\n") }
 	return ok(t.Org) && ok(t.Owner)
+}
+
+func validActivation(space string, in ActivationRequest) bool {
+	if !auth.ValidID(space) || !validTenant(Tenant{in.Org, in.Owner}) || len(in.Revisions) == 0 || in.IdempotencyKey == "" {
+		return false
+	}
+	for _, id := range in.Revisions {
+		if !ValidRevisionID(id) {
+			return false
+		}
+	}
+	return true
 }
 
 type inProc struct{ server Client }
@@ -182,13 +206,13 @@ func (c inProc) ValidateRevision(ctx context.Context, space, id string, in Revis
 	return httpapi.Copy(out)
 }
 
-func (c inProc) ActivateRevision(ctx context.Context, space, id string, in RevisionRequest) (Revision, error) {
-	if !auth.ValidID(space) || !ValidRevisionID(id) || !validTenant(Tenant{in.Org, in.Owner}) || in.IdempotencyKey == "" {
-		return Revision{}, httpapi.Errorf(ErrInvalid, "invalid activate request")
+func (c inProc) ActivateRevisions(ctx context.Context, space string, in ActivationRequest) ([]Revision, error) {
+	if !validActivation(space, in) {
+		return nil, httpapi.Errorf(ErrInvalid, "invalid activation request")
 	}
-	out, err := c.server.ActivateRevision(ctx, space, id, in)
+	out, err := c.server.ActivateRevisions(ctx, space, in)
 	if err != nil {
-		return Revision{}, httpapi.Normalize(err)
+		return nil, httpapi.Normalize(err)
 	}
 	return httpapi.Copy(out)
 }
@@ -260,12 +284,12 @@ func (c httpClient) ValidateRevision(ctx context.Context, space, id string, in R
 	return out, err
 }
 
-func (c httpClient) ActivateRevision(ctx context.Context, space, id string, in RevisionRequest) (Revision, error) {
-	if !auth.ValidID(space) || !ValidRevisionID(id) || !validTenant(Tenant{in.Org, in.Owner}) || in.IdempotencyKey == "" {
-		return Revision{}, httpapi.Errorf(ErrInvalid, "invalid activate request")
+func (c httpClient) ActivateRevisions(ctx context.Context, space string, in ActivationRequest) ([]Revision, error) {
+	if !validActivation(space, in) {
+		return nil, httpapi.Errorf(ErrInvalid, "invalid activation request")
 	}
-	var out Revision
-	err := c.Do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(space)+"/revisions/"+url.PathEscape(id)+"/activate", in, &out)
+	var out []Revision
+	err := c.Do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(space)+"/activations", in, &out)
 	return out, err
 }
 
@@ -336,12 +360,12 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.ValidateRevision(r.Context(), space, rest[1], in)
-		case r.Method == http.MethodPost && len(rest) == 3 && rest[0] == "revisions" && rest[2] == "activate":
-			var in RevisionRequest
+		case r.Method == http.MethodPost && len(rest) == 1 && rest[0] == "activations":
+			var in ActivationRequest
 			if err := httpapi.Decode(r, &in); err != nil {
 				return nil, err
 			}
-			return client.ActivateRevision(r.Context(), space, rest[1], in)
+			return client.ActivateRevisions(r.Context(), space, in)
 		case r.Method == http.MethodGet && len(rest) == 1 && rest[0] == "revisions":
 			t, err := queryTenant(r)
 			if err != nil {

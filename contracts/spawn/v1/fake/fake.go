@@ -147,46 +147,61 @@ func (s *Server) ValidateRevision(ctx context.Context, space, id string, in spaw
 	return httpapi.Copy(*rev)
 }
 
-// ActivateRevision runs the same one-transaction cut as the service: the
-// base must still be the active row, the old row is superseded and
-// re-anchored, the target goes active and a fresh effective digest lands.
-func (s *Server) ActivateRevision(ctx context.Context, space, id string, in spawn.RevisionRequest) (spawn.Revision, error) {
+// ActivateRevisions runs the same atomic set cut as the service: every
+// listed row must exist in a movable state, at most one per layer, and
+// each non-active row's base must still be the layer's active row — all
+// checked before anything moves. Then the old rows are superseded and
+// re-anchored, the targets go active and a fresh effective digest lands.
+func (s *Server) ActivateRevisions(ctx context.Context, space string, in spawn.ActivationRequest) ([]spawn.Revision, error) {
 	if err := ctx.Err(); err != nil {
-		return spawn.Revision{}, err
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
 	key := spaceKey(t, space)
-	rev, err := s.find(t, space, id)
-	if err != nil {
-		return spawn.Revision{}, err
+	targets := map[string]*spawn.Revision{}
+	for _, id := range in.Revisions {
+		rev, err := s.find(t, space, id)
+		if err != nil {
+			return nil, err
+		}
+		switch rev.State {
+		case "validated", "superseded", "active":
+		default:
+			return nil, fmt.Errorf("%w: revision %q is %s", spawn.ErrConflict, id, rev.State)
+		}
+		if _, dup := targets[rev.Layer]; dup {
+			return nil, fmt.Errorf("%w: two revisions for layer %q", spawn.ErrInvalid, rev.Layer)
+		}
+		targets[rev.Layer] = rev
 	}
-	switch rev.State {
-	case "active":
-		return httpapi.Copy(*rev)
-	case "validated", "superseded":
-	default:
-		return spawn.Revision{}, fmt.Errorf("%w: revision is %s", spawn.ErrConflict, rev.State)
-	}
-	var current *spawn.Revision
+	currents := map[string]*spawn.Revision{}
 	for _, other := range s.revisions[key] {
-		if other.Layer == rev.Layer && other.State == "active" {
-			current = other
+		if other.State == "active" {
+			currents[other.Layer] = other
 		}
 	}
-	if (current == nil) != (rev.BaseRevision == "") {
-		return spawn.Revision{}, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+	for layer, rev := range targets {
+		if rev.State == "active" {
+			continue
+		}
+		current := currents[layer]
+		if (current == nil) != (rev.BaseRevision == "") || (current != nil && current.ID != rev.BaseRevision) {
+			return nil, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+		}
 	}
-	if current != nil && current.ID != rev.BaseRevision {
-		return spawn.Revision{}, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+	for layer, rev := range targets {
+		if rev.State == "active" {
+			continue
+		}
+		if current := currents[layer]; current != nil {
+			current.State = "superseded"
+			current.BaseRevision = rev.ID
+		}
+		rev.State = "active"
 	}
-	if current != nil {
-		current.State = "superseded"
-		current.BaseRevision = rev.ID
-	}
-	rev.State = "active"
 	// Fabricate the effective row: digest of every active layer digest,
 	// documents merged from the active revisions' submissions.
 	h := sha256.New()
@@ -204,7 +219,12 @@ func (s *Server) ActivateRevision(ctx context.Context, space, id string, in spaw
 		}
 	}
 	s.effective[key] = fakeEffective{digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), documents: docs}
-	return httpapi.Copy(*rev)
+	out := make([]spawn.Revision, 0, len(in.Revisions))
+	for _, id := range in.Revisions {
+		rev, _ := s.find(t, space, id)
+		out = append(out, *rev)
+	}
+	return httpapi.Copy(out)
 }
 
 // Effective returns the fabricated effective row of the space.

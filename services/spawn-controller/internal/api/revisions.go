@@ -47,10 +47,17 @@ func (c Contract) ValidateRevision(ctx context.Context, space, id string, in spa
 	return revisionOf(out), err
 }
 
-// ActivateRevision cuts the revision in one transaction.
-func (c Contract) ActivateRevision(ctx context.Context, space, id string, in spawnv1.RevisionRequest) (spawnv1.Revision, error) {
-	out, err := c.Revisions.Activate(ctx, tenantOf(in.Org, in.Owner), space, id)
-	return revisionOf(out), err
+// ActivateRevisions cuts the listed revisions in one transaction.
+func (c Contract) ActivateRevisions(ctx context.Context, space string, in spawnv1.ActivationRequest) ([]spawnv1.Revision, error) {
+	rows, err := c.Revisions.Activate(ctx, tenantOf(in.Org, in.Owner), space, in.Revisions)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]spawnv1.Revision, len(rows))
+	for i, row := range rows {
+		out[i] = revisionOf(row)
+	}
+	return out, nil
 }
 
 // Effective returns the space's active effective spec.

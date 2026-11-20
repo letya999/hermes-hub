@@ -156,6 +156,7 @@ func setupSpace(t *testing.T, revs *spawn.Revisions) {
 		}
 		ids[layer] = rev.ID
 	}
+	var all []string
 	for _, layer := range spawn.LayerOrder {
 		id, ok := ids[layer]
 		if !ok {
@@ -168,9 +169,10 @@ func setupSpace(t *testing.T, revs *spawn.Revisions) {
 		if rev.State != "validated" {
 			t.Fatalf("validate %s %s: state %s detail %s", layer, id, rev.State, rev.Detail)
 		}
-		if _, err := revs.Activate(ctx, tenant, "alice", id); err != nil {
-			t.Fatalf("activate %s %s: %v", layer, id, err)
-		}
+		all = append(all, id)
+	}
+	if _, err := revs.Activate(ctx, tenant, "alice", all); err != nil {
+		t.Fatalf("activate set %v: %v", all, err)
 	}
 }
 
@@ -227,7 +229,7 @@ func TestRevisionRollbackActivatesOlder(t *testing.T) {
 		first := effectiveDigest(t, revs)
 
 		second := submitValidated(t, revs, "user", userDocs("UTC"))
-		if _, err := revs.Activate(ctx, tenant, "alice", second.ID); err != nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{second.ID}); err != nil {
 			t.Fatalf("activate second: %v", err)
 		}
 		if got := effectiveDigest(t, revs); got == first {
@@ -248,7 +250,7 @@ func TestRevisionRollbackActivatesOlder(t *testing.T) {
 		if older == "" {
 			t.Fatal("no superseded user revision")
 		}
-		if _, err := revs.Activate(ctx, tenant, "alice", older); err != nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{older}); err != nil {
 			t.Fatalf("rollback activate: %v", err)
 		}
 		if got := effectiveDigest(t, revs); got != first {
@@ -275,7 +277,7 @@ func TestApplyCrashLeavesPreviousActive(t *testing.T) {
 
 		second := submitValidated(t, revs, "user", userDocs("UTC"))
 		revs.BeforeCommit = func() error { return errors.New("injected crash") }
-		if _, err := revs.Activate(ctx, tenant, "alice", second.ID); err == nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{second.ID}); err == nil {
 			t.Fatal("activate with injected crash succeeded")
 		}
 		revs.BeforeCommit = nil
@@ -301,7 +303,7 @@ func TestApplyCrashLeavesPreviousActive(t *testing.T) {
 		}
 
 		// The same revision activates cleanly once the crash is gone.
-		if _, err := revs.Activate(ctx, tenant, "alice", second.ID); err != nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{second.ID}); err != nil {
 			t.Fatalf("activate after crash cleared: %v", err)
 		}
 	})
@@ -320,7 +322,7 @@ func TestEffectiveSpecIntersectsLayers(t *testing.T) {
 			"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}}},
 			"grants": {"allow": map[string]any{"workspace": []any{"read"}, "tools": []any{"list", "use"}}},
 		})
-		if _, err := revs.Activate(ctx, tenant, "alice", narrowed.ID); err != nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{narrowed.ID}); err != nil {
 			t.Fatalf("activate agent layer: %v", err)
 		}
 		spec, err := revs.Effective(ctx, tenant, "alice")
@@ -386,8 +388,8 @@ func TestAtMostOneActivePerLayer(t *testing.T) {
 		errs := make([]error, 2)
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _, errs[0] = revs.Activate(ctx, tenant, "alice", a.ID) }()
-		go func() { defer wg.Done(); _, errs[1] = revs.Activate(ctx, tenant, "alice", b.ID) }()
+		go func() { defer wg.Done(); _, errs[0] = revs.Activate(ctx, tenant, "alice", []string{a.ID}) }()
+		go func() { defer wg.Done(); _, errs[1] = revs.Activate(ctx, tenant, "alice", []string{b.ID}) }()
 		wg.Wait()
 
 		won, lost := 0, 0
@@ -430,7 +432,7 @@ func TestPruneKeepsNewestSuperseded(t *testing.T) {
 		zones := []string{"UTC", "Asia/Tokyo", "America/New_York", "Europe/London", "Australia/Sydney"}
 		for _, zone := range zones {
 			rev := submitValidated(t, revs, "user", userDocs(zone))
-			if _, err := revs.Activate(ctx, tenant, "alice", rev.ID); err != nil {
+			if _, err := revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
 				t.Fatalf("activate %s: %v", zone, err)
 			}
 		}
@@ -461,6 +463,186 @@ func TestPruneKeepsNewestSuperseded(t *testing.T) {
 		}
 		if len(prunedIDs) != 2 || prunedIDs[1] != list[len(list)-1].ID {
 			t.Fatalf("pruned set %v is not the oldest tail", prunedIDs)
+		}
+	})
+}
+
+// An activation whose would-be active set cannot compile is refused as a
+// conflict and writes nothing: every revision state, the history rows and
+// the serving digest are exactly what they were before the call.
+func TestActivationRefusesIncoherentSet(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		first := effectiveDigest(t, revs)
+
+		// The user revision validates first while no agent row exists; the
+		// agent then validates against the still-active user layer whose
+		// tools ops are [list,use] — an active row outranks the user's
+		// validated one.
+		user := submitValidated(t, revs, "user", map[string]map[string]any{
+			"config": {"memory": map[string]any{"backend": "local"}, "runtime": map[string]any{"timezone": "UTC"}},
+			"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}}},
+			"grants": {"allow": map[string]any{
+				"workspace": []any{"read", "write"},
+				"tools":     []any{"use"},
+			}},
+		})
+		agent := submitValidated(t, revs, "agent", map[string]map[string]any{
+			"grants": {"allow": map[string]any{
+				"workspace": []any{"read"},
+				"tools":     []any{"list", "use"},
+			}},
+		})
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{user.ID}); err != nil {
+			t.Fatalf("activate user without list: %v", err)
+		}
+		second := effectiveDigest(t, revs)
+		if second == first {
+			t.Fatal("user cut did not move the digest")
+		}
+		states := map[string]string{}
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, rev := range list {
+			states[rev.ID] = rev.State
+		}
+
+		// Activating the stale agent revision cannot compile against the
+		// new user layer: the cut must be refused wholesale.
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{agent.ID}); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("incoherent activation: want conflict, got %v", err)
+		}
+		list, err = revs.ListRevisions(ctx, tenant, "alice", "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, rev := range list {
+			if rev.State != states[rev.ID] {
+				t.Fatalf("refused activation moved %s to %s (was %s)", rev.ID, rev.State, states[rev.ID])
+			}
+			delete(states, rev.ID)
+		}
+		if len(states) != 0 {
+			t.Fatalf("refused activation deleted rows %v", states)
+		}
+		if got := effectiveDigest(t, revs); got != second {
+			t.Fatalf("refused activation moved the digest to %s", got)
+		}
+	})
+}
+
+// A rollback target that no longer compiles with the other active layers
+// is refused the same way — the current active set keeps serving.
+func TestRollbackRefusedWhenIncoherent(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+
+		// PT2 drops the browser-vnc port, then PC2 drops the browser
+		// service it pointed at — each move compiles against what is live.
+		template := layerDocs()["platform-template"]
+		delete(template["config"], "ports")
+		pt2 := submitValidated(t, revs, "platform-template", template)
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{pt2.ID}); err != nil {
+			t.Fatalf("activate template without ports: %v", err)
+		}
+		ceiling := layerDocs()["platform-ceiling"]
+		delete(ceiling["stack"]["services"].(map[string]any), "browser")
+		pc2 := submitValidated(t, revs, "platform-ceiling", ceiling)
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{pc2.ID}); err != nil {
+			t.Fatalf("activate ceiling without browser: %v", err)
+		}
+		serving := effectiveDigest(t, revs)
+
+		// The superseded template still publishes a port for a service the
+		// active ceiling no longer provides: rollback must be refused.
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "platform-template")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		var pt1 string
+		for _, rev := range list {
+			if rev.State == "superseded" {
+				pt1 = rev.ID
+			}
+		}
+		if pt1 == "" {
+			t.Fatal("no superseded template revision")
+		}
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{pt1}); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("incoherent rollback: want conflict, got %v", err)
+		}
+		if state := revisionState(t, revs, pt1); state != "superseded" {
+			t.Fatalf("refused rollback moved the row to %s", state)
+		}
+		if got := effectiveDigest(t, revs); got != serving {
+			t.Fatalf("refused rollback moved the digest to %s", got)
+		}
+	})
+}
+
+// Bootstrap is one activation of the whole layer set: a space with no
+// active set yet refuses to cut a single layer, then accepts all of them
+// in one transaction.
+func TestBootstrapActivatesLayersTogether(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		ctx := context.Background()
+		if _, err := revs.CreateSpace(ctx, tenant, "alice", "dev"); err != nil {
+			t.Fatalf("create space: %v", err)
+		}
+		layers := layerDocs()
+		layers["user"] = userDocs("Europe/Berlin")
+		var all []string
+		for _, layer := range spawn.LayerOrder {
+			docs, ok := layers[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Submit(ctx, tenant, "alice", layer, docs)
+			if err != nil {
+				t.Fatalf("submit %s: %v", layer, err)
+			}
+			all = append(all, rev.ID)
+		}
+		for _, id := range all {
+			rev, err := revs.Validate(ctx, tenant, "alice", id)
+			if err != nil {
+				t.Fatalf("validate %s: %v", id, err)
+			}
+			if rev.State != "validated" {
+				t.Fatalf("validate %s: %s", id, rev.State)
+			}
+		}
+
+		// One layer alone is not a spec — the space must stay empty.
+		if _, err := revs.Activate(ctx, tenant, "alice", all[:1]); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("single-layer bootstrap: want conflict, got %v", err)
+		}
+		for _, id := range all {
+			if state := revisionState(t, revs, id); state != "validated" {
+				t.Fatalf("refused bootstrap moved %s to %s", id, state)
+			}
+		}
+		if _, err := revs.Effective(ctx, tenant, "alice"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("effective before bootstrap: want not_found, got %v", err)
+		}
+
+		if _, err := revs.Activate(ctx, tenant, "alice", all); err != nil {
+			t.Fatalf("bootstrap set: %v", err)
+		}
+		if got := effectiveDigest(t, revs); got == "" {
+			t.Fatal("bootstrap produced no effective digest")
+		}
+		for _, id := range all {
+			if state := revisionState(t, revs, id); state != "active" {
+				t.Fatalf("bootstrapped %s is %s", id, state)
+			}
 		}
 	})
 }

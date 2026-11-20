@@ -208,6 +208,11 @@ newest `passport.RevisionKeepSlack` (3) superseded revisions per
 (space, layer) and moves older ones to the final `pruned` state.
 `rejected` and `pruned` are the tombstones. `rejected`/`pruned` content
 may be resubmitted — the digest dedup only binds non-pruned rows.
+Activation is a set operation: one transaction takes one or more
+revisions (at most one per layer) and first compiles the would-be active
+set — a set that cannot compile writes nothing, so a space never loses
+its serving policy to a partial cut; bootstrap is one activation of all
+layers together.
 
 ## ChannelLink
 

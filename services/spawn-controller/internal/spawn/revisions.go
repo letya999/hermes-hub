@@ -305,54 +305,40 @@ func (r *Revisions) Validate(ctx context.Context, t store.Tenant, spaceID, id st
 	return out, err
 }
 
-// Activate is the one-transaction revision cut: the current active row of
-// the layer is CAS'd to superseded (re-anchoring its base to the target so
-// rollback stays reachable), the target moves to active, the effective
-// spec is recomputed from every active layer and inserted if absent, and
-// superseded rows beyond the retention slack are pruned. The target must
-// have been validated or superseded against the still-current active —
-// any drift is a conflict. A crash anywhere before commit leaves the
-// previous active serving.
-func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID, id string) (Revision, error) {
-	var out Revision
+// Activate is the one-transaction revision cut over a SET of revisions —
+// at most one per layer; single-revision activation and rollback are the
+// one-element case. The transaction first compiles the would-be active set
+// (every current active layer with the listed layers replaced): if it does
+// not compile, a conflict is returned and NOTHING is written — no state
+// change, no supersede, no prune — so a space keeps serving the policy it
+// had. If it compiles, each listed revision's layer is CAS'd (the listed
+// row's base must still be the active row), the current rows move to
+// superseded re-anchored to their replacement, the targets move to active,
+// the effective spec is inserted if absent and superseded rows past the
+// keep slack are pruned. Activate is the authoritative gate — Validate is
+// only a pre-check against the newest known documents.
+func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string, ids []string) ([]Revision, error) {
+	var out []Revision
 	err := r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
-		rev, err := loadRevision(q, spaceID, id)
-		if err != nil {
-			return err
+		if len(ids) == 0 {
+			return httpapi.Errorf(httpapi.ErrInvalid, "empty activation set")
 		}
-		switch rev.State {
-		case "active":
-			out = rev.Revision
-			return nil
-		case "validated", "superseded":
-		default:
-			return fmt.Errorf("%w: revision %q is %s", store.ErrConflict, id, rev.State)
-		}
-		var curID string
-		err = q.QueryRow("SELECT id FROM passport_revisions WHERE {tenant} AND space_id = ? AND layer = ? AND state = 'active'", spaceID, rev.Layer).Scan(&curID)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-		if curID != rev.BaseRevision {
-			return fmt.Errorf("%w: activation base moved to %q", store.ErrConflict, curID)
-		}
-		now := r.now()
-		if curID != "" {
-			if err := fsm.Transition(q, PassportRevisionMachine, curID, "supersede", now); err != nil {
+		targets := map[string]revision{}
+		for _, id := range ids {
+			rev, err := loadRevision(q, spaceID, id)
+			if err != nil {
 				return err
 			}
-			if _, err := q.Exec("UPDATE passport_revisions SET base_revision = ? WHERE {tenant} AND id = ?", id, curID); err != nil {
-				return err
+			switch rev.State {
+			case "validated", "superseded", "active":
+			default:
+				return fmt.Errorf("%w: revision %q is %s", store.ErrConflict, id, rev.State)
 			}
-		}
-		if err := fsm.Transition(q, PassportRevisionMachine, id, "activate", now); err != nil {
-			return err
-		}
-		if r.BeforeCommit != nil {
-			if err := r.BeforeCommit(); err != nil {
-				return err
+			if _, dup := targets[rev.Layer]; dup {
+				return httpapi.Errorf(httpapi.ErrInvalid, "two revisions for layer %q", rev.Layer)
 			}
+			targets[rev.Layer] = rev
 		}
 		env, err := spaceEnvironment(q, spaceID)
 		if err != nil {
@@ -361,6 +347,21 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID, id st
 		byLayer, latest, err := activeLayerDocs(q, spaceID)
 		if err != nil {
 			return err
+		}
+		for layer, rev := range targets {
+			if rev.State == "active" {
+				continue
+			}
+			var docs map[string]map[string]any
+			if len(rev.documents) != 0 {
+				if err := json.Unmarshal(rev.documents, &docs); err != nil {
+					return err
+				}
+			}
+			byLayer[layer] = docs
+			if rev.CreatedAt > latest {
+				latest = rev.CreatedAt
+			}
 		}
 		reserved, err := reservedPorts(q, spaceID)
 		if err != nil {
@@ -371,28 +372,64 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID, id st
 			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
 		}
 		_, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
-		if compileErr == nil {
-			var have int
-			if err := q.QueryRow("SELECT count(*) FROM effective_specs WHERE {tenant} AND id = ?", digest).Scan(&have); err != nil {
+		if compileErr != nil {
+			return fmt.Errorf("%w: %s: %v", store.ErrConflict, locale.T(locale.Default, "spawn.revision-rejected"), compileErr)
+		}
+		now := r.now()
+		moved := map[string]string{}
+		for layer, rev := range targets {
+			if rev.State == "active" {
+				continue
+			}
+			var curID string
+			err = q.QueryRow("SELECT id FROM passport_revisions WHERE {tenant} AND space_id = ? AND layer = ? AND state = 'active'", spaceID, layer).Scan(&curID)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
-			if have == 0 {
-				if err := q.Insert("effective_specs", []string{"id", "space_id", "documents", "created_at"}, digest, spaceID, string(canonical), now.Unix()); err != nil {
+			if curID != rev.BaseRevision {
+				return fmt.Errorf("%w: activation base moved to %q", store.ErrConflict, curID)
+			}
+			if curID != "" {
+				if err := fsm.Transition(q, PassportRevisionMachine, curID, "supersede", now); err != nil {
+					return err
+				}
+				if _, err := q.Exec("UPDATE passport_revisions SET base_revision = ? WHERE {tenant} AND id = ?", rev.ID, curID); err != nil {
 					return err
 				}
 			}
+			if err := fsm.Transition(q, PassportRevisionMachine, rev.ID, "activate", now); err != nil {
+				return err
+			}
+			moved[layer] = rev.ID
 		}
-		// A compile failure never aborts the cut: during bootstrap the
-		// active set fills in layer by layer and may not yet be coherent,
-		// and Validate already gates quality. The effective spec simply
-		// materializes on the first activation whose set compiles; until
-		// then Effective reports the active set's compile error.
-		if err := pruneSuperseded(q, spaceID, rev.Layer, now); err != nil {
+		if r.BeforeCommit != nil {
+			if err := r.BeforeCommit(); err != nil {
+				return err
+			}
+		}
+		var have int
+		if err := q.QueryRow("SELECT count(*) FROM effective_specs WHERE {tenant} AND id = ?", digest).Scan(&have); err != nil {
 			return err
 		}
-		got, err := loadRevision(q, spaceID, id)
-		out = got.Revision
-		return err
+		if have == 0 {
+			if err := q.Insert("effective_specs", []string{"id", "space_id", "documents", "created_at"}, digest, spaceID, string(canonical), now.Unix()); err != nil {
+				return err
+			}
+		}
+		for layer := range moved {
+			if err := pruneSuperseded(q, spaceID, layer, now); err != nil {
+				return err
+			}
+		}
+		out = make([]Revision, 0, len(targets))
+		for _, id := range ids {
+			got, err := loadRevision(q, spaceID, id)
+			if err != nil {
+				return err
+			}
+			out = append(out, got.Revision)
+		}
+		return nil
 	})
 	return out, err
 }

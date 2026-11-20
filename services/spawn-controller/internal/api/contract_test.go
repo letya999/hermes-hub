@@ -181,6 +181,7 @@ func TestPolicySliceByDigestImmutable(t *testing.T) {
 			}
 			ids[layer] = rev.ID
 		}
+		var all []string
 		for _, layer := range spawnv1.Layers {
 			id, ok := ids[layer]
 			if !ok {
@@ -191,11 +192,12 @@ func TestPolicySliceByDigestImmutable(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("validate %s: %v", layer, err)
 			}
-			if _, err := client.ActivateRevision(ctx, "alice", id, spawnv1.RevisionRequest{
-				Org: contractTenant.Org, Owner: contractTenant.Owner, IdempotencyKey: "ka-" + layer,
-			}); err != nil {
-				t.Fatalf("activate %s: %v", layer, err)
-			}
+			all = append(all, id)
+		}
+		if _, err := client.ActivateRevisions(ctx, "alice", spawnv1.ActivationRequest{
+			Org: contractTenant.Org, Owner: contractTenant.Owner, Revisions: all, IdempotencyKey: "ka-all",
+		}); err != nil {
+			t.Fatalf("activate set: %v", err)
 		}
 		eff, err := client.Effective(ctx, contractTenant, "alice")
 		if err != nil {

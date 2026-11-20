@@ -30,7 +30,7 @@ Owns space compute in process mode: ensures one harness-runtime child per
 | `POST /v1/spaces` | register the tenant space | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/layers/{layer}/revisions` | submit one layer's documents as a draft revision | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/revisions/{id}/validate` | compile the draft against the other layers | write | `idempotency_key` |
-| `POST /v1/spaces/{space}/revisions/{id}/activate` | cut the revision in one transaction | write | `idempotency_key` |
+| `POST /v1/spaces/{space}/activations` | cut a revision set (one or more ids, at most one per layer) in one transaction; the would-be active set must compile or nothing moves | write | `idempotency_key` |
 | `GET /v1/spaces/{space}/revisions?layer=` | list revisions, optionally by layer | read | - |
 | `GET /v1/spaces/{space}/effective` | the active layers' compiled spec | read | - |
 | `GET /v1/spaces/{space}/policy/{service}?digest=` | immutable policy slice for one consumer | read | - |
