@@ -56,7 +56,12 @@ evidence:
   - "9c796a00: TestTenantInvariants covers spaces, effective_specs, passport_revisions and its history in internal/api; the internal/spawn suite already covers all tables."
   - "9c796a00: TestMinimalProfileAnswersMessage red ('catalog: open \\opt\\hub\\platform\\catalogs\\42\\manifest.yaml: path not found'), green — catalog resolves lazily per compile and hubctl injects HUB_CATALOG_ROOT only when it resolved a real manifest."
   - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl ./shared/locale/... green."
-remaining:
-  - "S2 known limitation: with no effective spec yet, Effective reports the active set's compile error as unavailable; activation never aborts on a partial merge — Validate is the quality gate."
+  - "d0ac1535: TestActivationRefusesIncoherentSet red ('incoherent activation: want conflict, got <nil>' — the stale agent revision committed and replaced the user layer's digest), green; the would-be-set compile inside the transaction returns conflict and writes nothing — states, history and digest unchanged."
+  - "d0ac1535: TestRollbackRefusedWhenIncoherent red ('incoherent rollback: want conflict, got <nil>'), green; a superseded template whose port's service the active ceiling dropped is refused, current set keeps serving."
+  - "d0ac1535: TestBootstrapActivatesLayersTogether red ('single-layer bootstrap: want conflict, got <nil>'), green; one layer alone is refused, all layers in one Activate commit — POST /v1/spaces/{space}/activations carries {org, owner, revisions: [ids]}."
+  - "4169d150: TestCatalogLoadRetriesAfterFailure red ('retry after failure: transient catalog failure' — sync.Once cached the error forever), green; catalogLoader caches only a successful load, mutex not Once."
+  - "4169d150: parseGrantsOps shared between LayeredGrants (bound = ops declared by layers above + agent-may-not-introduce) and CompileAuthoredDocs (bound = the caller's trusted grant ceiling) — different bounds, one parser; README env table documents HUB_CATALOG_ROOT."
+  - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl green."
+remaining: []
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
