@@ -14,6 +14,7 @@ last_verified: 2026-11-19
 | [architecture.md](architecture.md) | System overview — roles, component map, networks, lifecycle |
 | [boundaries.md](boundaries.md) | Per-component walls and system non-goals |
 | [engineering.md](engineering.md) | Go conventions, gates, pins, change process |
+| [shared.md](shared.md) | Shared infrastructure, trusted process launcher and test fixtures; minimal message acceptance remains pending core extraction |
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |

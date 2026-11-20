@@ -97,3 +97,31 @@ import them through the workspace.
 Moving any service (M40.3+). Docker/k8s descriptors (M40.3, M40.15).
 Docs owned by M40.1: docs/engineering.md, docs/architecture.md,
 docs/state-machines.md, ADR-0105..0109, SPEC-0100, services/README.template.md.
+
+## Continuation verification (2026-11-20)
+
+- c8d41b0e: pgx direct dependency, go mod tidy, ADR-0115, mandatory CI Postgres
+  job, SQL scope bypass regressions. Real red: marker in literal/comment, UNION,
+  negated guard and nested SELECT all returned data before the guard fix.
+- 8b9b5c07: descriptors, profiles, trusted process launcher; trust refusal red
+  before guard and green after; two external child processes stopped/joined on
+  cancellation and first child exit. This is launcher verification only.
+- 50fa92d7: testkit, task fake conformance, tool snapshot; drift detection tested
+  independently of initial artifact creation. No catalog version or shape changed.
+- 49c1ed25: retired multiplexer, gate/baseline and toolsurface removed; tenant
+  invariants run first; service_enable without policy red (wrote state/restarted)
+  then green (unauthorized, no state, no restart).
+- Existing migration and FSM regressions have no supplied original behavioral
+  red logs. Later sensitivity probes deliberately allowed duplicate migration,
+  allowed forbidden transitions, or disabled sweep collection: the intended
+  assertions failed. All probes restore production bytes before green checks.
+- just security passed (govulncheck + npm audit). Postgres store/FSM suites passed
+  in a uniquely named disposable postgres:17.12-alpine container, then stopped.
+- Real minimal message topology remains unavailable until M40.3/M40.4. The named
+  test skips with that reason; no fixture response is claimed as integration.
+
+## Remaining acceptance
+
+Owner review, minimal real topology, remote Postgres CI, publication and any live
+smoke remain explicit acceptance actions. Keep this CHG in progress while that
+acceptance is outstanding. No push, PR, live stack mutation or prune is performed.

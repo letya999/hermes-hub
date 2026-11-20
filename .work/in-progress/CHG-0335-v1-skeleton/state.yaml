@@ -4,7 +4,7 @@ title: v1 skeleton - shared packages, service descriptor, process mode, test bas
 status: in_progress
 branch: feat/m40-2-skeleton
 updated: 2026-11-20
-phase: implementation
+phase: verification
 adr: ADR-0105
 spec: SPEC-0100
 depends_on: [CHG-0330]
@@ -13,15 +13,37 @@ github_issue: 600
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S1-store: planned
-  S2-fsm: planned
-  S3-httpapi: planned
-  S4-auth-locale-log: planned
-  S5-descriptor: planned
-  S6-process-mode: planned
-  S7-test-base: planned
-  S8-deletions: planned
-  S9-contracts-on-httpapi: planned
-evidence: []
-remaining: []
-limitations: []
+  S1-store: green
+  S2-fsm: green
+  S3-httpapi: green
+  S4-auth-locale-log: green
+  S5-descriptor: green
+  S6-process-mode: green
+  S7-test-base: partial_topology_gap
+  S8-deletions: green
+  S9-contracts-on-httpapi: green
+validation:
+  postgres_local: passed_disposable_container_stopped
+  security: passed
+  just_check: pending_after_merge
+  all_modules_build: pending_after_merge
+  minimal_message_topology: unavailable_core_binaries_not_extracted
+  postgres_ci: unavailable_unpublished
+evidence:
+  - "Committed foundations: c73e56da httpapi; 560df786 store; b78678dd fsm; 7844b934 locale; 97ba833f auth and log."
+  - "TestProcessModeRefusesUntrusted: red before trust guard (binary lookup reached), green after; explicit false overrides HUB_TRUSTED=true and touches no data."
+  - "TestServiceEnableRefusesWithoutPolicy: red (enable wrote state and restarted), green after retiring the unconditional legacy writer."
+  - "TestStoreRefusesUnscopedQuery: five bypasses red (literal, comment, UNION, negation, subquery), green with restricted single-table SQL and scope as first WHERE predicate."
+  - "Disposable postgres:17.12-alpine store/fsm suites passed; uniquely named container stopped and auto-removed. pgx/v5/stdlib is actually imported; go mod tidy completed."
+  - "just security passed: govulncheck No vulnerabilities found; npm audit found 0 vulnerabilities."
+  - "Process launcher cancellation and first-child exit tests pass against external fixture executables, including env allowlist, wiring and joining all child exits; not a minimal topology acceptance."
+  - "Task and identity contracts already use shared/httpapi after c73e56da; fake task server passes the same in-process and HTTP conformance suite."
+  - "rg and go list confirm no production imports of removed cmd/hub, contracts/toolsurface, deps gate, ReadSelfServicesFeatures or HUB_ACTIVE_FEATURES."
+remaining:
+  - "Merge into feat/m40-v1-platform, update engineering rule links, build every go.work module, just check and affected packages."
+  - "Real TestMinimalProfileAnswersMessage awaits M40.3/M40.4 core binaries; marked skipped, never green."
+  - "Owner review and remote Postgres CI acceptance require separate publication authorization."
+limitations:
+  - "No live smoke, push, PR, prune or worktree removal."
+  - "No original behavioral red artifact supplied for the four already committed store/fsm tests; preserve this evidence gap and report later sensitivity probes separately."
+  - "Service descriptor covers hub processes; browser-runtime and workers remain per-space launches for M40.3/M40.4, not installation daemons."
