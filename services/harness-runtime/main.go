@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,12 +86,34 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func routes() *http.ServeMux {
+// guard applies the shared service-surface checks: a browser Origin is
+// refused outright, then the shared service token must match in constant
+// time. /healthz stays open for the launcher probe.
+func guard(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "browser origin refused"})
+			return
+		}
+		got, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !bearer || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func routes(token string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/messages", guard(token, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "application/json required"})
 			return
 		}
 		var input struct {
@@ -108,7 +131,7 @@ func routes() *http.ServeMux {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"reply": reply})
-	})
+	}))
 	return mux
 }
 
@@ -120,11 +143,15 @@ func serve(ctx context.Context) error {
 	if listen == "" {
 		return errors.New("HUB_LISTEN is required")
 	}
+	token := os.Getenv("HUB_SERVICE_TOKEN")
+	if token == "" {
+		return errors.New("HUB_SERVICE_TOKEN is required")
+	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: routes(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: routes(token), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		_ = server.Shutdown(context.Background())

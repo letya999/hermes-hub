@@ -220,16 +220,18 @@ func TestProcessEnvironmentContainsOnlyDeclaredValues(t *testing.T) {
 	t.Setenv("DECLARED_TEST_VALUE", "allowed")
 	svc := profileServices("minimal")[1]
 	svc.Env = []string{"DECLARED_TEST_VALUE"}
-	env := strings.Join(processEnv(svc, profileServices("minimal"), "data"), "\n")
-	if strings.Contains(env, "synthetic-private") || !strings.Contains(env, "DECLARED_TEST_VALUE=allowed") || !strings.Contains(env, "HUB_SPAWN_CONTROLLER_URL=http://127.0.0.1:9201") || strings.Contains(env, "HUB_TOOL_HUB_URL=") || !strings.Contains(env, "harness-runtime.db") || !strings.Contains(env, "HUB_DATA_DIR="+filepath.Join("data", "harness-runtime")) {
+	env := strings.Join(processEnv(svc, profileServices("minimal"), "data", "tok"), "\n")
+	if strings.Contains(env, "synthetic-private") || !strings.Contains(env, "DECLARED_TEST_VALUE=allowed") || !strings.Contains(env, "HUB_SPAWN_CONTROLLER_URL=http://127.0.0.1:9201") || strings.Contains(env, "HUB_TOOL_HUB_URL=") || !strings.Contains(env, "harness-runtime.db") || !strings.Contains(env, "HUB_SERVICE_TOKEN=tok") || !strings.Contains(env, "HUB_DATA_DIR="+filepath.Join("data", "harness-runtime")) {
 		t.Fatalf("environment wiring: %s", env)
 	}
 }
 
-// The minimal profile answers a real message end to end: hubctl run starts
-// spawn-controller, the controller spawns a harness-runtime child for the
-// (space, agent) pair, and the child answers through the fake model server.
-// No fixture stands in for the binaries, the launcher or the message path.
+// The minimal profile answers a real message end to end: the launcher
+// starts spawn-controller on a free port, the controller spawns a
+// harness-runtime child for the (space, agent) pair, and the child answers
+// through the fake model server. No fixture stands in for the binaries,
+// the launcher or the message path — and the service surface refuses
+// unauthenticated, browser-origin and non-JSON calls.
 func TestMinimalProfileAnswersMessage(t *testing.T) {
 	binDir := t.TempDir()
 	suffix := ""
@@ -246,32 +248,52 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	model := testkit.ModelServer(t, "pong-", "answer")
 	t.Setenv("HUB_MANAGED_MODEL_URL", model.URL+"/v1")
 	t.Setenv("HUB_MANAGED_MODEL_ID", "fixture-model")
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("HUB_TRUSTED=true\n"), 0o600); err != nil {
+	t.Setenv("HUB_SERVICE_TOKEN", "test-service-token")
+	services := launchedServices("minimal")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
+	services[0].Port = listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	base := "http://127.0.0.1:" + strconv.Itoa(services[0].Port)
+	dir := t.TempDir()
+	t.Chdir(dir)
 	data := filepath.Join(dir, "data")
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runProcesses(ctx, []string{"--mode", "process", "--profile", "minimal", "--bin", binDir, "--data", data})
+		done <- launchProcesses(ctx, services, binDir, data)
 	}()
+	// The launcher's trust gate is covered by its own test; here the process
+	// surface itself must be real. Poll until it answers or the launcher dies.
 	deadline := time.Now().Add(60 * time.Second)
+	post := func(body, token string, headers map[string]string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, base+"/v1/messages", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, nil
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, raw
+	}
 	var reply string
 	for reply == "" {
-		resp, err := http.Post("http://127.0.0.1:9201/v1/messages", "application/json", strings.NewReader(`{"space":"s1","agent":"a1","text":"ping"}`))
-		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				var out struct {
-					Reply string `json:"reply"`
-				}
-				if json.Unmarshal(body, &out) == nil {
-					reply = out.Reply
-				}
+		status, body := post(`{"space":"s1","agent":"a1","text":"ping"}`, "test-service-token", map[string]string{"Content-Type": "application/json"})
+		if status == http.StatusOK {
+			var out struct {
+				Reply string `json:"reply"`
+			}
+			if json.Unmarshal(body, &out) == nil {
+				reply = out.Reply
 			}
 		}
 		if reply == "" {
@@ -288,7 +310,27 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	if reply != "pong-answer" {
 		t.Fatalf("reply %q", reply)
 	}
-	resp, err := http.Get("http://127.0.0.1:9201/v1/runtimes")
+	// The same surface must refuse what a stray caller or browser could send.
+	for _, tc := range []struct {
+		name    string
+		token   string
+		headers map[string]string
+		want    int
+	}{
+		{"no token", "", map[string]string{"Content-Type": "application/json"}, http.StatusUnauthorized},
+		{"wrong token", "nope", map[string]string{"Content-Type": "application/json"}, http.StatusUnauthorized},
+		{"browser origin", "test-service-token", map[string]string{"Content-Type": "application/json", "Origin": "http://evil.example"}, http.StatusForbidden},
+		{"form post", "test-service-token", map[string]string{"Content-Type": "text/plain"}, http.StatusUnsupportedMediaType},
+	} {
+		t.Run("refuse-"+tc.name, func(t *testing.T) {
+			if status, _ := post(`{"space":"s1","agent":"a1","text":"ping"}`, tc.token, tc.headers); status != tc.want {
+				t.Fatalf("status %d, want %d", status, tc.want)
+			}
+		})
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/runtimes", nil)
+	req.Header.Set("Authorization", "Bearer test-service-token")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,11 +339,15 @@ func TestMinimalProfileAnswersMessage(t *testing.T) {
 	if !strings.Contains(string(body), `"space":"s1"`) || !strings.Contains(string(body), `"state":"running"`) {
 		t.Fatalf("spawned runtime missing: %s", body)
 	}
+	// The written token file is how local tooling authenticates.
+	if raw, err := os.ReadFile(filepath.Join(data, "service.token")); err != nil || strings.TrimSpace(string(raw)) != "test-service-token" {
+		t.Fatalf("service.token: %v", err)
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("launcher: %v", err)
 	}
-	if conn, err := net.DialTimeout("tcp", "127.0.0.1:9201", time.Second); err == nil {
+	if conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(services[0].Port), time.Second); err == nil {
 		_ = conn.Close()
 		t.Fatal("spawn-controller survived launcher shutdown")
 	}

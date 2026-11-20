@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/shared/locale"
 	hublog "github.com/letya999/hermes-hub/shared/log"
+	"github.com/letya999/hermes-hub/shared/proctree"
 )
 
 func runProcesses(ctx context.Context, args []string) error {
@@ -63,7 +66,25 @@ func serviceURLEnv(name string) string {
 	return "HUB_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_URL"
 }
 
-func processEnv(svc ServiceDescriptor, services []ServiceDescriptor, data string) []string {
+// serviceToken returns the operator-declared token or generates a
+// per-launch one. Every launched and spawned service shares it; it is
+// written to <data>/service.token (0600) so local tooling can authenticate.
+func serviceToken(data string) (string, error) {
+	token := os.Getenv("HUB_SERVICE_TOKEN")
+	if token == "" {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		token = hex.EncodeToString(raw)
+	}
+	if err := os.WriteFile(filepath.Join(data, "service.token"), []byte(token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func processEnv(svc ServiceDescriptor, services []ServiceDescriptor, data, token string) []string {
 	var env []string
 	// OS bootstrap only. Do not inherit the operator's provider credentials.
 	for _, name := range append([]string{"PATH", "SYSTEMROOT", "TEMP", "TMP", "HUB_LOG_LEVEL"}, svc.Env...) {
@@ -74,7 +95,8 @@ func processEnv(svc ServiceDescriptor, services []ServiceDescriptor, data string
 	env = append(env, "HUB_TRUSTED=true", "HUB_SERVICE="+svc.Name,
 		"HUB_LISTEN=127.0.0.1:"+strconv.Itoa(svc.Port),
 		"HUB_DATA_DIR="+filepath.Join(data, svc.DataDir),
-		"HUB_DATABASE_URL=sqlite://"+filepath.ToSlash(filepath.Join(data, svc.Name+".db")))
+		"HUB_DATABASE_URL=sqlite://"+filepath.ToSlash(filepath.Join(data, svc.Name+".db")),
+		"HUB_SERVICE_TOKEN="+token)
 	for _, edge := range svc.Edges {
 		for _, dependency := range services {
 			if dependency.Name == edge {
@@ -113,6 +135,15 @@ func launchProcesses(ctx context.Context, services []ServiceDescriptor, bin, dat
 			return err
 		}
 	}
+	token, err := serviceToken(data)
+	if err != nil {
+		return err
+	}
+	group, err := proctree.NewGroup()
+	if err != nil {
+		return err
+	}
+	defer group.Close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type exit struct{ service string }
@@ -128,13 +159,17 @@ func launchProcesses(ctx context.Context, services []ServiceDescriptor, bin, dat
 	logger := hublog.New(os.Stdout, "hubctl")
 	for i, svc := range services {
 		cmd := exec.CommandContext(ctx, paths[i]) // #nosec G204 -- operator-selected local binary, no shell or arguments
-		setSysProcAttr(cmd)
-		cmd.Cancel = func() error { return interruptProcess(cmd.Process) }
+		proctree.Configure(cmd)
+		cmd.Cancel = func() error { return proctree.Interrupt(cmd.Process) }
 		cmd.WaitDelay = 10 * time.Second
-		cmd.Env = processEnv(svc, services, data)
+		cmd.Env = processEnv(svc, services, data, token)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			return errors.New(locale.T(lang, "hubctl.run-start", svc.Name))
+		}
+		if err := group.Assign(cmd); err != nil {
+			_ = cmd.Cancel()
+			return err
 		}
 		started++
 		go func(name string) {

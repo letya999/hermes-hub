@@ -23,6 +23,10 @@ Owns space compute in process mode: ensures one harness-runtime child per
 | `GET /v1/runtimes` | list managed runtimes | read | - |
 | `POST /v1/messages` | ensure runtime for (space, agent), forward the message, relay the reply | write-local | `space` + `agent` |
 
+`/v1/*` requires `Authorization: Bearer $HUB_SERVICE_TOKEN` (constant-time
+compare): an `Origin` header is refused 403, missing or wrong bearer 401, a
+non-JSON POST 415. `/healthz` stays open for the launcher probe.
+
 ## State machines
 
 | From | Event | To | Deadline / sweeper |
@@ -45,13 +49,18 @@ record that arrives with M40.3.
 | `HUB_TRUSTED` | - | must be `true`; the service refuses otherwise |
 | `HUB_LISTEN` | - | `host:port` the controller binds |
 | `HUB_DATA_DIR` | - | own data dir; runtimes spawn under `runtimes/` |
+| `HUB_SERVICE_TOKEN` | - | bearer token required on `/v1/*` and forwarded to children; startup refuses without it |
+| `HUB_MAX_RUNTIMES` | `32` | upper bound on live children; must be a positive integer |
 | `HUB_DATABASE_URL` | `sqlite://<data>/<svc>.db` | reserved store connection string |
 | `HUB_MANAGED_MODEL_URL` | - | passed through to spawned runtimes |
 | `HUB_MANAGED_MODEL_ID` | - | passed through to spawned runtimes |
 | `HUB_FEATURES` | - | passed through to spawned runtimes |
 
-Only these names plus `TZ` reach spawned children; runtime binaries are
-resolved next to the controller's own binary.
+Only the three pass-through names plus `TZ` reach spawned children from the
+operator environment; the controller itself sets `HUB_TRUSTED`,
+`HUB_SERVICE`, `HUB_LISTEN`, `HUB_DATA_DIR`, `HUB_DATABASE_URL` and
+`HUB_SERVICE_TOKEN` on each child. Runtime binaries are resolved next to the
+controller's own binary.
 
 ## Extension point
 

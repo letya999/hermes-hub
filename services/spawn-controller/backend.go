@@ -11,7 +11,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/shared/proctree"
 )
 
 // Runtime is one space workload managed by the controller.
@@ -41,12 +44,16 @@ type Backend interface {
 
 // processBackend starts service binaries from the controller's own binary
 // directory as local child processes. env names the operator variables the
-// child may inherit.
+// child may inherit; token is the shared service credential the child must
+// serve and callers must present; group binds every child to this process.
 type processBackend struct {
 	binDir   string
 	dataDir  string
 	env      []string
+	token    string
 	ctx      context.Context
+	group    *proctree.Group
+	mu       sync.Mutex
 	children map[string]*childRuntime
 }
 
@@ -65,7 +72,7 @@ func (b *processBackend) envFor(spec SpawnSpec, port int) []string {
 		"HUB_LISTEN=127.0.0.1:" + strconv.Itoa(port),
 		"HUB_DATA_DIR=" + child,
 		"HUB_DATABASE_URL=sqlite://" + filepath.ToSlash(filepath.Join(child, "harness-runtime.db")),
-		"HUB_SPAWN_CONTROLLER_URL=" + controllerURL(),
+		"HUB_SERVICE_TOKEN=" + b.token,
 	}
 	for _, name := range b.env {
 		if value, ok := os.LookupEnv(name); ok {
@@ -93,18 +100,24 @@ func (b *processBackend) Start(ctx context.Context, spec SpawnSpec) (Runtime, er
 	// The child's lifetime binds to the backend, not to the request that
 	// triggered the spawn: cancelling one caller must not kill the runtime.
 	cmd := exec.CommandContext(b.ctx, path) // #nosec G204 -- own binary directory, fixed service name
-	setSysProcAttr(cmd)
-	cmd.Cancel = func() error { return interruptProcess(cmd.Process) }
+	proctree.Configure(cmd)
+	cmd.Cancel = func() error { return proctree.Interrupt(cmd.Process) }
 	cmd.WaitDelay = 10 * time.Second
 	cmd.Env = b.envFor(spec, port)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return Runtime{}, fmt.Errorf("spawn %s: %w", spec.Key, err)
 	}
+	if err := b.group.Assign(cmd); err != nil {
+		_ = cmd.Cancel()
+		return Runtime{}, err
+	}
 	child := &childRuntime{cmd: cmd, done: make(chan struct{})}
 	child.rt = Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "starting", Address: fmt.Sprintf("http://127.0.0.1:%d", port)}
 	go func() { _ = cmd.Wait(); close(child.done) }()
+	b.mu.Lock()
 	b.children[spec.Key] = child
+	b.mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, child.rt.Address+"/healthz", nil)
@@ -118,28 +131,38 @@ func (b *processBackend) Start(ctx context.Context, spec SpawnSpec) (Runtime, er
 		}
 		select {
 		case <-child.done:
-			delete(b.children, spec.Key)
+			b.remove(spec.Key)
 			return Runtime{}, errors.New("runtime exited before healthy")
 		case <-ctx.Done():
-			delete(b.children, spec.Key)
+			b.remove(spec.Key)
 			_ = b.Stop(context.Background(), spec.Key)
 			return Runtime{}, ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
 			_ = cmd.Cancel()
-			delete(b.children, spec.Key)
+			b.remove(spec.Key)
 			return Runtime{}, errors.New("runtime did not become healthy")
 		}
 	}
 }
 
+func (b *processBackend) remove(id string) {
+	b.mu.Lock()
+	delete(b.children, id)
+	b.mu.Unlock()
+}
+
 func (b *processBackend) Stop(_ context.Context, id string) error {
+	b.mu.Lock()
 	child, ok := b.children[id]
+	if ok {
+		delete(b.children, id)
+	}
+	b.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	delete(b.children, id)
 	select {
 	case <-child.done:
 	default:
@@ -150,7 +173,9 @@ func (b *processBackend) Stop(_ context.Context, id string) error {
 }
 
 func (b *processBackend) Inspect(_ context.Context, id string) (Runtime, error) {
+	b.mu.Lock()
 	child, ok := b.children[id]
+	b.mu.Unlock()
 	if !ok {
 		return Runtime{}, errors.New("unknown runtime")
 	}
@@ -164,15 +189,16 @@ func (b *processBackend) Inspect(_ context.Context, id string) (Runtime, error) 
 }
 
 func (b *processBackend) List(context.Context) []Runtime {
+	b.mu.Lock()
 	list := make([]Runtime, 0, len(b.children))
 	for _, child := range b.children {
-		rt := child.rt
-		select {
-		case <-child.done:
-			rt.State = "exited"
-		default:
+		list = append(list, child.rt)
+	}
+	b.mu.Unlock()
+	for i := range list {
+		if rt, err := b.Inspect(context.Background(), list[i].ID); err == nil {
+			list[i] = rt
 		}
-		list = append(list, rt)
 	}
 	return list
 }

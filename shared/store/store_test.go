@@ -71,6 +71,22 @@ func TestStoreRefusesUnscopedQuery(t *testing.T) {
 				_, err := q.Exec("UPDATE items SET v = ?, owner = ? WHERE {tenant} AND id = ?", "x", "bob", "i1")
 				return err
 			},
+			"tuple set moves the tenant": func(q store.Scoped) error {
+				_, err := q.Exec("UPDATE items SET (org, owner) = (?, ?) WHERE {tenant} AND id = ?", "org-b", "bob", "i1")
+				return err
+			},
+			"update reads tenant columns in SET": func(q store.Scoped) error {
+				_, err := q.Exec("UPDATE items SET v = owner WHERE {tenant} AND id = ?", "i1")
+				return err
+			},
+			"IN TABLE reads a foreign table": func(q store.Scoped) error {
+				var v string
+				return q.QueryRow("SELECT v FROM items WHERE {tenant} AND id IN (TABLE items)", "i1").Scan(&v)
+			},
+			"IN VALUES escapes the table": func(q store.Scoped) error {
+				var v string
+				return q.QueryRow("SELECT v FROM items WHERE {tenant} AND id IN (VALUES ('i1'))").Scan(&v)
+			},
 			"query rows without marker": func(q store.Scoped) error {
 				rows, err := q.Query("SELECT v FROM items")
 				if err == nil {

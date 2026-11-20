@@ -254,7 +254,7 @@ func provisionPreflight(dir, user, env string) []string {
 		} else if !settings.RendersInfra() {
 			findings = append(findings, fmt.Sprintf("infra space %s does not render infra", filepath.Base(infra)))
 		}
-		if _, err := os.Lstat(filepath.Join(infra, "runtime", "toolhub", "store.db")); err != nil {
+		if _, err := os.Lstat(api.ResolveStorePath(filepath.Join(infra, "runtime", "toolhub"))); err != nil {
 			findings = append(findings, fmt.Sprintf("infra toolhub store: %v", err))
 		}
 	}
@@ -305,7 +305,9 @@ type provisionBundle struct {
 
 func buildProvisionBundle(dir, user, env, root, profileName, expires, issuer string, now time.Time) (*provisionBundle, error) {
 	infra := stack.InfraSpaceDir(dir)
-	storePath := filepath.Join(infra, "runtime", "toolhub", "store.db")
+	// ResolveStorePath, not a hardcoded store.db: the SQLite substrate is
+	// authoritative only once it exists without a live store.json beside it.
+	storePath := api.ResolveStorePath(filepath.Join(infra, "runtime", "toolhub"))
 	definition := agenttools.HubToolsDefinition()
 	digest := api.DefinitionDigest(definition)
 

@@ -69,11 +69,13 @@ var scopedWhere = regexp.MustCompile(`(?i)\bWHERE\s+\{tenant\}(\s+AND\b|\s+(ORDE
 var scopedFrom = regexp.MustCompile(`(?i)\bFROM\s+[a-z_][a-z0-9_]*\s+WHERE\s+\{tenant\}`)
 var sqlWords = regexp.MustCompile(`[a-zA-Z_]+`)
 
-// tenantColumnsAssigned matches an org or owner assignment in an UPDATE's
-// SET clause. The check runs on the literal-stripped form, so 'x”org' can
-// never spoof a column name, and the SET..WHERE bound keeps a coincidental
-// predicate mention from matching.
-var tenantColumnsAssigned = regexp.MustCompile(`(?i)\bSET\b[^;]*?\b(org|owner)\b\s*=`)
+// setClause bounds an UPDATE's SET clause (a scoped statement has exactly
+// one WHERE). tenantInSet then refuses any org/owner word inside it —
+// assignments, the tuple form SET (org, owner) = (?, ?) and reads like
+// SET v = owner — so authored SQL can never move or inspect tenant
+// identity; Insert supplies both columns itself.
+var setClause = regexp.MustCompile(`(?i)\bSET\b(.*?)\bWHERE\b`)
+var tenantInSet = regexp.MustCompile(`(?i)\b(org|owner)\b`)
 
 // Insert adds one row whose org and owner come from the handle.
 func (q Scoped) Insert(table string, columns []string, values ...any) error {
@@ -139,7 +141,7 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 				wheres++
 			case "FROM":
 				froms++
-			case "JOIN", "UNION", "INTERSECT", "EXCEPT", "WITH", "RETURNING", "INTO":
+			case "JOIN", "UNION", "INTERSECT", "EXCEPT", "WITH", "RETURNING", "INTO", "TABLE", "VALUES":
 				return "", nil, ErrUnscoped
 			}
 		}
@@ -147,9 +149,12 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 			return "", nil, ErrUnscoped
 		}
 		// A scoped UPDATE can narrow or expire its own tenant's rows, never
-		// move them: org and owner are assigned only by Insert's tenant.
-		if updates == 1 && tenantColumnsAssigned.MatchString(plain) {
-			return "", nil, fmt.Errorf("%w: UPDATE assigns org or owner", ErrUnscoped)
+		// move them or probe their identity: org and owner may not appear in
+		// the SET clause at all — Insert binds them from the tenant handle.
+		if updates == 1 {
+			if m := setClause.FindStringSubmatch(plain); m != nil && tenantInSet.MatchString(m[1]) {
+				return "", nil, fmt.Errorf("%w: UPDATE touches org or owner", ErrUnscoped)
+			}
 		}
 	}
 	var out strings.Builder
