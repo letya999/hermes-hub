@@ -146,7 +146,12 @@ in the same transaction — a draining, missing or quarantined row can
 never carry a hold into its next generation. The claim binds tenant,
 policy digest and image digest to the row (Decision 10): warm reuse is
 exact-key only, and activation drains every runtime bound to the old
-digest in the activation transaction.
+digest in the activation transaction. A runtime whose backend Start
+outlives an activation is the gap activation cannot see — its ready
+move checks the space's stored digest in the same transaction and warms
+straight into draining on a mismatch, the claim re-plans for the current
+digest, and the sweeper drains any warm/busy row whose digest stops
+matching as the backstop for both.
 
 ### v1 live (spawn-controller)
 

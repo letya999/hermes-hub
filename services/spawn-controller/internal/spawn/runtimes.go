@@ -104,6 +104,11 @@ type claimPlan struct {
 // waiting on the winner, never by starting a second workload.
 var errClaimLost = errors.New("spawn: lost the start race")
 
+// errStaleDigest marks a started runtime whose policy was revoked while
+// its backend Start ran: the row is already draining — the claim re-plans
+// for the current digest instead of leasing the revoked generation.
+var errStaleDigest = errors.New("spawn: policy digest revoked during start")
+
 // Claim resolves one (tenant, space, agent) to a runtime whose workload
 // is up and whose row is warm or busy — reusing a warm row only on the
 // exact Decision 10 key. A space without a stored effective digest is
@@ -137,7 +142,11 @@ func (r *Runtimes) Claim(ctx context.Context, t store.Tenant, spaceID, agent str
 				return Runtime{}, err
 			}
 		default:
-			return r.start(ctx, plan)
+			rt, err := r.start(ctx, plan)
+			if errors.Is(err, errStaleDigest) {
+				continue // revoked mid-start — re-plan for the current digest
+			}
+			return rt, err
 		}
 	}
 }
@@ -255,8 +264,11 @@ func (r *Runtimes) waitStarted(ctx context.Context, t store.Tenant, id string) e
 }
 
 // start runs the backend call outside any transaction, then commits the
-// outcome: ready -> warm with the workload's address, or fail. A row the
-// sweeper already moved on (start budget fired mid-Start) can no longer
+// outcome: ready -> warm with the workload's address, or fail — unless an
+// activation revoked the row's digest while Start ran, in which case the
+// row warms straight into draining in the same transaction (a runtime
+// under a revoked policy is never observable warm) and the workload is
+// stopped on the spot. A row the sweeper already moved on can no longer
 // take ready — the just-started workload is stopped instead of orphaned.
 func (r *Runtimes) start(ctx context.Context, plan claimPlan) (Runtime, error) {
 	rt := plan.start
@@ -267,18 +279,43 @@ func (r *Runtimes) start(ctx context.Context, plan claimPlan) (Runtime, error) {
 	}
 	rt.Address = launched.Address
 	t := store.Tenant{Org: plan.spec.Org, Owner: plan.spec.Owner}
+	stale := false
 	err = r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
 		if _, err := q.Exec("UPDATE runtimes SET address = ? WHERE {tenant} AND id = ?", rt.Address, rt.ID); err != nil {
 			return err
 		}
-		return runtimeTransition(q, rt.ID, "ready", r.now())
+		if err := runtimeTransition(q, rt.ID, "ready", r.now()); err != nil {
+			return err
+		}
+		// Activation only drains warm/busy rows — a runtime whose Start
+		// outlives an activation is the gap this check closes. The
+		// space's stored pointer is the only truth: anything else on the
+		// row (or a gone space row) means revoke.
+		var current string
+		derr := q.QueryRow("SELECT effective_digest FROM spaces WHERE {tenant} AND id = ?", rt.Space).Scan(&current)
+		switch {
+		case errors.Is(derr, store.ErrNotFound):
+		case derr != nil:
+			return derr
+		}
+		if current != rt.PolicyDigest {
+			stale = true
+			return runtimeTransition(q, rt.ID, "drain", r.now())
+		}
+		return nil
 	})
 	if err != nil {
 		// The deadline or a drain moved the row while Start ran; the
 		// workload it describes must not outlive the row.
 		_ = r.Backend.Stop(context.Background(), rt.BackendID)
 		return Runtime{}, fmt.Errorf("%w: start %s: %v", httpapi.ErrUnavailable, rt.ID, err)
+	}
+	if stale {
+		// The workload carries a revoked policy — stop it now rather
+		// than wait for the sweep to confirm the drain.
+		_ = r.Backend.Stop(context.Background(), rt.BackendID)
+		return Runtime{}, errStaleDigest
 	}
 	rt.State = "warm"
 	return rt, nil

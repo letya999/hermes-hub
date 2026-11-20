@@ -45,6 +45,9 @@ func (s *Sweeper) Tick(ctx context.Context) error {
 	if _, err := fsm.Sweep(ctx, s.Store, WorkerMachine, now, 1000); err != nil {
 		return err
 	}
+	if err := s.drainStale(ctx, now); err != nil {
+		return err
+	}
 	if err := s.effects(ctx); err != nil {
 		return err
 	}
@@ -145,6 +148,51 @@ func liveRows(ctx context.Context, s *store.Store) ([]liveRuntimeRow, error) {
 		return nil
 	})
 	return out, err
+}
+
+// drainStale is the revoke backstop: the activation transaction drains
+// the warm/busy rows it can see, and this pass drains any row a crash or
+// an older version left behind — a warm or busy runtime whose policy
+// digest no longer matches its space's stored effective digest, or whose
+// space can serve nothing at all. The check re-reads the row inside the
+// transaction so a claim that moved it between the listing and here is
+// left alone.
+func (s *Sweeper) drainStale(ctx context.Context, now time.Time) error {
+	rows, err := liveRows(ctx, s.Store)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.state != "warm" && row.state != "busy" {
+			continue
+		}
+		err := s.Store.Tx(ctx, func(tx *store.Tx) error {
+			q := tx.Scoped(row.tenant)
+			var spaceID, digest string
+			err := q.QueryRow("SELECT space_id, policy_digest FROM runtimes WHERE {tenant} AND id = ? AND state IN ('warm','busy')", row.id).Scan(&spaceID, &digest)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				return fsm.ErrStale
+			case err != nil:
+				return err
+			}
+			var current string
+			err = q.QueryRow("SELECT effective_digest FROM spaces WHERE {tenant} AND id = ?", spaceID).Scan(&current)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+			case err != nil:
+				return err
+			}
+			if current != "" && current == digest {
+				return nil
+			}
+			return runtimeTransition(q, row.id, "drain", now)
+		})
+		if err != nil && !errors.Is(err, fsm.ErrStale) && !errors.Is(err, fsm.ErrForbiddenTransition) {
+			return err
+		}
+	}
+	return nil
 }
 
 // effects runs the backend actions the committed states call for, in row

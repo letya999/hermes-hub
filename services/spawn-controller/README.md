@@ -64,6 +64,10 @@ message path claims: `starting` (30s start budget -> `failed`), `warm`
 `failed`/`quarantined`/`missing` (24h retention -> `absent`). `absent` is
 final per generation: a claim creates the next generation's row. Moving
 out of `warm`/`busy` deletes the row's leases in the same transaction.
+A `starting` row that becomes ready under a revoked policy digest —
+activation drains only `warm`/`busy` — warms into `draining` in the same
+transaction; the claim re-plans and the sweep drains any `warm`/`busy`
+row whose digest stops matching as backstop.
 
 `PassportRevisionMachine` serves `/v1/spaces`: `draft` expires to
 `rejected` (10m), `validated` expires to `rejected` (1h), `active` and

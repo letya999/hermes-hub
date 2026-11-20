@@ -261,21 +261,30 @@ func leaseCountAs(t *testing.T, st *store.Store, tn store.Tenant, runtimeID stri
 	return n
 }
 
+// insertRuntimeRow writes one runtime row in the given state with an
+// explicit deadline — the shape a claim leaves behind, used to plant
+// rows the normal path no longer produces (a stale-digest warm row is
+// a pre-fix or pre-crash leftover).
+func insertRuntimeRow(t *testing.T, st *store.Store, tn store.Tenant, id, spaceID, agent string, gen int64, state, digest string, deadline time.Time) {
+	t.Helper()
+	err := st.Tx(context.Background(), func(tx *store.Tx) error {
+		q := tx.Scoped(tn)
+		if err := q.Insert("runtimes", []string{"id", "space_id", "agent", "generation", "state", "deadline", "policy_digest", "image_digest", "backend_id"}, id, spaceID, agent, gen, state, deadline.Unix(), digest, "harness-runtime", id); err != nil {
+			return err
+		}
+		return q.Insert("runtimes_history", []string{"id", "seq", "at", "from_state", "event", "to_state"}, id, 1, deadline.Unix(), "", "create", state)
+	})
+	if err != nil {
+		t.Fatalf("insert %s row: %v", state, err)
+	}
+}
+
 // insertStartingRow writes one runtime row in starting with an explicit
 // deadline — the shape a claim leaves behind while its Start runs, used
 // to test the start budget without racing a real claim.
 func insertStartingRow(t *testing.T, st *store.Store, tn store.Tenant, id, spaceID, agent string, gen int64, deadline time.Time) {
 	t.Helper()
-	err := st.Tx(context.Background(), func(tx *store.Tx) error {
-		q := tx.Scoped(tn)
-		if err := q.Insert("runtimes", []string{"id", "space_id", "agent", "generation", "state", "deadline", "policy_digest", "image_digest", "backend_id"}, id, spaceID, agent, gen, "starting", deadline.Unix(), "sha256:test", "harness-runtime", id); err != nil {
-			return err
-		}
-		return q.Insert("runtimes_history", []string{"id", "seq", "at", "from_state", "event", "to_state"}, id, 1, deadline.Unix(), "", "create", "starting")
-	})
-	if err != nil {
-		t.Fatalf("insert starting row: %v", err)
-	}
+	insertRuntimeRow(t, st, tn, id, spaceID, agent, gen, "starting", "sha256:test", deadline)
 }
 
 // A claim binds the tenant and both digests to the generation row it
@@ -382,6 +391,126 @@ func TestRevokeDrainsOldDigest(t *testing.T) {
 		}
 		if got := runtimeStateAs(t, fx.store, tenant, old.ID); got != "absent" {
 			t.Fatalf("drained runtime is %s, want absent", got)
+		}
+	})
+}
+
+// A runtime whose Start outlives its policy's activation must never
+// serve the revoked digest: activation drains only warm/busy rows, so
+// the ready check is the line — the row warms into the same transaction
+// that drains it, the claim re-plans for the current digest, and the
+// stale workload is stopped on the spot.
+func TestStartingRuntimeUnderRevokedDigestNeverServes(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		fx := newRuntimeFixture(t, url, newFakeBackend())
+		setupSpaceAs(t, fx.revs, tenant)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		fx.backend.gate = make(chan struct{})
+
+		claimed := make(chan spawn.Runtime, 1)
+		claimErr := make(chan error, 1)
+		go func() {
+			rt, err := fx.runtimes.Claim(ctx, tenant, "alice", "main")
+			if err != nil {
+				claimErr <- err
+				return
+			}
+			claimed <- rt
+		}()
+		select {
+		case <-fx.backend.entered:
+		case <-ctx.Done():
+			t.Fatal("claim never reached the backend")
+		}
+		// The plan committed the starting row before Start was called.
+		var stale string
+		if err := fx.store.ReadTx(ctx, func(tx *store.Tx) error {
+			return tx.Scoped(tenant).QueryRow("SELECT id FROM runtimes WHERE {tenant} AND state = 'starting'").Scan(&stale)
+		}); err != nil {
+			t.Fatalf("starting row: %v", err)
+		}
+		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		newDigest := effectiveDigest(t, fx.revs)
+		close(fx.backend.gate)
+
+		var rt spawn.Runtime
+		select {
+		case err := <-claimErr:
+			t.Fatalf("claim: %v", err)
+		case rt = <-claimed:
+		case <-ctx.Done():
+			t.Fatal("claim never returned")
+		}
+		if rt.PolicyDigest != newDigest {
+			t.Fatalf("claim under revoked digest returned %s bound to %s", rt.ID, rt.PolicyDigest)
+		}
+		if rt.ID == stale {
+			t.Fatal("claim re-planned onto the revoked generation")
+		}
+		if rt.Generation != 2 {
+			t.Fatalf("re-planned claim is generation %d, want 2", rt.Generation)
+		}
+		if got := runtimeStateAs(t, fx.store, tenant, stale); got != "draining" {
+			t.Fatalf("revoked-digest runtime is %s, want draining", got)
+		}
+		if err := fx.runtimes.Acquire(ctx, tenant, stale, "ls-stale"); err == nil {
+			t.Fatal("leased a runtime bound to a revoked digest")
+		}
+		if fx.backend.alive(stale) {
+			t.Fatal("workload under revoked digest survived the drain")
+		}
+		if n := fx.backend.startCount(); n != 2 {
+			t.Fatalf("backend started %d workloads, want stale + replanned", n)
+		}
+	})
+}
+
+// A warm row bound to another policy digest is never a claim's runtime:
+// the reuse key is exact. The row itself is planted directly because the
+// post-fix lifecycle no longer produces stale warm rows — it models a
+// leftover from before a crash or an upgrade. The sweeper drains it as
+// the backstop for the activation-time drain.
+func TestWarmClaimRequiresMatchingDigest(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		fx := newRuntimeFixture(t, url, newFakeBackend())
+		setupSpaceAs(t, fx.revs, tenant)
+		ctx := context.Background()
+
+		oldDigest := effectiveDigest(t, fx.revs)
+		if _, err := fx.runtimes.Claim(ctx, tenant, "alice", "main"); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		newDigest := effectiveDigest(t, fx.revs)
+		// A warm row on the revoked digest survives as a leftover; its
+		// workload is up but refuses to die, so the sweep's drain is
+		// visible as a stuck draining rather than a confirmed stop.
+		insertRuntimeRow(t, fx.store, tenant, "rt-stale", "alice", "main", 5, "warm", oldDigest, fx.clock.now().Add(15*time.Minute))
+		fx.backend.plant("rt-stale")
+		fx.backend.stuck["rt-stale"] = true
+
+		rt, err := fx.runtimes.Claim(ctx, tenant, "alice", "main")
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if rt.ID == "rt-stale" {
+			t.Fatal("claim reused a warm row bound to a revoked digest")
+		}
+		if rt.PolicyDigest != newDigest || rt.Generation != 6 {
+			t.Fatalf("claim row: %+v, want gen6 bound to %s", rt, newDigest)
+		}
+		if err := fx.sweeper.Tick(ctx); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if got := runtimeStateAs(t, fx.store, tenant, "rt-stale"); got != "draining" {
+			t.Fatalf("stale-digest warm row survived the sweep as %s", got)
 		}
 	})
 }
