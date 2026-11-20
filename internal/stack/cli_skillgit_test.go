@@ -128,3 +128,21 @@ func TestGatewaySeesGitLabHost(t *testing.T) {
 		t.Fatal("gitlab_host not rendered to the gateway")
 	}
 }
+
+// S7a live regression: /cli-exec lives on workload-controller — its env
+// must carry HUB_SPAWN_URL/HUB_SPAWN_TOKEN or the in-process spawn client
+// stays nil and every CLI cell refuses "cells unavailable".
+func TestControllerReachesSpawnController(t *testing.T) {
+	dir := t.TempDir()
+	services := Compose(validSettings(), "", dir)["services"].(M)
+	env, ok := services["workload-controller"].(M)["environment"].(M)
+	if !ok {
+		t.Fatal("workload-controller has no environment block")
+	}
+	if env["HUB_SPAWN_URL"] != "http://spawn-controller:8877" {
+		t.Fatalf("workload-controller cannot reach spawn-controller: %v", env["HUB_SPAWN_URL"])
+	}
+	if _, ok := env["HUB_SPAWN_TOKEN"]; !ok {
+		t.Fatal("workload-controller lacks HUB_SPAWN_TOKEN")
+	}
+}

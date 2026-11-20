@@ -858,6 +858,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
 		controller["environment"].(M)["HUB_CONTAINER_RUNTIME"] = "${HUB_CONTAINER_RUNTIME:-runc}"
 		controller["environment"].(M)["HUB_CLI_RUNTIME"] = "${HUB_CLI_RUNTIME:-}"
+		controller["environment"].(M)["HUB_SPAWN_URL"] = "http://spawn-controller:8877"
+		controller["environment"].(M)["HUB_SPAWN_TOKEN"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind, dockerSock}
 		controller["group_add"] = []string{dockerGroup}
 		controller["volumes"] = controllerVolumes
