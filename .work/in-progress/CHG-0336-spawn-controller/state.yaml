@@ -13,7 +13,7 @@ github_issue: 601
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S1-store-and-machines: not_started
+  S1-store-and-machines: green
   S2-revisions-and-contract: not_started
   S3-backends: not_started
   S4-runtime-lifecycle-and-warm-pool: not_started
@@ -23,13 +23,21 @@ slices:
   S8-delete-v0: not_started
   S9-docs-and-acceptance: not_started
 validation:
-  just_check: not_run
-  affected_tests: not_run
+  just_check: green
+  affected_tests: green
   backend_conformance_process: not_run
   backend_conformance_docker: not_run
   tool_snapshot: not_run
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "de1eb7b9: TestPassportRevisionTransitions red (package absent, build failed), green on sqlite leg; every allowed edge writes history, forbidden samples write none."
+  - "de1eb7b9: TestRuntimeTransitions red (package absent, build failed), green; absent is final per 'final for this generation', claim creates the next-generation row."
+  - "de1eb7b9: TestWorkerTransitions red (package absent, build failed), green; runtime table without warm, released or stuck worker drains."
+  - "de1eb7b9: TestMachinesHaveDeadlinePerNonFinalState red (package absent, build failed), green; every state with exits has a deadline event that is an edge out of it."
+  - "de1eb7b9: TestLeaseCountDerivedFromLeaseRows red (package absent, build failed), green; a crash between row insert and hold move rolls back both, busy bound drains a wedged runtime."
+  - "de1eb7b9: TestTenantInvariants red (package absent, build failed), green on all nine tables in internal/spawn and internal/spawn/migrations (sqlite leg; postgres leg via HUB_TEST_POSTGRES_URL)."
+  - "de1eb7b9: TestMinimalProfileAnswersMessage green after the skeleton move (hubctl launches spawn-controller, real message path intact)."
+  - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./cmd/hubctl green."
 remaining: []
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
