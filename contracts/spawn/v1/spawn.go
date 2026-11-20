@@ -175,6 +175,14 @@ type Client interface {
 	ReleaseWorker(context.Context, string, WorkerLeaseRequest) error
 	DrainWorkers(context.Context, string, DrainWorkersRequest) (int, error)
 	ExecWorker(context.Context, string, WorkerExecRequest) (WorkerExecResult, error)
+	// Runtimes are the tenant's warm-pool surface: the claim binds the
+	// space's stored digests to a ready runtime and hands back the lease
+	// the caller renews and releases around its forwards; the inventory
+	// is tenant-scoped.
+	ClaimRuntime(context.Context, string, ClaimRuntimeRequest) (ClaimedRuntime, error)
+	RenewLease(context.Context, string, LeaseRequest) (Runtime, error)
+	ReleaseLease(context.Context, string, LeaseRequest) error
+	ListRuntimes(context.Context, Tenant) ([]Runtime, error)
 }
 
 func validTenant(t Tenant) bool {
@@ -382,6 +390,19 @@ func Handler(server Client, token string) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/v1/workers/") {
 			return handleWorker(client, r)
 		}
+		if strings.HasPrefix(r.URL.Path, "/v1/leases/") {
+			return handleLease(client, r)
+		}
+		if r.URL.Path == "/v1/runtimes" {
+			if r.Method != http.MethodGet {
+				return nil, ErrNotFound
+			}
+			t, err := queryTenant(r)
+			if err != nil {
+				return nil, err
+			}
+			return client.ListRuntimes(r.Context(), t)
+		}
 		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/spaces"), "/")
 		// POST /v1/spaces is the only route with an empty segment list.
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/spaces" {
@@ -403,6 +424,12 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.ClaimWorker(r.Context(), space, in)
+		case r.Method == http.MethodPost && len(rest) == 1 && rest[0] == "runtimes":
+			var in ClaimRuntimeRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			return client.ClaimRuntime(r.Context(), space, in)
 		case r.Method == http.MethodPost && len(rest) == 2 && rest[0] == "workers" && rest[1] == "drain":
 			var in DrainWorkersRequest
 			if err := httpapi.Decode(r, &in); err != nil {

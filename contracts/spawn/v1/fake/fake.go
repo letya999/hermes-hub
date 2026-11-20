@@ -38,6 +38,7 @@ type Server struct {
 	docs      map[string]map[string]map[string]any
 	effective map[string]fakeEffective
 	workers   map[string]*fakeWorker
+	runtimes  map[string]*fakeRuntime
 }
 
 // fakeWorker is the in-memory worker row plus its live lease ids.
@@ -47,6 +48,12 @@ type fakeWorker struct {
 	leases  map[string]bool
 	binding string
 	job     string
+}
+
+// fakeRuntime is the in-memory runtime row plus its live lease ids.
+type fakeRuntime struct {
+	runtime spawn.Runtime
+	leases  map[string]bool
 }
 
 type fakeEffective struct {
@@ -64,6 +71,7 @@ func (s *Server) init() {
 		s.docs = map[string]map[string]map[string]any{}
 		s.effective = map[string]fakeEffective{}
 		s.workers = map[string]*fakeWorker{}
+		s.runtimes = map[string]*fakeRuntime{}
 	}
 }
 
@@ -480,6 +488,135 @@ func (s *Server) ExecWorker(ctx context.Context, id string, in spawn.WorkerExecR
 		return s.ExecFunc(in)
 	}
 	return spawn.WorkerExecResult{ExitCode: 0, Stdout: []byte(strings.Join(in.Argv, " "))}, nil
+}
+
+// runtimeKey scopes a runtime row to tenant + space + agent — the
+// service's exact reuse key.
+func runtimeKey(t spawn.Tenant, space, agent string) string {
+	return t.Org + "/" + t.Owner + "/" + space + "/" + agent
+}
+
+// runtimeLeaseOwner finds the runtime that holds id under the tenant —
+// leases never resolve across tenants.
+func (s *Server) runtimeLeaseOwner(t spawn.Tenant, id string) *fakeRuntime {
+	prefix := t.Org + "/" + t.Owner + "/"
+	for k, rt := range s.runtimes {
+		if strings.HasPrefix(k, prefix) && rt.leases[id] {
+			return rt
+		}
+	}
+	return nil
+}
+
+// ClaimRuntime mirrors the service's warm-pool claim: the space must
+// exist under the tenant (its stored digests are what the claim binds),
+// the row is reused on its exact key, and each claim mints a fresh lease
+// that leaves the runtime busy.
+func (s *Server) ClaimRuntime(ctx context.Context, space string, in spawn.ClaimRuntimeRequest) (spawn.ClaimedRuntime, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.ClaimedRuntime{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
+	if _, ok := s.spaces[spaceKey(t, space)]; !ok {
+		return spawn.ClaimedRuntime{}, fmt.Errorf("%w: space %q has no stored spec", spawn.ErrUnavailable, space)
+	}
+	k := runtimeKey(t, space, in.Agent)
+	rt, ok := s.runtimes[k]
+	if !ok {
+		sum := sha256.Sum256([]byte(k))
+		id := "rt-" + hex.EncodeToString(sum[:8])
+		// Generations bump when content rotates the row — the fake never
+		// rotates, so a fresh row starts at 1 and reuse keeps it.
+		gen := int64(1)
+		prefix := t.Org + "/" + t.Owner + "/" + space + "/"
+		for k, other := range s.runtimes {
+			if strings.HasPrefix(k, prefix) && k != runtimeKey(t, space, in.Agent) && other.runtime.Agent == in.Agent && other.runtime.Generation >= gen {
+				gen = other.runtime.Generation + 1
+			}
+		}
+		rt = &fakeRuntime{
+			runtime: spawn.Runtime{
+				ID: id, Space: space, Agent: in.Agent,
+				Generation:   gen,
+				State:        "warm",
+				PolicyDigest: "sha256:fake-policy",
+				ImageDigest:  "sha256:fake-image",
+				Address:      "http://" + id + ":8080",
+			},
+			leases: map[string]bool{},
+		}
+		s.runtimes[k] = rt
+	}
+	s.seq++
+	lease := fmt.Sprintf("ls-%016x", s.seq)
+	rt.leases[lease] = true
+	rt.runtime.State = "busy"
+	out := spawn.ClaimedRuntime{Runtime: rt.runtime, Lease: lease}
+	out.Runtime.Org, out.Runtime.Owner = in.Org, in.Owner
+	return httpapi.Copy(out)
+}
+
+// RenewLease re-arms the held lease; a lease id that is not the tenant's
+// is not_found, like the service's scoped lookup.
+func (s *Server) RenewLease(ctx context.Context, id string, in spawn.LeaseRequest) (spawn.Runtime, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.Runtime{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	rt := s.runtimeLeaseOwner(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	if rt == nil {
+		return spawn.Runtime{}, spawn.ErrNotFound
+	}
+	out := rt.runtime
+	out.Org, out.Owner = in.Org, in.Owner
+	return httpapi.Copy(out)
+}
+
+// ReleaseLease drops the hold; the last lease moves the runtime back to
+// warm. Releasing a lease that is not the tenant's is a no-op — releasing
+// is always safe.
+func (s *Server) ReleaseLease(ctx context.Context, id string, in spawn.LeaseRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	rt := s.runtimeLeaseOwner(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	if rt == nil {
+		return nil
+	}
+	delete(rt.leases, id)
+	if len(rt.leases) == 0 && rt.runtime.State == "busy" {
+		rt.runtime.State = "warm"
+	}
+	return nil
+}
+
+// ListRuntimes serves the tenant's runtime inventory.
+func (s *Server) ListRuntimes(ctx context.Context, t spawn.Tenant) ([]spawn.Runtime, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	prefix := t.Org + "/" + t.Owner + "/"
+	out := []spawn.Runtime{}
+	for k, rt := range s.runtimes {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		row := rt.runtime
+		row.Org, row.Owner = t.Org, t.Owner
+		out = append(out, row)
+	}
+	return httpapi.Copy(out)
 }
 
 func flattenFake(node map[string]any, prefix string, out map[string]any) {

@@ -278,6 +278,75 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 			t.Errorf("%s: want invalid or not_found, got %v", name, err)
 		}
 	}
+
+	// The runtime surface: the claim binds tenant + the space's stored
+	// digests to a ready runtime and hands back the lease the caller
+	// renews and releases around its forwards; the runtime's Address is
+	// the endpoint the caller forwards to.
+	claimed, err := client.ClaimRuntime(ctx, f.Space, spawn.ClaimRuntimeRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Agent: "main",
+	})
+	if err != nil {
+		t.Fatalf("claim runtime: %v", err)
+	}
+	if claimed.Runtime.ID == "" || claimed.Runtime.Space != f.Space || claimed.Runtime.Agent != "main" ||
+		claimed.Runtime.Generation < 1 || claimed.Runtime.Address == "" || claimed.Lease == "" {
+		t.Fatalf("claim runtime answer: %+v", claimed)
+	}
+	if claimed.Runtime.State != "busy" {
+		t.Fatalf("claimed runtime must be busy while leased, got %q", claimed.Runtime.State)
+	}
+	if claimed.Runtime.PolicyDigest == "" || claimed.Runtime.ImageDigest == "" {
+		t.Fatalf("claim must bind the stored digests: %+v", claimed.Runtime)
+	}
+	if _, err := client.RenewLease(ctx, claimed.Lease, spawn.LeaseRequest{Org: f.Tenant.Org, Owner: f.Tenant.Owner}); err != nil {
+		t.Fatalf("renew lease: %v", err)
+	}
+	rows, err := client.ListRuntimes(ctx, f.Tenant)
+	if err != nil {
+		t.Fatalf("list runtimes: %v", err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ID == claimed.Runtime.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("claimed runtime missing from tenant inventory: %+v", rows)
+	}
+	if err := client.ReleaseLease(ctx, claimed.Lease, spawn.LeaseRequest{Org: f.Tenant.Org, Owner: f.Tenant.Owner}); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
+	// The released runtime is warm: a fresh claim reuses the row (same id)
+	// but mints a new lease — the warm pool holds one runtime per key.
+	reclaim, err := client.ClaimRuntime(ctx, f.Space, spawn.ClaimRuntimeRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Agent: "main",
+	})
+	if err != nil {
+		t.Fatalf("reclaim runtime: %v", err)
+	}
+	if reclaim.Runtime.ID != claimed.Runtime.ID || reclaim.Lease == "" || reclaim.Lease == claimed.Lease {
+		t.Fatalf("warm-pool reuse must keep the row and mint a fresh lease: %+v vs %+v", claimed, reclaim)
+	}
+	if err := client.ReleaseLease(ctx, reclaim.Lease, spawn.LeaseRequest{Org: f.Tenant.Org, Owner: f.Tenant.Owner}); err != nil {
+		t.Fatalf("release reclaimed lease: %v", err)
+	}
+
+	// A foreign tenant never joins or sees the owner's runtime: the space
+	// is not the foreign tenant's (claim refused), the lease id does not
+	// resolve under it, and its inventory stays empty.
+	if _, err := client.ClaimRuntime(ctx, f.Space, spawn.ClaimRuntimeRequest{
+		Org: f.Foreign.Org, Owner: f.Foreign.Owner, Agent: "main",
+	}); !errors.Is(err, spawn.ErrUnavailable) {
+		t.Fatalf("foreign claim: want unavailable, got %v", err)
+	}
+	if _, err := client.RenewLease(ctx, reclaim.Lease, spawn.LeaseRequest{Org: f.Foreign.Org, Owner: f.Foreign.Owner}); !errors.Is(err, spawn.ErrNotFound) {
+		t.Fatalf("foreign renew: want not_found, got %v", err)
+	}
+	if foreignRows, err := client.ListRuntimes(ctx, f.Foreign); err != nil || len(foreignRows) != 0 {
+		t.Fatalf("foreign inventory must be empty: %v %v", foreignRows, err)
+	}
 }
 
 func zeros(n int) string {
