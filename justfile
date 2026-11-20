@@ -75,7 +75,7 @@ docs-check:
     go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= -config-file .github/actionlint.yaml .github/workflows/ci.yml .github/workflows/runner.yml .github/workflows/prune-images.yml
 
 fmt:
-    gofmt -w cmd internal contracts shared shared
+    gofmt -w cmd internal contracts shared services
 
 security:
     go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...

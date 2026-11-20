@@ -14,11 +14,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // Postgres driver "pgx" (ADR-0115)
 	"github.com/letya999/hermes-hub/shared/httpapi"
 	"modernc.org/sqlite" // pure-Go SQLite driver keeps binaries CGO-free
 )
@@ -105,6 +105,9 @@ func parseURL(rawURL string) (dialect Dialect, driver, dsn, path string, err err
 	case strings.HasPrefix(rawURL, "postgres://"), strings.HasPrefix(rawURL, "postgresql://"):
 		if _, perr := url.Parse(rawURL); perr != nil {
 			return "", "", "", "", ErrURL
+		}
+		if !slices.Contains(sql.Drivers(), "pgx") {
+			return "", "", "", "", fmt.Errorf("%w: postgres requires importing github.com/letya999/hermes-hub/shared/store/postgres", ErrURL)
 		}
 		return Postgres, "pgx", rawURL, "", nil
 	default:

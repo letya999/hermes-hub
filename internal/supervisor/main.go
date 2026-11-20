@@ -176,7 +176,8 @@ func supervisorAuthFromEnv() string {
 	return os.Getenv("HUB_RUNTIME_AUTH")
 }
 
-// Preserve the process invocation, including hub serve --zone control.
+// Preserve the supervisor's own invocation so the watched child parses the
+// same flags; only the watch flag itself is reset to avoid recursion.
 func supervisorWatchArgs(args []string) []string {
 	return append(append([]string(nil), args...), "-watch=false")
 }

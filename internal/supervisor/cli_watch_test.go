@@ -50,14 +50,14 @@ func TestSupervisorServiceFlags(t *testing.T) {
 	}
 }
 
-func TestWatchPreservesHubZoneInvocation(t *testing.T) {
-	args := []string{"serve", "--zone", "control", "--watch", "--env", "dev"}
+func TestWatchPreservesInvocationArgs(t *testing.T) {
+	args := []string{"-watch", "-env", "dev", "-listen", "127.0.0.1:9200"}
 	got := supervisorWatchArgs(args)
-	if strings.Join(got, " ") != "serve --zone control --watch --env dev -watch=false" {
+	if strings.Join(got, " ") != "-watch -env dev -listen 127.0.0.1:9200 -watch=false" {
 		t.Fatalf("watch child: %v", got)
 	}
 	got[0] = "mutated"
-	if args[0] != "serve" {
+	if args[0] != "-watch" {
 		t.Fatal("watch changed the parent invocation")
 	}
 }

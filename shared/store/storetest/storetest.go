@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/shared/store"
+	_ "github.com/letya999/hermes-hub/shared/store/postgres" // pgx for the HUB_TEST_POSTGRES_URL leg
 )
 
 // PostgresEnv names a Postgres URL (a database the test may create and drop
