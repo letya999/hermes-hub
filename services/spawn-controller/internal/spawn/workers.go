@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
@@ -38,10 +39,22 @@ type Worker struct {
 	claim  WorkerClaim // persisted claim, credential values stripped
 }
 
+// workerLeaseTTL bounds one hold: a caller that stops renewing loses its
+// lease when the sweep next runs, so a crashed consumer can't pin a worker
+// forever. Runtime leases keep expires_at = 0 (never expire).
+const workerLeaseTTL = 30 * time.Minute
+
+// workerAbsentRetention is how long an absent worker row (and its history)
+// is kept for audit before the sweep deletes it. The row's deadline column
+// doubles as the GC clock: absent has no machine deadline, so the
+// transition writes now+retention there instead of NULL.
+const workerAbsentRetention = 24 * time.Hour
+
 // workerTransition applies one WorkerMachine event inside the caller's
 // transaction and, whenever the move lands the row outside busy, deletes
 // the worker's lease rows in the same transaction — a draining or missing
-// worker can never carry a hold into its next generation.
+// worker can never carry a hold into its next generation. A row landing
+// absent gets its deadline re-armed as the retention GC clock.
 func workerTransition(q store.Scoped, id, event string, now time.Time) error {
 	if err := fsm.Transition(q, WorkerMachine, id, event, now); err != nil {
 		return err
@@ -53,7 +66,12 @@ func workerTransition(q store.Scoped, id, event string, now time.Time) error {
 	if state == "busy" {
 		return nil
 	}
-	_, err = q.Exec("DELETE FROM leases WHERE {tenant} AND runtime_id = ?", id)
+	if _, err := q.Exec("DELETE FROM leases WHERE {tenant} AND runtime_id = ?", id); err != nil {
+		return err
+	}
+	if state == "absent" {
+		_, err = q.Exec("UPDATE workers SET deadline = ? WHERE {tenant} AND id = ?", now.Add(workerAbsentRetention).Unix(), id)
+	}
 	return err
 }
 
@@ -89,8 +107,8 @@ func (w *Workers) now() time.Time {
 // workerRowID is content-derived per generation — a retried insert of the
 // same generation names the same row, and the unique starting index keeps
 // concurrent claims to one row per (space, cell key, image).
-func workerRowID(t store.Tenant, spaceID, agent, cellKey string, generation int64) string {
-	sum := sha256.Sum256([]byte(t.Org + "\x00" + t.Owner + "\x00" + spaceID + "\x00" + agent + "\x00" + cellKey + "\x00" + fmt.Sprint(generation)))
+func workerRowID(t store.Tenant, spaceID, agent, cellKey, image string, generation int64) string {
+	sum := sha256.Sum256([]byte(t.Org + "\x00" + t.Owner + "\x00" + spaceID + "\x00" + agent + "\x00" + cellKey + "\x00" + image + "\x00" + fmt.Sprint(generation)))
 	return "wk-" + hex.EncodeToString(sum[:])[:16]
 }
 
@@ -115,6 +133,7 @@ func loadWorker(q store.Scoped, id string) (Worker, error) {
 // stripped — values travel the exec file channel only, never the store.
 func storedClaim(req WorkerClaim) (string, error) {
 	clean := req
+	clean.Brokered = append([]CellCred(nil), req.Brokered...)
 	for i := range clean.Brokered {
 		clean.Brokered[i].Value = ""
 	}
@@ -277,7 +296,7 @@ func (w *Workers) plan(ctx context.Context, t store.Tenant, spaceID string, req 
 			return err
 		}
 		now := w.now()
-		id := workerRowID(t, spaceID, req.Agent, req.CellKey, gen)
+		id := workerRowID(t, spaceID, req.Agent, req.CellKey, req.Image, gen)
 		canary := workerLeaseID()
 		deadline := now.Add(WorkerMachine.Deadlines["starting"].After).Unix()
 		if err := q.Insert("workers", []string{"id", "space_id", "agent", "generation", "state", "deadline", "cell_key", "image_digest", "backend_id", "canary", "claim", "binding_id", "job_id"}, id, spaceID, req.Agent, gen, "starting", deadline, req.CellKey, req.Image, id, canary, rawClaim, req.BindingID, req.JobID); err != nil {
@@ -369,7 +388,7 @@ func (w *Workers) start(ctx context.Context, t store.Tenant, spaceID string, req
 		if err := workerTransition(q, row.ID, "ready", w.now()); err != nil {
 			return err
 		}
-		return q.Insert("leases", []string{"id", "runtime_id", "created_at"}, lease, row.ID, w.now().Unix())
+		return q.Insert("leases", []string{"id", "runtime_id", "created_at", "expires_at"}, lease, row.ID, w.now().Unix(), w.now().Add(workerLeaseTTL).Unix())
 	})
 	if err != nil {
 		_ = w.Backend.Stop(context.Background(), row.BackendID)
@@ -383,16 +402,41 @@ func (w *Workers) start(ctx context.Context, t store.Tenant, spaceID string, req
 }
 
 // reuse re-verifies a busy worker before another lease — the moved v0
-// warmCell drift check. First the container profile is re-inspected
-// against the spec the persisted claim rebuilds (VerifyWorker; a tampered
-// bind or dropped hardening denies), then the canary probes run through
-// backend exec: token file intact, /tmp clean, no stray processes. A
-// drifted worker drains and the claim re-plans.
+// warmCell drift check. A worker holding live leases is someone else's
+// running cell: probing it mid-exec reads a legitimately dirty state, so
+// the claim joins as an additional holder without any probe. Only an
+// unleased busy row (a stale hold the sweep has not reached yet) gets the
+// full drift check: container profile re-inspected against the spec the
+// persisted claim rebuilds (VerifyWorker), then the canary probes through
+// backend exec — token file intact, /tmp clean, no stray processes.
 func (w *Workers) reuse(ctx context.Context, t store.Tenant, wk Worker) (WorkerLease, error) {
-	dirty := false
+	live, err := w.liveLeaseCount(ctx, t, wk.ID)
+	if err != nil {
+		return WorkerLease{}, err
+	}
+	if live == 0 && w.probeDirty(ctx, t, wk) {
+		return w.drainOrJoin(ctx, t, wk)
+	}
+	return w.leaseWorker(ctx, t, wk)
+}
+
+// liveLeaseCount counts the worker's unexpired holds — the join decision's
+// source of truth.
+func (w *Workers) liveLeaseCount(ctx context.Context, t store.Tenant, workerID string) (int, error) {
+	var live int
+	err := w.Store.ReadTx(ctx, func(tx *store.Tx) error {
+		return tx.Scoped(t).QueryRow("SELECT count(*) FROM leases WHERE {tenant} AND runtime_id = ? AND (expires_at = 0 OR expires_at > ?)", workerID, w.now().Unix()).Scan(&live)
+	})
+	return live, err
+}
+
+// probeDirty runs the reuse guard on an unleased busy row: spec drift via
+// VerifyWorker plus the canary exec probes. True means the cell cannot be
+// trusted for another holder.
+func (w *Workers) probeDirty(ctx context.Context, t store.Tenant, wk Worker) bool {
 	spec, specErr := w.Cells.spec(t, wk.Space, wk.claim, wk.ID)
 	if specErr != nil || w.Backend.VerifyWorker(ctx, wk.BackendID, spec) != nil {
-		dirty = true
+		return true
 	}
 	for _, probe := range [][]string{
 		{cellInitGuest, "clean", "/tmp", cellCanaryName, wk.canary},
@@ -400,20 +444,35 @@ func (w *Workers) reuse(ctx context.Context, t store.Tenant, wk Worker) (WorkerL
 	} {
 		res, err := w.Backend.Exec(ctx, wk.BackendID, backend.ExecSpec{Argv: probe, Timeout: 15 * time.Second})
 		if err != nil || res.ExitCode != 0 {
-			dirty = true
+			return true
 		}
 	}
-	if dirty {
-		if err := w.event(ctx, t, wk.ID, "drain"); err != nil {
-			return WorkerLease{}, err
-		}
-		return WorkerLease{}, errWorkerDirty
+	return false
+}
+
+// drainOrJoin resolves a dirty probe under the row lock: a claim that
+// landed a lease between the probe reads and this transaction joins as a
+// holder instead of draining the worker it now co-owns.
+func (w *Workers) drainOrJoin(ctx context.Context, t store.Tenant, wk Worker) (WorkerLease, error) {
+	live, err := w.liveLeaseCount(ctx, t, wk.ID)
+	if err != nil {
+		return WorkerLease{}, err
 	}
+	if live > 0 {
+		return w.leaseWorker(ctx, t, wk)
+	}
+	if err := w.event(ctx, t, wk.ID, "drain"); err != nil {
+		return WorkerLease{}, err
+	}
+	return WorkerLease{}, errWorkerDirty
+}
+
+// leaseWorker mints the caller's hold on a still-busy row — the CAS keeps
+// a release that already drained the row from leasing a dead cell.
+func (w *Workers) leaseWorker(ctx context.Context, t store.Tenant, wk Worker) (WorkerLease, error) {
 	lease := workerLeaseID()
 	err := w.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
-		// Confirm busy under the row lock — a release that already
-		// drained the row must fail this lease insert.
 		result, err := q.Exec("UPDATE workers SET deadline = deadline WHERE {tenant} AND id = ? AND state = 'busy'", wk.ID)
 		if err != nil {
 			return err
@@ -421,7 +480,8 @@ func (w *Workers) reuse(ctx context.Context, t store.Tenant, wk Worker) (WorkerL
 		if n, err := result.RowsAffected(); err != nil || n == 0 {
 			return fsm.ErrStale
 		}
-		return q.Insert("leases", []string{"id", "runtime_id", "created_at"}, lease, wk.ID, w.now().Unix())
+		now := w.now()
+		return q.Insert("leases", []string{"id", "runtime_id", "created_at", "expires_at"}, lease, wk.ID, now.Unix(), now.Add(workerLeaseTTL).Unix())
 	})
 	if err != nil {
 		return WorkerLease{}, err
@@ -439,8 +499,9 @@ func (w *Workers) event(ctx context.Context, t store.Tenant, id, event string) e
 	})
 }
 
-// Renew re-arms a held worker's busy bound: the lease row must still
-// exist and the worker must still be busy.
+// Renew re-arms a held worker's busy bound and extends the caller's own
+// lease expiry: the lease row must still exist and the worker must still
+// be busy.
 func (w *Workers) Renew(ctx context.Context, t store.Tenant, workerID, leaseID string) (Worker, error) {
 	var out Worker
 	err := w.Store.Tx(ctx, func(tx *store.Tx) error {
@@ -452,7 +513,11 @@ func (w *Workers) Renew(ctx context.Context, t store.Tenant, workerID, leaseID s
 		if owner != workerID {
 			return store.ErrNotFound
 		}
-		if err := fsm.Transition(q, WorkerMachine, workerID, "renew", w.now()); err != nil {
+		now := w.now()
+		if _, err := q.Exec("UPDATE leases SET expires_at = ? WHERE {tenant} AND id = ?", now.Add(workerLeaseTTL).Unix(), leaseID); err != nil {
+			return err
+		}
+		if err := fsm.Transition(q, WorkerMachine, workerID, "renew", now); err != nil {
 			return err
 		}
 		got, err := loadWorker(q, workerID)
@@ -511,9 +576,23 @@ func (w *Workers) Release(ctx context.Context, t store.Tenant, workerID, leaseID
 	return nil
 }
 
+// deniedExecEnv rejects env names that must never reach the exec request:
+// a value in spec env lands in the docker CLI child's own environment for
+// -e forwarding, and DOCKER_* names reconfigure that CLI (host, context,
+// config dir, TLS). The workload has no legitimate use for them.
+func deniedExecEnv(name string) bool {
+	return name == "DOCKER" || strings.HasPrefix(name, "DOCKER_")
+}
+
 // Exec runs one bounded command inside a busy worker whose lease the
 // caller holds; a worker that left busy refuses.
 func (w *Workers) Exec(ctx context.Context, t store.Tenant, workerID, leaseID string, spec backend.ExecSpec) (backend.ExecResult, error) {
+	for _, entry := range spec.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		if deniedExecEnv(name) {
+			return backend.ExecResult{}, httpapi.Errorf(httpapi.ErrInvalid, "%s", locale.T(locale.Default, "spawn.exec-env-reserved"))
+		}
+	}
 	err := w.Store.ReadTx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
 		var owner string
@@ -610,12 +689,17 @@ func (w *Workers) Drain(ctx context.Context, t store.Tenant, spaceID, bindingID,
 	return drained, nil
 }
 
+// workerListLimit bounds one List read — worker rows accumulate per call,
+// so an unbounded enumeration is a memory and latency hazard. Consumers
+// that need the live set use drain/claim, not List.
+const workerListLimit = 500
+
 // List returns the tenant's worker rows, newest generation first per key —
-// tombstones included.
+// tombstones included, capped at workerListLimit.
 func (w *Workers) List(ctx context.Context, t store.Tenant) ([]Worker, error) {
 	out := []Worker{}
 	err := w.Store.ReadTx(ctx, func(tx *store.Tx) error {
-		rows, err := tx.Scoped(t).Query("SELECT " + workerColumns + " FROM workers WHERE {tenant} ORDER BY space_id, cell_key, generation DESC, id")
+		rows, err := tx.Scoped(t).Query("SELECT "+workerColumns+" FROM workers WHERE {tenant} ORDER BY space_id, cell_key, generation DESC, id LIMIT ?", workerListLimit)
 		if err != nil {
 			return err
 		}

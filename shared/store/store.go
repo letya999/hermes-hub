@@ -222,10 +222,12 @@ type Tx struct {
 // Dialect reports the SQL flavour of the transaction's store.
 func (tx *Tx) Dialect() Dialect { return tx.dialect }
 
-// DueRow is one expired entity row's tenant key and state. Sweepers collect
-// these across tenants, then act scoped to each row's own tenant.
+// DueRow is one expired entity row's tenant key, state and deadline.
+// Sweepers collect these across tenants, then act scoped to each row's
+// own tenant. Deadline orders the cursor read DueRowsAfter.
 type DueRow struct {
 	Org, Owner, ID, State string
+	Deadline              int64
 }
 
 // sweepRowLimit caps one DueRows batch; a sweeper loops until a batch comes
@@ -241,12 +243,32 @@ func (tx *Tx) DueRows(table string, deadline int64, limit int) ([]DueRow, error)
 	if !identifier.MatchString(table) || limit <= 0 || limit > sweepRowLimit {
 		return nil, fmt.Errorf("%w: sweep read arguments", ErrUnscoped)
 	}
-	query := "SELECT org, owner, id, state FROM " + table + " WHERE deadline IS NOT NULL AND deadline <= ? ORDER BY deadline LIMIT ?"
+	query := "SELECT org, owner, id, state, deadline FROM " + table + " WHERE deadline IS NOT NULL AND deadline <= ? ORDER BY deadline, id LIMIT ?"
 	bound, values, err := bind(tx.dialect, query, []any{deadline, limit}, Tenant{}, false)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.tx.QueryContext(tx.ctx, bound, values...)
+	return tx.scanDue(bound, values)
+}
+
+// DueRowsAfter is DueRows with a (deadline, id) cursor: rows strictly after
+// the cursor in the same order, still batched by sweepRowLimit. A sweep that
+// needs the whole non-final set loops on it until a short batch — the batch
+// caps one read, never the total.
+func (tx *Tx) DueRowsAfter(table string, deadline, afterDeadline int64, afterID string, limit int) ([]DueRow, error) {
+	if !identifier.MatchString(table) || limit <= 0 || limit > sweepRowLimit {
+		return nil, fmt.Errorf("%w: sweep read arguments", ErrUnscoped)
+	}
+	query := "SELECT org, owner, id, state, deadline FROM " + table + " WHERE deadline IS NOT NULL AND deadline <= ? AND (deadline > ? OR (deadline = ? AND id > ?)) ORDER BY deadline, id LIMIT ?"
+	bound, values, err := bind(tx.dialect, query, []any{deadline, afterDeadline, afterDeadline, afterID, limit}, Tenant{}, false)
+	if err != nil {
+		return nil, err
+	}
+	return tx.scanDue(bound, values)
+}
+
+func (tx *Tx) scanDue(query string, values []any) ([]DueRow, error) {
+	rows, err := tx.tx.QueryContext(tx.ctx, query, values...)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +276,7 @@ func (tx *Tx) DueRows(table string, deadline int64, limit int) ([]DueRow, error)
 	var due []DueRow
 	for rows.Next() {
 		var d DueRow
-		if err := rows.Scan(&d.Org, &d.Owner, &d.ID, &d.State); err != nil {
+		if err := rows.Scan(&d.Org, &d.Owner, &d.ID, &d.State, &d.Deadline); err != nil {
 			return nil, err
 		}
 		due = append(due, d)

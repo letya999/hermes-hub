@@ -205,8 +205,8 @@ func TestMountOptionInjectionRefused(t *testing.T) {
 // TestExecNoSecretInArgv: an exec env value travels only through the
 // exec's own environment — argv carries names, never values (X4). The
 // process leg proves it by construction; the docker leg's argv builder is
-// asserted in the internal test, and this case proves the value does reach
-// the workload's environment through the name channel.
+// asserted in docker_internal_test.go, and this case proves the value
+// does reach the workload's environment through the name channel.
 func TestExecNoSecretInArgv(t *testing.T) {
 	eachLeg(t, func(t *testing.T, leg backendtest.Leg) {
 		if leg.ExecArgv == nil {

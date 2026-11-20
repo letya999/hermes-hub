@@ -59,6 +59,9 @@ func (s *Sweeper) Tick(ctx context.Context) error {
 	if err := workerSweep(ctx, s.Store, now); err != nil {
 		return err
 	}
+	if err := workerLeaseSweep(ctx, s.Store, now); err != nil {
+		return err
+	}
 	if err := s.drainStale(ctx, now); err != nil {
 		return err
 	}
@@ -127,7 +130,9 @@ func runtimeSweep(ctx context.Context, s *store.Store, now time.Time) error {
 
 // workerSweep is runtimeSweep for the worker machine: deadline events
 // fire through workerTransition so the move out of busy removes its
-// holds in the same transaction.
+// holds in the same transaction. Absent rows carry a retention deadline
+// instead of a machine event — the GC deletes row and history once it
+// passes (workerAbsentRetention from the absent transition).
 func workerSweep(ctx context.Context, s *store.Store, now time.Time) error {
 	var expired []store.DueRow
 	if err := s.ReadTx(ctx, func(tx *store.Tx) error {
@@ -138,6 +143,31 @@ func workerSweep(ctx context.Context, s *store.Store, now time.Time) error {
 		return err
 	}
 	for _, d := range expired {
+		if d.State == "absent" {
+			err := s.Tx(ctx, func(tx *store.Tx) error {
+				q := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner})
+				var state string
+				var due *int64
+				err := q.QueryRow("SELECT state, deadline FROM workers WHERE {tenant} AND id = ?", d.ID).Scan(&state, &due)
+				switch {
+				case errors.Is(err, store.ErrNotFound):
+					return fsm.ErrStale
+				case err != nil:
+					return err
+				case state != "absent", due == nil, *due > now.Unix():
+					return fsm.ErrStale
+				}
+				if _, err := q.Exec("DELETE FROM workers_history WHERE {tenant} AND id = ?", d.ID); err != nil {
+					return err
+				}
+				_, err = q.Exec("DELETE FROM workers WHERE {tenant} AND id = ?", d.ID)
+				return err
+			})
+			if err != nil && !errors.Is(err, fsm.ErrStale) {
+				return err
+			}
+			continue
+		}
 		deadline, ok := WorkerMachine.Deadlines[d.State]
 		if !ok {
 			continue
@@ -191,7 +221,8 @@ func (r liveRow) transition(q store.Scoped, event string, now time.Time) error {
 // carries a deadline, so one DueRows batch at the far bound lists the
 // live set. The batch is capped by the store (1000 rows per sweep — a
 // pass always finishes, a bigger fleet is handled across consecutive
-// ticks).
+// ticks). Terminal rows carrying the retention clock (absent workers)
+// never count as live.
 func liveRows(ctx context.Context, s *store.Store, machine *fsm.Machine, worker bool) ([]liveRow, error) {
 	var out []liveRow
 	err := s.ReadTx(ctx, func(tx *store.Tx) error {
@@ -200,23 +231,104 @@ func liveRows(ctx context.Context, s *store.Store, machine *fsm.Machine, worker 
 			return err
 		}
 		for _, d := range rows {
-			var backendID string
-			err := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner}).
-				QueryRow("SELECT backend_id FROM "+machine.Table+" WHERE {tenant} AND id = ?", d.ID).Scan(&backendID)
-			if err != nil {
+			if err := appendLiveRow(ctx, tx, machine, worker, d, &out); err != nil {
 				return err
 			}
-			out = append(out, liveRow{
-				tenant:    store.Tenant{Org: d.Org, Owner: d.Owner},
-				id:        d.ID,
-				state:     d.State,
-				backendID: backendID,
-				worker:    worker,
-			})
 		}
 		return nil
 	})
 	return out, err
+}
+
+// liveRowsAll is liveRows without the batch cap: the cursor read loops
+// until the whole non-final set is enumerated. The orphan pass and the
+// lease sweep need complete knowledge — a worker past an arbitrary cap
+// must never look orphaned or lease-free.
+func liveRowsAll(ctx context.Context, s *store.Store, machine *fsm.Machine, worker bool) ([]liveRow, error) {
+	var out []liveRow
+	err := s.ReadTx(ctx, func(tx *store.Tx) error {
+		var cursorDue int64 = -1
+		var cursorID string
+		for {
+			rows, err := tx.DueRowsAfter(machine.Table, math.MaxInt64, cursorDue, cursorID, 1000)
+			if err != nil {
+				return err
+			}
+			for _, d := range rows {
+				cursorDue, cursorID = d.Deadline, d.ID
+				if err := appendLiveRow(ctx, tx, machine, worker, d, &out); err != nil {
+					return err
+				}
+			}
+			if len(rows) < 1000 {
+				return nil
+			}
+		}
+	})
+	return out, err
+}
+
+// appendLiveRow resolves one due row into a liveRow, skipping terminal
+// states whose deadline is the retention clock, not a live workload.
+func appendLiveRow(_ context.Context, tx *store.Tx, machine *fsm.Machine, worker bool, d store.DueRow, out *[]liveRow) error {
+	if d.State == "absent" {
+		return nil
+	}
+	var backendID string
+	err := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner}).
+		QueryRow("SELECT backend_id FROM "+machine.Table+" WHERE {tenant} AND id = ?", d.ID).Scan(&backendID)
+	if err != nil {
+		return err
+	}
+	*out = append(*out, liveRow{
+		tenant:    store.Tenant{Org: d.Org, Owner: d.Owner},
+		id:        d.ID,
+		state:     d.State,
+		backendID: backendID,
+		worker:    worker,
+	})
+	return nil
+}
+
+// workerLeaseSweep is the lease-expiry backstop: a hold whose expiry
+// lapsed (crashed consumer, lost claim response) is deleted, and a busy
+// worker left with no holds unleases — the effects pass then stops it
+// in the same tick. Runtime leases never expire (expires_at = 0).
+func workerLeaseSweep(ctx context.Context, s *store.Store, now time.Time) error {
+	rows, err := liveRowsAll(ctx, s, WorkerMachine, true)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.state != "busy" {
+			continue
+		}
+		err := s.Tx(ctx, func(tx *store.Tx) error {
+			q := tx.Scoped(row.tenant)
+			if _, err := q.Exec("DELETE FROM leases WHERE {tenant} AND runtime_id = ? AND expires_at > 0 AND expires_at <= ?", row.id, now.Unix()); err != nil {
+				return err
+			}
+			var remaining int
+			if err := q.QueryRow("SELECT count(*) FROM leases WHERE {tenant} AND runtime_id = ?", row.id).Scan(&remaining); err != nil {
+				return err
+			}
+			if remaining > 0 {
+				return nil
+			}
+			var state string
+			if err := q.QueryRow("SELECT state FROM workers WHERE {tenant} AND id = ?", row.id).Scan(&state); err != nil {
+				return err
+			}
+			if state != "busy" {
+				return nil
+			}
+			return workerTransition(q, row.id, "unlease", now)
+		})
+		if err != nil && !errors.Is(err, fsm.ErrStale) && !errors.Is(err, fsm.ErrForbiddenTransition) && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // drainStale is the revoke backstop: the activation transaction drains
@@ -371,14 +483,14 @@ func (s *Sweeper) reconcile(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	if scopes[false] != nil {
-		rows, err := liveRows(ctx, s.Store, RuntimeMachine, false)
+		rows, err := liveRowsAll(ctx, s.Store, RuntimeMachine, false)
 		if err != nil {
 			return err
 		}
 		scopes[false].rows = rows
 	}
 	if scopes[true] != nil {
-		rows, err := liveRows(ctx, s.Store, WorkerMachine, true)
+		rows, err := liveRowsAll(ctx, s.Store, WorkerMachine, true)
 		if err != nil {
 			return err
 		}

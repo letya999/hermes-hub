@@ -38,6 +38,7 @@ func init() {
 		"spawn.revision-rejected":                        "Passport revision did not compile",
 		"spawn.runtime-unavailable":                      "Runtime is unavailable",
 		"spawn.cells-unavailable":                        "Cells are unavailable on this installation",
+		"spawn.exec-env-reserved":                        "Environment variable is not allowed inside a cell",
 		"toolhub.cells-unavailable":                      "CLI cells are unavailable on this installation",
 		"supervisor.identity-upkeep-pending":             "Identity upkeep is pending",
 

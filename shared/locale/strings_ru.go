@@ -38,6 +38,7 @@ func init() {
 		"spawn.revision-rejected":                        "Ревизия паспорта не скомпилировалась",
 		"spawn.runtime-unavailable":                      "Рантайм недоступен",
 		"spawn.cells-unavailable":                        "Ячейки недоступны в этой установке",
+		"spawn.exec-env-reserved":                        "Переменная окружения не разрешена внутри ячейки",
 		"toolhub.cells-unavailable":                      "CLI-ячейки недоступны в этой установке",
 		"supervisor.identity-upkeep-pending":             "Обслуживание реестра идентификации ожидает повтора",
 

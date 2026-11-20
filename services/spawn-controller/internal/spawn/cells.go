@@ -21,6 +21,7 @@ import (
 
 	thapi "github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
+	"github.com/letya999/hermes-hub/shared/auth"
 	"github.com/letya999/hermes-hub/shared/httpapi"
 	"github.com/letya999/hermes-hub/shared/store"
 )
@@ -174,6 +175,13 @@ func (c *Cells) cellInitSeed() error {
 // (moved from v0 cell_init.go).
 var skillSourceIDPattern = regexp.MustCompile(`^[0-9a-f]{16}\.git$`)
 
+// bindingDirPattern is the only shape a binding-scope workspace id may
+// take on disk — one path segment, no leading dot, no separators. The
+// controller derives the host path itself; the consumer's filesystem
+// namespace is not the controller's, so a sent path would bind whatever
+// happens to sit at that offset here.
+var bindingDirPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
 // cellWorkspaceBind resolves the claim's workspace into the host-side bind
 // source; the empty string means the cell mounts nothing at /work (moved
 // from v0 cell_init.go cellWorkspaceBind — scope paths are the space's own,
@@ -197,13 +205,25 @@ func (c *Cells) cellWorkspaceBind(spaceID string, req WorkerClaim) (hostPath str
 		if access != "rw" && access != "ro" {
 			return "", false, fmt.Errorf("%w: binding workspace access", httpapi.ErrInvalid)
 		}
-		path, err := filepath.Abs(req.Workspace.Path)
-		if err != nil || !thapi.ContainedPath(c.StateRoot, path) || thapi.NoSymlinkPath(path) != nil {
-			return "", false, fmt.Errorf("%w: binding workspace outside state root", httpapi.ErrForbidden)
+		if req.Workspace.Path != "" {
+			return "", false, fmt.Errorf("%w: binding workspace carries a host path", httpapi.ErrInvalid)
 		}
-		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() {
-			return "", false, fmt.Errorf("%w: binding workspace is missing", httpapi.ErrForbidden)
+		if !auth.ValidID(spaceID) || !bindingDirPattern.MatchString(req.BindingID) {
+			return "", false, fmt.Errorf("%w: binding workspace identity", httpapi.ErrInvalid)
+		}
+		// The controller owns the path: one dir per (space, binding)
+		// under its own state root — the root itself, reserved entries
+		// and other spaces' trees are unreachable by construction.
+		root := filepath.Join(c.StateRoot, "bindings", spaceID)
+		path := filepath.Join(root, req.BindingID)
+		if filepath.Clean(path) == filepath.Clean(root) || !thapi.ContainedPath(root, path) {
+			return "", false, fmt.Errorf("%w: binding workspace outside its space", httpapi.ErrForbidden)
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return "", false, err
+		}
+		if err := thapi.NoSymlinkPath(path); err != nil {
+			return "", false, fmt.Errorf("%w: binding workspace path", httpapi.ErrForbidden)
 		}
 		return thapi.DockerBindSource(path), access == "rw", nil
 	case WorkspacePrincipal:

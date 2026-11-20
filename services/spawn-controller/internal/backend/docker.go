@@ -95,10 +95,35 @@ func (d *dockerBackend) command(ctx context.Context, env []string, args ...strin
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, d.cfg.Docker, args...) // #nosec G204 -- configured docker binary, argv built internally
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = dockerCLIEnv(env)
 	return cmd.CombinedOutput()
+}
+
+// dockerCLIEnv builds the docker CLI child's environment: an allowlist of
+// the controller's own variables — the ones the CLI genuinely needs plus
+// the operator's DOCKER_* daemon configuration — then the spec env whose
+// values the -e NAME mechanism forwards to the container. Everything else
+// in os.Environ is dropped, so a stray controller variable or a spec name
+// the caller injected can no longer redirect or reconfigure the CLI
+// itself (caller-facing DOCKER_* names are refused upstream in
+// Workers.Exec and the contract).
+func dockerCLIEnv(specEnv []string) []string {
+	allow := map[string]bool{
+		"PATH": true, "HOME": true, "USERPROFILE": true,
+		"HOMEDRIVE": true, "HOMEPATH": true, "APPDATA": true,
+		"LOCALAPPDATA": true, "SYSTEMROOT": true, "SYSTEMDRIVE": true,
+		"COMSPEC": true, "PATHEXT": true, "TEMP": true, "TMP": true,
+		"TMPDIR": true, "LANG": true, "LC_ALL": true,
+		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+	}
+	out := make([]string, 0, len(specEnv)+16)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if allow[name] || strings.HasPrefix(name, "DOCKER_") {
+			out = append(out, entry)
+		}
+	}
+	return append(out, specEnv...)
 }
 
 func (d *dockerBackend) labels(spec Spec) map[string]string {
@@ -537,6 +562,36 @@ func (d *dockerBackend) Inspect(ctx context.Context, id string) (Runtime, error)
 	}, nil
 }
 
+// execArgs builds the `docker exec` argv: env names ride argv while
+// values stay out of it entirely (X4) — the CLI forwards each -e NAME
+// from its own process environment, so a value in argv would mean the
+// builder itself leaked it.
+func (d *dockerBackend) execArgs(id string, spec ExecSpec) ([]string, error) {
+	target := d.container(id)
+	if spec.Sidecar != "" {
+		if !sidecarNamePattern.MatchString(spec.Sidecar) {
+			return nil, fmt.Errorf("%w: sidecar name %q", ErrSpec, spec.Sidecar)
+		}
+		target += "-" + spec.Sidecar
+	}
+	args := []string{"exec"}
+	if spec.Stdin != nil {
+		args = append(args, "-i")
+	}
+	for _, entry := range spec.Env {
+		envName, _, ok := strings.Cut(entry, "=")
+		if !ok || envName == "" {
+			return nil, fmt.Errorf("%w: malformed env entry %q", ErrSpec, entry)
+		}
+		args = append(args, "-e", envName)
+	}
+	if spec.Dir != "" {
+		args = append(args, "-w", spec.Dir)
+	}
+	args = append(args, target)
+	return append(args, spec.Argv...), nil
+}
+
 // Exec runs `docker exec` against the workload or one of its named sidecars:
 // argv goes to the container uninterpreted (no shell unless the caller's own
 // argv is one), env names ride argv while values travel in the CLI's own
@@ -546,13 +601,6 @@ func (d *dockerBackend) Exec(ctx context.Context, id string, spec ExecSpec) (Exe
 	if len(spec.Argv) == 0 {
 		return ExecResult{}, fmt.Errorf("%w: exec argv required", ErrSpec)
 	}
-	target := d.container(id)
-	if spec.Sidecar != "" {
-		if !sidecarNamePattern.MatchString(spec.Sidecar) {
-			return ExecResult{}, fmt.Errorf("%w: sidecar name %q", ErrSpec, spec.Sidecar)
-		}
-		target += "-" + spec.Sidecar
-	}
 	timeout := spec.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -561,35 +609,21 @@ func (d *dockerBackend) Exec(ctx context.Context, id string, spec ExecSpec) (Exe
 	if limit <= 0 {
 		limit = 1 << 20
 	}
-	args := []string{"exec"}
-	if spec.Stdin != nil {
-		args = append(args, "-i")
+	args, err := d.execArgs(id, spec)
+	if err != nil {
+		return ExecResult{}, err
 	}
-	for _, entry := range spec.Env {
-		envName, _, ok := strings.Cut(entry, "=")
-		if !ok || envName == "" {
-			return ExecResult{}, fmt.Errorf("%w: malformed env entry %q", ErrSpec, entry)
-		}
-		args = append(args, "-e", envName)
-	}
-	if spec.Dir != "" {
-		args = append(args, "-w", spec.Dir)
-	}
-	args = append(args, target)
-	args = append(args, spec.Argv...)
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, d.cfg.Docker, args...) // #nosec G204 -- configured docker binary, argv built internally
-	if len(spec.Env) > 0 {
-		cmd.Env = append(os.Environ(), spec.Env...)
-	}
+	cmd.Env = dockerCLIEnv(spec.Env)
 	if spec.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(spec.Stdin)
 	}
 	stdout := &bounded{limit: limit}
 	stderr := &bounded{limit: limit}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if callCtx.Err() != nil {
 		return ExecResult{}, fmt.Errorf("exec %s: %w", id, callCtx.Err())
 	}
@@ -839,8 +873,17 @@ func (d *dockerBackend) List(ctx context.Context) ([]Runtime, error) {
 		// runtimes missing from a list they never got.
 		return nil, fmt.Errorf("backend: list: %w: %s", err, firstLine(out))
 	}
+	return d.parseList(string(out)), nil
+}
+
+// parseList keeps only this backend's own containers from the daemon's
+// managed-label dump: the label is shared across backends, so a foreign
+// prefix is another backend's workload and a sidecar label marks a
+// companion that lives and dies with its worker — listing either as an
+// orphan would have the reconciler stop a live cell mid-exec.
+func (d *dockerBackend) parseList(out string) []Runtime {
 	var list []Runtime
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -853,19 +896,28 @@ func (d *dockerBackend) List(ctx context.Context) ([]Runtime, error) {
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
 			continue
 		}
+		if !strings.HasPrefix(row.Names, d.cfg.ContainerPrefix) {
+			continue
+		}
 		rt := Runtime{ID: strings.TrimPrefix(row.Names, d.cfg.ContainerPrefix), State: row.State}
+		sidecar := false
 		for _, pair := range strings.Split(row.Labels, ",") {
 			k, v, _ := strings.Cut(pair, "=")
 			switch k {
+			case "hermes-hub.sidecar":
+				sidecar = true
 			case "hermes-hub.space":
 				rt.Space = v
 			case "hermes-hub.agent":
 				rt.Agent = v
 			}
 		}
+		if sidecar {
+			continue
+		}
 		list = append(list, rt)
 	}
-	return list, nil
+	return list
 }
 
 // isMissingContainer matches the daemon's "no such object/container" reply;

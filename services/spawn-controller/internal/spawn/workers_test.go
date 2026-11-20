@@ -250,12 +250,43 @@ func TestWorkerMountsOnlyOwnSpace(t *testing.T) {
 	if _, err := w.Claim(ctx, workerTenant, "alice", foreign); !errors.Is(err, httpapi.ErrForbidden) {
 		t.Fatalf("foreign-principal claim: %v, want forbidden", err)
 	}
-	// A binding path outside the state root refuses too.
-	outside := workerClaimReq()
-	outside.CellKey = "binding|alice|bind-9|sha256:aaa"
-	outside.Workspace = CellWorkspace{Scope: WorkspaceBinding, Path: t.TempDir()}
-	if _, err := w.Claim(ctx, workerTenant, "alice", outside); !errors.Is(err, httpapi.ErrForbidden) {
-		t.Fatalf("outside binding claim: %v, want forbidden", err)
+	// Binding workspaces are controller-derived: a claim carrying any
+	// host path — another space's binding dir, the state root itself or
+	// an unrelated tree — is refused before Start, and a well-formed
+	// claim mounts the derived per-space dir.
+	for name, path := range map[string]string{
+		"state root":   w.Cells.StateRoot,
+		"other space":  filepath.Join(w.Cells.StateRoot, "bindings", "bob", "bind-1"),
+		"unrelated":    t.TempDir(),
+		"state escape": filepath.Join(w.Cells.StateRoot, "..", "outside"),
+	} {
+		bad := workerClaimReq()
+		bad.CellKey = "binding|alice|bind-9|sha256:aaa"
+		bad.Workspace = CellWorkspace{Scope: WorkspaceBinding, Path: path}
+		if _, err := w.Claim(ctx, workerTenant, "alice", bad); !errors.Is(err, httpapi.ErrInvalid) {
+			t.Fatalf("%s path claim: %v, want invalid", name, err)
+		}
+	}
+	derived := workerClaimReq()
+	derived.CellKey = "binding|alice|bind-9|sha256:aaa"
+	derived.Workspace = CellWorkspace{Scope: WorkspaceBinding}
+	leaseB, err := w.Claim(ctx, workerTenant, "alice", derived)
+	if err != nil {
+		t.Fatalf("derived binding claim: %v", err)
+	}
+	want := filepath.Join(w.Cells.StateRoot, "bindings", "alice", "bind-1")
+	gotMount := ""
+	for _, m := range be.specOf(leaseB.Worker.ID).Mounts {
+		if m.Target == cellWorkGuest {
+			gotMount = m.Source
+		}
+	}
+	if filepath.Clean(gotMount) != filepath.Clean(want) {
+		t.Fatalf("binding mount=%q, want derived %q", gotMount, want)
+	}
+	info, err := os.Stat(want)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("derived workspace not materialized: %v", err)
 	}
 }
 
@@ -294,8 +325,10 @@ func TestWorkerNeverCrossesTenants(t *testing.T) {
 }
 
 // TestExecNoSecretInArgv: brokered credential values reach the cred
-// sidecar through the exec file channel only — never the worker's spec
-// argv, env, mounts or the persisted claim.
+// sidecar through the exec file channel — and only there: the rules
+// payload must carry the value (a shallow-copy strip would starve the
+// sidecar) while spec argv/env, staged files and the persisted claim
+// never do.
 func TestExecNoSecretInArgv(t *testing.T) {
 	s, be, w := workersFixture(t, nil)
 	ctx := context.Background()
@@ -310,17 +343,23 @@ func TestExecNoSecretInArgv(t *testing.T) {
 	var blob strings.Builder
 	_, _ = blob.WriteString(strings.Join(spec.Command, "\x00"))
 	_, _ = blob.WriteString(strings.Join(spec.Env, "\x00"))
+	viaExec := ""
 	for _, sc := range spec.Sidecars {
 		_, _ = blob.WriteString(strings.Join(sc.Command, "\x00"))
 		_, _ = blob.WriteString(strings.Join(sc.Env, "\x00"))
 		for _, f := range sc.Files {
-			if !f.ViaExec {
+			if f.ViaExec {
+				viaExec += string(f.Content)
+			} else {
 				_, _ = blob.Write(f.Content) // docker-cp staged payload must be secret-free
 			}
 		}
 	}
 	if strings.Contains(blob.String(), secret) {
 		t.Fatal("credential value reached spec argv/env/staged files")
+	}
+	if !strings.Contains(viaExec, secret) {
+		t.Fatal("credential value never reached the cred sidecar's rules payload")
 	}
 	// The persisted claim column strips values.
 	row, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID)
@@ -334,6 +373,282 @@ func TestExecNoSecretInArgv(t *testing.T) {
 	}
 	if lease.CredHost == "" {
 		t.Fatal("brokered claim returned no cred endpoint")
+	}
+}
+
+// TestWorkerDifferentImageNewWorker: the cell key is (tenant, space, cell
+// key, image) — same key with a second image must mint another worker,
+// never reuse or collide with the first (M2).
+func TestWorkerDifferentImageNewWorker(t *testing.T) {
+	s, be, w := workersFixture(t, nil)
+	ctx := context.Background()
+	leaseA, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqB := workerClaimReq()
+	reqB.Image = "sha256:" + strings.Repeat("b", 64)
+	leaseB, err := w.Claim(ctx, workerTenant, "alice", reqB)
+	if err != nil {
+		t.Fatalf("second-image claim: %v", err)
+	}
+	if leaseB.Worker.ID == leaseA.Worker.ID {
+		t.Fatal("second image collided with the first worker's row")
+	}
+	if be.startCount() != 2 {
+		t.Fatalf("second image reused the first worker: starts=%d", be.startCount())
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, leaseA.Worker.ID)
+	if err != nil || row.State != "busy" {
+		t.Fatalf("first worker state=%q err=%v after second-image claim, want busy", row.State, err)
+	}
+}
+
+// TestWorkerJoinBusyWithoutProbe: a claim on a key whose worker is held
+// mid-exec joins as an additional holder — probing the cell reads a
+// legitimately dirty state, so no probe may run while a live lease
+// exists (the drain mutant dies here).
+func TestWorkerJoinBusyWithoutProbe(t *testing.T) {
+	s, be, w := workersFixture(t, nil)
+	ctx := context.Background()
+	// Any probe reads a busy cell as dirty: clean/procs fail.
+	be.exec = func(spec backend.ExecSpec) (backend.ExecResult, error) {
+		if len(spec.Argv) >= 2 && spec.Argv[0] == cellInitGuest && (spec.Argv[1] == "clean" || spec.Argv[1] == "procs") {
+			return backend.ExecResult{ExitCode: 1}, nil
+		}
+		return backend.ExecResult{}, nil
+	}
+	leaseA, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	execsBefore := len(be.execs)
+	leaseB, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatalf("concurrent-key claim: %v", err)
+	}
+	if leaseB.Worker.ID != leaseA.Worker.ID || leaseB.Lease == leaseA.Lease {
+		t.Fatalf("join got %+v, want same worker, fresh lease", leaseB)
+	}
+	for _, exec := range be.execs[execsBefore:] {
+		if len(exec.Argv) >= 2 && exec.Argv[0] == cellInitGuest {
+			t.Fatalf("probe exec ran against a held worker: %v", exec.Argv)
+		}
+	}
+	// The original holder's lease still works — the claim did not drain
+	// the worker under it.
+	if _, err := w.Exec(ctx, workerTenant, leaseA.Worker.ID, leaseA.Lease, backend.ExecSpec{Argv: []string{"true"}}); err != nil {
+		t.Fatalf("holder lease lost to the join: %v", err)
+	}
+	if err := w.Release(ctx, workerTenant, leaseA.Worker.ID, leaseA.Lease); err != nil {
+		t.Fatal(err)
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, leaseA.Worker.ID)
+	if err != nil || row.State != "busy" {
+		t.Fatalf("worker state=%q after first release, want busy", row.State)
+	}
+	if err := w.Release(ctx, workerTenant, leaseB.Worker.ID, leaseB.Lease); err != nil {
+		t.Fatal(err)
+	}
+	row, err = loadWorkerInStore(ctx, s, workerTenant, leaseA.Worker.ID)
+	if err != nil || row.State != "absent" {
+		t.Fatalf("worker state=%q after last release, want absent", row.State)
+	}
+}
+
+// TestWorkerDirtyDrainWhenUnheld: an unleased busy row is the stale-hold
+// shape — the probe runs on it and a dirty answer drains the generation,
+// then the claim re-plans to a fresh worker.
+func TestWorkerDirtyDrainWhenUnheld(t *testing.T) {
+	s, be, w := workersFixture(t, nil)
+	ctx := context.Background()
+	be.exec = func(spec backend.ExecSpec) (backend.ExecResult, error) {
+		if len(spec.Argv) >= 2 && spec.Argv[0] == cellInitGuest && (spec.Argv[1] == "clean" || spec.Argv[1] == "procs") {
+			return backend.ExecResult{ExitCode: 1}, nil
+		}
+		return backend.ExecResult{}, nil
+	}
+	leaseA, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the crashed-holder shape directly: the busy row stands
+	// with no lease row at all.
+	if err := s.Tx(ctx, func(tx *store.Tx) error {
+		_, err := tx.Scoped(workerTenant).Exec("DELETE FROM leases WHERE {tenant} AND runtime_id = ?", leaseA.Worker.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	leaseB, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatalf("re-claim after dirty drain: %v", err)
+	}
+	if leaseB.Worker.ID == leaseA.Worker.ID {
+		t.Fatal("dirty worker was reused instead of drained")
+	}
+	if be.startCount() != 2 {
+		t.Fatalf("dirty row did not re-plan: starts=%d", be.startCount())
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, leaseA.Worker.ID)
+	if err != nil || (row.State != "draining" && row.State != "absent") {
+		t.Fatalf("dirty worker state=%q, want draining", row.State)
+	}
+}
+
+// TestWorkerLeaseExpiryDrainsStaleHold: a lease that outlives its expiry
+// is swept — the hold disappears and a busy worker with none left drains
+// (injected clock).
+func TestWorkerLeaseExpiryDrainsStaleHold(t *testing.T) {
+	s, be, w := workersFixture(t, nil)
+	ctx := context.Background()
+	cur := time.Unix(1_800_000_000, 0)
+	w.Now = func() time.Time { return cur }
+	lease, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Before expiry the hold is live and the sweep leaves it alone.
+	if err := workerLeaseSweep(ctx, s, cur.Add(workerLeaseTTL-1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec(ctx, workerTenant, lease.Worker.ID, lease.Lease, backend.ExecSpec{Argv: []string{"true"}}); err != nil {
+		t.Fatalf("live lease lost early: %v", err)
+	}
+	// Past expiry the lease row is gone and the worker unleases.
+	if err := workerLeaseSweep(ctx, s, cur.Add(workerLeaseTTL+time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID)
+	if err != nil || row.State != "draining" {
+		t.Fatalf("worker state=%q after lease expiry, want draining", row.State)
+	}
+	if _, err := w.Exec(ctx, workerTenant, lease.Worker.ID, lease.Lease, backend.ExecSpec{Argv: []string{"true"}}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired lease still execs: %v, want not-found", err)
+	}
+	// The effects pass then confirms the stop: absent in the same tick.
+	sweep := &Sweeper{Store: s, Backend: be, WorkerBackend: be, Now: func() time.Time { return cur }}
+	if err := sweep.effects(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, err = loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID)
+	if err != nil || row.State != "absent" {
+		t.Fatalf("worker state=%q after stop, want absent", row.State)
+	}
+	if len(be.live) != 0 {
+		t.Fatalf("worker workload still live after expiry drain: %v", be.live)
+	}
+}
+
+// TestWorkerAbsentRowsGC: an absent row (and its history) is retained for
+// audit, then the retention deadline deletes both — the table does not
+// grow per call forever.
+func TestWorkerAbsentRowsGC(t *testing.T) {
+	s, _, w := workersFixture(t, nil)
+	ctx := context.Background()
+	cur := time.Unix(1_800_000_000, 0)
+	w.Now = func() time.Time { return cur }
+	lease, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Release(ctx, workerTenant, lease.Worker.ID, lease.Lease); err != nil {
+		t.Fatal(err)
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID)
+	if err != nil || row.State != "absent" {
+		t.Fatalf("released worker state=%q, want absent", row.State)
+	}
+	// Inside retention the row stays; past it the sweep deletes both
+	// the row and its history.
+	if err := workerSweep(ctx, s, cur.Add(workerAbsentRetention-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID); err != nil {
+		t.Fatalf("retained row gone early: %v", err)
+	}
+	if err := workerSweep(ctx, s, cur.Add(workerAbsentRetention+time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("absent row survived retention: %v", err)
+	}
+	var history int
+	if err := s.ReadTx(ctx, func(tx *store.Tx) error {
+		return tx.Scoped(workerTenant).QueryRow("SELECT count(*) FROM workers_history WHERE {tenant} AND id = ?", lease.Worker.ID).Scan(&history)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if history != 0 {
+		t.Fatalf("absent row's history survived retention: %d rows", history)
+	}
+}
+
+// TestWorkerOrphanPassSeesAllNonFinalRows: the orphan pass must know
+// every non-final row — a busy worker beyond the old 1000-row cap is a
+// live workload, never an orphan to stop.
+func TestWorkerOrphanPassSeesAllNonFinalRows(t *testing.T) {
+	s, be, w := workersFixture(t, nil)
+	ctx := context.Background()
+	lease, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fill the table past the read cap with older non-final rows; their
+	// deadlines sort first so the real busy worker is the row the cap
+	// would drop.
+	if err := s.Tx(ctx, func(tx *store.Tx) error {
+		q := tx.Scoped(workerTenant)
+		for i := 0; i < 1100; i++ {
+			id := "wk-plant-" + strings.Repeat("0", 4) + fmt.Sprint(i)
+			err := q.Insert("workers", []string{"id", "space_id", "agent", "generation", "state", "deadline", "cell_key", "image_digest", "backend_id", "canary", "claim", "binding_id", "job_id"}, id, "alice", "agent", 1, "busy", 1, "key-"+fmt.Sprint(i), "img", "be-plant-"+id, "", "{}", "", "")
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtimeBE := newWorkerFakeBackend()
+	sweep := &Sweeper{Store: s, Backend: runtimeBE, WorkerBackend: be}
+	if err := sweep.reconcile(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	be.mu.Lock()
+	_, live := be.live[lease.Worker.BackendID]
+	be.mu.Unlock()
+	if !live {
+		t.Fatal("busy worker beyond the read cap was stopped as an orphan")
+	}
+	row, err := loadWorkerInStore(ctx, s, workerTenant, lease.Worker.ID)
+	if err != nil || row.State != "busy" {
+		t.Fatalf("busy worker state=%q after reconcile, want busy", row.State)
+	}
+}
+
+// TestWorkerExecEnvReserved: exec env names that would reconfigure the
+// controller's docker CLI are refused server-side — the workload has no
+// legitimate use for DOCKER_*.
+func TestWorkerExecEnvReserved(t *testing.T) {
+	_, _, w := workersFixture(t, nil)
+	ctx := context.Background()
+	lease, err := w.Claim(ctx, workerTenant, "alice", workerClaimReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH"} {
+		_, err := w.Exec(ctx, workerTenant, lease.Worker.ID, lease.Lease, backend.ExecSpec{
+			Argv: []string{"true"}, Env: []string{name + "=tcp://evil.invalid:2375"},
+		})
+		if !errors.Is(err, httpapi.ErrInvalid) {
+			t.Fatalf("exec env %s: %v, want invalid", name, err)
+		}
+	}
+	if _, err := w.Exec(ctx, workerTenant, lease.Worker.ID, lease.Lease, backend.ExecSpec{
+		Argv: []string{"true"}, Env: []string{"HTTP_PROXY=http://proxy:3128", "HOME=/tmp"},
+	}); err != nil {
+		t.Fatalf("legitimate workload env refused: %v", err)
 	}
 }
 

@@ -38,6 +38,7 @@ func init() {
 		"spawn.revision-rejected":                        "La revisión del pasaporte no compiló",
 		"spawn.runtime-unavailable":                      "El runtime no está disponible",
 		"spawn.cells-unavailable":                        "Las celdas no están disponibles en esta instalación",
+		"spawn.exec-env-reserved":                        "La variable de entorno no está permitida dentro de una celda",
 		"toolhub.cells-unavailable":                      "Las celdas CLI no están disponibles en esta instalación",
 		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
 
