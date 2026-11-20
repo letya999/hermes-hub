@@ -125,3 +125,7 @@ docs/state-machines.md, ADR-0105..0109, SPEC-0100, services/README.template.md.
 Owner review, minimal real topology, remote Postgres CI, publication and any live
 smoke remain explicit acceptance actions. Keep this CHG in progress while that
 acceptance is outstanding. No push, PR, live stack mutation or prune is performed.
+
+Integration: e7b4a881 on feat/m40-v1-platform. Store connection diagnostic red/green
+added in 0b3ac931. Native Windows credential-broker compilation is unavailable
+(fs_linux.go only); root module build passed. actionlint on ci.yml passed.

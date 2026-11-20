@@ -82,8 +82,8 @@ refusal gets a test in the issue that builds the crossing
 ## Reading the boundary in code
 
 Import direction between `internal/communication` and its leaf packages is
-enforced by parser tests; the per-binary dependency closure is enforced by
-`devcheck deps` until M40.2 replaces it with Go `internal` visibility
+enforced by parser tests; shared infrastructure imports are enforced by
+`devcheck boundaries` and service internals by Go `internal` visibility
 (ADR-0105 D1); the agent-visible capability surface is enforced by ToolHub
 admission, not by convention. If a doc and code disagree about a
 boundary, code wins and the doc is stale - fix the doc.

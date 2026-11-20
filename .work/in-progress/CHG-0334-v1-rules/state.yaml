@@ -30,6 +30,7 @@ validation:
   live_acceptance: not_applicable
   owner_review: pending
 evidence:
+  - "M40.2 merged as e7b4a881; engineering links actual infrastructure tests and explicitly marks the minimal topology skip. No ADR number collision (new dependency is ADR-0115)."
   - "2026-11-20: just check passed at 0a794569 plus archive fix. TestSourceArchiveContainsOnlyTrackedInputs failed before sourcePaths included the service README template, then passed; go vet -p=2 ./cmd/package passed."
   - "Source base: 380fb5aa on feat/m40-v1-platform; work step 1 (parking 6e6b53c6 on chore/park-chg-0332-run-tokens) done by the coordinator before this CHG. No push, no GitHub writes."
   - "TestServiceReadmeTemplateHeadings: 6 of 10 subtests red before the rule existed (missing heading, heading in prose or at another level, missing README, missing template, template without headings, stale exemption), all 10 green after (59352c9c)."
@@ -41,5 +42,4 @@ evidence:
 remaining:
   - "Owner review of docs/engineering.md, docs/architecture.md, docs/state-machines.md, services/README.template.md and ADR-0105..0112 (issue #599 acceptance)."
 limitations:
-  - "ADR-0110..0112 numbers taken without coordination with the parallel M40.2 worktree (feat/m40-2-skeleton); a collision there fails devcheck docs at merge."
   - "Issue 612 still names branch wip/chg-0332-run-tokens; the parked work is on chore/park-chg-0332-run-tokens."

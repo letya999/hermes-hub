@@ -2,7 +2,7 @@ schema: 1
 change: CHG-0335
 title: v1 skeleton - shared packages, service descriptor, process mode, test base
 status: in_progress
-branch: feat/m40-2-skeleton
+branch: feat/m40-v1-platform
 updated: 2026-11-20
 phase: verification
 adr: ADR-0105
@@ -30,6 +30,11 @@ validation:
   minimal_message_topology: unavailable_core_binaries_not_extracted
   postgres_ci: unavailable_unpublished
 evidence:
+  - "Integrated feat/m40-2-skeleton in e7b4a881; conflicts resolved in work/docs/ADR indexes and source packaging. engineering.md now links the real M40.2 tests and names the minimal topology skip."
+  - "0b3ac931: TestPostgresConnectionErrorDoesNotEchoConfiguration red when driver parsing echoed configuration, green after returning opaque unavailable (context cancellation remains typed)."
+  - "Sensitivity probes: duplicate migration, forbidden transition/history writes, disabled sweep and tool-name drift each made its named test fail; restored production code made all five named store/FSM/snapshot tests green."
+  - "go build -p=2 ./... passed for the root module. Native Windows build of credential-broker unavailable: securefs has only fs_linux.go."
+  - "actionlint v1.7.12 passed for the modified CI workflow."
   - "Committed foundations: c73e56da httpapi; 560df786 store; b78678dd fsm; 7844b934 locale; 97ba833f auth and log."
   - "TestProcessModeRefusesUntrusted: red before trust guard (binary lookup reached), green after; explicit false overrides HUB_TRUSTED=true and touches no data."
   - "TestServiceEnableRefusesWithoutPolicy: red (enable wrote state and restarted), green after retiring the unconditional legacy writer."
@@ -40,7 +45,7 @@ evidence:
   - "Task and identity contracts already use shared/httpapi after c73e56da; fake task server passes the same in-process and HTTP conformance suite."
   - "rg and go list confirm no production imports of removed cmd/hub, contracts/toolsurface, deps gate, ReadSelfServicesFeatures or HUB_ACTIVE_FEATURES."
 remaining:
-  - "Merge into feat/m40-v1-platform, update engineering rule links, build every go.work module, just check and affected packages."
+  - "Final combined-tree local check and affected package gates pending."
   - "Real TestMinimalProfileAnswersMessage awaits M40.3/M40.4 core binaries; marked skipped, never green."
   - "Owner review and remote Postgres CI acceptance require separate publication authorization."
 limitations:
