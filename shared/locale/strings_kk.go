@@ -25,6 +25,9 @@ func init() {
 		"hubctl.identity-apply":              "Көшіруді қолдану; жалаушасыз бастапқы жазбалар санын көрсету",
 		"hubctl.identity-invalid":            "Сәйкестендіруді көшіру деректері қате немесе қолжетімсіз",
 		"hubctl.identity-failed":             "Сәйкестендіруді көшіру орындалмады; сәйкестендіру өзгерістері сақталмады",
+		"hubctl.explain-usage":               "Пайдалану: hubctl explain <space> [--org <org>] [--owner <owner>]",
+		"hubctl.explain-no-controller":       "spawn-controller қолжетімсіз (HUB_SPAWN_CONTROLLER_URL мен HUB_SERVICE_TOKEN орнатыңыз)",
+		"hubctl.explain-header":              "space %s effective %s",
 
 		"communication.identity-endpoint-required":       "Аутентификациясы бар identity-hub мекенжайы қажет",
 		"communication.identity-link-authority-required": "OIDC арқылы байланыстыру үшін identity-hub кіріс арнасының бөлек кілті қажет",

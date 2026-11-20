@@ -25,6 +25,9 @@ func init() {
 		"hubctl.identity-apply":              "Применить миграцию; без флага показать количество записей источника",
 		"hubctl.identity-invalid":            "Входные данные миграции идентификации недоступны или некорректны",
 		"hubctl.identity-failed":             "Миграция идентификации завершилась ошибкой; изменения идентификации не сохранены",
+		"hubctl.explain-usage":               "Использование: hubctl explain <space> [--org <org>] [--owner <owner>]",
+		"hubctl.explain-no-controller":       "spawn-controller недоступен (задайте HUB_SPAWN_CONTROLLER_URL и HUB_SERVICE_TOKEN)",
+		"hubctl.explain-header":              "space %s effective %s",
 
 		"communication.identity-endpoint-required":       "Требуется адрес identity-hub с аутентификацией",
 		"communication.identity-link-authority-required": "Для привязки через OIDC требуется отдельный ключ входного канала identity-hub",

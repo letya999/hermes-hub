@@ -43,7 +43,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.5.0: init | org-init | space apply | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay | run\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.5.0: init | org-init | space apply | execution-audit | select-execution | render | doctor | explain | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay | run\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -420,6 +420,13 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "provision" {
 		return runProvision(ctx, args[1:])
+	}
+	if op == "explain" {
+		client, err := explainClient()
+		if err != nil {
+			return err
+		}
+		return runExplain(ctx, os.Stdout, args[1:], client)
 	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")

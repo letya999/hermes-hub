@@ -30,6 +30,51 @@ func TestWarmTTLFlagDefault(t *testing.T) {
 	}
 }
 
+// hubctl doctor has no passport/config shape fixer: the authored passport
+// vocabulary is the only shape v0 ever wrote, so no migration exists for
+// --fix to apply (CHG-0336 S5 decision). The flag must stay rejected and
+// doctor must leave authored files byte-identical — if a real shape
+// migration is ever added, this test is where its contract starts.
+func TestDoctorHasNoShapeMigration(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "owner")
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m1\nroutes:\n  m1: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m1}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string][]byte{}
+	entries, err := os.ReadDir(filepath.Join(dir, "passports"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, "passports", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[e.Name()] = body
+	}
+	if err := run(ctx, []string{"doctor", "--dir", dir, "--fix"}); err == nil {
+		t.Fatal("doctor --fix accepted; no authored shape migration exists to apply")
+	}
+	if err := run(ctx, []string{"doctor", "--dir", dir}); err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	for name, body := range before {
+		after, err := os.ReadFile(filepath.Join(dir, "passports", name))
+		if err != nil || !bytes.Equal(body, after) {
+			t.Fatalf("doctor rewrote authored passport %s", name)
+		}
+	}
+}
+
 func TestCLIWorkflow(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "owner")

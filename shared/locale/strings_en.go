@@ -25,6 +25,9 @@ func init() {
 		"hubctl.identity-apply":              "Apply migration; otherwise show source counts",
 		"hubctl.identity-invalid":            "Identity migration input is invalid or unavailable",
 		"hubctl.identity-failed":             "Identity migration failed; no identity changes were committed",
+		"hubctl.explain-usage":               "Usage: hubctl explain <space> [--org <org>] [--owner <owner>]",
+		"hubctl.explain-no-controller":       "spawn-controller is unreachable (set HUB_SPAWN_CONTROLLER_URL and HUB_SERVICE_TOKEN)",
+		"hubctl.explain-header":              "space %s effective %s",
 
 		"communication.identity-endpoint-required":       "An authenticated identity-hub endpoint is required",
 		"communication.identity-link-authority-required": "OIDC linking requires a separate identity-hub ingress credential",
