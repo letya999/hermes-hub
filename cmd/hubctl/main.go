@@ -774,7 +774,10 @@ func run(ctx context.Context, args []string) error {
 				return readErr
 			}
 			if s.RendersInfra() {
-				if err := checkProviderAliasOwnership(ctx, "hermes-hub-"+s.User+"-"+*environment, dockerOutput); err != nil {
+				// The infra cliproxy renders in the standalone shared
+				// project after the plan split; compare foreign projects
+				// against that owner, never the user plan's name.
+				if err := checkProviderAliasOwnership(ctx, stack.SharedProjectName(*environment), dockerOutput); err != nil {
 					return err
 				}
 			}
@@ -783,7 +786,7 @@ func run(ctx context.Context, args []string) error {
 				if secretErr != nil {
 					return secretErr
 				}
-				if err := checkTelegramOwnership(ctx, "hermes-hub-"+s.User+"-"+*environment, secrets["TELEGRAM_BOT_TOKEN"], dockerOutput); err != nil {
+				if err := checkTelegramOwnership(ctx, stack.SharedProjectName(*environment), secrets["TELEGRAM_BOT_TOKEN"], dockerOutput); err != nil {
 					return err
 				}
 			}
