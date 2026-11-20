@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -305,4 +306,46 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// A failed persist of the uncertain transition rolls the record back to
+// running with Unconfirmed=false; neither the reconciler nor ExpireUncertain
+// ever looks at such a record. The sweep names it uncertain once it is past
+// the run budget plus one warm TTL of grace, exactly as a restart would.
+func TestRunningJobPastDeadlineBecomesUncertain(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), JobID: "stuck", IdempotencyKey: "stuck"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	statePath := m.statePath
+	m.statePath = filepath.Join(t.TempDir(), "missing", "state.json")
+	uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, Status: "uncertain", LastEvent: "run.unknown"}
+	if err := m.finishJobGeneration(request, uncertain, "uncertain", ""); err == nil {
+		t.Fatal("persist failure not reported")
+	}
+	m.statePath = statePath
+	m.mu.Lock()
+	if record := m.jobs[executeJobKey(request)]; record.Status != "running" || record.Unconfirmed {
+		m.mu.Unlock()
+		t.Fatalf("precondition: rollback left %+v", record)
+	}
+	m.mu.Unlock()
+	m.sweep(context.Background(), time.Now().UTC().Add(time.Minute))
+	m.mu.Lock()
+	if status := m.jobs[executeJobKey(request)].Status; status != "running" {
+		m.mu.Unlock()
+		t.Fatalf("job inside its run budget was swept: %s", status)
+	}
+	m.mu.Unlock()
+	m.sweep(context.Background(), time.Now().UTC().Add(hubruntime.RunBudget()+2*m.cfg.WarmTTL))
+	m.mu.Lock()
+	record := m.jobs[executeJobKey(request)]
+	m.mu.Unlock()
+	if record.Status != "uncertain" || record.Response.Status != "uncertain" || record.Response.LastEvent != "run.unknown" {
+		t.Fatalf("stuck running job not named uncertain: status=%s response=%+v", record.Status, record.Response)
+	}
+	if replay, known, err := m.beginJob(request); err != nil || !known || replay.Status != "uncertain" {
+		t.Fatalf("retry still blocked: replay=%+v known=%v err=%v", replay, known, err)
+	}
 }

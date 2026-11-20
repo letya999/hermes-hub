@@ -322,7 +322,7 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	m.mu.Lock()
 	entry := m.items[key]
 	valid := entry != nil && entry.Container == runtime.Container && entry.Generation == runtime.Generation
-	busy := valid && entry.Leases > ownLeases
+	busy := valid && len(entry.leases) > ownLeases
 	m.mu.Unlock()
 	if !valid {
 		return false, errors.New("runtime changed before restart")
@@ -566,7 +566,7 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 	// Only a lease-free idle container may be replaced; a busy or absent one
 	// answers scheduled:false — nothing is queued, the next spawn reads the
 	// new revision anyway.
-	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Idle) || entry.Leases != 0 {
+	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Idle) || len(entry.leases) != 0 {
 		m.mu.Unlock()
 		return false, nil
 	}
@@ -579,7 +579,7 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 	lock.Lock()
 	m.mu.Lock()
 	current := m.items[key]
-	valid := current != nil && current.Container == snapshot.Container && current.Generation == snapshot.Generation && current.Leases == 0
+	valid := current != nil && current.Container == snapshot.Container && current.Generation == snapshot.Generation && len(current.leases) == 0
 	var binding Binding
 	if valid {
 		binding = current.binding

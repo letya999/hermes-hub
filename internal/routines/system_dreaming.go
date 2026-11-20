@@ -66,9 +66,14 @@ func (e *Engine) SyncDreamingSchedule(auth identity.Envelope, localTime, zone, r
 	return e.atomicJSON(path, item)
 }
 
+// dreamingAttempts bounds one night's operation failures. The proactive pass
+// always picks a schedule's oldest occurrence, so a night that never settles
+// would block every later night.
+const dreamingAttempts = 3
+
 // RunDueDreaming resumes occurrence work after a host restart. The memory
 // processor owns its finer checkpoints; this routine owns occurrence state.
-func (e *Engine) RunDueDreaming(ctx context.Context, authorize func(commodel.Job) error, run func(context.Context, commodel.RoutineOccurrence) error) error {
+func (e *Engine) RunDueDreaming(ctx context.Context, now time.Time, authorize func(commodel.Job) error, run func(context.Context, commodel.RoutineOccurrence) error) error {
 	var failures []error
 	err := e.ProcessProactive(ctx, "dreaming", func(o commodel.RoutineOccurrence) {
 		if o.JobKind != "dreaming" || o.ScheduleID != SystemDreamingID {
@@ -86,10 +91,21 @@ func (e *Engine) RunDueDreaming(ctx context.Context, authorize func(commodel.Job
 			}
 			return
 		}
+		if o.RetryAfter.After(now) {
+			return
+		}
 		if err := run(ctx, o); err != nil {
 			e.mu.Lock()
+			defer e.mu.Unlock()
 			failures = append(failures, err)
-			e.mu.Unlock()
+			o.RetryCount++
+			o.RetryAfter = now.Add(time.Duration(o.RetryCount) * time.Minute).UTC()
+			if o.RetryCount >= dreamingAttempts {
+				o.State = "failed"
+			}
+			if err := e.atomicJSON(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+				failures = append(failures, err)
+			}
 			return
 		}
 		e.mu.Lock()

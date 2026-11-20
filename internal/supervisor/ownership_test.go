@@ -214,7 +214,7 @@ func TestRestoreRejectsReplacementWithoutDiscardingOriginalLeases(t *testing.T) 
 		t.Fatal("replacement adopted")
 	}
 	status, _, err := restored.Status(b)
-	if err != nil || status.Generation != runtime.Generation || status.Leases != runtime.Leases || mutations != 0 || len(restored.sem) != 1 {
+	if err != nil || status.Generation != runtime.Generation || len(status.Consumers) != 1 || mutations != 0 || len(restored.sem) != 1 {
 		t.Fatalf("lost original state or mutated replacement: %+v %v mutations=%d", status, err, mutations)
 	}
 	restored.mu.Lock()
@@ -420,7 +420,7 @@ func TestRestoredReadinessFailurePreservesRunAndLease(t *testing.T) {
 	restored.mu.Lock()
 	defer restored.mu.Unlock()
 	entry := restored.items[runtimeKey(b)]
-	if entry.Generation != runtime.Generation || entry.Leases != runtime.Leases || entry.leases[lease.ID].Kind != LeaseStream || mutations != 0 {
+	if entry.Generation != runtime.Generation || len(entry.leases) != 1 || entry.leases[lease.ID].Kind != LeaseStream || mutations != 0 {
 		t.Fatalf("live unready runtime discarded: %+v mutations=%d", entry.Runtime, mutations)
 	}
 }
@@ -522,13 +522,14 @@ func TestRestoredStartingGenerationAdoptsWithoutDuplicate(t *testing.T) {
 	if err != nil || current.Generation != first.Generation || starts != 0 || len(restored.sem) != 1 {
 		t.Fatalf("adoption=%+v starts=%d err=%v", current, starts, err)
 	}
-	before := current.Leases
+	beforeStatus, _, _ := restored.Status(b)
+	before := len(beforeStatus.Consumers)
 	restored.statePath = root
 	if _, err := restored.Ensure(context.Background(), b); err == nil {
 		t.Fatal("non-durable lease accepted")
 	}
 	current, _, _ = restored.Status(b)
-	if current.Leases != before {
+	if len(current.Consumers) != before {
 		t.Fatal("failed persistence changed lease count")
 	}
 }

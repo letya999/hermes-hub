@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-11-13
+last_verified: 2026-11-20
 ---
 
 # hubctl
@@ -37,6 +37,8 @@ a human confirmation link minted through the communication gateway.
   (smoke-gated rollout pins: `promote`/`revert`/`canary`/`status`),
   `replay` (sanitized incident bundle `export` + isolated mock-channel `run`),
   `storage` (owner budget `status` + digest-bound `cleanup` dry-run/apply).
+  `job resolve` settles an uncertain gateway job the supervisor can no
+  longer settle (docs/services/communication.md, Spool).
   `apply -f` also converges a declarative `space:` manifest.
 - **Interactive**: `chat`, `telegram-login`, `meet-auth`, `companion`.
 

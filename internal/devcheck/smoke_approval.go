@@ -121,7 +121,7 @@ func supervisorApprovalSmoke(ctx context.Context, m *supervisor.Manager, binding
 			cancel()
 			return err
 		}
-		if runtime, _, err := m.Status(binding); err != nil || runtime.State != supervisor.Busy || runtime.Leases == 0 {
+		if runtime, _, err := m.Status(binding); err != nil || runtime.State != supervisor.Busy || len(runtime.Consumers) == 0 {
 			cancel()
 			return fmt.Errorf("actionable native approval lost its hold: %v", err)
 		}
@@ -196,7 +196,7 @@ func supervisorApprovalSmoke(ctx context.Context, m *supervisor.Manager, binding
 			return fmt.Errorf("native approval did not settle")
 		}
 		cancel()
-		if runtime, _, err := m.Status(binding); err != nil || runtime.Leases != 0 {
+		if runtime, _, err := m.Status(binding); err != nil || len(runtime.Consumers) != 0 {
 			return fmt.Errorf("settled native approval retained runtime holds: expiry=%t err=%v", expire, err)
 		}
 		approvals := 0

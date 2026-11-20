@@ -287,6 +287,37 @@ func TestAssignmentLifecyclePropagates(t *testing.T) {
 	}
 }
 
+// A paused assignment must leave pause only through Resume: apply would mark
+// it active while its kept schedules stay paused, and a plan update would move
+// it to waiting the same way.
+func TestApplyRefusesPausedAssignment(t *testing.T) {
+	e := testEngine(t)
+	if _, _, err := e.CreateAssignment(newTestAssignment("asg-paused"), assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-paused", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PauseAssignment("asg-paused", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-paused", assignmentCaller()); err == nil {
+		t.Fatal("apply accepted a paused assignment")
+	}
+	plan := *newTestAssignment("asg-paused").Plan
+	if _, err := e.UpdateAssignmentPlan("asg-paused", plan, commodel.AssignmentGrants{MaxWakesPerDay: 10}, assignmentCaller()); err == nil {
+		t.Fatal("plan update accepted a paused assignment")
+	}
+	got, err := e.LoadAssignment("asg-paused", assignmentCaller())
+	if err != nil || got.State != "paused" {
+		t.Fatalf("paused assignment left pause without resume: %+v %v", got, err)
+	}
+	sched, err := e.LoadSchedule(commodel.AssignmentScheduleID("asg-paused", "page"))
+	if err != nil || !sched.Paused {
+		t.Fatalf("paused assignment source must stay paused: %+v %v", sched, err)
+	}
+}
+
 func TestAssignmentDraftCannotBecomeActiveWithoutApply(t *testing.T) {
 	e := testEngine(t)
 	draft := newTestAssignment("asg-draft-guard")

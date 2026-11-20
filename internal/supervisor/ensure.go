@@ -17,7 +17,53 @@ import (
 	"time"
 )
 
+// Ensure starts or reuses a runtime and records an anonymous hold that
+// ReleaseBinding returns. Every hold is a lease row: the runtime's demand is
+// len(leases), persisted in the same write as the state change.
 func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) {
+	return m.ensure(ctx, binding, &Lease{})
+}
+
+// ensure is Ensure with the hold row supplied by the caller: Acquire passes
+// its named kind so the lease lands in the same persist as the Busy
+// transition. A failed ensure removes the row it may have added.
+func (m *Manager) ensure(ctx context.Context, binding Binding, hold *Lease) (Runtime, error) {
+	runtime, err := m.ensureHold(ctx, binding, hold)
+	if err != nil && hold.ID != "" {
+		m.mu.Lock()
+		for _, entry := range m.items {
+			if _, ok := entry.leases[hold.ID]; ok {
+				delete(entry.leases, hold.ID)
+				_ = m.persistLocked()
+			}
+		}
+		m.mu.Unlock()
+		hold.ID = ""
+	}
+	return runtime, err
+}
+
+// ensureHoldReason marks an anonymous Ensure reference among lease rows.
+const ensureHoldReason = "ensure"
+
+// addHoldLocked inserts the caller's hold row into entry. An anonymous hold
+// (no kind) is an Ensure reference; like Acquire's lease it is owned by
+// "supervisor" with a claim deadline, so a holder that died is swept instead
+// of pinning the runtime. m.mu must be held.
+func (m *Manager) addHoldLocked(entry *runtimeEntry, binding Binding, hold *Lease) {
+	m.leaseSeq++
+	kind, reason := hold.Kind, ""
+	if kind == "" {
+		kind, reason = LeaseJob, ensureHoldReason
+	}
+	*hold = Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode, Scope: binding.ScopeID, Generation: entry.Generation, Owner: "supervisor", Reason: reason, ExpiresAt: m.cfg.Now().Add(5 * time.Minute)}
+	if entry.leases == nil {
+		entry.leases = map[string]Lease{}
+	}
+	entry.leases[hold.ID] = *hold
+}
+
+func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) (Runtime, error) {
 	m.mu.Lock()
 	held := m.holds[holdKey(binding.PrincipalID, binding.ContextID)].Active
 	m.mu.Unlock()
@@ -134,12 +180,14 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 				return Runtime{}, errors.New("runtime disappeared during restore")
 			}
 			previous := current.Runtime
-			current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
+			current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
 			current.Address = address
+			m.addHoldLocked(current, binding, hold)
 			m.slots[key] = struct{}{}
 			result := current.Runtime
 			if err := m.persistLocked(); err != nil {
 				current.Runtime = previous
+				delete(current.leases, hold.ID)
 				m.mu.Unlock()
 				return snapshot, err
 			}
@@ -160,7 +208,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		current = m.items[key]
 		if current != nil {
 			previous, previousLeases := current.Runtime, current.leases
-			current.State, current.Leases, current.leases = Stopped, 0, map[string]Lease{}
+			current.State, current.leases = Stopped, map[string]Lease{}
 			if err := m.persistLocked(); err != nil {
 				current.Runtime, current.leases = previous, previousLeases
 				m.mu.Unlock()
@@ -189,10 +237,12 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			current.Address, current.ComputeConditions = observed.Address, observed.Conditions
 		}
 		previous := current.Runtime
-		current.State, current.Leases, current.LastUsed, current.IdleDeadline = Busy, current.Leases+1, m.cfg.Now(), time.Time{}
+		current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
+		m.addHoldLocked(current, binding, hold)
 		result := current.Runtime
 		if err := m.persistLocked(); err != nil {
 			current.Runtime = previous
+			delete(current.leases, hold.ID)
 			m.mu.Unlock()
 			return previous, err
 		}
@@ -250,13 +300,13 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{IdentityRevision: binding.IdentityRevision, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{IdentityRevision: binding.IdentityRevision, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
 		logical.leases[id] = lease
-		logical.Leases++
 	}
+	m.addHoldLocked(logical, binding, hold)
 	previousEntry := m.items[key]
 	if previousEntry != nil && !previousEntry.CrashWindowStart.IsZero() && m.cfg.Now().Sub(previousEntry.CrashWindowStart) < 10*time.Minute {
 		logical.CrashCount, logical.CrashWindowStart, logical.NextRetryAt = previousEntry.CrashCount, previousEntry.CrashWindowStart, previousEntry.NextRetryAt

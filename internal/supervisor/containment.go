@@ -166,7 +166,7 @@ func (m *Manager) containHeldScope(ctx context.Context, hold AdministrativeHold)
 		}
 		m.mu.Lock()
 		previousLeases := entry.leases
-		entry.State, entry.Leases, entry.IdleDeadline, entry.leases = Stopped, 0, time.Time{}, map[string]Lease{}
+		entry.State, entry.IdleDeadline, entry.leases = Stopped, time.Time{}, map[string]Lease{}
 		if err := m.persistLocked(); err != nil {
 			entry.Runtime, entry.leases = snapshot, previousLeases
 			m.mu.Unlock()

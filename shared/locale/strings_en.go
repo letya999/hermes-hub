@@ -596,5 +596,10 @@ func init() {
 		"cred.checking":                 "Checking the fields with the server.",
 		"cred.failed":                   "The check failed. %s",
 		"cred.tools-empty":              "The server did not answer with the tools list.",
+
+		"hubctl.job-resolve-usage":  "Usage: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":   "communication service-control bearer unavailable; pass --gateway-auth or configure the space auth files",
+		"hubctl.job-resolve-failed": "job %s not resolved: HTTP %d",
+		"hubctl.job-resolved":       "job %s resolved as %s; its conversation lane is free",
 	})
 }

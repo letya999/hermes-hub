@@ -594,5 +594,10 @@ func init() {
 		"cred.checking":                 "Проверяю поля у сервера.",
 		"cred.failed":                   "Проверка не прошла. %s",
 		"cred.tools-empty":              "Сервер не ответил списком инструментов.",
+
+		"hubctl.job-resolve-usage":  "Использование: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":   "Service-control bearer communication недоступен; передайте --gateway-auth или настройте auth-файлы пространства",
+		"hubctl.job-resolve-failed": "Задача %s не закрыта: HTTP %d",
+		"hubctl.job-resolved":       "Задача %s закрыта со статусом %s; полоса разговора свободна",
 	})
 }

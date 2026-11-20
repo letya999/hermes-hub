@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
@@ -1304,5 +1305,87 @@ func TestGoalUserMessagePreemptsContinuation(t *testing.T) {
 	goal, _, _ := g.spool.GoalForTask(user.ID, task.ConversationID)
 	if goal.Epoch != 2 {
 		t.Fatalf("epoch not bumped: %+v", goal)
+	}
+}
+
+// goalHookRunner runs a hook inside the evaluation call: the owner's command
+// lands while the network round trip is in flight.
+type goalHookRunner struct {
+	*goalLoopRunner
+	during func()
+}
+
+func (f goalHookRunner) Goal(ctx context.Context, request hubruntime.GoalRequest) (hubruntime.GoalResult, error) {
+	f.during()
+	return f.goalLoopRunner.Goal(ctx, request)
+}
+
+// A /goal clear (or pause, or epoch bump) that lands while a turn is being
+// evaluated must survive: the post-evaluation write re-reads the record under
+// the spool lock and refuses instead of saving the stale snapshot.
+func TestGoalClearDuringEvaluationIsNotUndone(t *testing.T) {
+	for _, change := range []string{"clear", "pause", "epoch"} {
+		t.Run(change, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.Identity = identitycontract.NewHTTPClient("http://127.0.0.1:1", "test-identity", nil)
+			g, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			user := g.user("alice")
+			task, err := g.spool.ResolveTask(user, 11, 0, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			goal := Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: "active", MaxTurns: 3, Epoch: 7}
+			if err := g.spool.SaveGoal(goal); err != nil {
+				t.Fatal(err)
+			}
+			g.api = &fakeAPI{}
+			g.runner = goalHookRunner{goalLoopRunner: &goalLoopRunner{}, during: func() {
+				switch change {
+				case "clear":
+					err = g.spool.ClearGoal(user.ID, task.ConversationID)
+				case "pause":
+					changed := goal
+					changed.Status = "paused"
+					err = g.spool.SaveGoal(changed)
+				case "epoch":
+					changed := goal
+					changed.Epoch++
+					err = g.spool.SaveGoal(changed)
+				}
+			}}
+			job := Job{Envelope: user.Envelope(11), ID: "goal-turn-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "continue", GoalEpoch: 7, CreatedAt: g.now().UTC()}
+			g.goalAfterJob(context.Background(), job, "turn answer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "clear":
+				if found {
+					t.Fatalf("cleared goal resurrected: %+v", after)
+				}
+			case "pause":
+				if !found || after.Status != "paused" || after.TurnsUsed != 0 {
+					t.Fatalf("pause undone: %+v", after)
+				}
+			case "epoch":
+				if !found || after.Epoch != 8 || after.TurnsUsed != 0 {
+					t.Fatalf("epoch bump undone: %+v", after)
+				}
+			}
+			entries, _ := os.ReadDir(filepath.Join(g.spool.root, "pending"))
+			for _, e := range entries {
+				var j Job
+				if data, err := os.ReadFile(filepath.Join(g.spool.root, "pending", e.Name())); err == nil && json.Unmarshal(data, &j) == nil && j.Trigger == "goal" {
+					t.Fatalf("continuation queued for a superseded goal: %s", j.ID)
+				}
+			}
+		})
 	}
 }

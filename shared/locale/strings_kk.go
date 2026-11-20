@@ -596,5 +596,10 @@ func init() {
 		"cred.checking":                 "Өрістерді серверде тексерудемін.",
 		"cred.failed":                   "Тексеру сәтсіз аяқталды. %s",
 		"cred.tools-empty":              "Сервер қыралдар тізімімен жауап бермеді.",
+
+		"hubctl.job-resolve-usage":  "Қолдану: hubctl job resolve --dir <space> --job <id> [--status interrupted|failed|cancelled] [--env dev|prod] [--gateway-url <url>] [--gateway-auth <token>]",
+		"hubctl.job-resolve-auth":   "Communication service-control bearer қолжетімсіз; --gateway-auth беріңіз немесе кеңістік auth файлдарын баптаңыз",
+		"hubctl.job-resolve-failed": "%s тапсырмасы жабылмады: HTTP %d",
+		"hubctl.job-resolved":       "%s тапсырмасы %s күйімен жабылды; сөйлесу жолағы бос",
 	})
 }

@@ -51,7 +51,7 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	}
 	wg.Wait()
 	runtime, ok, err := m.Status(binding(root))
-	if err != nil || !ok || runtime.Leases != 0 || starts != 1 {
+	if err != nil || !ok || len(runtime.Consumers) != 0 || starts != 1 {
 		t.Fatalf("pin wake: %+v starts=%d err=%v", runtime, starts, err)
 	}
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(10*time.Minute)); err != nil {

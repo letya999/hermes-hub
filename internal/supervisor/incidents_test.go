@@ -134,6 +134,9 @@ func TestWatchdogIncidentCoalescing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := m.ReleaseBinding(b); err != nil {
+		t.Fatal(err)
+	}
 	m.mu.Lock()
 	for _, entry := range m.items {
 		entry.Address = api.URL

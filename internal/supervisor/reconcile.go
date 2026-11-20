@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -264,6 +265,32 @@ func (m *Manager) tryRecoveryWorker() bool {
 	}
 }
 
+// sweepStuckRunning names "running" records past the run budget plus one warm
+// TTL of grace uncertain, exactly as a restart does. A failed persist of the
+// uncertain (or terminal) transition rolls the record back to running with
+// Unconfirmed=false; reconcileUnconfirmed and ExpireUncertain never look at
+// such a record, so without this it pins its runtime and blocks every retry
+// of the job until the supervisor restarts.
+func (m *Manager) sweepStuckRunning(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, record := range m.jobs {
+		if record.Status != "running" || !now.After(record.UpdatedAt.Add(hubruntime.RunBudget()+m.cfg.WarmTTL)) {
+			continue
+		}
+		previous := record
+		record.Status = "uncertain"
+		record.Response.Status, record.Response.LastEvent = "uncertain", "run.unknown"
+		record.UpdatedAt = now.UTC()
+		m.jobs[key] = record
+		if err := m.persistLocked(); err != nil {
+			m.jobs[key] = previous
+			log.Printf("supervisor stuck-run sweep job_id=%q persistence failed: %v", key, err)
+			return
+		}
+	}
+}
+
 // reconcileUnconfirmed retries observation for jobs whose outcome was never
 // confirmed. A run-bound job is re-observed through the runtime's stream so a
 // late or replayed terminal event settles the record once.
@@ -398,7 +425,7 @@ func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
 	if _, ok := m.pins[runtimeKey(Binding{PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode})]; ok {
 		return true
 	}
-	if entry.Leases > 0 {
+	if len(entry.leases) > 0 {
 		return true
 	}
 	for _, record := range m.jobs {

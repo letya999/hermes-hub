@@ -59,7 +59,7 @@ func TestResumeObservesOriginalRunAndRejectsOtherConversation(t *testing.T) {
 		if err := m.Reap(context.Background(), time.Now().Add(10*time.Minute)); err != nil {
 			t.Error(err)
 		}
-		if held, _, err := m.Status(b); err != nil || held.State != Busy || held.Leases == 0 || held.Generation != runtime.Generation {
+		if held, _, err := m.Status(b); err != nil || held.State != Busy || len(held.Consumers) == 0 || held.Generation != runtime.Generation {
 			t.Errorf("active stream lost its runtime: %+v %v", held, err)
 		}
 		event.Status, event.LastEvent, event.EventID, event.Text = "completed", "run.completed", "terminal:completed", "answer"
@@ -124,7 +124,7 @@ func TestJobLeaseOwnershipRollsBackWhenPersistenceFails(t *testing.T) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	actual := m.items[runtimeKey(b)].leases[lease.ID]
-	if actual.Owner != lease.Owner || actual.Kind != LeaseUncertain || m.items[runtimeKey(b)].Leases != 1 {
+	if actual.Owner != lease.Owner || actual.Kind != LeaseUncertain || len(m.items[runtimeKey(b)].leases) != 1 {
 		t.Fatalf("ownership or hold changed: %+v", actual)
 	}
 }
@@ -487,7 +487,7 @@ func TestResumeTransportFailuresRetainOriginalRunAndHold(t *testing.T) {
 				t.Fatalf("unsafe recovery accepted: %d calls=%d", recorder.Code, calls)
 			}
 			state, _, err := m.Status(b)
-			if err != nil || state.Leases == 0 || m.jobs[request.JobID].Response.RunID != "original" || terminalRunStatus(m.jobs[request.JobID].Status) {
+			if err != nil || len(state.Consumers) == 0 || m.jobs[request.JobID].Response.RunID != "original" || terminalRunStatus(m.jobs[request.JobID].Status) {
 				t.Fatalf("failure lost original observation or freed runtime: %+v %v", state, err)
 			}
 		})

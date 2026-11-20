@@ -1,13 +1,12 @@
 package main
 
 import (
-	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -16,14 +15,7 @@ import (
 // it repins ahead of catalog enable. Each warning names the profile and the
 // repair command; a missing store means an unmanaged space, not a failure.
 func toolhubDoctorWarnings(dir string, lang locale.Lang) []string {
-	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
-	storePath := filepath.Join(root, "store.json")
-	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil { // #nosec G703 -- root is built under the operator's space dir.
-		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) { // #nosec G703 -- same operator space root.
-			storePath = filepath.Join(root, "store.db")
-		}
-	}
-	store, err := toolhub.Load(storePath)
+	store, err := toolhub.Load(api.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")))
 	if err != nil {
 		return nil
 	}

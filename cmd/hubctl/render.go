@@ -42,7 +42,7 @@ func renderRevisionEnvironment(dir, root, environment, revision string) error {
 // deploy that follows already finds matching state.
 func migrateToolhubBindings(dir string, s stack.Settings) error {
 	manifest := stack.ExpectedToolManifest(s)
-	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
+	storePath := api.ResolveStorePath(filepath.Join(dir, "runtime", "toolhub"))
 	if _, err := os.Stat(storePath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -59,6 +59,7 @@ func migrateToolhubBindings(dir string, s stack.Settings) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "hubctl.toolhub-store-unavailable"), err)
 	}
+	defer func() { _ = store.CloseDB() }()
 	report, err := toolhub.MigrateProjection(store, s.User, manifest.Context, s.User, manifest.PolicyVersion)
 	if err != nil {
 		return fmt.Errorf("%s: %w", locale.T(locale.Operator(), "hubctl.toolhub-migration-failed", manifest.PolicyVersion), err)

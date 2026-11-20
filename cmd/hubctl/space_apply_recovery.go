@@ -287,7 +287,9 @@ func recoverApplyWithRebuiltImage(ctx context.Context, dir, root, environment st
 		return fmt.Errorf("apply recovery: restore: %w", err)
 	}
 	if record.Phase == "effects" {
-		if record.Previous == "" {
+		// Without actions a first apply has no service effect to doubt: the
+		// restore above already rolled it back, so the journal can go.
+		if record.Previous == "" && len(record.Actions) != 0 {
 			_ = passport.PointCurrent(dir, "pending")
 			return errors.New("apply recovery: first apply service effects need intervention")
 		}

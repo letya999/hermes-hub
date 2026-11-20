@@ -43,15 +43,25 @@ func (m *Manager) releaseKey(key string) error {
 	if runtime == nil {
 		return errors.New("runtime is not registered")
 	}
-	if runtime.Leases == 0 {
+	hold := ""
+	for id, lease := range runtime.leases {
+		if lease.Reason == ensureHoldReason {
+			hold = id
+			break
+		}
+	}
+	if hold == "" {
 		return errors.New("runtime lease underflow")
 	}
-	runtime.Leases--
+	before, released := runtime.Runtime, runtime.leases[hold]
+	delete(runtime.leases, hold)
 	runtime.LastUsed = m.cfg.Now()
-	if runtime.Leases == 0 {
+	if len(runtime.leases) == 0 {
 		runtime.State, runtime.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(runtime.binding))
 	}
 	if err := m.persistLocked(); err != nil {
+		runtime.Runtime = before
+		runtime.leases[hold] = released
 		return err
 	}
 	return nil
@@ -120,42 +130,12 @@ func (m *Manager) Acquire(ctx context.Context, binding Binding, kind LeaseKind) 
 	if !validLeaseKind(kind) {
 		return Lease{}, Runtime{}, errors.New("invalid lease kind")
 	}
-	if _, err := m.Ensure(ctx, binding); err != nil {
-		return Lease{}, Runtime{}, err
-	}
-	normalized, err := m.normalize(binding)
+	hold := Lease{Kind: kind}
+	runtime, err := m.ensure(ctx, binding, &hold)
 	if err != nil {
-		_ = m.ReleaseBinding(binding)
 		return Lease{}, Runtime{}, err
 	}
-	binding = normalized
-	key := runtimeKey(binding)
-	lock := m.lockFor(key)
-	lock.Lock()
-	defer lock.Unlock()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.leaseSeq++
-	lease := Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode, Scope: binding.ScopeID, Generation: entryGeneration(m.items[key]), Owner: "supervisor", ExpiresAt: m.cfg.Now().Add(5 * time.Minute)}
-	entry := m.items[key]
-	if entry == nil || entry.State == Stopped || entry.State == Degraded {
-		return Lease{}, Runtime{}, errors.New("runtime is not registered")
-	}
-	if entry.leases == nil {
-		entry.leases = map[string]Lease{}
-	}
-	entry.leases[lease.ID] = lease
-	if err := m.persistLocked(); err != nil {
-		return Lease{}, Runtime{}, err
-	}
-	return lease, entry.Runtime, nil
-}
-
-func entryGeneration(entry *runtimeEntry) string {
-	if entry == nil {
-		return ""
-	}
-	return entry.Generation
+	return hold, runtime, nil
 }
 
 func (m *Manager) ReleaseLease(leaseID string) error {
@@ -187,14 +167,10 @@ func (m *Manager) ReleaseLease(leaseID string) error {
 	if lease.Generation != entry.Generation {
 		return errors.New("stale runtime lease")
 	}
-	if entry.Leases == 0 {
-		return errors.New("runtime lease underflow")
-	}
 	before := entry.Runtime
 	delete(entry.leases, leaseID)
-	entry.Leases--
 	entry.LastUsed = m.cfg.Now()
-	if entry.Leases == 0 {
+	if len(entry.leases) == 0 {
 		entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(entry.binding))
 	}
 	if err := m.persistLocked(); err != nil {
@@ -244,15 +220,12 @@ func (m *Manager) sweepStaleLeasesLocked(now time.Time) {
 				continue
 			}
 			delete(entry.leases, id)
-			if entry.Leases > 0 {
-				entry.Leases--
-			}
 			changed = true
 		}
 		if !changed {
 			continue
 		}
-		if entry.Leases == 0 && entry.State == Busy {
+		if len(entry.leases) == 0 && entry.State == Busy {
 			entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.idleTTL(entry.binding))
 		}
 		_ = m.persistLocked()

@@ -95,13 +95,6 @@ func voiceServicesEnabled(s Settings) bool {
 	return false
 }
 
-// regularFile reports a present, non-symlinked regular file; render only
-// ever keys substrate switches on real files the migration wrote.
-func regularFile(path string) bool {
-	info, err := os.Lstat(path) // #nosec G703 -- operator-owned compose input path
-	return err == nil && info.Mode().IsRegular()
-}
-
 func managedAgentNetwork(s Settings) string {
 	return "hermes-hub-agent-" + s.User + "-" + s.Environment
 }
@@ -192,10 +185,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// The SQLite substrate activates when the verified store.db exists and
 	// the legacy store.json has been retired by store-activate (SPEC-0090
 	// R5.1): only then does the rendered path switch backends.
-	toolhubStoreEnv := "/state/toolhub/store.json"
-	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
-		toolhubStoreEnv = "/state/toolhub/store.db"
-	}
+	toolhubStoreEnv := "/state/toolhub/" + filepath.Base(api.ResolveStorePath(filepath.Join(dir, "runtime", "toolhub")))
 	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json", "HUB_MODEL_USAGE_FILE": "/run/model-state/model-select.json.usage.json", "HUB_MODEL_REGISTRY_FILE": "/run/model-config/models.yaml"}
 	for _, connection := range connections {
 		runtimeEnv[connection.EnvKey] = connection.ConfigPath

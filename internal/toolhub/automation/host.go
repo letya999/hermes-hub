@@ -695,7 +695,7 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 					},
 					func() error { return h.tickStreams(ctx, e, owner.principal, now) },
 					func() error { return e.DispatchDueOccurrences(now, dueAuth) },
-					func() error { return e.RunDueDreaming(ctx, dueAuth, h.runDreamingOccurrence) },
+					func() error { return e.RunDueDreaming(ctx, now, dueAuth, h.runDreamingOccurrence) },
 					func() error { return e.RunDueScripts(ctx, now, dueAuth, h.cfg.Supervisor.RunScript) },
 					func() error {
 						return e.ProbeDueOccurrencesContext(ctx, now, dueAuth, h.cfg.Fetch, h.cfg.ToolCall, nil)
@@ -775,15 +775,28 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 			h.events.mu.Unlock()
 			return err
 		}
+		if st.Pending != nil && st.Pending.Revision != schedule.Revision {
+			// resume fences a batch from an older schedule revision forever; drop its
+			// unadmitted events as a recorded gap instead of holding the stream.
+			seen := make(map[string]bool, len(st.Seen))
+			for _, id := range st.Seen {
+				seen[id] = true
+			}
+			for _, ev := range st.Pending.Events {
+				if !seen[ev.ID] {
+					st.GapCount++
+				}
+			}
+			st.LastGapAt = now.UTC()
+			st.Pending = nil
+		}
 		if err := rebindEventState(&st, schedule); err != nil {
 			h.events.mu.Unlock()
-			return err
+			// One fenced stream must not stop the principal's other streams.
+			log.Printf("routine stream %s skipped: %s", safeName(schedule.ScheduleID), strings.Join(strings.Fields(diagnostics.Redact(err.Error())), " "))
+			continue
 		}
 		if st.StreamRevision != 0 && st.StreamRevision != schedule.Revision {
-			if st.Pending != nil {
-				h.events.mu.Unlock()
-				return errors.New("automation: pending event batch revision changed; recovery required")
-			}
 			st.StreamAt = time.Time{}
 			st.LastPollAt = time.Time{}
 		}

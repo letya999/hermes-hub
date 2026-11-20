@@ -600,7 +600,7 @@ func TestReconcileAttemptLeaseReleasedWhenUnresolved(t *testing.T) {
 	record := m.jobs[request.JobID]
 	record.UnconfirmedSince = time.Now().Add(-time.Minute)
 	m.jobs[request.JobID] = record
-	baseline := m.items[runtimeKey(b)].Leases
+	baseline := len(m.items[runtimeKey(b)].leases)
 	m.mu.Unlock()
 	m.reconcileUnconfirmed(context.Background(), time.Now())
 	deadline := time.Now().Add(10 * time.Second)
@@ -613,9 +613,9 @@ func TestReconcileAttemptLeaseReleasedWhenUnresolved(t *testing.T) {
 	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		m.mu.Lock()
-		leases, holds := m.items[runtimeKey(b)].Leases, len(m.items[runtimeKey(b)].leases)
+		holds := len(m.items[runtimeKey(b)].leases)
 		m.mu.Unlock()
-		if leases == baseline && holds == 0 {
+		if holds == baseline {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -623,7 +623,7 @@ func TestReconcileAttemptLeaseReleasedWhenUnresolved(t *testing.T) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry := m.items[runtimeKey(b)]
-	t.Fatalf("unresolved reconcile left holds: leases=%d map=%v, want %d/empty", entry.Leases, entry.leases, baseline)
+	t.Fatalf("unresolved reconcile left holds: map=%v, want %d rows", entry.leases, baseline)
 }
 
 func TestReconcileDeliversOnce(t *testing.T) {

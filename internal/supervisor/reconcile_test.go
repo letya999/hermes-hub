@@ -267,7 +267,7 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 			}
 			if active {
 				status, _, _ = m.Status(b)
-				if status.Generation == runtime.Generation || status.Leases != 1 {
+				if status.Generation == runtime.Generation || len(status.Consumers) != 1 {
 					t.Fatalf("replacement=%+v", status)
 				}
 				m.mu.Lock()
@@ -292,7 +292,7 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 				}
 			} else {
 				status, _, _ = m.Status(b)
-				if status.State != Stopped || status.Leases != 0 {
+				if status.State != Stopped || len(status.Consumers) != 0 {
 					t.Fatalf("missing idle runtime stayed registered: %+v", status)
 				}
 				if _, err := m.Ensure(context.Background(), b); err != nil || runs != 2 {
@@ -636,14 +636,14 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 	m.RecoverMissingWork(context.Background())
 	m.RecoverMissingWork(context.Background())
 	current, _, err := m.Status(b)
-	if err != nil || starts != 2 || current.Generation == first.Generation || current.Leases != 1 {
+	if err != nil || starts != 2 || current.Generation == first.Generation || len(current.Consumers) != 1 {
 		t.Fatalf("lifecycle recovery=%+v starts=%d err=%v", current, starts, err)
 	}
 	if err := m.ReleaseLease(lease.ID); err != nil {
 		t.Fatal(err)
 	}
 	current, _, _ = m.Status(b)
-	if current.Leases != 0 || current.State != Idle {
+	if len(current.Consumers) != 0 || current.State != Idle {
 		t.Fatal("original opaque lifecycle release lost")
 	}
 }
@@ -679,6 +679,9 @@ func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
 	b := binding(root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReleaseBinding(b); err != nil {
 		t.Fatal(err)
 	}
 	m.mu.Lock()
@@ -753,6 +756,9 @@ func TestWedgedRemediationSkipsLeasedRuntimeAndUsesSigtermGrace(t *testing.T) {
 	b := binding(root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReleaseBinding(b); err != nil {
 		t.Fatal(err)
 	}
 	m.mu.Lock()

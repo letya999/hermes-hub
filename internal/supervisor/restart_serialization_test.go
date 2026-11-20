@@ -55,7 +55,8 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 	key := runtimeKey(owner)
 	m.mu.Lock()
 	entry := m.items[key]
-	entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+	entry.Address, entry.State = api.URL, Idle
+	dropEnsureHolds(entry)
 	rt = entry.Runtime
 	m.mu.Unlock()
 	finished := make(chan error, 1)
@@ -103,7 +104,8 @@ func TestRuntimeRestartUsesSigtermGrace(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding(root))]
-	entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+	entry.Address, entry.State = api.URL, Idle
+	dropEnsureHolds(entry)
 	rt := entry.Runtime
 	m.mu.Unlock()
 	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 0)
@@ -178,7 +180,8 @@ func TestProjectionRestartFailureKeepsFreshReadinessRequirement(t *testing.T) {
 			}
 			m.mu.Lock()
 			entry := m.items[runtimeKey(binding(root))]
-			entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+			entry.Address, entry.State = api.URL, Idle
+			dropEnsureHolds(entry)
 			rt = entry.Runtime
 			m.mu.Unlock()
 			if failure == "changed-runtime" {
@@ -226,7 +229,8 @@ func TestProjectionRestartAcknowledgesBeforeNotifierDeadline(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding(root))]
-	entry.Address, entry.State, entry.Leases, entry.auth = native.URL, Idle, 0, "secret"
+	entry.Address, entry.State, entry.auth = native.URL, Idle, "secret"
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	supervisor := httptest.NewServer(m.Handler())
 	defer func() { release.Do(func() { close(ready) }); supervisor.Close() }()
@@ -270,7 +274,8 @@ func TestRestartRequestSkipsRestartForDeadNotifier(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding(root))]
-	entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, Idle, 0, "secret"
+	entry.Address, entry.State, entry.auth = runtimeAPI.URL, Idle, "secret"
+	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	base := m.cfg.HTTP.Transport
 	if base == nil {
@@ -391,7 +396,8 @@ func TestAcceptedRestartCountedOnRuntime(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding(root))]
-	entry.Address, entry.Leases, entry.State = api.URL, 0, Idle
+	entry.Address, entry.State = api.URL, Idle
+	dropEnsureHolds(entry)
 	rt := entry.Runtime
 	m.mu.Unlock()
 	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 0)
