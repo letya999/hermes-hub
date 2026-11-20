@@ -1054,11 +1054,33 @@ func TestRestartRejectsCorruptAdmissionInsteadOfReplayingPrompt(t *testing.T) {
 	if err := os.WriteFile(s.mappingPath(job.ID), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSpool(s.root); err == nil {
-		t.Fatal("corrupt admission metadata accepted")
+	// The spool survives (B10): the mapping is rebuilt from the running job
+	// record and the job parks uncertain in failed/ — never requeued,
+	// never replayed.
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("corrupt admission metadata bricked the spool: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(s.root, "running", job.ID+".json")); err != nil {
-		t.Fatalf("claimed job moved into replay queue: %v", err)
+	mapping, _, err := reopened.Mapping(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapping.Status != "uncertain" || !mapping.CorruptAdmission {
+		t.Fatalf("rebuilt mapping: %+v", mapping)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "failed", spoolFileID(job.ID)+".json")); err != nil {
+		t.Fatalf("claimed job not parked in failed/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "running", job.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("claimed job still in running/: %v", err)
+	}
+	if claimed, err := reopened.ClaimJob(); err != nil || claimed != nil {
+		t.Fatalf("corrupt-admission job requeued for execution: %+v %v", claimed, err)
+	}
+	// The operator escape still works: resolve records the verdict and
+	// frees the lane.
+	if err := reopened.ResolveUncertainJob(job.ID, "failed", func(Job) *Delivery { return nil }); err != nil {
+		t.Fatalf("resolve: %v", err)
 	}
 }
 

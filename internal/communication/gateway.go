@@ -97,6 +97,21 @@ type Gateway struct {
 	// and flushed as one suppressed-summary line.
 	alertMu     sync.Mutex
 	alertLedger ownerAlertLedger
+	// outcomeMu/pendingOutcomes retry failed ToolHub outcome reports on the
+	// delivery sweep tick: an un-reported death would leave the
+	// routine-failure dedupe marker pending and suppress the next identical
+	// notice. The durable half — the failed record — is already in the
+	// spool, so an in-memory retry mark is sufficient.
+	outcomeMu       sync.Mutex
+	pendingOutcomes map[string]outcomeReport
+}
+
+// outcomeReport is one queued delivery-outcome report to ToolHub; the
+// whole delivery record rides along so the retry rebuilds caller and
+// payload exactly as the first attempt did.
+type outcomeReport struct {
+	delivery Delivery
+	status   string
 }
 
 func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {

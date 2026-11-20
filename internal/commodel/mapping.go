@@ -93,7 +93,17 @@ type JobMapping struct {
 	// UncertainSince anchors the reconciliation window: it is stamped once
 	// when the outcome first becomes unknown and cleared when the run names
 	// a terminal cause. Repeated uncertain observations never extend it.
-	UncertainSince   time.Time `json:"uncertain_since,omitempty"`
+	UncertainSince time.Time `json:"uncertain_since,omitempty"`
+	// OperatorAlerted latches once a still-uncertain job outlives its owner
+	// notice: the gateway warns the operator once that only
+	// `hubctl job resolve` settles it, instead of logging every observation.
+	OperatorAlerted bool `json:"operator_alerted,omitempty"`
+	// CorruptAdmission marks a mapping rebuilt from the running job record
+	// after the admission file failed to load. Admission state is
+	// unverifiable, so the job is never silently re-queued for execution:
+	// it waits in failed/ for observation (supervised mode re-observes
+	// safely under its idempotency key) or an operator `job resolve`.
+	CorruptAdmission bool      `json:"corrupt_admission,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	TerminalAt       time.Time `json:"terminal_at,omitempty"`

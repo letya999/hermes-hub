@@ -1336,7 +1336,12 @@ func TestGoalNativeMirrorWriteCannotResurrectClear(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "native", Status: "active", MaxTurns: 20, Epoch: 2}); err != nil {
+			seed := "active"
+			if verb == "resume" {
+				// resume may only leave paused/blocked — seed a state it can move.
+				seed = "paused"
+			}
+			if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "native", Status: seed, MaxTurns: 20, Epoch: 2}); err != nil {
 				t.Fatal(err)
 			}
 			var duringErr error
@@ -1356,6 +1361,86 @@ func TestGoalNativeMirrorWriteCannotResurrectClear(t *testing.T) {
 			}
 			if found {
 				t.Fatalf("cleared goal resurrected by the native %s mirror write", verb)
+			}
+		})
+	}
+}
+
+// A /goal clear or a competing set that lands while the runner's set
+// round trip is in flight must win: the record write is a guarded
+// compare-and-swap, not an unconditional save.
+func TestGoalSetCannotUndoClearDuringRoundTrip(t *testing.T) {
+	c := testConfig(t)
+	g, err := newTestGateway(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.user("alice")
+	task, err := g.spool.ResolveTask(user, 11, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "old", Engine: "hub", Status: "active", MaxTurns: 3, Epoch: 4}); err != nil {
+		t.Fatal(err)
+	}
+	var duringErr error
+	g.api = &fakeAPI{}
+	g.runner = goalHookRunner{goalLoopRunner: &goalLoopRunner{result: hubruntime.GoalResult{Engine: "hub", MaxTurns: 5, KickoffPrompt: "start"}}, during: func() {
+		duringErr = g.spool.ClearGoal(user.ID, task.ConversationID)
+	}}
+	answer, err := g.goalVerb(context.Background(), user, task, 11, "telegram_bot", 11, "set", "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duringErr != nil {
+		t.Fatal(duringErr)
+	}
+	if found, ferr := func() (bool, error) { _, f, e := g.spool.GoalForTask(user.ID, task.ConversationID); return f, e }(); ferr != nil {
+		t.Fatal(ferr)
+	} else if found {
+		t.Fatalf("cleared goal resurrected by set round trip (answer %q)", answer)
+	}
+}
+
+// Resume and pause only move a goal from the statuses the verb allows:
+// a terminal or already-active goal cannot flip back to active.
+func TestGoalVerbsCheckSourceStatus(t *testing.T) {
+	for _, tc := range []struct {
+		verb  string
+		state string
+		want  string
+	}{
+		{"resume", "done", "done"},
+		{"resume", "stopped", "stopped"},
+		{"pause", "done", "done"},
+		{"pause", "paused", "paused"},
+		{"resume", "active", "active"},
+	} {
+		t.Run(tc.verb+"-from-"+tc.state, func(t *testing.T) {
+			c := testConfig(t)
+			g, err := newTestGateway(t, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			user := g.user("alice")
+			task, err := g.spool.ResolveTask(user, 11, 0, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: tc.state, MaxTurns: 3, Epoch: 4}); err != nil {
+				t.Fatal(err)
+			}
+			g.api = &fakeAPI{}
+			g.runner = &goalLoopRunner{}
+			if _, err := g.goalVerb(context.Background(), user, task, 11, "telegram_bot", 11, tc.verb, ""); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
+			if err != nil || !found {
+				t.Fatalf("goal missing after %s: %+v %v", tc.verb, got, err)
+			}
+			if got.Status != tc.want {
+				t.Fatalf("/goal %s moved %s to %s", tc.verb, tc.state, got.Status)
 			}
 		})
 	}

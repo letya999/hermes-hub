@@ -880,3 +880,45 @@ func TestRejectedTransitionLogsJSON(t *testing.T) {
 		t.Fatalf("missing trace fields: %q", buf.String())
 	}
 }
+
+// B10.3: one unwritable record rolls back and skips its tick — it must not
+// abort the sweep for every other stuck run behind it.
+func TestStuckRunSweepContinuesPastPersistFailure(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{jobs: map[string]jobRecord{}, items: map[string]*runtimeEntry{}, cfg: Config{StateDir: dir}}
+	m.statePath = filepath.Join(dir, "supervisor.json")
+	stale := time.Now().Add(-hubruntime.RunBudget() - time.Hour)
+	for _, id := range []string{"job-a", "job-b"} {
+		m.jobs[id] = jobRecord{Status: "running", UpdatedAt: stale, Request: hubruntime.ExecuteRequest{JobID: id}}
+	}
+	// Point StateDir at a regular file: os.CreateTemp fails, persistLocked
+	// rolls back. With the old early return the second record was never even
+	// attempted — one stuck run silenced the whole sweep.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.StateDir = filepath.Join(blocker, "missing")
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	m.sweepStuckRunning(time.Now())
+	if n := strings.Count(buf.String(), "persistence failed"); n != 2 {
+		t.Fatalf("persist failures logged=%d, want 2 (one per record): %s", n, buf.String())
+	}
+	for _, id := range []string{"job-a", "job-b"} {
+		if got := m.jobs[id].Status; got != "running" {
+			t.Fatalf("%s status=%q after rollback, want running", id, got)
+		}
+	}
+	// Restore the dir and sweep again: both records settle uncertain this
+	// time, proving the retry is the next tick, not a restart.
+	m.cfg.StateDir = dir
+	m.sweepStuckRunning(time.Now())
+	for _, id := range []string{"job-a", "job-b"} {
+		if got := m.jobs[id].Status; got != "uncertain" {
+			t.Fatalf("%s status=%q after retry tick, want uncertain", id, got)
+		}
+	}
+}

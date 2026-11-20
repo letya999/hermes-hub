@@ -71,6 +71,33 @@ func (e *Engine) SyncDreamingSchedule(auth identity.Envelope, localTime, zone, r
 // would block every later night.
 const dreamingAttempts = 3
 
+// dreamingRunTimeout bounds one night's operation: a wedged run cannot hold
+// the schedule's oldest slot (and every later night) forever. A var so the
+// timeout is exercisable in tests; a timeout counts as one attempt.
+var dreamingRunTimeout = 10 * time.Minute
+
+var errDreamingTimeout = errors.New("dreaming run timed out")
+
+// runBounded executes the occurrence operation under a deadline. A run that
+// ignores cancellation still leaks its goroutine but no longer blocks the
+// proactive pass; the parent's own cancellation passes through so a host
+// shutdown leaves the night pending instead of burning an attempt.
+func runBounded(ctx context.Context, run func(context.Context, commodel.RoutineOccurrence) error, o commodel.RoutineOccurrence) error {
+	runCtx, cancel := context.WithTimeout(ctx, dreamingRunTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(runCtx, o) }()
+	select {
+	case err := <-done:
+		return err
+	case <-runCtx.Done():
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errDreamingTimeout
+	}
+}
+
 // RunDueDreaming resumes occurrence work after a host restart. The memory
 // processor owns its finer checkpoints; this routine owns occurrence state.
 func (e *Engine) RunDueDreaming(ctx context.Context, now time.Time, authorize func(commodel.Job) error, run func(context.Context, commodel.RoutineOccurrence) error) error {
@@ -94,7 +121,12 @@ func (e *Engine) RunDueDreaming(ctx context.Context, now time.Time, authorize fu
 		if o.RetryAfter.After(now) {
 			return
 		}
-		if err := run(ctx, o); err != nil {
+		if err := runBounded(ctx, run, o); err != nil {
+			if ctx.Err() != nil {
+				// Host shutdown, not a failure: keep the night pending for
+				// the next pass rather than spend one of its attempts.
+				return
+			}
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			failures = append(failures, err)

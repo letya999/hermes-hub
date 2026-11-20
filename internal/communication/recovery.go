@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // slowObservationInterval paces re-observation of an uncertain job once its
@@ -53,9 +55,6 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 			continue
 		}
 		admitted := mapping.RunID != "" && mapping.SessionID != "" && mapping.RuntimeGeneration != ""
-		if !admitted && !reconcileAdmissionUnknown {
-			continue
-		}
 		if mapping.Fingerprint != jobFingerprint(job) || mapping.JobID != job.ID || name != spoolFileID(job.ID)+".json" {
 			return errors.New("recovery job binding mismatch")
 		}
@@ -63,8 +62,9 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 		// notify again and must not consume a worker on the fast backoff.
 		// It slows down instead of stopping: an admitted run keeps its
 		// conversation lane until the supervisor's terminal result lands.
+		pastBudget := !now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget()))
 		noticed := false
-		if !now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget())) {
+		if pastBudget {
 			for _, dir := range []string{"pending", "sending", "done", "failed"} {
 				_, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID("job-"+job.ID+"-uncertain")+".json"))
 				if err == nil {
@@ -75,6 +75,23 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 					return err
 				}
 			}
+		}
+		// The owner was told and the supervisor still has not settled: from
+		// here only the operator's `job resolve` frees the lane, so say so
+		// once instead of silently observing forever. A rebuilt
+		// corrupt-admission job alerts on budget alone — no uncertain
+		// notice was ever written for it, and nothing re-parks it.
+		if !mapping.OperatorAlerted && (noticed || (mapping.CorruptAdmission && pastBudget)) {
+			mapping.OperatorAlerted = true
+			if err = s.writeMappingLocked(mapping); err != nil {
+				return err
+			}
+			log.Printf("gateway job_id=%q status=uncertain_stuck action='hubctl job resolve %s'", job.ID, job.ID)
+		}
+		if !admitted && !reconcileAdmissionUnknown {
+			// Without a supervisor there is no idempotent rebind to observe;
+			// an unadmitted job is never re-run, it waits for `job resolve`.
+			continue
 		}
 		if noticed && now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget()+slowObservationInterval)) {
 			continue
@@ -114,7 +131,9 @@ var (
 // status through the ordinary terminal handoff, which releases the
 // conversation lane. Only a parked job (failed/) is resolved; one claimed or
 // requeued for observation is refused so the operator retries after it.
-func (s *Spool) ResolveUncertainJob(jobID, status string) error {
+// notice builds the owner-facing delivery for the loaded job — the operator
+// verdict is not silent.
+func (s *Spool) ResolveUncertainJob(jobID, status string, notice func(Job) *Delivery) error {
 	if status != "failed" && status != "cancelled" && status != "interrupted" {
 		return errors.New("invalid resolve status")
 	}
@@ -138,7 +157,11 @@ func (s *Spool) ResolveUncertainJob(jobID, status string) error {
 	if strictEventJSON(body, &job) != nil || job.ID != jobID {
 		return errors.New("invalid uncertain job record")
 	}
-	if err := s.recordTerminalOutcomeLocked(job, RunOutcome{Status: status, LastEvent: "run." + status}, nil); err != nil {
+	var delivery *Delivery
+	if notice != nil {
+		delivery = notice(job)
+	}
+	if err := s.recordTerminalOutcomeLocked(job, RunOutcome{Status: status, LastEvent: "run." + status}, delivery); err != nil {
 		return err
 	}
 	s.signal()
@@ -177,7 +200,17 @@ func (g *Gateway) serveJobResolve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid resolve status", http.StatusBadRequest)
 		return
 	}
-	err := g.spool.ResolveUncertainJob(body.JobID, body.Status)
+	err := g.spool.ResolveUncertainJob(body.JobID, body.Status, func(job Job) *Delivery {
+		lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
+		key := "job-" + job.ID + "-resolved"
+		return &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID,
+			OwnerPrincipalID: job.PrincipalID, OwnerContextID: job.ContextID,
+			Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID,
+			ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID,
+			SlackChannel: job.SlackChannel, SlackThread: job.SlackThread,
+			Text:      locale.T(lang, "job.resolved", failureMessage(lang, body.Status)),
+			CreatedAt: g.now().UTC()}
+	})
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):

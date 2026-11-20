@@ -105,6 +105,9 @@ func (g *Gateway) runClaimedJob(ctx context.Context, job *Job) {
 			err = g.spool.FailJob(job.ID)
 		}
 		if err != nil {
+			// The file still sits in running/ and its lane is held: mark it
+			// for the sweep's retry instead of wedging until a restart.
+			g.spool.MarkSettleRetry(job.ID)
 			log.Printf("gateway job_id=%q status=uncertain reason=settle_failed", job.ID)
 		}
 	}()
@@ -272,13 +275,28 @@ func (g *Gateway) deliveryLoop(ctx context.Context) {
 			} else if n > 0 {
 				log.Printf("gateway prepare requeue deliveries=%d", n)
 			}
+			// A settle write that failed mid-handoff retried here releases
+			// the lane without waiting for a restart; deliveries claimed in
+			// sending/ and dropped ToolHub outcome reports retry likewise.
+			if n := g.spool.RetryPendingSettles(); n > 0 {
+				log.Printf("gateway settle retry jobs=%d", n)
+			}
+			if n := g.spool.RetryDeliverySettles(); n > 0 {
+				log.Printf("gateway settle retry deliveries=%d", n)
+			}
+			g.retryOutcomeReports(ctx)
 		}
 	}
 }
 
 // uncertainDelivery settles a claimed delivery as failed-unconfirmed.
 func (g *Gateway) uncertainDelivery(ctx context.Context, d Delivery) {
-	_ = g.spool.UncertainDelivery(d.ID)
+	if err := g.spool.UncertainDelivery(d.ID); err != nil {
+		// The record still sits claimed in sending/: mark it for the
+		// sweep's retry instead of stranding it until a restart.
+		g.spool.MarkDeliverySettleRetry(d.ID)
+		log.Printf("gateway delivery_id=%q status=uncertain reason=settle_failed", d.ID)
+	}
 	g.reportDeliveryOutcome(ctx, d, "uncertain")
 }
 
@@ -292,7 +310,43 @@ func (g *Gateway) reportDeliveryOutcome(ctx context.Context, delivery Delivery, 
 	}
 	caller := g.user(delivery.OwnerPrincipalID).Envelope(1)
 	if err := g.automationCall(ctx, caller, "delivery.outcome", map[string]any{"id": delivery.OccurrenceID, "status": status, "text": delivery.Text}, nil); err != nil {
+		// An un-reported death leaves the dedupe marker pending and would
+		// suppress the next identical notice — queue a retry for the
+		// delivery sweep tick instead of dropping the report.
+		g.outcomeMu.Lock()
+		if g.pendingOutcomes == nil {
+			g.pendingOutcomes = map[string]outcomeReport{}
+		}
+		g.pendingOutcomes[delivery.ID] = outcomeReport{delivery: delivery, status: status}
+		g.outcomeMu.Unlock()
 		log.Printf("gateway delivery outcome delivery_id=%q occurrence_id=%q status=%q err=%v", delivery.ID, delivery.OccurrenceID, status, err)
+	}
+}
+
+// retryOutcomeReports re-attempts outcome reports whose ToolHub call failed;
+// each success unmarks its delivery. Called from the delivery sweep tick.
+func (g *Gateway) retryOutcomeReports(ctx context.Context) {
+	g.outcomeMu.Lock()
+	pending := make([]outcomeReport, 0, len(g.pendingOutcomes))
+	for _, report := range g.pendingOutcomes {
+		pending = append(pending, report)
+	}
+	g.outcomeMu.Unlock()
+	for _, report := range pending {
+		delivery := report.delivery
+		if delivery.Kind != "routine-failure" || delivery.OccurrenceID == "" || delivery.OwnerPrincipalID == "" || g.config.ToolHubURL == "" || g.config.AutomationAuth == "" {
+			g.outcomeMu.Lock()
+			delete(g.pendingOutcomes, delivery.ID)
+			g.outcomeMu.Unlock()
+			continue
+		}
+		caller := g.user(delivery.OwnerPrincipalID).Envelope(1)
+		if err := g.automationCall(ctx, caller, "delivery.outcome", map[string]any{"id": delivery.OccurrenceID, "status": report.status, "text": delivery.Text}, nil); err != nil {
+			continue
+		}
+		g.outcomeMu.Lock()
+		delete(g.pendingOutcomes, delivery.ID)
+		g.outcomeMu.Unlock()
 	}
 }
 
@@ -328,7 +382,9 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		return
 	}
 	delivery.Lang = g.deliveryLang(delivery)
-	_ = g.spool.UpdateSending(*delivery)
+	if err := g.spool.UpdateSending(*delivery); err != nil {
+		log.Printf("gateway delivery_id=%q lang persist err=%v", delivery.ID, err)
+	}
 	if delivery.OccurrenceID != "" {
 		// Send-time owner fence: a routine delivery re-authorizes its
 		// occurrence with ToolHub before the channel send — a deleted

@@ -178,13 +178,7 @@ func Sweep(ctx context.Context, s *store.Store, m *Machine, now time.Time, limit
 	}
 	moved := 0
 	for _, d := range expired {
-		deadline, ok := m.Deadlines[d.State]
-		if !ok {
-			continue
-		}
-		err := s.Tx(ctx, func(tx *store.Tx) error {
-			return Transition(tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner}), m, d.ID, deadline.Event, now)
-		})
+		err := SweepRow(ctx, s, m, d, now)
 		if errors.Is(err, ErrStale) {
 			continue
 		}
@@ -194,4 +188,35 @@ func Sweep(ctx context.Context, s *store.Store, m *Machine, now time.Time, limit
 		moved++
 	}
 	return moved, nil
+}
+
+// SweepRow applies one scanned row's deadline event in its own tenant-scoped
+// transaction. The row's state and deadline are re-verified under that
+// transaction before the transition runs: a row another actor moved,
+// re-armed or deleted since the scan reports ErrStale and is skipped — the
+// stale event never fires early on a state that does not hold it, and a
+// forbidden edge can never fail the batch.
+func SweepRow(ctx context.Context, s *store.Store, m *Machine, d store.DueRow, now time.Time) error {
+	if err := m.check(); err != nil {
+		return err
+	}
+	deadline, ok := m.Deadlines[d.State]
+	if !ok {
+		return nil
+	}
+	return s.Tx(ctx, func(tx *store.Tx) error {
+		q := tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner})
+		var state string
+		var due *int64
+		err := q.QueryRow("SELECT state, deadline FROM "+m.Table+" WHERE {tenant} AND id = ?", d.ID).Scan(&state, &due)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return ErrStale
+		case err != nil:
+			return err
+		case state != d.State, due == nil, *due > now.Unix():
+			return ErrStale
+		}
+		return Transition(q, m, d.ID, deadline.Event, now)
+	})
 }

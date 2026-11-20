@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -91,6 +92,15 @@ type Spool struct {
 	// idle control plane — roughly one fallback poll per second, not ten.
 	claimPolls   atomic.Int64
 	deliverPolls atomic.Int64
+	// pendingSettles lists claimed jobs whose settle write failed mid-handoff:
+	// the sweep retries parking on the next tick instead of holding the
+	// conversation lane until a restart. In-memory only — a restart's
+	// recoverJobs covers the same files.
+	pendingSettles map[string]bool
+	// pendingDeliverySettles does the same for outbox deliveries whose
+	// uncertain settle failed: the record sits in sending/ until the
+	// sweep's retry moves it (a restart's recoverFiles covers the rest).
+	pendingDeliverySettles map[string]bool
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
@@ -180,7 +190,7 @@ func InspectSpool(root string) (*Spool, error) {
 }
 
 func openSpool(root string, create bool) (result *Spool, err error) {
-	s := &Spool{readOnly: !create, root: root, fsys: osFS{}, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	s := &Spool{readOnly: !create, root: root, fsys: osFS{}, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv(), pendingSettles: map[string]bool{}, pendingDeliverySettles: map[string]bool{}}
 	// A failed open must not leak the activated backend's database handle.
 	defer func() {
 		if err != nil {
@@ -275,9 +285,48 @@ func (s *Spool) recover() error {
 	if err := s.recoverStreamEvents(); err != nil {
 		return err
 	}
+	if err := s.settleRecoveredAdmissions(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reconcileBudgetLocked()
+}
+
+// settleRecoveredAdmissions finishes the corrupt-admission rebuild once the
+// stream ledger has replayed. The replay may restore a run binding and
+// rewind the status to a live event ("running", "waiting_for_approval") —
+// the binding stays (it lets observation reattach), but the status goes
+// back to uncertain: the outcome is still unknown and a live status in
+// failed/ would wedge the job outside every observation path.
+func (s *Spool) settleRecoveredAdmissions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		body, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
+		if err != nil {
+			return err
+		}
+		var mapping JobMapping
+		if err := json.Unmarshal(body, &mapping); err != nil || mapping.JobID == "" {
+			continue // Unreadable entries stay for the operator; recovery must not brick on them.
+		}
+		if !mapping.CorruptAdmission || terminalStatus(mapping.Status) || mapping.Status == "uncertain" {
+			continue
+		}
+		mapping.Status, mapping.LastKnownEvent = "uncertain", "run.unknown"
+		if err := s.writeMappingLocked(mapping); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Spool) recoverJobs() error {
@@ -293,7 +342,24 @@ func (s *Spool) recoverJobs() error {
 		jobID := strings.TrimSuffix(name, ".json")
 		mapping, loadErr := s.loadMappingLocked(jobID)
 		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-			return loadErr // Corrupt admission metadata must never make a claimed job retryable.
+			// Corrupt admission metadata must never make a claimed job
+			// retryable — and must not brick the spool either: rebuild the
+			// mapping from the running job record (the same source the
+			// admission wrote it from) and park the job uncertain.
+			mapping, loadErr = s.rebuildMappingFromJobLocked(filepath.Join(from, name))
+			if loadErr != nil {
+				if qerr := s.quarantineLocked(s.mappingPath(jobID), filepath.Join(from, name)); qerr != nil {
+					return qerr
+				}
+				log.Printf("spool quarantined unrecoverable job record %s: %v", name, loadErr)
+				continue
+			}
+			// A rebuilt mapping parks in failed/ like a bound run: admission
+			// state is unverifiable, so the claim path must never re-run it.
+			if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, "failed", name)); err != nil {
+				return err
+			}
+			continue
 		}
 		if loadErr == nil {
 			if err := s.parkClaimedLocked(mapping, "running", name); err != nil {
@@ -302,6 +368,49 @@ func (s *Spool) recoverJobs() error {
 			continue
 		}
 		if err := s.renameOwned(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rebuildMappingFromJobLocked rebuilds a claimed job's admission metadata
+// from its running record — the same record admission wrote it from — and
+// parks it uncertain for observation. It never requeues: a claimed job is
+// never made retryable.
+func (s *Spool) rebuildMappingFromJobLocked(path string) (JobMapping, error) {
+	body, err := s.fsys.ReadFile(path)
+	if err != nil {
+		return JobMapping{}, err
+	}
+	var job Job
+	if err := json.Unmarshal(body, &job); err != nil || job.ID == "" {
+		return JobMapping{}, errors.New("invalid running job record")
+	}
+	mapping := mappingFromJob(job, job.CreatedAt.UTC())
+	mapping.Status = "uncertain"
+	mapping.LastKnownEvent = "run.unknown"
+	mapping.UncertainSince = time.Now().UTC()
+	mapping.CorruptAdmission = true
+	if err := s.writeMappingLocked(mapping); err != nil {
+		return JobMapping{}, err
+	}
+	return mapping, nil
+}
+
+// quarantineLocked moves unreadable spool records out of their hot
+// directories so recovery continues past them; the files stay on disk for
+// the operator under <dir>/quarantine/.
+func (s *Spool) quarantineLocked(paths ...string) error {
+	for _, path := range paths {
+		if _, err := s.fsys.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		target := filepath.Join(filepath.Dir(path), "quarantine", filepath.Base(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := s.renameOwned(path, target); err != nil {
 			return err
 		}
 	}
@@ -348,6 +457,77 @@ func (s *Spool) ParkJobUncertain(id string) error {
 		return err
 	}
 	return s.parkClaimedLocked(mapping, "running", spoolFileID(id)+".json")
+}
+
+// MarkSettleRetry registers a claimed job whose settle write failed; the
+// periodic RetryPendingSettles parks it on the next tick instead of leaving
+// the conversation lane held until a restart (the file still sits in
+// running/, which recoverJobs would also cover).
+func (s *Spool) MarkSettleRetry(jobID string) {
+	s.mu.Lock()
+	s.pendingSettles[jobID] = true
+	s.mu.Unlock()
+}
+
+// RetryPendingSettles re-attempts parking for jobs whose settle write
+// failed. A success — or a job already moved out of running/ — unmarks it;
+// a persistent failure stays marked for the next tick.
+func (s *Spool) RetryPendingSettles() int {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.pendingSettles))
+	for id := range s.pendingSettles {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	settled := 0
+	for _, id := range ids {
+		err := s.ParkJobUncertain(id)
+		if err != nil {
+			if _, stat := s.fsys.Lstat(filepath.Join(s.root, "running", spoolFileID(id)+".json")); !errors.Is(stat, os.ErrNotExist) {
+				continue
+			}
+		}
+		s.mu.Lock()
+		delete(s.pendingSettles, id)
+		s.mu.Unlock()
+		settled++
+	}
+	return settled
+}
+
+// MarkDeliverySettleRetry registers an outbox delivery whose uncertain
+// settle failed; the periodic RetryDeliverySettles moves it on the next
+// tick instead of leaving the record claimed in sending/ until a restart.
+func (s *Spool) MarkDeliverySettleRetry(id string) {
+	s.mu.Lock()
+	s.pendingDeliverySettles[id] = true
+	s.mu.Unlock()
+}
+
+// RetryDeliverySettles re-attempts the sending/→failed/ move for marked
+// deliveries. A success — or a record already gone — unmarks it; a
+// persistent failure stays marked for the next tick.
+func (s *Spool) RetryDeliverySettles() int {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.pendingDeliverySettles))
+	for id := range s.pendingDeliverySettles {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	settled := 0
+	for _, id := range ids {
+		err := s.UncertainDelivery(id)
+		if err != nil {
+			if _, stat := s.fsys.Lstat(filepath.Join(s.root, "outbox", "sending", spoolFileID(id)+".json")); !errors.Is(stat, os.ErrNotExist) {
+				continue
+			}
+		}
+		s.mu.Lock()
+		delete(s.pendingDeliverySettles, id)
+		s.mu.Unlock()
+		settled++
+	}
+	return settled
 }
 
 func (s *Spool) rebuildMappings() error {

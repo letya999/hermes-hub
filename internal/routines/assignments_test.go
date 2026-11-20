@@ -322,6 +322,45 @@ func TestApplyRefusesPausedAssignment(t *testing.T) {
 	}
 }
 
+func TestResumeAppliesStagedPlanOnPausedAssignment(t *testing.T) {
+	e := testEngine(t)
+	if _, _, err := e.CreateAssignment(newTestAssignment("asg-staged"), assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-staged", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PauseAssignment("asg-staged", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	plan := *newTestAssignment("asg-staged").Plan
+	if _, err := e.UpdateAssignmentPlan("asg-staged", plan, commodel.AssignmentGrants{MaxWakesPerDay: 10}, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.LoadAssignment("asg-staged", assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AppliedRev == got.Plan.Revision {
+		t.Fatalf("fixture wrong: nothing staged (AppliedRev=%d Plan.Revision=%d)", got.AppliedRev, got.Plan.Revision)
+	}
+	if err := e.ResumeAssignment("asg-staged", assignmentCaller(), got.Revision); err != nil {
+		t.Fatalf("resume with a staged plan must apply it, not wedge: %v", err)
+	}
+	got, err = e.LoadAssignment("asg-staged", assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "active" || got.AppliedRev != got.Plan.Revision {
+		t.Fatalf("resume must apply the staged plan and activate: %+v", got)
+	}
+	rc := got.Applied["page"]
+	sched, err := e.LoadSchedule(rc.ScheduleID)
+	if err != nil || sched.Paused {
+		t.Fatalf("resumed schedule must be unpaused: %+v %v", sched, err)
+	}
+}
+
 func TestAssignmentDraftCannotBecomeActiveWithoutApply(t *testing.T) {
 	e := testEngine(t)
 	draft := newTestAssignment("asg-draft-guard")

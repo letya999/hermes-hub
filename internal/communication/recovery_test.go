@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1189,7 +1190,7 @@ func TestOperatorResolveSettlesUncertainJob(t *testing.T) {
 	if err := s.FailJob(job.ID); err != nil {
 		t.Fatal(err)
 	}
-	g := &Gateway{config: Config{AutomationAuth: "service"}, spool: s}
+	g := &Gateway{config: Config{AutomationAuth: "service"}, spool: s, now: time.Now}
 	post := func(token, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/admin/jobs/resolve", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -1235,7 +1236,263 @@ func TestOperatorResolveSettlesUncertainJob(t *testing.T) {
 	if held != 0 {
 		t.Fatalf("lane still held after operator resolve: %d", held)
 	}
+	// The operator verdict is not silent: the owner gets a final, localized
+	// notice through the ordinary outbox.
+	delivery, err := s.ClaimDelivery()
+	if err != nil || delivery == nil {
+		t.Fatalf("resolve notice delivery=%+v err=%v", delivery, err)
+	}
+	if delivery.ID != "job-"+job.ID+"-resolved" || !strings.Contains(delivery.Text, locale.T(locale.Fallback(), "job.interrupted")) {
+		t.Fatalf("resolve notice=%+v", delivery)
+	}
 	if code := post("service", valid); code != http.StatusConflict {
 		t.Fatalf("terminal job resolved twice: %d", code)
+	}
+}
+
+// Once the owner notice is durable but the supervisor still has not settled,
+// the only way out is the operator's resolve — so the gateway says so once,
+// not on every observation tick.
+func TestStuckUncertainJobAlertsOperatorOnce(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "uncertain"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	mapping, _, err := s.Mapping(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Past the budget and the slow-observation grace: the owner notice is
+	// durable and the job keeps coming back.
+	mapping.UncertainSince = time.Now().Add(-hubruntime.RunBudget() - slowObservationInterval - time.Minute)
+	if err := atomicJSON(s.mappingPath(job.ID), &mapping); err != nil {
+		t.Fatal(err)
+	}
+	notice := filepath.Join(s.root, "outbox", "done", spoolFileID("job-"+job.ID+"-uncertain")+".json")
+	if err := os.MkdirAll(filepath.Dir(notice), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notice, []byte(`{"id":"noticed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := s.RequeueObservations(now, false); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(slowObservationInterval + time.Second)
+	}
+	if count := strings.Count(buf.String(), "uncertain_stuck"); count != 1 {
+		t.Fatalf("operator alerts=%d, want exactly 1: %s", count, buf.String())
+	}
+	after, _, err := s.Mapping(job.ID)
+	if err != nil || !after.OperatorAlerted {
+		t.Fatalf("alert flag not persisted: %+v", after)
+	}
+}
+
+// B10.1: a settle write that failed mid-handoff is retried by the sweep, not
+// abandoned — the lane releases on the next tick instead of a restart.
+func TestSettleRetryParksAfterFailedSettle(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	s.MarkSettleRetry(job.ID)
+	if n := s.RetryPendingSettles(); n != 1 {
+		t.Fatalf("settled=%d, want 1", n)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json")); !os.IsNotExist(err) {
+		t.Fatalf("job still in running/: %v", err)
+	}
+	mapping, _, err := s.Mapping(job.ID)
+	if err != nil || mapping.Status != "uncertain" {
+		t.Fatalf("mapping after retry: %+v %v", mapping, err)
+	}
+	if n := s.RetryPendingSettles(); n != 0 {
+		t.Fatalf("settled on second tick=%d — job stayed marked", n)
+	}
+}
+
+// A job whose file is gone from running/ unmarks without a failed write.
+func TestSettleRetryUnmarksGoneJob(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	s.MarkSettleRetry(job.ID)
+	// Move the file out of running/ externally (operator/restart settled it).
+	if err := os.Rename(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json"), filepath.Join(s.root, "failed", spoolFileID(job.ID)+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.RetryPendingSettles(); n != 1 {
+		t.Fatalf("settled=%d, want 1 (unmark)", n)
+	}
+	s.mu.Lock()
+	marked := s.pendingSettles[job.ID]
+	s.mu.Unlock()
+	if marked {
+		t.Fatal("job stayed marked after external settle")
+	}
+}
+
+// A persistent failure keeps the job marked for the next tick.
+func TestSettleRetryKeepsUnparkableJobMarked(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the mapping so parking fails while the file still sits in
+	// running/ — the mark must survive for the next tick.
+	if err := os.WriteFile(s.mappingPath(job.ID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.MarkSettleRetry(job.ID)
+	if n := s.RetryPendingSettles(); n != 0 {
+		t.Fatalf("settled=%d, want 0 (retry must fail)", n)
+	}
+	s.mu.Lock()
+	marked := s.pendingSettles[job.ID]
+	s.mu.Unlock()
+	if !marked {
+		t.Fatal("job unmarked despite failed retry")
+	}
+}
+
+// B10.2: a corrupt mapping in mappings/ no longer bricks the spool on
+// restart — the mapping is rebuilt from the running job record and the job
+// is parked uncertain for observation.
+func TestRestartRecoversPastCorruptMapping(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.mappingPath(job.ID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("corrupt mapping bricked the spool: %v", err)
+	}
+	s = reopened
+	mapping, _, err := s.Mapping(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapping.Status != "uncertain" || !mapping.CorruptAdmission {
+		t.Fatalf("rebuilt mapping: %+v", mapping)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json")); !os.IsNotExist(err) {
+		t.Fatal("job still in running/ after recover")
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "failed", spoolFileID(job.ID)+".json")); err != nil {
+		t.Fatal("job not parked in failed/ for observation")
+	}
+	if claimed, err := s.ClaimJob(); err != nil || claimed != nil {
+		t.Fatalf("rebuilt job requeued for execution: %+v %v", claimed, err)
+	}
+	// Past the run budget the operator alert latches once — a rebuilt job
+	// never produces the uncertain owner notice, so the alert is the only
+	// signal that `hubctl job resolve` is the way out.
+	mapping.UncertainSince = time.Now().Add(-hubruntime.RunBudget() - time.Minute)
+	if err := atomicJSON(s.mappingPath(job.ID), &mapping); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	for i := 0; i < 3; i++ {
+		if err := s.RequeueObservations(time.Now(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count := strings.Count(buf.String(), "uncertain_stuck"); count != 1 {
+		t.Fatalf("operator alerts=%d, want exactly 1: %s", count, buf.String())
+	}
+	// Non-supervised: no idempotent rebind exists, so the job waits for
+	// `job resolve` — it must never re-park into the claim path.
+	if err := s.RequeueObservations(time.Now(), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json")); !os.IsNotExist(err) {
+		t.Fatalf("corrupt-admission job requeued for execution: %v", err)
+	}
+	// Supervised: re-parking for observation IS the safe settlement — the
+	// supervisor's execute under the same idempotency key rebinds or
+	// replays rather than duplicating the run.
+	if err := s.RequeueObservations(time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json")); err != nil {
+		t.Fatalf("corrupt-admission job not re-parked for observation: %v", err)
+	}
+}
+
+// B10.2: an unreadable running job record is quarantined, and recovery
+// continues past it instead of failing the spool open.
+func TestRestartQuarantinesUnrecoverableRunningJob(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt both the mapping and the running record — nothing rebuildable.
+	if err := os.WriteFile(s.mappingPath(job.ID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.root, "running", spoolFileID(job.ID)+".json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("unrecoverable job bricked the spool: %v", err)
+	}
+	s = reopened
+	for _, q := range []string{
+		filepath.Join(s.root, "mappings", "quarantine", spoolFileID(job.ID)+".json"),
+		filepath.Join(s.root, "running", "quarantine", spoolFileID(job.ID)+".json"),
+	} {
+		if _, err := os.Lstat(q); err != nil {
+			t.Fatalf("quarantined record missing at %s: %v", q, err)
+		}
+	}
+}
+
+// B10.1b: a delivery whose uncertain settle failed retried on the next tick
+// moves sending/→failed/ instead of stranding until a restart.
+func TestDeliverySettleRetryMovesAfterFailure(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnqueueDelivery(Delivery{ID: "d-1", Channel: "telegram_bot", ChatID: 11, ConversationID: "telegram-11", DeliveryTargetID: "telegram-11", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil {
+		t.Fatalf("claim: %+v %v", d, err)
+	}
+	s.MarkDeliverySettleRetry(d.ID)
+	if n := s.RetryDeliverySettles(); n != 1 {
+		t.Fatalf("settled=%d, want 1", n)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "outbox", "failed", spoolFileID(d.ID)+".json")); err != nil {
+		t.Fatalf("delivery not in failed/: %v", err)
+	}
+	if n := s.RetryDeliverySettles(); n != 0 {
+		t.Fatalf("settled on second tick=%d — delivery stayed marked", n)
 	}
 }

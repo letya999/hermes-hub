@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -90,10 +91,19 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		if !found {
 			return reply(locale.T(lang, "goal.none"))
 		}
+		allowed := map[string][]string{"pause": {"active"}, "resume": {"paused", "blocked"}}[verb]
+		if goal.Engine != "native" && !slices.Contains(allowed, goal.Status) {
+			// The hub record is authoritative: the verb may only leave the
+			// statuses it names, so a terminal goal (done, stopped) can never
+			// flip back to active. Native verbs go upstream first — the
+			// authoritative engine decides, and its refusal surfaces below.
+			return reply(locale.T(lang, "goal.cannot", verb, goal.Status))
+		}
 		// Hub-engine resumes restate no upstream prompt: the synthesized kick
 		// carries the owner's language hint like every model-facing text.
 		prompt := "Resume the goal and continue working toward it." + modelLangHint(locale.LangOf(user.WorkspaceDir))
 		prevEpoch := goal.Epoch
+		statusAtRead := goal.Status
 		if goal.Engine == "native" {
 			// Upstream is authoritative — the verb moves its record and the
 			// mirrored state (plus resume's continuation prompt) comes back.
@@ -108,7 +118,16 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		} else {
 			goal.Status = map[string]string{"pause": "paused", "resume": "active"}[verb]
 		}
-		goal, err = g.spool.UpdateGoalAtEpoch(user.ID, task.ConversationID, prevEpoch, func(rec *Goal) { *rec = goal })
+		if goal.Engine == "native" {
+			goal, err = g.spool.UpdateGoalAtEpoch(user.ID, task.ConversationID, prevEpoch, func(rec *Goal) { *rec = goal })
+		} else {
+			// Authoritative local path: re-check the source status under the
+			// spool lock so a concurrent transition still wins the write.
+			goal, err = g.spool.UpdateGoalFromStatus(user.ID, task.ConversationID, prevEpoch, allowed, func(rec *Goal) { *rec = goal })
+		}
+		if errors.Is(err, errGoalStatusRefused) {
+			return reply(locale.T(lang, "goal.cannot", verb, statusAtRead))
+		}
 		if errors.Is(err, errGoalSuperseded) {
 			return reply(locale.T(lang, "goal.none"))
 		}
@@ -155,11 +174,24 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 	if found {
 		epoch = existing.Epoch + 1
 	}
-	if err := g.spool.SaveGoal(Goal{
+	goal := Goal{
 		TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID,
 		Text: arg, Engine: result.Engine, Status: "active", MaxTurns: result.MaxTurns, Epoch: epoch,
-	}); err != nil {
-		return reply(locale.T(lang, "goal.unavailable", err.Error()))
+	}
+	// The write is a compare-and-swap: a /goal clear (or another set) that
+	// lands during the runner round trip wins — the record is either re-read
+	// at the epoch we saw, or refused because one appeared while we worked.
+	var werr error
+	if found {
+		_, werr = g.spool.UpdateGoalAtEpoch(user.ID, task.ConversationID, existing.Epoch, func(rec *Goal) { *rec = goal })
+	} else {
+		werr = g.spool.CreateGoal(goal)
+	}
+	if errors.Is(werr, errGoalSuperseded) {
+		return reply(locale.T(lang, "goal.none"))
+	}
+	if werr != nil {
+		return reply(locale.T(lang, "goal.unavailable", werr.Error()))
 	}
 	suffix := "-e" + strconv.FormatInt(epoch, 10) + "-" + strconv.FormatInt(g.now().UnixNano(), 36)
 	kickoff := Job{

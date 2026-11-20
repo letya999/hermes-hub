@@ -343,6 +343,7 @@ func init() {
 		"alert.crash-budget":   "El runtime %s está atascado: presupuesto de reinicios agotado tras %d caídas.",
 		"alert.suppressed":     "Se suprimieron %d alertas del hub en la última hora para evitar una avalancha.",
 		"job.recheck":          "Comprobando la tarea original tras perder la conexión.",
+		"job.resolved":         "El operador cerró la tarea: %s",
 		"job.truncated":        "La respuesta es demasiado larga para el chat — se muestra solo la parte final; el texto completo se adjunta como archivo.",
 
 		// /compact.
@@ -372,6 +373,7 @@ func init() {
 		"goal.cleared":                 "Objetivo restablecido — registro eliminado, turnos planificados obsoletos.",
 		"goal.paused":                  "Objetivo en pausa — turnos detenidos, registros conservados.",
 		"goal.resumed":                 "Objetivo reanudado — el turno continúa.",
+		"goal.cannot":                  "No se puede %s el objetivo mientras está en estado %s.",
 		"goal.unhandled":               "Objetivo no disponible: comando no procesado.",
 		"goal.unsupported-runner":      "La gestión de objetivos no está disponible para este ejecutor.",
 		"goal.rejected":                "Objetivo no aceptado: %s",

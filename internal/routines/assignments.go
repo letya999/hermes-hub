@@ -155,6 +155,14 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 	if item.State == "paused" {
 		return commodel.Assignment{}, errors.New("assignment is paused; resume it first")
 	}
+	return e.reconcileAssignmentPlanLocked(id, item, false)
+}
+
+// reconcileAssignmentPlanLocked materializes the current plan generation
+// into owned schedule artifacts. With keepPaused, new and kept schedules
+// stay paused so a staged plan can be applied under the pause fence; the
+// caller is then responsible for unpausing (ResumeAssignment).
+func (e *Engine) reconcileAssignmentPlanLocked(id string, item commodel.Assignment, keepPaused bool) (commodel.Assignment, error) {
 	if item.Plan == nil {
 		return commodel.Assignment{}, errors.New("assignment plan required")
 	}
@@ -240,12 +248,15 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		if !free {
 			return commodel.Assignment{}, errors.New("assignment source generations exhausted")
 		}
+		draft.Paused = keepPaused
 		created, cerr := e.createScheduleAtLocked(draft, scheduleCaller, "", nil, now)
 		if cerr != nil {
 			// Persist the partial reconciliation before reporting the error:
 			// artifacts already created must stay reachable through receipts
 			// or pause/cancel can never fence them (SPEC-0080 R1.8).
-			item.State = "waiting"
+			if !keepPaused {
+				item.State = "waiting"
+			}
 			item.UpdatedAt = now
 			_ = e.atomicJSON(e.AssignmentPath(id), item)
 			return commodel.Assignment{}, cerr
@@ -268,7 +279,9 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 			return commodel.Assignment{}, err
 		}
 	}
-	item.State = "active"
+	if !keepPaused {
+		item.State = "active"
+	}
 	item.AppliedRev = item.Plan.Revision
 	item.Revision++
 	item.UpdatedAt = now
@@ -541,8 +554,18 @@ func (e *Engine) ResumeAssignment(id string, caller identity.Envelope, expected 
 		item.UpdatedAt = time.Now().UTC()
 		return e.atomicJSON(e.AssignmentPath(id), item)
 	}
-	if item.Plan == nil || item.AppliedRev != item.Plan.Revision {
+	if item.Plan == nil {
 		return errors.New("assignment has no applied plan to resume")
+	}
+	if item.AppliedRev != item.Plan.Revision {
+		// A plan staged while paused: reconcile it under the pause fence so
+		// resume is never wedged between "apply refuses paused" and "resume
+		// requires applied". New artifacts come up paused; the loop below
+		// unpauses everything it owns.
+		item, err = e.reconcileAssignmentPlanLocked(id, item, true)
+		if err != nil {
+			return err
+		}
 	}
 	now := time.Now().UTC()
 	for _, rc := range item.Applied {

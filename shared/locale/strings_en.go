@@ -325,6 +325,7 @@ func init() {
 		"alert.crash-budget":   "Runtime %s is wedged: restart budget exhausted after %d crashes.",
 		"alert.suppressed":     "%d hub alerts were suppressed in the last hour to avoid a flood.",
 		"job.recheck":          "Rechecking the original task after losing the connection.",
+		"job.resolved":         "The operator closed the task: %s",
 		"job.truncated":        "The response is too long for chat — showing only the final part; the full text is attached as a file.",
 
 		// /compact.
@@ -354,6 +355,7 @@ func init() {
 		"goal.cleared":                 "Goal reset — record deleted, scheduled turns stale.",
 		"goal.paused":                  "Goal paused — turns stopped, records kept.",
 		"goal.resumed":                 "Goal resumed — the turn continues.",
+		"goal.cannot":                  "Cannot %s the goal while it is %s.",
 		"goal.unhandled":               "Goal unavailable: unhandled command.",
 		"goal.unsupported-runner":      "Goal management is not available for this runner.",
 		"goal.rejected":                "Goal not accepted: %s",

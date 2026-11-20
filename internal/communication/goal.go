@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -85,6 +86,11 @@ func (s *Spool) SaveGoal(goal Goal) error {
 // active state or moved to a newer epoch since the caller read it.
 var errGoalSuperseded = errors.New("goal superseded")
 
+// errGoalStatusRefused refuses a verb whose source status the record no
+// longer holds — the record exists and the epoch still matches, but a
+// concurrent transition already moved it somewhere the verb cannot leave.
+var errGoalStatusRefused = errors.New("goal status changed")
+
 // UpdateGoal applies fn to the durable record under the spool lock. It
 // re-reads the record and refuses when it is gone, no longer active or at a
 // different epoch than expectEpoch, so a slow caller cannot undo a concurrent
@@ -92,7 +98,7 @@ var errGoalSuperseded = errors.New("goal superseded")
 func (s *Spool) UpdateGoal(principal, conversationID string, expectEpoch int64, fn func(*Goal)) (Goal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.updateGoalLocked(principal, conversationID, expectEpoch, true, fn)
+	return s.updateGoalLocked(principal, conversationID, expectEpoch, []string{"active"}, fn)
 }
 
 // UpdateGoalAtEpoch applies fn to the durable record under the spool lock
@@ -102,10 +108,33 @@ func (s *Spool) UpdateGoal(principal, conversationID string, expectEpoch int64, 
 func (s *Spool) UpdateGoalAtEpoch(principal, conversationID string, expectEpoch int64, fn func(*Goal)) (Goal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.updateGoalLocked(principal, conversationID, expectEpoch, false, fn)
+	return s.updateGoalLocked(principal, conversationID, expectEpoch, nil, fn)
 }
 
-func (s *Spool) updateGoalLocked(principal, conversationID string, expectEpoch int64, requireActive bool, fn func(*Goal)) (Goal, error) {
+// UpdateGoalFromStatus applies fn under the spool lock only while the record
+// sits at expectEpoch in one of the allowed source statuses — the verb guard
+// that keeps a terminal or already-moved goal from flipping back.
+func (s *Spool) UpdateGoalFromStatus(principal, conversationID string, expectEpoch int64, allowed []string, fn func(*Goal)) (Goal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateGoalLocked(principal, conversationID, expectEpoch, allowed, fn)
+}
+
+// CreateGoal inserts a record only while none exists for the conversation:
+// a /goal set whose runner round trip raced a concurrent set or a clear of
+// the landed record loses instead of clobbering it.
+func (s *Spool) CreateGoal(goal Goal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.loadGoalLocked(goal.PrincipalID, goal.ConversationID); err == nil {
+		return errGoalSuperseded
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return s.saveGoalLocked(goal)
+}
+
+func (s *Spool) updateGoalLocked(principal, conversationID string, expectEpoch int64, allowed []string, fn func(*Goal)) (Goal, error) {
 	goal, err := s.loadGoalLocked(principal, conversationID)
 	if errors.Is(err, os.ErrNotExist) {
 		return Goal{}, errGoalSuperseded
@@ -113,8 +142,11 @@ func (s *Spool) updateGoalLocked(principal, conversationID string, expectEpoch i
 	if err != nil {
 		return Goal{}, err
 	}
-	if goal.Epoch != expectEpoch || (requireActive && goal.Status != "active") {
+	if goal.Epoch != expectEpoch {
 		return Goal{}, errGoalSuperseded
+	}
+	if allowed != nil && !slices.Contains(allowed, goal.Status) {
+		return Goal{}, errGoalStatusRefused
 	}
 	fn(&goal)
 	if err := s.saveGoalLocked(goal); err != nil {

@@ -280,6 +280,112 @@ func TestSweepSkipsStaleAndConcurrentSweepersLoseCleanly(t *testing.T) {
 	})
 }
 
+// The window between the sweep's read-only scan and the per-row write is
+// where a concurrent actor wins: the row must be re-verified inside the
+// write transaction or the stale event fires early (or the whole batch
+// dies on a forbidden edge).
+func TestSweepRowReverifiesInsideWriteTransaction(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		s := storetest.Open(t, url, schema)
+		m := jobMachine(t)
+		create(t, s, m, alice, "j1", t0)
+		create(t, s, m, alice, "j2", t0)
+		now := t0.Add(2 * time.Hour)
+		// Scan exactly what the sweeper would see.
+		var due []store.DueRow
+		if err := s.ReadTx(t.Context(), func(tx *store.Tx) error {
+			var err error
+			due, err = tx.DueRows("jobs", now.Unix(), 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(due) != 2 {
+			t.Fatalf("scan: %+v", due)
+		}
+		var j1, j2 store.DueRow
+		for _, d := range due {
+			switch d.ID {
+			case "j1":
+				j1 = d
+			case "j2":
+				j2 = d
+			}
+		}
+		// A concurrent actor moves j1 out of the scanned state: the stale
+		// "expire" event is forbidden from "running" — before the fix this
+		// returned ErrForbiddenTransition and killed the whole batch.
+		if err := tx(t, s, func(tx *store.Tx) error { return fsm.Transition(tx.Scoped(alice), m, "j1", "admit", now) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := fsm.SweepRow(t.Context(), s, m, j1, now); !errors.Is(err, fsm.ErrStale) {
+			t.Fatalf("moved row: %v, want ErrStale", err)
+		}
+		if state, err := currentState(t, s, alice, "j1"); err != nil || state != "running" {
+			t.Fatalf("j1 state=%q err %v — expire fired on a moved row", state, err)
+		}
+		// j2 is untouched and still sweeps through the same path.
+		if err := fsm.SweepRow(t.Context(), s, m, j2, now); err != nil {
+			t.Fatalf("clean row: %v", err)
+		}
+		if state, err := currentState(t, s, alice, "j2"); err != nil || state != "expired" {
+			t.Fatalf("j2 state=%q err %v", state, err)
+		}
+
+		// A row still in the scanned state but re-armed onto a fresh deadline
+		// by a concurrent writer must not fire early: state matches, deadline
+		// does not — the row is stale for this scan.
+		create(t, s, m, alice, "j3", now)
+		var j3 store.DueRow
+		if err := s.ReadTx(t.Context(), func(tx *store.Tx) error {
+			var err error
+			rows, err := tx.DueRows("jobs", now.Add(90*time.Minute).Unix(), 100)
+			for _, d := range rows {
+				if d.ID == "j3" {
+					j3 = d
+				}
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if j3.ID != "j3" {
+			t.Fatal("fixture: j3 not due")
+		}
+		// A concurrent transition refreshed j3's deadline far past the scan
+		// instant while leaving it in "queued".
+		later := now.Add(72 * time.Hour)
+		if err := tx(t, s, func(tx *store.Tx) error {
+			res, err := tx.Scoped(alice).Exec("UPDATE jobs SET deadline = ? WHERE {tenant} AND id = ?", later.Unix(), "j3")
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil || n != 1 {
+				t.Fatalf("re-arm rows=%d err=%v", n, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fsm.SweepRow(t.Context(), s, m, j3, now.Add(90*time.Minute)); !errors.Is(err, fsm.ErrStale) {
+			t.Fatalf("re-armed row: %v, want ErrStale", err)
+		}
+		if state, err := currentState(t, s, alice, "j3"); err != nil || state != "queued" {
+			t.Fatalf("j3 state=%q err %v — expire fired early", state, err)
+		}
+	})
+}
+
+func currentState(t *testing.T, s *store.Store, tenant store.Tenant, id string) (string, error) {
+	t.Helper()
+	var state string
+	err := tx(t, s, func(tx *store.Tx) error {
+		return tx.Scoped(tenant).QueryRow("SELECT state FROM jobs WHERE {tenant} AND id = ?", id).Scan(&state)
+	})
+	return state, err
+}
+
 func TestMachineRequiresDeadlinePerNonFinalState(t *testing.T) {
 	base := func() fsm.Machine {
 		return fsm.Machine{

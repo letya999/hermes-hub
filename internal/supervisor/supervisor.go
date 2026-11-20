@@ -840,6 +840,7 @@ func (m *Manager) Status(binding Binding) (Runtime, bool, error) {
 	}
 	status := runtime.Runtime
 	status.Consumers = runtime.consumers()
+	status.Leases = len(runtime.leases)
 	status.WaitReason = m.expectedWaitLocked(runtime)
 	return status, true, nil
 }

@@ -286,9 +286,11 @@ func (m *Manager) sweepStuckRunning(now time.Time) {
 		record.UpdatedAt = now.UTC()
 		m.jobs[key] = record
 		if err := m.persistLocked(); err != nil {
+			// One unwritable record rolls back and skips this tick — it must
+			// not abort the sweep for every other stuck run behind it.
 			m.jobs[key] = previous
 			log.Printf("supervisor stuck-run sweep job_id=%q persistence failed: %v", key, err)
-			return
+			continue
 		}
 	}
 }
@@ -315,7 +317,11 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 			// confirmed is still named — failed with a timeout cause —
 			// rather than left unknown forever.
 			timeout := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RunID: record.Response.RunID, SessionID: record.Response.SessionID, RuntimeGeneration: record.Generation, Status: "failed", LastEvent: "run.timeout"}
-			_ = m.finishJobGeneration(record.Request, timeout, "failed", record.Generation)
+			// A failed durable write leaves the record unconfirmed, so the
+			// next sweep retries the settle — log it instead of discarding.
+			if err := m.finishJobGeneration(record.Request, timeout, "failed", record.Generation); err != nil {
+				log.Printf("supervisor unconfirmed settle job_id=%q err=%v — retrying next sweep", record.Request.JobID, err)
+			}
 			m.mu.Lock()
 			for _, entry := range m.items {
 				if entry.PrincipalID == record.Request.PrincipalID && entry.ContextID == record.Request.ContextID {
@@ -413,7 +419,9 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 		// the same question until the run budget expires.
 		if endpoint == "/v1/readmit" && response.StatusCode == http.StatusConflict {
 			lost := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RuntimeGeneration: fresh.Generation, Status: "failed", LastEvent: "run.failed"}
-			_ = m.finishJobGeneration(record.Request, lost, "failed", fresh.Generation)
+			if err := m.finishJobGeneration(record.Request, lost, "failed", fresh.Generation); err != nil {
+				log.Printf("supervisor readmit-refusal settle job_id=%q err=%v — retrying next sweep", record.Request.JobID, err)
+			}
 		}
 		return
 	}
