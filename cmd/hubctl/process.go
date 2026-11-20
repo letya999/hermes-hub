@@ -13,8 +13,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/shared/locale"
 	hublog "github.com/letya999/hermes-hub/shared/log"
 )
@@ -25,16 +27,37 @@ func runProcesses(ctx context.Context, args []string) error {
 	f.SetOutput(io.Discard)
 	mode := f.String("mode", "process", "")
 	profile := f.String("profile", "minimal", "")
-	trusted := f.Bool("trusted", os.Getenv("HUB_TRUSTED") == "true", "")
 	bin := f.String("bin", "./bin", "")
 	data := f.String("data", "./data", "")
 	if err := f.Parse(args); err != nil || f.NArg() != 0 || *mode != "process" || (*profile != "minimal" && *profile != "family") {
 		return errors.New(locale.T(lang, "hubctl.run-usage"))
 	}
-	if !*trusted {
+	trusted, err := installationTrusted()
+	if err != nil {
+		return fmt.Errorf("%s: %w", locale.T(lang, "hubctl.run-env"), err)
+	}
+	if !trusted {
 		return errors.New(locale.T(lang, "hubctl.run-untrusted"))
 	}
 	return launchProcesses(ctx, profileServices(*profile), *bin, *data)
+}
+
+// installationTrusted resolves the trusted installation flag from the
+// installation's .env next to the operator's working directory; a present
+// .env is authoritative, otherwise the process environment decides. An
+// absent declaration fails closed.
+func installationTrusted() (bool, error) {
+	if _, err := os.Lstat(".env"); err != nil {
+		if os.IsNotExist(err) {
+			return os.Getenv("HUB_TRUSTED") == "true", nil
+		}
+		return false, err
+	}
+	values, err := stack.ReadSecrets(".env")
+	if err != nil {
+		return false, err
+	}
+	return values["HUB_TRUSTED"] == "true", nil
 }
 
 func serviceURLEnv(name string) string {
@@ -51,7 +74,8 @@ func processEnv(svc ServiceDescriptor, services []ServiceDescriptor, data string
 	}
 	env = append(env, "HUB_TRUSTED=true", "HUB_SERVICE="+svc.Name,
 		"HUB_LISTEN=127.0.0.1:"+strconv.Itoa(svc.Port),
-		"HUB_DATABASE_URL=sqlite://"+filepath.ToSlash(filepath.Join(data, svc.DataDir)))
+		"HUB_DATA_DIR="+filepath.Join(data, svc.DataDir),
+		"HUB_DATABASE_URL=sqlite://"+filepath.ToSlash(filepath.Join(data, svc.Name+".db")))
 	for _, edge := range svc.Edges {
 		for _, dependency := range services {
 			if dependency.Name == edge {
@@ -85,6 +109,11 @@ func launchProcesses(ctx context.Context, services []ServiceDescriptor, bin, dat
 	if err := os.MkdirAll(data, 0o700); err != nil {
 		return err
 	}
+	for _, svc := range services {
+		if err := os.MkdirAll(filepath.Join(data, svc.DataDir), 0o700); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type exit struct{ service string }
@@ -100,6 +129,13 @@ func launchProcesses(ctx context.Context, services []ServiceDescriptor, bin, dat
 	logger := hublog.New(os.Stdout, "hubctl")
 	for i, svc := range services {
 		cmd := exec.CommandContext(ctx, paths[i]) // #nosec G204 -- operator-selected local binary, no shell or arguments
+		cmd.Cancel = func() error {
+			if runtime.GOOS == "windows" {
+				return cmd.Process.Kill()
+			}
+			return cmd.Process.Signal(syscall.SIGTERM)
+		}
+		cmd.WaitDelay = 10 * time.Second
 		cmd.Env = processEnv(svc, services, data)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {

@@ -2,8 +2,9 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
-		"hubctl.run-usage":                   "Uso: hubctl run --mode process --profile minimal|family --trusted [--bin ./bin] [--data ./data]",
-		"hubctl.run-untrusted":               "El modo process requiere una instalación de confianza",
+		"hubctl.run-usage":                   "Uso: hubctl run --mode process --profile minimal|family [--bin ./bin] [--data ./data]",
+		"hubctl.run-env":                     "No se pudo leer el .env de la instalación",
+		"hubctl.run-untrusted":               "El modo process requiere una instalación de confianza (HUB_TRUSTED=true en el .env de la instalación)",
 		"hubctl.run-missing":                 "Binario de servicio requerido no disponible: %s",
 		"hubctl.run-start":                   "No se pudo iniciar el servicio: %s",
 		"hubctl.run-health":                  "El servicio no pasó la comprobación de salud: %s",

@@ -27,6 +27,7 @@ func TestMain(m *testing.M) {
 		body, _ := json.Marshal(map[string]string{
 			"database": os.Getenv("HUB_DATABASE_URL"), "declared": os.Getenv("DECLARED_TEST_VALUE"),
 			"undeclared": os.Getenv("UNDECLARED_PROVIDER_TOKEN"), "dependency": os.Getenv("HUB_FIXTURE_ONE_URL"),
+			"datadir": os.Getenv("HUB_DATA_DIR"),
 		})
 		path := strings.TrimPrefix(os.Getenv("HUB_DATABASE_URL"), "sqlite://") + ".started"
 		if os.WriteFile(path, body, 0o600) != nil {
@@ -51,7 +52,7 @@ func TestProcessModeStartsProfileWithDeclaredEnv(t *testing.T) {
 	}
 	for _, stop := range []string{"cancel", "first-exit"} {
 		t.Run(stop, func(t *testing.T) {
-			services := []ServiceDescriptor{{Name: "fixture-one", DataDir: "fixture-one.db"}, {Name: "fixture-two", DataDir: "fixture-two.db", Edges: []string{"fixture-one"}}}
+			services := []ServiceDescriptor{{Name: "fixture-one", DataDir: "fixture-one"}, {Name: "fixture-two", DataDir: "fixture-two", Edges: []string{"fixture-one"}}}
 			for i := range services {
 				listener, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {
@@ -68,7 +69,7 @@ func TestProcessModeStartsProfileWithDeclaredEnv(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- launchProcesses(ctx, services, filepath.Dir(executable), data) }()
 			for i, svc := range services {
-				path := filepath.Join(data, svc.DataDir) + ".started"
+				path := filepath.Join(data, svc.Name) + ".db.started"
 				var report map[string]string
 				for {
 					body, err := os.ReadFile(path)
@@ -83,8 +84,11 @@ func TestProcessModeStartsProfileWithDeclaredEnv(t *testing.T) {
 					case <-time.After(10 * time.Millisecond):
 					}
 				}
-				if report["declared"] != "allowed" || report["undeclared"] != "" || report["database"] != "sqlite://"+filepath.ToSlash(filepath.Join(data, svc.DataDir)) {
+				if report["declared"] != "allowed" || report["undeclared"] != "" || report["database"] != "sqlite://"+filepath.ToSlash(filepath.Join(data, svc.Name+".db")) || report["datadir"] != filepath.Join(data, svc.DataDir) {
 					t.Fatalf("incorrect launch environment for %s", svc.Name)
+				}
+				if info, err := os.Stat(filepath.Join(data, svc.DataDir)); err != nil || !info.IsDir() {
+					t.Fatalf("service data dir missing for %s: %v", svc.Name, err)
 				}
 				if i == 1 && report["dependency"] == "" {
 					t.Fatal("enabled dependency was not wired")
@@ -119,20 +123,47 @@ func TestProcessModeStartsProfileWithDeclaredEnv(t *testing.T) {
 }
 
 func TestProcessModeRefusesUntrusted(t *testing.T) {
-	t.Setenv("HUB_TRUSTED", "true")
-	data := filepath.Join(t.TempDir(), "absent")
-	err := runProcesses(context.Background(), []string{"--mode", "process", "--profile", "minimal", "--trusted=false", "--data", data})
-	if err == nil || err.Error() != locale.T(locale.Operator(), "hubctl.run-untrusted") {
-		t.Fatalf("want untrusted refusal before binary lookup, got %v", err)
-	}
-	if _, err := os.Stat(data); !os.IsNotExist(err) {
-		t.Fatalf("untrusted launch touched data: %v", err)
+	unt := locale.T(locale.Operator(), "hubctl.run-untrusted")
+	for _, tc := range []struct {
+		name    string
+		envFile string
+		envVar  string
+		want    string
+	}{
+		{name: "default-no-declaration", want: unt},
+		{name: "env-file-false", envFile: "HUB_TRUSTED=false\n", want: unt},
+		{name: "env-file-overrides-process-env", envFile: "HUB_TRUSTED=false\n", envVar: "true", want: unt},
+		{name: "corrupt-env-file", envFile: "lowercase=bad\n", want: locale.T(locale.Operator(), "hubctl.run-env")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			t.Setenv("HUB_TRUSTED", tc.envVar)
+			if tc.envFile != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(tc.envFile), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := filepath.Join(t.TempDir(), "absent")
+			err := runProcesses(context.Background(), []string{"--mode", "process", "--profile", "minimal", "--data", data})
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("want %q refusal, got %v", tc.want, err)
+			}
+			if _, err := os.Stat(data); !os.IsNotExist(err) {
+				t.Fatalf("refused launch touched data: %v", err)
+			}
+		})
 	}
 }
 
 func TestProcessModeMissingCoreDoesNotCreateData(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("HUB_TRUSTED=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	data := filepath.Join(t.TempDir(), "absent")
-	err := runProcesses(t.Context(), []string{"--trusted", "--bin", t.TempDir(), "--data", data})
+	err := runProcesses(t.Context(), []string{"--bin", t.TempDir(), "--data", data})
 	if err == nil || err.Error() != locale.T(locale.Operator(), "hubctl.run-missing", "spawn-controller") {
 		t.Fatalf("missing core: %v", err)
 	}
@@ -145,7 +176,7 @@ func TestServiceDescriptorIsConsistent(t *testing.T) {
 	names, ports := map[string]bool{}, map[int]bool{}
 	services := serviceDescriptors()
 	for _, svc := range services {
-		if names[svc.Name] || ports[svc.Port] || svc.Binary == "" || svc.DataDir != svc.Name+".db" || svc.Port < 1024 {
+		if names[svc.Name] || ports[svc.Port] || svc.Binary == "" || svc.DataDir != svc.Name || filepath.Ext(svc.DataDir) != "" || len(svc.Env) == 0 || svc.Port < 1024 {
 			t.Fatalf("invalid service: %+v", svc)
 		}
 		names[svc.Name], ports[svc.Port] = true, true
@@ -175,7 +206,7 @@ func TestProcessEnvironmentContainsOnlyDeclaredValues(t *testing.T) {
 	svc := profileServices("minimal")[1]
 	svc.Env = []string{"DECLARED_TEST_VALUE"}
 	env := strings.Join(processEnv(svc, profileServices("minimal"), "data"), "\n")
-	if strings.Contains(env, "synthetic-private") || !strings.Contains(env, "DECLARED_TEST_VALUE=allowed") || !strings.Contains(env, "HUB_SPAWN_CONTROLLER_URL=http://127.0.0.1:9201") || strings.Contains(env, "HUB_TOOL_HUB_URL=") || !strings.Contains(env, "harness-runtime.db") {
+	if strings.Contains(env, "synthetic-private") || !strings.Contains(env, "DECLARED_TEST_VALUE=allowed") || !strings.Contains(env, "HUB_SPAWN_CONTROLLER_URL=http://127.0.0.1:9201") || strings.Contains(env, "HUB_TOOL_HUB_URL=") || !strings.Contains(env, "harness-runtime.db") || !strings.Contains(env, "HUB_DATA_DIR="+filepath.Join("data", "harness-runtime")) {
 		t.Fatalf("environment wiring: %s", env)
 	}
 }
