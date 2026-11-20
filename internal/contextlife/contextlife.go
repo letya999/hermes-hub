@@ -88,12 +88,21 @@ func Backup(home, user, out string, spoolDir string) error {
 			return err
 		}
 	}
-	toolhub := filepath.Join(absHome, "runtime", "toolhub", "store.json")
-	if _, err := os.Stat(toolhub); err == nil {
-		includes = append(includes, "toolhub")
-		if err := addFile(zipw, hashes, "runtime/toolhub/store.json", toolhub, absHome); err != nil {
-			_ = zipw.Close()
-			return err
+	// Both store files travel together: after the SQLite cutover a space may
+	// hold store.db, store.json or both, and the import side re-resolves the
+	// authoritative path (SPEC-0090 R5.1).
+	toolhubIncluded := false
+	for _, name := range []string{"store.db", "store.json"} {
+		toolhub := filepath.Join(absHome, "runtime", "toolhub", name)
+		if _, err := os.Stat(toolhub); err == nil {
+			if !toolhubIncluded {
+				includes = append(includes, "toolhub")
+				toolhubIncluded = true
+			}
+			if err := addFile(zipw, hashes, "runtime/toolhub/"+name, toolhub, absHome); err != nil {
+				_ = zipw.Close()
+				return err
+			}
 		}
 	}
 	if spoolDir != "" {
@@ -287,9 +296,12 @@ func Restore(home, user, archive, spoolDir string) error {
 			return err
 		}
 	}
-	srcTool := filepath.Join(staging, "runtime", "toolhub", "store.json")
-	if _, err := os.Stat(srcTool); err == nil {
-		dest := filepath.Join(absHome, "runtime", "toolhub")
+	dest := filepath.Join(absHome, "runtime", "toolhub")
+	for _, name := range []string{"store.db", "store.json"} {
+		srcTool := filepath.Join(staging, "runtime", "toolhub", name)
+		if _, err := os.Stat(srcTool); err != nil {
+			continue
+		}
 		if err := os.MkdirAll(dest, 0700); err != nil {
 			return err
 		}
@@ -297,7 +309,7 @@ func Restore(home, user, archive, spoolDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dest, "store.json"), body, 0600); err != nil { // #nosec G703 -- operator-managed context root
+		if err := os.WriteFile(filepath.Join(dest, name), body, 0600); err != nil { // #nosec G703 -- operator-managed context root
 			return err
 		}
 	}

@@ -42,7 +42,10 @@ func renderRevisionEnvironment(dir, root, environment, revision string) error {
 // deploy that follows already finds matching state.
 func migrateToolhubBindings(dir string, s stack.Settings) error {
 	manifest := stack.ExpectedToolManifest(s)
-	storePath := api.ResolveStorePath(filepath.Join(dir, "runtime", "toolhub"))
+	// A managed space's ToolHub state lives in the infra sibling's runtime
+	// dir — resolving only the caller's own root would miss the live store
+	// (SPEC-0090 R5.1).
+	storePath := api.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
 	if _, err := os.Stat(storePath); err != nil {
 		if os.IsNotExist(err) {
 			return nil

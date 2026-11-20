@@ -11,9 +11,10 @@ import (
 // the JSON path is returned, existing or not.
 func ResolveStorePath(dir string) string {
 	jsonPath := filepath.Join(dir, "store.json")
-	if _, err := os.Stat(filepath.Join(dir, "store.db")); err == nil { // #nosec G703 -- dir is the operator's ToolHub state root.
+	dbPath := filepath.Join(dir, "store.db")
+	if info, err := os.Stat(dbPath); err == nil && info.Mode().IsRegular() { // #nosec G703 -- dir is the operator's ToolHub state root.
 		if _, err := os.Stat(jsonPath); os.IsNotExist(err) { // #nosec G703 -- same state root.
-			return filepath.Join(dir, "store.db")
+			return dbPath
 		}
 	}
 	return jsonPath

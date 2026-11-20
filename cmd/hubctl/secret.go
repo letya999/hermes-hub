@@ -15,6 +15,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -76,7 +77,7 @@ func runSecret(_ context.Context, args []string) error {
 	}
 	svc.Audit = ledger
 	if *toolHubStore == "" {
-		*toolHubStore = filepath.Join(absDir, "runtime", "toolhub", "store.json")
+		*toolHubStore = api.ResolveStorePath(filepath.Join(absDir, "runtime", "toolhub"))
 	}
 	if !filepath.IsAbs(*toolHubStore) {
 		*toolHubStore, err = filepath.Abs(*toolHubStore)

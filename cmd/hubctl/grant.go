@@ -39,7 +39,7 @@ func runGrant(_ context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		*storePath = filepath.Join(absDir, "runtime", "toolhub", "store.json")
+		*storePath = api.ResolveStorePath(filepath.Join(absDir, "runtime", "toolhub"))
 	}
 	if !filepath.IsAbs(*storePath) {
 		abs, err := filepath.Abs(*storePath)

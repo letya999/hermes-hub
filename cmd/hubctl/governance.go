@@ -55,7 +55,7 @@ func runGovernance(_ context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			*storePath = filepath.Join(absDir, "runtime", "toolhub", "store.json")
+			*storePath = api.ResolveStorePath(filepath.Join(absDir, "runtime", "toolhub"))
 		}
 		*govPath = toolhub.GovernanceStorePath(*storePath)
 	}
