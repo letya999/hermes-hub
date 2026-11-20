@@ -26,6 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/importer"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
 	"github.com/letya999/hermes-hub/shared/httpapi"
 	"github.com/letya999/hermes-hub/shared/proctree"
@@ -308,6 +309,26 @@ func Serve(ctx context.Context) error {
 		Store: serviceStore, Backend: be,
 		Image: runtimeDefaultImage, OCIRuntime: "runc", MaxLive: max,
 	}
+	revisions := &spawn.Revisions{
+		Store:       serviceStore,
+		LoadCatalog: catalogLoader(catalog.LoadPinned),
+	}
+	// One-time v0 import (D5): enabled by HUB_IMPORT_V0_DIR it runs once
+	// before the socket opens, while the spawn store still holds none of
+	// the v0 space rows. The report is stdout-safe: counts and ids only.
+	if v0Dir := os.Getenv("HUB_IMPORT_V0_DIR"); v0Dir != "" {
+		report, err := (&importer.Importer{Revisions: revisions, Store: serviceStore}).Run(ctx, importer.Config{
+			V0Dir:     v0Dir,
+			SpacesDir: os.Getenv("HUB_IMPORT_SPACES_DIR"),
+			DryRun:    os.Getenv("HUB_IMPORT_DRY_RUN") == "true",
+		})
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return err
+		}
+	}
 	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be}
 	// Boot recovery is one reconcile pass before the socket opens: runtime
 	// rows this process left behind are re-anchored against the backend.
@@ -319,10 +340,7 @@ func Serve(ctx context.Context) error {
 	go sweeper.Run(sweepCtx, sweepEvery)
 	controller := &Controller{
 		runtimes: runtimes, token: token,
-		spaces: spawnv1.Handler(Contract{Revisions: &spawn.Revisions{
-			Store:       serviceStore,
-			LoadCatalog: catalogLoader(catalog.LoadPinned),
-		}}, token),
+		spaces: spawnv1.Handler(Contract{Revisions: revisions}, token),
 		client: &http.Client{Timeout: 60 * time.Second},
 	}
 	listener, err := net.Listen("tcp", listen)

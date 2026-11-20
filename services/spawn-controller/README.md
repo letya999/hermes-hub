@@ -18,8 +18,11 @@ the service's own — no runtime state lives in memory.
 - `PassportRevision` - one submitted layer document set and its lifecycle;
   `pruned` is the retention tombstone past the keep slack.
 - `EffectiveSpec` - the immutable compiled bundle the active layers produce,
-  keyed by content digest and served to consumers as policy slices.
+  keyed by content digest and served to consumers as policy slices; its
+  per-leaf layer attribution is stored with it and served by `explain`.
 - `Lease` - one hold row on a runtime; the lease count is the row count.
+- `Backup` - one space's backup bookkeeping row imported from the v0
+  supervisor (last success/error, archive, retention, last drill).
 
 ## Does not own
 
@@ -41,6 +44,7 @@ the service's own — no runtime state lives in memory.
 | `POST /v1/spaces/{space}/activations` | cut a revision set (one or more ids, at most one per layer) in one transaction; the would-be active set must compile or nothing moves | write | `idempotency_key` |
 | `GET /v1/spaces/{space}/revisions?layer=` | list revisions, optionally by layer | read | - |
 | `GET /v1/spaces/{space}/effective` | the active layers' compiled spec | read | - |
+| `GET /v1/spaces/{space}/explain?org=&owner=` | per-leaf provenance of the effective spec: value plus the layer that set it | read | - |
 | `GET /v1/spaces/{space}/policy/{service}?digest=` | immutable policy slice for one consumer | read | - |
 
 `/v1/spaces*` is the spawn/v1 contract (`contracts/spawn/v1`): tenant
@@ -84,13 +88,14 @@ a restarted controller recovers its runtimes from the rows.
 
 `internal/spawn/migrations` creates `spawn-controller.db` on open:
 `spaces` (with `environment`, `effective_digest`), `passport_revisions` +
-`_history`, `effective_specs`, `runtimes` + `_history` (with `generation`,
-`policy_digest`, `image_digest`, `backend_id`, `address`), `leases`,
-`workers` + `_history`, `image_pins`; every tenant-owned table carries
-`org` and `owner`. `spaces`, `passport_revisions` and `effective_specs`
-serve the spawn/v1 contract; `runtimes` and `leases` serve the message
-path and `/v1/runtimes`. `workers` and `image_pins` are not yet wired
-(S5+).
+`_history`, `effective_specs` (with `attribution`), `runtimes` + `_history`
+(with `generation`, `policy_digest`, `image_digest`, `backend_id`,
+`address`), `leases`, `workers` + `_history`, `image_pins`, `backups`;
+every tenant-owned table carries `org` and `owner`. `spaces`,
+`passport_revisions` and `effective_specs` serve the spawn/v1 contract;
+`runtimes` and `leases` serve the message path and `/v1/runtimes`.
+`image_pins` and `backups` receive the v0 import; `workers` is not yet
+wired.
 
 ## Environment
 
@@ -107,12 +112,39 @@ path and `/v1/runtimes`. `workers` and `image_pins` are not yet wired
 | `HUB_MANAGED_MODEL_URL` | - | passed through to spawned runtimes |
 | `HUB_MANAGED_MODEL_ID` | - | passed through to spawned runtimes |
 | `HUB_FEATURES` | - | passed through to spawned runtimes |
+| `HUB_IMPORT_V0_DIR` | - | v0 control directory (`supervisor.json`, `backups.json`, the journals); empty disables the one-time import |
+| `HUB_IMPORT_SPACES_DIR` | - | v0 spaces root holding `generated/passports/current` and `generated/image-pins.json` per space |
+| `HUB_IMPORT_DRY_RUN` | `false` | `true` prints the import report (counts and ids only) and writes nothing |
 
 Only the three pass-through names plus `TZ` reach spawned children from the
 operator environment; the controller itself sets `HUB_TRUSTED`,
 `HUB_SERVICE`, `HUB_LISTEN`, `HUB_DATA_DIR`, `HUB_DATABASE_URL` and
 `HUB_SERVICE_TOKEN` on each child. Runtime binaries are resolved next to the
 controller's own binary.
+
+## v0 import
+
+With `HUB_IMPORT_V0_DIR` set the importer runs once at startup, before the
+socket opens, only while the spawn store holds none of the v0 space rows —
+a second start is a no-op. It reads the v0 files, never writes them:
+
+- each discovered space -> a `spaces` row (org `local`, owner = space name)
+  plus one `active` user-layer revision and its effective spec, imported
+  through the same Submit/Validate/Activate path a client uses — the
+  emitted revision is re-layered as authored content (envelope,
+  `workspace.tree` and the pinned `tools.core.platform` dropped), so the
+  imported spec is a real compile, not a copy;
+- `generated/image-pins.json` -> `image_pins` rows;
+- `backups.json` -> `backups` rows;
+- v0 runtimes are NOT imported as live rows (they are v0 processes this
+  service does not own); a generation baseline per (space, agent) keeps
+  new generations monotonic;
+- `transitions.jsonl` and `signals.jsonl` are counted in the report and
+  dropped: no reader exists in this milestone (S3 — no table without a
+  reader).
+
+`HUB_IMPORT_DRY_RUN=true` prints the same report — counts and ids only,
+no document contents — and writes nothing.
 
 ## Extension point
 
