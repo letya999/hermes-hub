@@ -54,6 +54,17 @@ keeps working through the new service.
    is `runsc` (X6), before touching disk.
 9. Lease count, warm/busy and "apply in progress" are derived from rows, never
    stored flags (F5).
+10. Warm pool (decided at S4). Mounts are fixed when a container starts and a
+    runtime mounts only its own space's workspace (X2), so an unbound
+    pre-started pool is impossible. The pool is the set of `warm` runtime
+    rows keyed by (org, owner, space, agent, policy digest, image digest):
+    the claim that starts a runtime binds tenant and digests for that
+    generation, and a later claim reuses a warm row only on an exact key
+    match. Nothing warm is ever handed to another tenant, space, policy or
+    image. A new activation drains every runtime bound to the old digest.
+11. Effective digest pointer (decided at S4). Activation stores the effective
+    digest on the space row in the same transaction; readers and claims use
+    the stored digest and never recompile on the hot path.
 
 ## Slices
 
