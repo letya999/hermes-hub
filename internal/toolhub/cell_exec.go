@@ -214,7 +214,12 @@ func (c *genericController) execInWorker(ctx context.Context, held *heldWorker, 
 		}
 		command = cellToolsetGuest + "/" + strconv.Itoa(idx) + req.Command
 	}
-	res, err := c.spawn.ExecWorker(ctx, held.id, spawnv1.WorkerExecRequest{
+	// The call's deadline follows the exec's own bound plus margin for the
+	// server round trip — the HTTP client carries no fixed timeout, so the
+	// deadline is what actually bounds the call.
+	execCtx, cancel := context.WithTimeout(ctx, timeout+15*time.Second)
+	defer cancel()
+	res, err := c.spawn.ExecWorker(execCtx, held.id, spawnv1.WorkerExecRequest{
 		Org: spawnOrg, Owner: held.principal, Lease: held.lease,
 		Argv:      append([]string{command}, req.Args...),
 		Env:       env,

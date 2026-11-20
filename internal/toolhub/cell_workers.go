@@ -49,6 +49,15 @@ type workerMetrics struct {
 // the same constant the v0 importer scopes spaces under.
 const spawnOrg = "local"
 
+// spawnClaimBound caps one worker claim: a fresh start can take the
+// worker's start budget plus pull/settle time, and the caller's context
+// may carry no deadline at all.
+const spawnClaimBound = 90 * time.Second
+
+// spawnCallBound caps every other contract call — renew, release, drain
+// and the post-exec sweep — none may outlive a wedged server.
+const spawnCallBound = 30 * time.Second
+
 // spawnClaim builds the worker claim from the admitted request: the reuse
 // key the warm tiers computed, the resolved image and the full cell shape
 // the service declares on the worker spec.
@@ -85,13 +94,22 @@ func (c *genericController) spawnClaim(req api.CliExecRequest, image, key string
 			EnvName: cred.EnvName, Host: cred.Host, Prefix: cred.Prefix, Value: cred.Value,
 		})
 	}
+	if scope == "binding" {
+		// Binding workspaces send the id only: the controller derives the
+		// host path under its own state root — a host path from ToolHub's
+		// filesystem namespace cannot be trusted there.
+		claim.Workspace.Path = ""
+	}
 	return claim
 }
 
 // claimWorker asks spawn-controller for a ready worker and wraps the
-// granted lease in the held handle.
+// granted lease in the held handle. The claim gets its own deadline — a
+// fresh cell start is bounded work, never a hang on the caller's ctx.
 func (c *genericController) claimWorker(ctx context.Context, req api.CliExecRequest, image, key string, toolset []string) (*heldWorker, error) {
-	out, err := c.spawn.ClaimWorker(ctx, req.Principal, c.spawnClaim(req, image, key, toolset))
+	claimCtx, cancel := context.WithTimeout(ctx, spawnClaimBound)
+	defer cancel()
+	out, err := c.spawn.ClaimWorker(claimCtx, req.Principal, c.spawnClaim(req, image, key, toolset))
 	if err != nil {
 		return nil, err
 	}
@@ -114,114 +132,119 @@ var errWorkerGone = errors.New("worker lease lost")
 
 // heldWorkerFor returns the warm worker for key, reusing the held lease or
 // claiming a new generation — the v0 warmCell flow over the contract. A
-// held worker the server drained is forgotten and re-claimed.
+// held worker the server drained is forgotten and re-claimed. Claims are
+// single-flight per key: a concurrent caller waits on the in-flight claim
+// and joins the held worker instead of racing a second claim at the
+// server (a mid-exec worker must never see a probe it didn't earn).
 func (c *genericController) heldWorkerFor(ctx context.Context, req api.CliExecRequest, image, key string, toolset []string) (*heldWorker, error) {
-	c.mu.Lock()
-	held := c.held[key]
-	c.mu.Unlock()
-	if held != nil {
+	for {
+		c.mu.Lock()
+		held := c.held[key]
+		c.mu.Unlock()
+		if held != nil {
+			select {
+			case held.execSlot <- struct{}{}:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			renewCtx, cancel := context.WithTimeout(ctx, spawnCallBound)
+			_, err := c.spawn.RenewWorker(renewCtx, held.id, spawnv1.WorkerLeaseRequest{Org: spawnOrg, Owner: req.Principal, Lease: held.lease})
+			cancel()
+			if err != nil {
+				<-held.execSlot
+				if errors.Is(err, httpapi.ErrNotFound) || errors.Is(err, httpapi.ErrForbidden) {
+					c.mu.Lock()
+					if c.held[key] == held {
+						delete(c.held, key)
+					}
+					c.mu.Unlock()
+					continue
+				}
+				return nil, fmt.Errorf("%w: worker renew: %v", api.ErrIsolation, err)
+			}
+			c.mu.Lock()
+			c.workerMetrics.reuses++
+			c.mu.Unlock()
+			return held, nil
+		}
+		// One claim per key at a time: the loser waits on the flight and
+		// loops into the held path above.
+		c.mu.Lock()
+		if c.flights == nil {
+			c.flights = map[string]chan struct{}{}
+		}
+		if wait, flying := c.flights[key]; flying {
+			c.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		c.flights[key] = done
+		c.mu.Unlock()
+		// Cap the held table like the v0 warm cap: evict the oldest idle
+		// worker (release drains it server-side) before claiming past it.
+		capN := c.config.MaxActive
+		if capN < 4 {
+			capN = 4
+		}
+		c.mu.Lock()
+		for len(c.held) >= capN {
+			var oldest *heldWorker
+			for _, member := range c.held {
+				select {
+				case member.execSlot <- struct{}{}:
+					<-member.execSlot
+					if oldest == nil || member.lastUse.Before(oldest.lastUse) {
+						oldest = member
+					}
+				default:
+				}
+			}
+			if oldest == nil {
+				break
+			}
+			delete(c.held, oldest.key)
+			go c.releaseHeld(oldest, "evicted-capacity") // #nosec G118 -- worker eviction intentionally outlives the caller context
+		}
+		full := len(c.held) >= capN
+		c.mu.Unlock()
+		if full {
+			c.mu.Lock()
+			delete(c.flights, key)
+			close(done)
+			c.mu.Unlock()
+			return nil, fmt.Errorf("%w: cli cell table is full", api.ErrIsolation)
+		}
+		waiting := time.Now()
+		held, err := c.claimWorker(ctx, req, image, key, toolset)
+		c.mu.Lock()
+		c.workerMetrics.claimWaitNanos += time.Since(waiting).Nanoseconds()
+		if err == nil {
+			// Register before the flight closes: a waiter that wakes
+			// must see the worker in the table, never re-claim.
+			c.held[key] = held
+			c.workerMetrics.creates++
+		}
+		delete(c.flights, key)
+		close(done)
+		c.mu.Unlock()
+		if err != nil {
+			c.evictToolbox(req.ToolboxID)
+			return nil, fmt.Errorf("%w: worker claim: %v", api.ErrIsolation, err)
+		}
+		// The caller's deferred release expects the slot held for the
+		// whole exec — take it here, mirroring the reuse path.
 		select {
 		case held.execSlot <- struct{}{}:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		if _, err := c.spawn.RenewWorker(ctx, held.id, spawnv1.WorkerLeaseRequest{Org: spawnOrg, Owner: req.Principal, Lease: held.lease}); err != nil {
-			<-held.execSlot
-			if errors.Is(err, httpapi.ErrNotFound) || errors.Is(err, httpapi.ErrForbidden) {
-				c.mu.Lock()
-				if c.held[key] == held {
-					delete(c.held, key)
-				}
-				c.mu.Unlock()
-				return c.heldWorkerFor(ctx, req, image, key, toolset)
-			}
-			return nil, fmt.Errorf("%w: worker renew: %v", api.ErrIsolation, err)
-		}
-		c.mu.Lock()
-		c.workerMetrics.reuses++
-		c.mu.Unlock()
 		return held, nil
 	}
-	// Cap the held table like the v0 warm cap: evict the oldest idle
-	// worker (release drains it server-side) before claiming past it.
-	capN := c.config.MaxActive
-	if capN < 4 {
-		capN = 4
-	}
-	c.mu.Lock()
-	for len(c.held) >= capN {
-		var oldest *heldWorker
-		for _, member := range c.held {
-			select {
-			case member.execSlot <- struct{}{}:
-				<-member.execSlot
-				if oldest == nil || member.lastUse.Before(oldest.lastUse) {
-					oldest = member
-				}
-			default:
-			}
-		}
-		if oldest == nil {
-			break
-		}
-		delete(c.held, oldest.key)
-		go c.releaseHeld(oldest, "evicted-capacity") // #nosec G118 -- worker eviction intentionally outlives the caller context
-	}
-	full := len(c.held) >= capN
-	c.mu.Unlock()
-	if full {
-		return nil, fmt.Errorf("%w: cli cell table is full", api.ErrIsolation)
-	}
-	waiting := time.Now()
-	held, err := c.claimWorker(ctx, req, image, key, toolset)
-	c.mu.Lock()
-	c.workerMetrics.claimWaitNanos += time.Since(waiting).Nanoseconds()
-	c.mu.Unlock()
-	if err != nil {
-		c.evictToolbox(req.ToolboxID)
-		return nil, fmt.Errorf("%w: worker claim: %v", api.ErrIsolation, err)
-	}
-	c.mu.Lock()
-	if existing, raced := c.held[key]; raced {
-		c.mu.Unlock()
-		go c.releaseHeld(held, "superseded") // #nosec G118 -- losing claim's worker intentionally outlives the caller context
-		// The winner's exec slot still serializes execs on the shared
-		// worker; claim it before returning or the caller's deferred
-		// release would drain a slot nobody filled. The lease renews the
-		// same way the hit path does — a drained worker re-plans.
-		select {
-		case existing.execSlot <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		if _, err := c.spawn.RenewWorker(ctx, existing.id, spawnv1.WorkerLeaseRequest{Org: spawnOrg, Owner: req.Principal, Lease: existing.lease}); err != nil {
-			<-existing.execSlot
-			if errors.Is(err, httpapi.ErrNotFound) || errors.Is(err, httpapi.ErrForbidden) {
-				c.mu.Lock()
-				if c.held[key] == existing {
-					delete(c.held, key)
-				}
-				c.mu.Unlock()
-				return c.heldWorkerFor(ctx, req, image, key, toolset)
-			}
-			return nil, fmt.Errorf("%w: worker renew: %v", api.ErrIsolation, err)
-		}
-		c.mu.Lock()
-		c.workerMetrics.reuses++
-		c.mu.Unlock()
-		return existing, nil
-	}
-	c.held[key] = held
-	c.workerMetrics.creates++
-	c.mu.Unlock()
-	// The caller's deferred release expects the slot held for the whole
-	// exec — take it here, mirroring the reuse path.
-	select {
-	case held.execSlot <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return held, nil
 }
 
 // releaseHeld drops the worker lease; the last hold drains it server-side.
@@ -325,7 +348,9 @@ func (c *genericController) drainWorkers(ctx context.Context, req api.CliRelease
 		delete(c.held, key)
 	}
 	c.mu.Unlock()
-	_, _ = c.spawn.DrainWorkers(ctx, req.PrincipalID, spawnv1.DrainWorkersRequest{
+	drainCtx, cancel := context.WithTimeout(ctx, spawnCallBound)
+	defer cancel()
+	_, _ = c.spawn.DrainWorkers(drainCtx, req.PrincipalID, spawnv1.DrainWorkersRequest{
 		Org: spawnOrg, Owner: req.PrincipalID, BindingID: req.BindingID, JobID: req.JobID,
 	})
 }

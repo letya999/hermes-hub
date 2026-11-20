@@ -444,6 +444,37 @@ func TestCLIExecEnvSecretChannel(t *testing.T) {
 	}
 }
 
+// TestCLIExecClaimsSingleFlight: two concurrent warm-tier execs on the
+// same key produce one server claim — the loser waits on the claim
+// flight and joins the held worker instead of racing a second claim
+// (a mid-exec worker must never see a probe it didn't earn).
+func TestCLIExecClaimsSingleFlight(t *testing.T) {
+	c, spy := cellFixture(t, nil)
+	req := cliReq("rg", cellExecution())
+	req.Lifecycle = api.CLILifecycleBinding
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := c.execCLI(context.Background(), req)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent exec: %v", err)
+		}
+	}
+	claims, _, _ := spy.counts()
+	if claims != 1 {
+		t.Fatalf("concurrent claims raced the server: claims=%d, want 1", claims)
+	}
+}
+
 // TestCLIExecEgressClaim: an approved-egress plan forwards the allowlist in
 // the claim; the exec env carries the squid endpoint the worker reports.
 func TestCLIExecEgressClaim(t *testing.T) {

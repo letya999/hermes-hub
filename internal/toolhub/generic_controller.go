@@ -61,8 +61,12 @@ type genericController struct {
 	// nil when HUB_SPAWN_URL is unset — cells refuse, ToolHive MCP keeps
 	// serving (V5). held maps warm keys to claimed workers whose leases
 	// ToolHub keeps between execs; workerMetrics backs /cli-metrics.
-	spawn         spawnv1.Client
-	held          map[string]*heldWorker
+	spawn spawnv1.Client
+	held  map[string]*heldWorker
+	// flights single-flights worker claims per warm key: a second caller
+	// waits on the in-flight claim and then joins the held worker rather
+	// than racing a duplicate claim at the server.
+	flights       map[string]chan struct{}
 	workerMetrics workerMetrics
 	cellInitOK    bool            // cellinit seeded into the state root for sibling binds
 	runtimes      map[string]bool // daemon runtime list, cached after first read
@@ -221,9 +225,11 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	// Cells run through spawn-controller when HUB_SPAWN_URL points at one
 	// (V5); the worker contract carries the same bearer token pattern the
-	// controller's own surface uses.
+	// controller's own surface uses. The HTTP client carries no fixed
+	// timeout — a CLI call runs as long as its plan's exec bound, so each
+	// call site supplies its own context deadline instead.
 	if url := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); url != "" {
-		controller.spawn = spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), nil)
+		controller.spawn = spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), &http.Client{})
 	}
 	return controller, nil
 }

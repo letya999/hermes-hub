@@ -22,7 +22,6 @@ const (
 	cellUserTmpGuest = "/usertmp"
 	cellToolsetGuest = "/tools"
 	credProxyPort    = 3129
-	cellProxyPort    = 3128
 )
 
 // cellWarmKey computes the reuse key a lifecycle tier implies; empty means
