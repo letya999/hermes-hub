@@ -115,20 +115,31 @@ crash counters.
 
 | From | Event | To | Deadline / next actor |
 |---|---|---|---|
-| absent | claim for an admitted job | starting | start budget; backend |
-| starting | readiness probe passes | warm | idle TTL; sweeper |
-| starting | budget exceeded or probe fails | failed | operator or reconciler |
-| warm | lease row created | busy | - |
-| busy | last lease row removed | warm | - |
-| warm | idle TTL or policy digest revoked | draining | stop budget; backend |
-| draining | inspect confirms stop | absent | final for this generation |
-| any | stop not confirmed | quarantined | operator |
-| any | inspect finds nothing | missing | reconciler |
-| failed, quarantined, missing | removal confirmed | absent | - |
+| - | claim for an admitted job | starting | start budget 30s, deadline `fail`; backend probe, sweeper backstop |
+| starting | `ready` (probe passes) | warm | idle TTL 15m, deadline `drain`; sweeper |
+| starting | `fail` (budget exceeded or probe fails) | failed | retention 24h, deadline `removed`; sweeper (operator or reconciler) |
+| warm | `lease` (lease row created) | busy | hold bound 2h, deadline `drain`; sweeper |
+| busy | `unlease` (last lease row removed) | warm | idle TTL 15m, deadline `drain`; sweeper |
+| warm | `drain` (idle TTL or policy digest revoked) | draining | stop budget 30s, deadline `quarantine`; backend confirms stop, sweeper backstop |
+| busy | `drain` (hold bound passed) | draining | stop budget 30s, deadline `quarantine`; sweeper |
+| draining | `stopped` (inspect confirms stop) | absent | final for this generation |
+| any non-final | `quarantine` (stop not confirmed) | quarantined | retention 24h, deadline `removed`; sweeper (operator) |
+| any non-final | `missing` (inspect finds nothing) | missing | retention 24h, deadline `removed`; sweeper (reconciler) |
+| failed, quarantined, missing | `removed` (removal confirmed) | absent | final |
 
 Every `starting` increments the generation (`gen` in run tokens). The
 lease count is the number of lease rows. Worker follows the same table
-without `warm`.
+without `warm`: `ready` lands `busy`, `unlease` and `drain` both leave
+`busy` for `draining`.
+
+S1 implementation notes (`services/spawn-controller/internal/spawn`,
+verified 2026-11-20): `absent` is final per generation — a claim creates
+a new-generation row in `starting`, it is not an edge out of `absent`.
+"any" fans out to every non-final state except the edge's own target. A
+`busy` hold that outlives its bound drains — the timed-out hold's runtime
+is reclaimed, not returned dirty to the warm pool; S4 makes lease renewal
+re-arm the bound and draining remove the lease rows in the same
+transaction.
 
 ### v1 skeleton (spawn-controller)
 
@@ -173,15 +184,26 @@ on.
 
 | From | Event | To | Deadline / next actor |
 |---|---|---|---|
-| - | passports submitted for a layer | draft | draft TTL; sweeper removes |
-| draft | compiler validates | validated | - |
-| draft | compiler rejects | rejected | final |
-| validated | activate (compare-and-set on the current active) | active | - |
-| active | a newer revision activates | superseded | final unless reactivated |
-| superseded | rollback activates it | active | - |
+| - | passports submitted for a layer | draft | draft TTL 10m, deadline `expire`; sweeper removes |
+| draft | `validate` (compiler validates) | validated | activation window 1h, deadline `expire`; sweeper |
+| draft | `reject` (compiler rejects) | rejected | final |
+| draft | `expire` (draft TTL passed) | rejected | final |
+| validated | `activate` (compare-and-set on the current active) | active | bound 30d, deadline `retain` (self-loop re-arm); owner activates a newer revision |
+| validated | `expire` (never activated) | rejected | final |
+| active | `supersede` (a newer revision activates) | superseded | bound 30d, deadline `retain` (self-loop re-arm); owner rolls back |
+| superseded | `activate` (rollback activates it) | active | bound 30d, deadline `retain` (self-loop re-arm) |
+| active, superseded | `retain` (bound passed, nothing else acted) | same state | re-arm only; `active` and `superseded` never expire |
 
 Rollback is activation of an older revision. Readers fetch a slice by
 digest; there is no `pending` pointer and no journal file.
+
+S1 implementation notes (`services/spawn-controller/internal/spawn`,
+verified 2026-11-20): `active` is the space's only live policy and
+`superseded` is the rollback target (v0 `RestoreCurrent`), so the sweeper
+must never tombstone either — the `retain` self-loop only re-arms their
+bound and writes history. Pruning old superseded revisions is an explicit
+count-based action (S2), never the sweeper. `rejected` is the only
+tombstone.
 
 ## ChannelLink
 

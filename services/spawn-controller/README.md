@@ -42,8 +42,19 @@ The durable v1 machines exist in `internal/spawn` on `shared/fsm` —
 `PassportRevisionMachine` (draft, validated, active, superseded, rejected),
 `RuntimeMachine` (starting, warm, busy, draining, failed, quarantined,
 missing, absent) and `WorkerMachine` (the runtime table without warm).
-They match the target tables in `docs/state-machines.md`, carry a deadline
-per non-final state and are not yet wired to HTTP (S4).
+They match the target tables in `docs/state-machines.md` and are not yet
+wired to HTTP (S4).
+
+Deadline per non-final state — revision: `draft` expires to `rejected`
+(10m), `validated` expires to `rejected` (1h), `active` and `superseded`
+re-arm only (30d `retain` self-loop — the sweeper never tombstones the
+live policy or a rollback target). Runtime: `starting` fails (30s),
+`warm` drains (15m idle TTL), `busy` drains (2h hold bound — S4: lease
+renewal re-arms it; draining removes lease rows in the same transaction),
+`draining` quarantines (30s stop budget), `failed`/`quarantined`/`missing`
+are `removed` after 24h retention. `absent` is final per generation: a
+claim creates a new-generation row. "any" edges fan out to every non-final
+state except the edge's own target.
 
 ## Tables
 
