@@ -91,9 +91,9 @@ func checkTable(t *testing.T, m *fsm.Machine, cases []struct {
 }
 
 // The revision machine: draft, validated, rejected, active, superseded.
-// Rollback is an activate on a superseded row; expire is the sweeper's
-// retention event — the doc's "-" deadline cells still need a bound under
-// shared/fsm, and rejected is the revision tombstone.
+// Rollback is an activate on a superseded row; expire tombstones stale
+// drafts and unactivated validated rows, while retain is the sweeper's
+// self-loop that keeps active and superseded alive forever.
 func TestPassportRevisionTransitions(t *testing.T) {
 	checkTable(t, spawn.PassportRevisionMachine, []struct {
 		path  []string
@@ -106,14 +106,101 @@ func TestPassportRevisionTransitions(t *testing.T) {
 		{[]string{"validate"}, "activate", "active"},
 		{[]string{"validate"}, "expire", "rejected"},
 		{[]string{"validate", "activate"}, "supersede", "superseded"},
-		{[]string{"validate", "activate"}, "expire", "rejected"},
+		{[]string{"validate", "activate"}, "retain", "active"},
 		{[]string{"validate", "activate", "supersede"}, "activate", "active"},
-		{[]string{"validate", "activate", "supersede"}, "expire", "rejected"},
+		{[]string{"validate", "activate", "supersede"}, "retain", "superseded"},
 	}, map[string][]string{
-		"validated":  {"supersede", "reject", "validate"},
-		"rejected":   {"validate", "activate", "expire", "supersede"},
-		"active":     {"validate", "reject", "activate"},
-		"superseded": {"validate", "reject", "supersede"},
+		"validated":  {"supersede", "reject", "validate", "retain"},
+		"rejected":   {"validate", "activate", "expire", "supersede", "retain"},
+		"active":     {"validate", "reject", "activate", "expire"},
+		"superseded": {"validate", "reject", "supersede", "expire"},
+	})
+}
+
+// history events of id in seq order.
+func history(t *testing.T, s *store.Store, m *fsm.Machine, id string) []string {
+	t.Helper()
+	var events []string
+	err := s.Tx(t.Context(), func(tx *store.Tx) error {
+		rows, err := tx.Scoped(tenant).Query("SELECT event FROM "+m.History+" WHERE {tenant} AND id = ? ORDER BY seq", id)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e string
+			if err := rows.Scan(&e); err != nil {
+				return err
+			}
+			events = append(events, e)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		t.Fatalf("history %s: %v", id, err)
+	}
+	return events
+}
+
+// An active revision is the space's only live policy: the sweeper must never
+// tombstone it. Past every deadline the only event it fires is retain, which
+// re-arms the bound and leaves the state untouched.
+func TestActiveRevisionNeverExpires(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		s := storetest.Open(t, url, migrations.FS)
+		m := spawn.PassportRevisionMachine
+		create(t, s, m, "r1")
+		for _, event := range []string{"validate", "activate"} {
+			if err := transition(t, s, m, "r1", event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		past := t0.Add(365 * 24 * time.Hour)
+		if _, err := fsm.Sweep(t.Context(), s, m, past, 10); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if state, _ := read(t, s, m, "r1"); state != "active" {
+			t.Fatalf("active revision swept to %q — the space lost its live policy", state)
+		}
+		want := []string{"create", "validate", "activate", "retain"}
+		got := history(t, s, m, "r1")
+		if len(got) != len(want) {
+			t.Fatalf("history %v, want %v", got, want)
+		}
+		for i, e := range want {
+			if got[i] != e {
+				t.Fatalf("history %v, want %v", got, want)
+			}
+		}
+	})
+}
+
+// Rollback replaces v0 RestoreCurrent: a superseded revision stays
+// activatable no matter how old it gets — the sweeper retains it, it never
+// expires.
+func TestSupersededRevisionStaysRollbackable(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		s := storetest.Open(t, url, migrations.FS)
+		m := spawn.PassportRevisionMachine
+		create(t, s, m, "r2")
+		for _, event := range []string{"validate", "activate", "supersede"} {
+			if err := transition(t, s, m, "r2", event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		past := t0.Add(365 * 24 * time.Hour)
+		if _, err := fsm.Sweep(t.Context(), s, m, past, 10); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if state, _ := read(t, s, m, "r2"); state != "superseded" {
+			t.Fatalf("superseded revision swept to %q — rollback is gone", state)
+		}
+		if err := transition(t, s, m, "r2", "activate"); err != nil {
+			t.Fatalf("rollback a year later: %v", err)
+		}
+		if state, _ := read(t, s, m, "r2"); state != "active" {
+			t.Fatalf("rolled back revision is %q, want active", state)
+		}
 	})
 }
 

@@ -18,11 +18,13 @@ import (
 
 // PassportRevisionMachine is the revision lifecycle: draft -> validated ->
 // active -> superseded, rollback reactivates a superseded revision, and
-// rejected is the final tombstone. The doc's only terminal state is
-// rejected, so the retention sweep lands there too: expire is the sweeper's
-// event for a revision whose bound passed — the draft TTL the doc names,
-// an activation window on validated, the revision lifetime on active
-// (refresh must supersede it first) and the rollback window on superseded.
+// rejected is the final tombstone. The doc's "-" cells get fsm deadlines:
+// expire sweeps an uncompiled draft (the doc's draft TTL) or a validated
+// revision never activated, while retain is a self-loop that only re-arms
+// the bound — an active revision is the space's only live policy and a
+// superseded one is the rollback target (v0 RestoreCurrent), so the sweeper
+// must never tombstone either. Pruning old superseded rows is an explicit
+// count-based S2 action, never the sweeper.
 var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 	Table:   "passport_revisions",
 	History: "passport_revisions_history",
@@ -34,15 +36,15 @@ var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 		{From: "validated", Event: "activate", To: "active"},
 		{From: "validated", Event: "expire", To: "rejected"},
 		{From: "active", Event: "supersede", To: "superseded"},
-		{From: "active", Event: "expire", To: "rejected"},
+		{From: "active", Event: "retain", To: "active"},
 		{From: "superseded", Event: "activate", To: "active"},
-		{From: "superseded", Event: "expire", To: "rejected"},
+		{From: "superseded", Event: "retain", To: "superseded"},
 	},
 	Deadlines: map[string]fsm.Deadline{
 		"draft":      {After: 10 * time.Minute, Event: "expire"},   // draft TTL; sweeper removes an uncompiled draft
 		"validated":  {After: time.Hour, Event: "expire"},          // activation window on a never-activated revision
-		"active":     {After: 30 * 24 * time.Hour, Event: "expire"}, // revision lifetime; refresh supersedes before it
-		"superseded": {After: 24 * time.Hour, Event: "expire"},     // rollback-window retention, then tombstone
+		"active":     {After: 30 * 24 * time.Hour, Event: "retain"}, // re-arm only; next actor is a newer activation
+		"superseded": {After: 30 * 24 * time.Hour, Event: "retain"}, // re-arm only; next actor is a rollback
 	},
 }))
 
@@ -85,6 +87,7 @@ var RuntimeMachine = must(fsm.New(fsm.Machine{
 	Deadlines: map[string]fsm.Deadline{
 		"starting":    {After: 30 * time.Second, Event: "fail"},       // start budget; backend probe result
 		"warm":        {After: 15 * time.Minute, Event: "drain"},      // idle TTL; sweeper
+		// S4: lease renewal re-arms this bound; draining a runtime removes its lease rows in the same transaction.
 		"busy":        {After: 2 * time.Hour, Event: "drain"},         // hold bound; sweeper reclaims a stuck busy
 		"draining":    {After: 30 * time.Second, Event: "quarantine"}, // stop budget; unconfirmed stop quarantines
 		"failed":      {After: 24 * time.Hour, Event: "removed"},      // retention; reconciler or operator confirms
