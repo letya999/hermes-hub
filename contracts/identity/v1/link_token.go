@@ -3,7 +3,7 @@ package identity
 import (
 	"time"
 
-	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/auth"
 )
 
 const ChannelLinkAudience = "identity-channel-link"
@@ -21,9 +21,9 @@ type LinkClaims struct {
 
 func VerifyLinkToken(token string, keys []PublicSigningKey, now time.Time) (LinkClaims, error) {
 	var claims LinkClaims
-	body, err := verifySignedPayload(token, SignLink, keys, now, 8192)
-	if err != nil || !canonicalSignedJSON(body, &claims) || claims.Issuer != RunTokenIssuer || claims.Audience != ChannelLinkAudience ||
-		!primitive.ValidID(claims.Subject) || !claimID.MatchString(claims.Challenge) || !ValidPolicyDigest(claims.ChannelDigest) ||
+	body, err := auth.VerifySigned(token, SignLink, keys, now, 8192)
+	if err != nil || !auth.CanonicalJSON(body, &claims) || claims.Issuer != RunTokenIssuer || claims.Audience != ChannelLinkAudience ||
+		!auth.ValidID(claims.Subject) || !auth.ValidClaimID(claims.Challenge) || !ValidPolicyDigest(claims.ChannelDigest) ||
 		now.Unix() >= claims.Expires {
 		return LinkClaims{}, ErrForbidden
 	}

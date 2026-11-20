@@ -13,9 +13,9 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credstore"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func runSecret(_ context.Context, args []string) error {

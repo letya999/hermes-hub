@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // The agent-facing continuation for an awaiting-oauth outcome must tell the

@@ -8,8 +8,8 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a

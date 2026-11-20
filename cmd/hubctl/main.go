@@ -11,10 +11,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/hosting"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
+	"github.com/letya999/hermes-hub/shared/locale"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log"
 	"net/http"
@@ -47,6 +47,9 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	}
 	op := args[0]
+	if op == "run" {
+		return runProcesses(ctx, args[1:])
+	}
 	if op == "identity" {
 		return runIdentity(ctx, os.Stdout, args[1:])
 	}

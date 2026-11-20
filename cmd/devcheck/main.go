@@ -81,10 +81,10 @@ func run(args []string) error {
 	switch {
 	case len(args) == 1 && args[0] == "docs":
 		err = devcheck.Project(".")
-	case len(args) == 1 && args[0] == "deps":
-		err = devcheck.Deps(".")
-	case len(args) == 1 && args[0] == "deps-baseline":
-		err = devcheck.WriteDepsBaseline(".")
+	case len(args) == 1 && args[0] == "boundaries":
+		err = devcheck.SharedBoundaries(".")
+	case len(args) == 1 && args[0] == "tool-catalog-snapshot":
+		err = devcheck.WriteToolCatalogSnapshot(".")
 	case len(args) == 1 && args[0] == "catalog-emit":
 		err = devcheck.CatalogEmit(".")
 	case len(args) == 1 && args[0] == "format":
@@ -93,7 +93,7 @@ func run(args []string) error {
 		for _, scan := range []struct {
 			dir  string
 			pkgs []string
-		}{{".", []string{"./cmd/...", "./internal/..."}}, {"services/credential-broker", []string{"./..."}}} {
+		}{{".", []string{"./cmd/...", "./internal/...", "./shared/..."}}, {"services/credential-broker", []string{"./..."}}} {
 			argv := append([]string{"run", "github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20261022115301-1cbfd7e6488c", "-quiet", "-exclude-generated", "-exclude=G101,G204,G301,G302,G304,G306"}, scan.pkgs...)
 			cmd := exec.Command("go", argv...)
 			cmd.Env = append(os.Environ(), "GOWORK=off")
@@ -141,6 +141,11 @@ func run(args []string) error {
 		flags := []string{"test", "-short", "-p=2", "-timeout=5m"}
 		if testExec != "" {
 			flags = append(flags, "-exec="+testExec, "-toolexec="+testExec)
+		}
+		invariants := exec.Command("go", append(append([]string{}, flags...), "-run=^TestTenantInvariants$", "./...")...) // #nosec G204 -- fixed Go test selection
+		invariants.Stdout, invariants.Stderr = os.Stdout, os.Stderr
+		if err := invariants.Run(); err != nil {
+			return err
 		}
 		test := exec.Command("go", append(flags, args[1:]...)...) // #nosec G702 -- local developer package arguments go directly to the fixed go executable, without a shell
 		test.Stdout, test.Stderr = os.Stdout, os.Stderr
@@ -211,7 +216,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|deps|deps-baseline|catalog-emit|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-publish-to IMAGE TARGET ENV|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|m32-lifecycle IMAGE ENV|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
+		err = fmt.Errorf("usage: devcheck docs|boundaries|tool-catalog-snapshot|catalog-emit|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-publish-to IMAGE TARGET ENV|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|m32-lifecycle IMAGE ENV|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
 	}
 	return err
 }

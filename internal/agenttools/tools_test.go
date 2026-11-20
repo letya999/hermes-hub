@@ -147,7 +147,7 @@ func TestSelfEnvUpdateSuggestsNextStepForJira(t *testing.T) {
 	}
 }
 
-func TestServiceCatalogAndEnable(t *testing.T) {
+func TestServiceEnableRefusesWithoutPolicy(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("HUB_STATE", state)
 	t.Setenv("HUB_FEATURES", "workspace")
@@ -164,23 +164,11 @@ func TestServiceCatalogAndEnable(t *testing.T) {
 	restarted := false
 	v.Restart = func() error { restarted = true; return nil }
 	out, err := v.ServiceEnable(Input{Service: "gitlab"})
-	if err != nil || out["enabled"] != true || !restarted {
-		t.Fatal(out, err)
+	if !errors.Is(err, api.ErrUnauthorized) || out != nil || restarted {
+		t.Fatalf("unmanaged legacy enable crossed policy boundary: %v %v restart=%v", out, err, restarted)
 	}
-	body, err := os.ReadFile(filepath.Join(state, "self-services.json"))
-	if err != nil || string(body) == "" {
-		t.Fatal(string(body), err)
-	}
-	t.Setenv("JIRA_URL", "")
-	t.Setenv("JIRA_USERNAME", "")
-	t.Setenv("JIRA_API_TOKEN", "")
-	out, err = v.ServiceEnable(Input{Service: "atlassian"})
-	if err != nil || out["enabled"] != false {
-		t.Fatal(out, err)
-	}
-	missing := out["missing_env"].([]string)
-	if len(missing) != 3 || missing[0] != "JIRA_API_TOKEN" || missing[1] != "JIRA_URL" || missing[2] != "JIRA_USERNAME" {
-		t.Fatal(missing)
+	if _, err := os.Stat(filepath.Join(state, "self-services.json")); !os.IsNotExist(err) {
+		t.Fatalf("unauthorized enable wrote state: %v", err)
 	}
 }
 
@@ -241,9 +229,6 @@ func TestSelfServicesValidationAndDependencies(t *testing.T) {
 	}
 	if _, err := v.ServiceCatalog(); err != nil {
 		t.Fatal(err)
-	}
-	if deps := mustServiceDependencies("google_write"); !deps["google"] {
-		t.Fatal(deps)
 	}
 	if _, err := v.ServiceEnable(Input{Service: "unknown"}); err == nil {
 		t.Fatal("unknown service accepted")

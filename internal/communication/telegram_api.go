@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/netguard"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Telegram API subset used by the adapter.

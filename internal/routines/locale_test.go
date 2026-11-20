@@ -10,7 +10,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func newLocaleEngine(t *testing.T, delivered *[]commodel.Delivery) (*Engine, string) {

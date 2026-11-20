@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 // OIDCLink is accepted only from authenticated channel ingress after its
@@ -32,10 +32,10 @@ func validLink(value OIDCLink) bool {
 	return (value.Channel.Channel == Telegram || value.Channel.Channel == Slack) && value.Channel.ID != "" && len(value.Channel.ID) <= 256 && !strings.ContainsAny(value.Channel.ID, "\r\n\t ") && (value.PrincipalID == "" || validID(value.PrincipalID)) && value.Issuer != "" && len(value.Issuer) <= primitive.MaxProvenanceBytes && value.Subject != "" && len(value.Subject) <= primitive.MaxProvenanceBytes && !strings.ContainsAny(value.Issuer+value.Subject, "\r\n")
 }
 
-type linkHTTPClient struct{ wire.Client }
+type linkHTTPClient struct{ httpapi.Client }
 
 func NewLinkHTTPClient(baseURL, token string, hc *http.Client) LinkClient {
-	return linkHTTPClient{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return linkHTTPClient{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 func (c linkHTTPClient) VerifyOIDC(ctx context.Context, value OIDCLink) error {
 	if !validLink(value) {
@@ -55,7 +55,7 @@ func (c linkHTTPClient) Unlink(ctx context.Context, value UnlinkRequest) error {
 // LinkHandler has a separate ingress credential. The read/service-control
 // credential and browser-origin requests cannot assert OIDC proof.
 func LinkHandler(server LinkClient, token string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		if r.Header.Get("Origin") != "" {
 			return nil, ErrForbidden
 		}
@@ -65,25 +65,25 @@ func LinkHandler(server LinkClient, token string) http.Handler {
 		switch r.URL.Path {
 		case "/v1/identity/links/oidc":
 			var value OIDCLink
-			if err := wire.Decode(r, &value); err != nil {
+			if err := httpapi.Decode(r, &value); err != nil {
 				return nil, err
 			}
 			if !validLink(value) {
 				return nil, ErrInvalid
 			}
 			if err := server.VerifyOIDC(r.Context(), value); err != nil {
-				return nil, wire.Normalize(err)
+				return nil, httpapi.Normalize(err)
 			}
 		case "/v1/identity/links/revoke":
 			var value UnlinkRequest
-			if err := wire.Decode(r, &value); err != nil {
+			if err := httpapi.Decode(r, &value); err != nil {
 				return nil, err
 			}
 			if !validID(value.PrincipalID) {
 				return nil, ErrInvalid
 			}
 			if err := server.Unlink(r.Context(), value); err != nil {
-				return nil, wire.Normalize(err)
+				return nil, httpapi.Normalize(err)
 			}
 		default:
 			return nil, ErrNotFound

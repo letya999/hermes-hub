@@ -25,9 +25,9 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/iam"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 type Gateway struct {

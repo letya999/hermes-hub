@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 // ChannelBinding is a verified link only; pending/revoked proofs are private
@@ -56,7 +56,7 @@ func checkedBindings(owner string, values []ChannelBinding) ([]ChannelBinding, e
 		}
 		seen[value.Channel] = true
 	}
-	return wire.Copy(values)
+	return httpapi.Copy(values)
 }
 
 func (c inProc) Bindings(ctx context.Context, owner string) ([]ChannelBinding, error) {
@@ -65,7 +65,7 @@ func (c inProc) Bindings(ctx context.Context, owner string) ([]ChannelBinding, e
 	}
 	values, err := c.server.Bindings(ctx, owner)
 	if err != nil {
-		return nil, wire.Normalize(err)
+		return nil, httpapi.Normalize(err)
 	}
 	return checkedBindings(owner, values)
 }

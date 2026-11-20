@@ -28,7 +28,40 @@ jobs:
   # test verdict). Short independent shards stay inside each runner's
   # resource window, reruns are cheap, and a recurring shard failure
   # identifies the implicated package set instead of the whole suite.
+  tenant-invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -short -run '^TestTenantInvariants$' ./...
+  postgres-store:
+    needs: tenant-invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: hub_test
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: hub_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U hub_test -d hub_test'
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      HUB_TEST_POSTGRES_URL: postgres://hub_test:local-test-only@localhost:5432/hub_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -short ./shared/store/... ./shared/fsm/...
   checks:
+    needs: tenant-invariants
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -39,6 +72,8 @@ jobs:
       SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -237,7 +272,7 @@ jobs:
   checks-verify:
     name: checks # main branch protection requires this status context
     if: always()
-    needs: [checks, coverage, lint, docs-config, credential-broker, security, gitleaks]
+    needs: [checks, coverage, lint, docs-config, credential-broker, security, gitleaks, tenant-invariants, postgres-store]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

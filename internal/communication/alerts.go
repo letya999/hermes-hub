@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Owner alerts (issue #199): a durable, deduplicated, rate-bound notice to

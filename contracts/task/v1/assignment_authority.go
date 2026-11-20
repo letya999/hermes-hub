@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 const AssignmentAuthorityPath = "/v1/automation/verify-run/"
@@ -15,10 +15,10 @@ type AssignmentAuthority interface {
 	AuthorizeAssignmentJob(ctx context.Context, jobID string) error
 }
 
-type assignmentHTTP struct{ wire.Client }
+type assignmentHTTP struct{ httpapi.Client }
 
 func NewAssignmentHTTPClient(baseURL, token string, hc *http.Client) AssignmentAuthority {
-	return assignmentHTTP{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return assignmentHTTP{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (a assignmentHTTP) AuthorizeAssignmentJob(ctx context.Context, jobID string) error {
@@ -36,7 +36,7 @@ func (a assignmentHTTP) AuthorizeAssignmentJob(ctx context.Context, jobID string
 }
 
 func AssignmentAuthorityHandler(owner AssignmentAuthority, token string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		jobID := strings.TrimPrefix(r.URL.Path, AssignmentAuthorityPath)
 		if r.Method != http.MethodGet || r.Header.Get("Origin") != "" || !ValidJobID(jobID) {
 			return nil, ErrForbidden

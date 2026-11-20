@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/letya999/hermes-hub/internal/audit"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // hubctl audit groups the ledger utilities: rollover migrates a stopped

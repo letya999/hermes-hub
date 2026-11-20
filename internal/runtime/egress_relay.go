@@ -12,8 +12,8 @@ import (
 	"time"
 
 	identity "github.com/letya999/hermes-hub/contracts/identity/v1"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // egressRelayHandler is the managed runtime's only reviewed path off the

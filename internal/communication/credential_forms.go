@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 const credentialFormTTL = 10 * time.Minute

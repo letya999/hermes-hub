@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/sqlitedb"
+	"github.com/letya999/hermes-hub/shared/store"
 )
 
 // spoolFS is the narrow filesystem surface the durable spool needs. The os
@@ -54,7 +54,7 @@ const spoolDBSchema = 2
 // openSpoolDB opens the hybrid backend: records in <root>/spool.db,
 // payloads on disk.
 func openSpoolDB(root string, readOnly bool) (spoolFS, error) {
-	db, err := sqlitedb.Open(filepath.Join(root, "spool.db"), spoolDBSchema, func(tx *sql.Tx) error {
+	db, err := store.OpenVersioned(filepath.Join(root, "spool.db"), spoolDBSchema, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS rec (
 			path TEXT PRIMARY KEY,
 			body BLOB NOT NULL,

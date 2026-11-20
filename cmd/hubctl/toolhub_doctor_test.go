@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // doctorStore builds a managed store whose profile selections were legal when

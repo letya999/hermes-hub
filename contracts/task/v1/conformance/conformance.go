@@ -5,6 +5,7 @@ package conformance
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/shared/testkit"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -38,12 +39,11 @@ func Run(t *testing.T, client task.Client, known task.RunRecord) {
 // HTTP transport over handler (the contract Handler or a real server's).
 func Both(t *testing.T, server task.Client, handler func(token string) http.Handler, known task.RunRecord) {
 	t.Helper()
-	t.Run("inproc", func(t *testing.T) { Run(t, task.NewInProc(server), known) })
-	t.Run("http", func(t *testing.T) {
-		const token = "conformance-token"
+	const token = "conformance-token"
+	testkit.Transports(t, task.NewInProc(server), handler(token), func(url string, hc *http.Client) task.Client { return task.NewHTTPClient(url, token, hc) }, func(t *testing.T, client task.Client) { Run(t, client, known) })
+	t.Run("forbidden", func(t *testing.T) {
 		srv := httptest.NewServer(handler(token))
 		defer srv.Close()
-		Run(t, task.NewHTTPClient(srv.URL, token, srv.Client()), known)
 		if _, err := task.NewHTTPClient(srv.URL, "wrong", srv.Client()).Run(context.Background(), known.JobID); !errors.Is(err, task.ErrForbidden) {
 			t.Fatalf("wrong token: want forbidden, got %v", err)
 		}

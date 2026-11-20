@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // grant_request is the in-conversation half of the unlock ceremony. The host

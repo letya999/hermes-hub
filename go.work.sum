@@ -17,6 +17,8 @@ github.com/gotd/getdoc v0.53.0/go.mod h1:dGzxEXIknZKAjGTbm9Axgx5LJqR/FBvHkoaPfns
 github.com/gotd/getdoc v0.54.0/go.mod h1:B9oqI9swXD5dtIwmPUplAId0oeCWUNQhMyxXEuwM5O4=
 github.com/gotd/tl v0.4.0/go.mod h1:CMIcjPWFS4qxxJ+1Ce7U/ilbtPrkoVo/t8uhN5Y/D7c=
 github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79/go.mod h1:FecbI9+v66THATjSRHfNgh1IVFe/9kFxbXtjV0ctIMA=
+github.com/jackc/puddle/v2 v2.2.3 h1:f8HoREISb3l5eO9coPgK7U3hKLhWGokOFVcThl5jrao=
+github.com/jackc/puddle/v2 v2.2.3/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/k0kubun/pp/v3 v3.5.2/go.mod h1:lNnOiHoLg3XXNPt3mKuR1vx8dmw+RLKYJ1WfnfpNjgI=
 github.com/moby/spdystream v0.5.1/go.mod h1:xBAYlnt/ay+11ShkdFKNAG7LsyK/tmNBVvVOwrfMgdI=
 github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f/go.mod h1:ZdcZmHo+o7JKHSa8/e818NopupXU1YMK5fe1lsApnBw=

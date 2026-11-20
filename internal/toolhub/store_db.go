@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/sqlitedb"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	sharedstore "github.com/letya999/hermes-hub/shared/store"
 )
 
 // SQLite substrate for the ToolHub registry (ADR-0091/SPEC-0090): one
@@ -38,7 +38,7 @@ func (s *Store) CloseDB() error {
 }
 
 func openStoreDB(path string) (*sql.DB, error) {
-	db, err := sqlitedb.OpenRollback(path, toolhubDBSchema, func(tx *sql.Tx) error {
+	db, err := sharedstore.OpenVersionedRollback(path, toolhubDBSchema, func(tx *sql.Tx) error {
 		stmts := []string{
 			`CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
 			`CREATE TABLE ent (collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (collection, id))`,
@@ -53,7 +53,7 @@ func openStoreDB(path string) (*sql.DB, error) {
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, sqlitedb.ErrSchema) {
+		if errors.Is(err, sharedstore.ErrSchema) {
 			return nil, fmt.Errorf("%w: store schema", api.ErrInvalid)
 		}
 		return nil, err

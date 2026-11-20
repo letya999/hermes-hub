@@ -11,10 +11,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 type allowRoutineRights struct{}

@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // toolProgressText renders run progress in the workspace language resolved

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // toolhubDoctorWarnings reports managed capability profiles whose selections

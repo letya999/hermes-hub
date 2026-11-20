@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Provider quota is measured through the pinned CLIProxyAPI management API:

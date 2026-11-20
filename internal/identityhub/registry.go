@@ -11,7 +11,7 @@ import (
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
-	"github.com/letya999/hermes-hub/internal/sqlitedb"
+	"github.com/letya999/hermes-hub/shared/store"
 )
 
 type Registry struct {
@@ -58,7 +58,7 @@ func Open(path string) (*Registry, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, contract.ErrUnavailable
 	}
-	db, err := sqlitedb.Open(path, version, migrate)
+	db, err := store.OpenVersioned(path, version, migrate)
 	if err != nil {
 		return nil, contract.ErrUnavailable
 	}

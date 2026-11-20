@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // HealthLines renders the caller-scoped block in the owner's language.

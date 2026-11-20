@@ -6,6 +6,7 @@ last_verified: "2026-11-20"
 
 | Record | Decision |
 |---|---|
+| [ADR-0115](ADR-0115-postgres-driver.md) | Proposed: pgx database/sql driver for the shared SQLite/Postgres store |
 | [ADR-0112](ADR-0112-v1-secrets.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.13: credential-broker the only secret owner, refs in runtimes and workers, boundary injection by cred-proxy or egress-gateway |
 | [ADR-0111](ADR-0111-v1-state-machines.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.2 and each service: one `Transition` in shared/fsm, history in the same transaction, deadline and sweeper per non-final state, `uncertain` never retried, no stored flag beside a state |
 | [ADR-0110](ADR-0110-v1-storage.md) | Proposed - M40.1 (CHG-0334), owner review pending; delivery M40.2..M40.15: one database per service, SQLite default and Postgres by connection string, migrations under a lock, every row tenant-scoped, no `.json`/`.jsonl` state; amends ADR-0091 |

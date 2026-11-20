@@ -49,10 +49,10 @@ func TestPack(t *testing.T) {
 			t.Fatalf("git: %v %s", err, out)
 		}
 	}
-	hubBuilds := map[string]bool{}
+	runtimeBuilds := map[string]bool{}
 	buildBinary = func(output, pkg, _, arch string) error {
-		if pkg == "./cmd/hub" {
-			hubBuilds[arch] = true
+		if pkg == "./cmd/runtime" {
+			runtimeBuilds[arch] = true
 		}
 		return os.WriteFile(output, []byte(filepath.Base(output)), 0600)
 	}
@@ -60,7 +60,7 @@ func TestPack(t *testing.T) {
 		t.Fatal(err)
 	}
 	checksums, err := os.ReadFile(filepath.Join("dist", "SHA256SUMS"))
-	if err != nil || strings.Count(string(checksums), "\n") != 11 || !hubBuilds["amd64"] || !hubBuilds["arm64"] {
+	if err != nil || strings.Count(string(checksums), "\n") != 9 || !runtimeBuilds["amd64"] || !runtimeBuilds["arm64"] {
 		t.Fatalf("checksums: %q, %v", checksums, err)
 	}
 	archive, err := zip.OpenReader(filepath.Join("dist", "hermes-hub-test-source.zip"))

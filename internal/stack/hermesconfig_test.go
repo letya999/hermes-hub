@@ -199,31 +199,6 @@ func TestManagedToolHubConfigUsesRunBindingProxy(t *testing.T) {
 	}
 }
 
-func TestSelfServicesRejectsInvalidState(t *testing.T) {
-	dir := t.TempDir()
-	services := filepath.Join(dir, "self-services.json")
-	for _, body := range []string{`not-json`, `{"features":["workspace"]}`, `{"features":["gitlab","gitlab"]}`} {
-		if err := os.WriteFile(services, []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := ReadSelfServicesFeatures(services); err == nil {
-			t.Fatal("invalid self-services accepted", body)
-		}
-	}
-	if err := os.Remove(services); err != nil {
-		t.Fatal(err)
-	}
-	if features, err := ReadSelfServicesFeatures(services); err != nil || features != nil {
-		t.Fatal(features, err)
-	}
-	if err := os.Mkdir(services, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadSelfServicesFeatures(services); err == nil {
-		t.Fatal("directory self-services accepted")
-	}
-}
-
 func reviewedHermesSource(t *testing.T) []byte {
 	t.Helper()
 	body, err := yaml.Marshal(Config(Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}))

@@ -10,17 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 // Typed errors (SPEC-0100 R2.5).
 var (
-	ErrNotFound    = wire.ErrNotFound
-	ErrConflict    = wire.ErrConflict
-	ErrForbidden   = wire.ErrForbidden
-	ErrInvalid     = wire.ErrInvalid
-	ErrUnavailable = wire.ErrUnavailable
+	ErrNotFound    = httpapi.ErrNotFound
+	ErrConflict    = httpapi.ErrConflict
+	ErrForbidden   = httpapi.ErrForbidden
+	ErrInvalid     = httpapi.ErrInvalid
+	ErrUnavailable = httpapi.ErrUnavailable
 )
 
 // RunRecord is the authority-verified lifecycle record of one job. Every
@@ -88,25 +88,25 @@ func NewInProc(server Client) Client { return inProc{server} }
 
 func (c inProc) Run(ctx context.Context, jobID string) (RunRecord, error) {
 	if !ValidJobID(jobID) {
-		return RunRecord{}, wire.Errorf(ErrInvalid, "invalid job ID")
+		return RunRecord{}, httpapi.Errorf(ErrInvalid, "invalid job ID")
 	}
 	record, err := c.server.Run(ctx, jobID)
 	if err != nil {
-		return RunRecord{}, wire.Normalize(err)
+		return RunRecord{}, httpapi.Normalize(err)
 	}
-	return wire.Copy(record)
+	return httpapi.Copy(record)
 }
 
-type httpClient struct{ wire.Client }
+type httpClient struct{ httpapi.Client }
 
 // NewHTTPClient calls a server at baseURL with a bearer token; hc may be nil.
 func NewHTTPClient(baseURL, token string, hc *http.Client) Client {
-	return httpClient{wire.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
+	return httpClient{httpapi.Client{BaseURL: baseURL, Token: token, HTTP: hc}}
 }
 
 func (c httpClient) Run(ctx context.Context, jobID string) (RunRecord, error) {
 	if !ValidJobID(jobID) {
-		return RunRecord{}, wire.Errorf(ErrInvalid, "invalid job ID")
+		return RunRecord{}, httpapi.Errorf(ErrInvalid, "invalid job ID")
 	}
 	var record RunRecord
 	err := c.Do(ctx, http.MethodGet, "/v1/jobs/"+url.PathEscape(jobID), nil, &record)
@@ -115,9 +115,9 @@ func (c httpClient) Run(ctx context.Context, jobID string) (RunRecord, error) {
 
 // Handler serves GET /v1/jobs/<id> for a server.
 func Handler(server Client, token string) http.Handler {
-	return wire.Handle(token, func(r *http.Request) (any, error) {
+	return httpapi.Handle(token, func(r *http.Request) (any, error) {
 		if r.Method != http.MethodGet {
-			return nil, wire.Errorf(ErrInvalid, "method not allowed")
+			return nil, httpapi.Errorf(ErrInvalid, "method not allowed")
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
 		return NewInProc(server).Run(r.Context(), id)

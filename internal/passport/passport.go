@@ -17,8 +17,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/passportview"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Names are the six passports one revision publishes together.

@@ -6,7 +6,7 @@ import (
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // ToolHub owns admission; communication binds the destination to its durable job.

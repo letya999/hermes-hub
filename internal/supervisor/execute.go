@@ -17,8 +17,8 @@ import (
 
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 var errJobInProgress = errors.New("job is already in progress")

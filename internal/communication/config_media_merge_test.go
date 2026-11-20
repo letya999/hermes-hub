@@ -3,7 +3,7 @@ package communication
 import (
 	"context"
 	"encoding/json"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 	"net/http"
 	"net/http/httptest"
 	"os"

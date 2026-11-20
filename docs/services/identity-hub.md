@@ -17,7 +17,7 @@ fallback after registry refusal.
 
 ## State and boundaries
 
-`Open(path)` uses `internal/sqlitedb`, schema 4, a private SQLite file and WAL.
+`Open(path)` uses `shared/store.OpenVersioned`, schema 4, a private SQLite file and WAL.
 An existing file must carry the registry's `HID1` application ID and schema
 version. Earlier registry schemas upgrade transactionally without rewriting
 identity/import receipts. A read-only probe checks fixed metadata before WAL is

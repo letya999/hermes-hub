@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // The gateway reads its owner skill store path from the environment so

@@ -16,7 +16,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory"
 	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
 	"github.com/letya999/hermes-hub/internal/memory/importer"
@@ -30,6 +29,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/vault"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func runContext(_ context.Context, args []string) error {

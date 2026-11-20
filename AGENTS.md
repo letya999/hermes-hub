@@ -54,7 +54,7 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   statuses are re-checked against delivered state, and `last_verified` is set to the merge
   date only on documents whose content was actually re-verified in that PR — never bump a
   date without reading the document against the code.
-- Every user-visible string is localized through internal/locale — no hardcoded
+- Every user-visible string is localized through shared/locale — no hardcoded
   language literals in handlers, pages or command replies, including units and
   placeholder words like "unknown". Render via locale.T(lang, key) with keys in
   all four catalogs (en/ru/kk/es); resolve lang with pageLang(r)/Negotiate on

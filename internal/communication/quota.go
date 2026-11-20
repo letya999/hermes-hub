@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Provider quota is owned by the space's model-relay, which holds the CLIProxy

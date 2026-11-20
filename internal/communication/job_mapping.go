@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // Only controlled status labels reach chat; upstream error text may contain credentials.

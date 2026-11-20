@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // The mock channel is the local acceptance bench: real pipeline, zero

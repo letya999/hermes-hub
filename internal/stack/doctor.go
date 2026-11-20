@@ -10,7 +10,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/letya999/hermes-hub/internal/dns"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 func slackEventsHostPort(s Settings) int {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")

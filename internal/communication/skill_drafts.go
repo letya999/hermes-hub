@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // skillDraft is one pending skill-store mutation awaiting the owner's click on

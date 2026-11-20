@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/netguard"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/letya999/hermes-hub/shared/locale"
 	"gopkg.in/yaml.v3"
 )
 
@@ -356,10 +356,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	features := splitList(os.Getenv("HUB_ACTIVE_FEATURES"))
-	if len(features) == 0 {
-		features = splitList(os.Getenv("HUB_FEATURES"))
-	}
+	features := splitList(os.Getenv("HUB_FEATURES"))
 	configured := map[string]bool{}
 	if raw := os.Getenv("HUB_CONFIGURED_ENV"); raw != "" {
 		for _, key := range splitList(raw) {

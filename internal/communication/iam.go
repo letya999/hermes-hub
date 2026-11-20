@@ -14,7 +14,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/iam"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // iamState is the optional SSO enrolment/link surface (ADR-0100). nil on the

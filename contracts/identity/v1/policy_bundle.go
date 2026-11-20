@@ -12,8 +12,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/letya999/hermes-hub/contracts/internal/wire"
 	primitive "github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/shared/auth"
+	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
 const maxPolicyBundleBytes = 512 << 10
@@ -36,7 +37,7 @@ type SignedPolicy struct {
 	JWS    string `json:"jws"`
 }
 
-func ValidPolicyDigest(digest string) bool { return digestID.MatchString(digest) }
+func ValidPolicyDigest(digest string) bool { return auth.ValidDigest(digest) }
 
 func PolicyDigest(body []byte) string {
 	digest := sha256.Sum256(body)
@@ -64,13 +65,13 @@ func (b PolicyBundle) HasPassportRight(domain, operation string) bool {
 }
 
 func (b PolicyBundle) Canonical() ([]byte, string, error) {
-	if (b.Environment != "dev" && b.Environment != "prod") || !claimID.MatchString(b.PassportRevision) ||
+	if (b.Environment != "dev" && b.Environment != "prod") || !auth.ValidClaimID(b.PassportRevision) ||
 		!primitive.ValidID(b.Space) || len(b.Passports) != len(policyPassports) {
 		return nil, "", ErrInvalid
 	}
 	if b.Identity != nil {
 		query := TemplateRequest{Subject: b.Identity.Subject.ID, Actor: b.Identity.Actor.ID, Space: b.Space}
-		if !ValidPolicyDigest(b.PassportDigest) || !validOwnedAgent(query.Subject, query.Actor) || !validTemplate(query, *b.Identity) {
+		if !ValidPolicyDigest(b.PassportDigest) || !auth.ValidOwnedAgent(query.Subject, query.Actor) || !validTemplate(query, *b.Identity) {
 			return nil, "", ErrInvalid
 		}
 	} else if b.PassportDigest != "" {
@@ -117,7 +118,7 @@ func (c inProc) Policy(ctx context.Context, digest string) (SignedPolicy, error)
 	}
 	value, err := c.server.Policy(ctx, digest)
 	if err != nil {
-		return SignedPolicy{}, wire.Normalize(err)
+		return SignedPolicy{}, httpapi.Normalize(err)
 	}
 	return checkPolicyResponse(value, digest)
 }
@@ -141,7 +142,7 @@ func checkPolicyResponse(value SignedPolicy, digest string) (SignedPolicy, error
 }
 
 func VerifyPolicyBundle(signed, digest, space, environment string, keys []PublicSigningKey, now time.Time) (PolicyBundle, error) {
-	body, err := verifySignedPayload(signed, SignPolicy, keys, now, 1<<20)
+	body, err := auth.VerifySigned(signed, SignPolicy, keys, now, 1<<20)
 	var policy PolicyBundle
 	if err != nil || len(body) > maxPolicyBundleBytes || json.Unmarshal(body, &policy) != nil ||
 		policy.Space != space || policy.Environment != environment {

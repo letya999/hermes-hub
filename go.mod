@@ -9,6 +9,7 @@ require (
 	github.com/gofrs/flock v0.13.2
 	github.com/google/jsonschema-go v0.4.3
 	github.com/gotd/td v0.166.1
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/k2-fsa/sherpa-onnx-go v1.13.8
 	github.com/letya999/credential-broker v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -64,6 +65,9 @@ require (
 	github.com/gotd/ige v0.3.0 // indirect
 	github.com/gotd/log v0.1.0 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.8 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8 // indirect
