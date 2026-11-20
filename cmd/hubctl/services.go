@@ -13,6 +13,9 @@ type ServiceDescriptor struct {
 	Port                             int
 	Env, Edges, Profiles             []string
 	DataDir                          string
+	// Spawned services are space workloads started per (space, agent) by
+	// spawn-controller, not fixed launcher processes.
+	Spawned bool
 }
 
 func serviceDescriptors() []ServiceDescriptor {
@@ -22,7 +25,7 @@ func serviceDescriptors() []ServiceDescriptor {
 	model := []string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID"}
 	return []ServiceDescriptor{
 		{Name: "spawn-controller", Binary: "spawn-controller", Port: 9201, Zone: "control", ReplicaClass: "single", DataDir: "spawn-controller", Env: model, Profiles: core},
-		{Name: "harness-runtime", Binary: "harness-runtime", Port: 9202, Zone: "space", ReplicaClass: "multi", DataDir: "harness-runtime", Env: append(slices.Clone(model), "HUB_FEATURES"), Profiles: core, Edges: []string{"spawn-controller", "identity-hub", "task-engine", "tool-hub", "model-gateway", "egress-gateway"}},
+		{Name: "harness-runtime", Binary: "harness-runtime", Port: 9202, Zone: "space", ReplicaClass: "multi", DataDir: "harness-runtime", Env: append(slices.Clone(model), "HUB_FEATURES"), Profiles: core, Spawned: true, Edges: []string{"spawn-controller", "identity-hub", "task-engine", "tool-hub", "model-gateway", "egress-gateway"}},
 		{Name: "identity-hub", Binary: "identity-hub", Port: 9203, Zone: "control", ReplicaClass: "single", DataDir: "identity-hub", Env: []string{"TZ"}, Profiles: family},
 		{Name: "task-engine", Binary: "task-engine", Port: 9204, Zone: "control", ReplicaClass: "single", DataDir: "task-engine", Env: []string{"TZ"}, Profiles: family, Edges: []string{"spawn-controller", "identity-hub", "harness-runtime"}},
 		{Name: "channel-hub", Binary: "channel-hub", Port: 9205, Zone: "edge", ReplicaClass: "single", DataDir: "channel-hub", Env: []string{"TZ"}, Profiles: family, Edges: []string{"identity-hub", "task-engine", "model-gateway"}},
@@ -41,6 +44,18 @@ func profileServices(profile string) []ServiceDescriptor {
 	var result []ServiceDescriptor
 	for _, svc := range serviceDescriptors() {
 		if slices.Contains(svc.Profiles, profile) {
+			result = append(result, svc)
+		}
+	}
+	return result
+}
+
+// launchedServices is the profile's fixed process set: spawned services are
+// started on demand by spawn-controller, not by the launcher.
+func launchedServices(profile string) []ServiceDescriptor {
+	var result []ServiceDescriptor
+	for _, svc := range profileServices(profile) {
+		if !svc.Spawned {
 			result = append(result, svc)
 		}
 	}

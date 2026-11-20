@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -39,7 +38,7 @@ func runProcesses(ctx context.Context, args []string) error {
 	if !trusted {
 		return errors.New(locale.T(lang, "hubctl.run-untrusted"))
 	}
-	return launchProcesses(ctx, profileServices(*profile), *bin, *data)
+	return launchProcesses(ctx, launchedServices(*profile), *bin, *data)
 }
 
 // installationTrusted resolves the trusted installation flag from the
@@ -129,12 +128,8 @@ func launchProcesses(ctx context.Context, services []ServiceDescriptor, bin, dat
 	logger := hublog.New(os.Stdout, "hubctl")
 	for i, svc := range services {
 		cmd := exec.CommandContext(ctx, paths[i]) // #nosec G204 -- operator-selected local binary, no shell or arguments
-		cmd.Cancel = func() error {
-			if runtime.GOOS == "windows" {
-				return cmd.Process.Kill()
-			}
-			return cmd.Process.Signal(syscall.SIGTERM)
-		}
+		setSysProcAttr(cmd)
+		cmd.Cancel = func() error { return interruptProcess(cmd.Process) }
 		cmd.WaitDelay = 10 * time.Second
 		cmd.Env = processEnv(svc, services, data)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

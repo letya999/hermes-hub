@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/shared/locale"
+	"github.com/letya999/hermes-hub/shared/testkit"
 )
 
 // The helper is a foreign executable fixture for launcher lifecycle tests.
@@ -191,12 +195,23 @@ func TestServiceDescriptorIsConsistent(t *testing.T) {
 			}
 		}
 	}
+	for _, svc := range services {
+		if svc.Spawned && svc.Zone != "space" {
+			t.Fatalf("non-space service marked spawned: %+v", svc)
+		}
+	}
 	minimal := profileServices("minimal")
 	if len(minimal) != 2 || minimal[0].Name != "spawn-controller" || minimal[1].Name != "harness-runtime" {
 		t.Fatalf("minimal: %+v", minimal)
 	}
 	if len(profileServices("family")) != 9 || len(profileServices("enterprise")) != 13 {
 		t.Fatal("profile membership drift")
+	}
+	if launched := launchedServices("minimal"); len(launched) != 1 || launched[0].Name != "spawn-controller" {
+		t.Fatalf("minimal launch set: %+v", launched)
+	}
+	if len(launchedServices("family")) != 8 || len(launchedServices("enterprise")) != 12 {
+		t.Fatal("launch set drift")
 	}
 }
 
@@ -211,6 +226,83 @@ func TestProcessEnvironmentContainsOnlyDeclaredValues(t *testing.T) {
 	}
 }
 
+// The minimal profile answers a real message end to end: hubctl run starts
+// spawn-controller, the controller spawns a harness-runtime child for the
+// (space, agent) pair, and the child answers through the fake model server.
+// No fixture stands in for the binaries, the launcher or the message path.
 func TestMinimalProfileAnswersMessage(t *testing.T) {
-	t.Skip("M40.3 spawn-controller and M40.4 harness-runtime binaries are not extracted; no real minimal message path exists in M40.2")
+	binDir := t.TempDir()
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	for _, svc := range []string{"spawn-controller", "harness-runtime"} {
+		build := exec.Command("go", "build", "-o", filepath.Join(binDir, svc+suffix), "./services/"+svc)
+		build.Dir = "../.."
+		if body, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", svc, err, body)
+		}
+	}
+	model := testkit.ModelServer(t, "pong-", "answer")
+	t.Setenv("HUB_MANAGED_MODEL_URL", model.URL+"/v1")
+	t.Setenv("HUB_MANAGED_MODEL_ID", "fixture-model")
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("HUB_TRUSTED=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "data")
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runProcesses(ctx, []string{"--mode", "process", "--profile", "minimal", "--bin", binDir, "--data", data})
+	}()
+	deadline := time.Now().Add(60 * time.Second)
+	var reply string
+	for reply == "" {
+		resp, err := http.Post("http://127.0.0.1:9201/v1/messages", "application/json", strings.NewReader(`{"space":"s1","agent":"a1","text":"ping"}`))
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var out struct {
+					Reply string `json:"reply"`
+				}
+				if json.Unmarshal(body, &out) == nil {
+					reply = out.Reply
+				}
+			}
+		}
+		if reply == "" {
+			if time.Now().After(deadline) {
+				t.Fatal("minimal profile did not answer within 60s")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("launcher exited: %v", err)
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}
+	if reply != "pong-answer" {
+		t.Fatalf("reply %q", reply)
+	}
+	resp, err := http.Get("http://127.0.0.1:9201/v1/runtimes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(body), `"space":"s1"`) || !strings.Contains(string(body), `"state":"running"`) {
+		t.Fatalf("spawned runtime missing: %s", body)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("launcher: %v", err)
+	}
+	if conn, err := net.DialTimeout("tcp", "127.0.0.1:9201", time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("spawn-controller survived launcher shutdown")
+	}
 }
