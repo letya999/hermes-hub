@@ -39,22 +39,14 @@ func LayeredGrants(layers []Layer) ([]Layer, map[string][]string, error) {
 				caps = append(caps, s)
 			}
 		case map[string]any:
-			for cap, opsRaw := range allow {
-				ops, ok := opsRaw.([]any)
-				if !ok || len(ops) == 0 {
-					return nil, nil, fmt.Errorf("passport compile: layer %q grants.allow.%s must be a nonempty list", l.Name, cap)
-				}
-				seen := map[string]bool{}
-				for _, opRaw := range ops {
-					op, ok := opRaw.(string)
-					if !ok || op == "" || seen[op] {
-						return nil, nil, fmt.Errorf("passport compile: layer %q grants.allow.%s has an invalid or duplicate operation", l.Name, cap)
-					}
-					seen[op] = true
-				}
-				above, hasAbove := declaredOps[cap]
-				if hasAbove {
-					for op := range seen {
+			parsed, opsMap, err := parseGrantsOps(allow, fmt.Sprintf("passport compile: layer %q grants.allow.", l.Name))
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, cap := range parsed {
+				ops := opsMap[cap]
+				if above, hasAbove := declaredOps[cap]; hasAbove {
+					for _, op := range ops {
 						if !containsString(above, op) {
 							return nil, nil, fmt.Errorf("passport compile: layer %q grants.allow.%s.%s widens beyond the layer above", l.Name, cap, op)
 						}
@@ -62,10 +54,7 @@ func LayeredGrants(layers []Layer) ([]Layer, map[string][]string, error) {
 				} else if i == len(layers)-1 {
 					return nil, nil, fmt.Errorf("passport compile: agent layer %q grants.allow.%s adds a capability beyond the user layer", l.Name, cap)
 				}
-				declaredOps[cap] = make([]string, 0, len(ops))
-				for _, opRaw := range ops {
-					declaredOps[cap] = append(declaredOps[cap], opRaw.(string))
-				}
+				declaredOps[cap] = ops
 				caps = append(caps, cap)
 			}
 		default:
@@ -99,4 +88,34 @@ func containsString(list []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// parseGrantsOps parses an authored grants.allow {capability: [operations]}
+// map into the sorted capability list and the operations each capability
+// declared; where is the full error prefix ending in "allow." — authored.go
+// passes the grants.yaml path, LayeredGrants the layer name. The bound each
+// caller checks against differs (the trusted grant ceiling in authored.go,
+// the ops declared by layers above in LayeredGrants) — only the parse is
+// shared.
+func parseGrantsOps(raw map[string]any, where string) ([]string, map[string][]string, error) {
+	caps := make([]string, 0, len(raw))
+	ops := make(map[string][]string, len(raw))
+	for cap, opsRaw := range raw {
+		list, ok := opsRaw.([]any)
+		if !ok || len(list) == 0 {
+			return nil, nil, fmt.Errorf("%s%s must be a nonempty list", where, cap)
+		}
+		seen := map[string]bool{}
+		for _, opRaw := range list {
+			op, ok := opRaw.(string)
+			if !ok || op == "" || seen[op] {
+				return nil, nil, fmt.Errorf("%s%s has an invalid or duplicate operation", where, cap)
+			}
+			seen[op] = true
+			ops[cap] = append(ops[cap], op)
+		}
+		caps = append(caps, cap)
+	}
+	sort.Strings(caps)
+	return caps, ops, nil
 }

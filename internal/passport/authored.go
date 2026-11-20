@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -152,28 +151,20 @@ func CompileAuthoredDocs(spaceDir, environment string, now time.Time, catalogDoc
 	if !ok || len(grantsDoc) != 1 {
 		return empty, fmt.Errorf("authored passports: grants.yaml must contain only an allow map")
 	}
-	grants := make(map[string][]string, len(allow))
-	caps := make([]string, 0, len(allow))
-	for cap, raw := range allow {
-		ops, ok := raw.([]any)
-		if !ok || len(ops) == 0 {
-			return empty, fmt.Errorf("authored passports: grants.yaml allow.%s must be a nonempty list", cap)
-		}
-		seen := map[string]bool{}
-		for _, op := range ops {
-			s, ok := op.(string)
-			if !ok || s == "" || seen[s] {
-				return empty, fmt.Errorf("authored passports: grants.yaml allow.%s has an invalid or duplicate operation", cap)
-			}
-			if !slices.Contains(grantCeiling[cap], s) {
-				return empty, fmt.Errorf("authored passports: grants.yaml allow.%s.%s exceeds trusted ceiling", cap, s)
-			}
-			seen[s] = true
-			grants[cap] = append(grants[cap], s)
-		}
-		caps = append(caps, cap)
+	// The {capability: [operations]} parse is shared with LayeredGrants in
+	// grants.go; the bound differs — v0 checks each op against the trusted
+	// grant ceiling the caller supplies, not the layer above.
+	caps, grants, err := parseGrantsOps(allow, "authored passports: grants.yaml allow.")
+	if err != nil {
+		return empty, err
 	}
-	sort.Strings(caps)
+	for cap, ops := range grants {
+		for _, op := range ops {
+			if !slices.Contains(grantCeiling[cap], op) {
+				return empty, fmt.Errorf("authored passports: grants.yaml allow.%s.%s exceeds trusted ceiling", cap, op)
+			}
+		}
+	}
 	ceiling := make([]any, len(caps))
 	for i, cap := range caps {
 		ceiling[i] = cap

@@ -166,6 +166,30 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 const defaultMaxRuntimes = 32
 
+// catalogLoader caches the pinned catalog after the first successful
+// load. The baked tree lives in the image while process-mode children
+// inherit HUB_CATALOG_ROOT from the launcher, so the lookup stays lazy —
+// and a failure is never remembered: the next compile retries the load
+// instead of serving a transient error until restart.
+func catalogLoader(load func() (catalog.Docs, error)) func() (catalog.Docs, error) {
+	var mu sync.Mutex
+	var docs catalog.Docs
+	var loaded bool
+	return func() (catalog.Docs, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if loaded {
+			return docs, nil
+		}
+		got, err := load()
+		if err != nil {
+			return catalog.Docs{}, err
+		}
+		docs, loaded = got, true
+		return docs, nil
+	}
+}
+
 // Serve runs the controller until ctx ends. Untrusted installations or a
 // missing service token are refused before any socket or child exists.
 func Serve(ctx context.Context) error {
@@ -215,21 +239,11 @@ func Serve(ctx context.Context) error {
 		return err
 	}
 	defer serviceStore.Close()
-	// The pinned catalog resolves on first compile — the baked tree lives
-	// in the image while process-mode children inherit HUB_CATALOG_ROOT
-	// from the launcher; a compile that still cannot resolve fails
-	// unavailable instead of killing the boot.
-	var catalogOnce sync.Once
-	var catalogDocs catalog.Docs
-	var catalogErr error
 	controller := &Controller{
 		backend: be, token: token, max: max,
 		spaces: spawnv1.Handler(Contract{Revisions: &spawn.Revisions{
-			Store: serviceStore,
-			LoadCatalog: func() (catalog.Docs, error) {
-				catalogOnce.Do(func() { catalogDocs, catalogErr = catalog.LoadPinned() })
-				return catalogDocs, catalogErr
-			},
+			Store:       serviceStore,
+			LoadCatalog: catalogLoader(catalog.LoadPinned),
 		}}, token),
 		ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: 60 * time.Second},
 	}

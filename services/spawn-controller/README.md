@@ -95,6 +95,7 @@ spawn/v1 contract; the remaining tables are not yet wired to HTTP (S4).
 | `HUB_SERVICE_TOKEN` | - | bearer token required on `/v1/*` and forwarded to children; startup refuses without it |
 | `HUB_MAX_RUNTIMES` | `32` | upper bound on live children; must be a positive integer |
 | `HUB_DATABASE_URL` | `sqlite://<data>/<svc>.db` | service store connection string (`sqlite://` or `postgres://`); startup refuses without it |
+| `HUB_CATALOG_ROOT` | - | platform checkout or image path the pinned catalog resolves from; `hubctl` injects the launcher's resolved root when it carries the release manifest — otherwise the image's baked tree is used |
 | `HUB_MANAGED_MODEL_URL` | - | passed through to spawned runtimes |
 | `HUB_MANAGED_MODEL_ID` | - | passed through to spawned runtimes |
 | `HUB_FEATURES` | - | passed through to spawned runtimes |
