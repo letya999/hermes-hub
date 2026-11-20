@@ -99,6 +99,23 @@ type PolicySlice struct {
 	Documents map[string]json.RawMessage `json:"documents"`
 }
 
+// ExplainField is one leaf of the effective bundle: its value and the
+// layer that set it — one of Layers, or "derived" for compiler output.
+type ExplainField struct {
+	Doc   string `json:"doc"`
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+	Layer string `json:"layer"`
+}
+
+// ExplainReport is the per-leaf provenance of the space's active spec
+// (GET /v1/spaces/{space}/explain?org=&owner=).
+type ExplainReport struct {
+	Space  string         `json:"space"`
+	Digest string         `json:"digest"`
+	Fields []ExplainField `json:"fields"`
+}
+
 // CreateSpaceRequest registers one tenant space (POST /v1/spaces).
 type CreateSpaceRequest struct {
 	Org            string `json:"org"`
@@ -149,6 +166,7 @@ type Client interface {
 	Effective(context.Context, Tenant, string) (EffectiveSpec, error)
 	PolicySlice(context.Context, Tenant, string, string, string) (PolicySlice, error)
 	ListRevisions(context.Context, Tenant, string, string) ([]Revision, error)
+	Explain(context.Context, Tenant, string) (ExplainReport, error)
 }
 
 func validTenant(t Tenant) bool {
@@ -250,6 +268,17 @@ func (c inProc) ListRevisions(ctx context.Context, t Tenant, space, layer string
 	return httpapi.Copy(out)
 }
 
+func (c inProc) Explain(ctx context.Context, t Tenant, space string) (ExplainReport, error) {
+	if !validTenant(t) || !auth.ValidID(space) {
+		return ExplainReport{}, httpapi.Errorf(ErrInvalid, "invalid explain request")
+	}
+	out, err := c.server.Explain(ctx, t, space)
+	if err != nil {
+		return ExplainReport{}, httpapi.Normalize(err)
+	}
+	return httpapi.Copy(out)
+}
+
 type httpClient struct{ httpapi.Client }
 
 // NewHTTPClient calls a server at baseURL with a bearer token; hc may be nil.
@@ -324,11 +353,20 @@ func (c httpClient) ListRevisions(ctx context.Context, t Tenant, space, layer st
 	return out, err
 }
 
+func (c httpClient) Explain(ctx context.Context, t Tenant, space string) (ExplainReport, error) {
+	if !validTenant(t) || !auth.ValidID(space) {
+		return ExplainReport{}, httpapi.Errorf(ErrInvalid, "invalid explain request")
+	}
+	var out ExplainReport
+	err := c.Do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(space)+"/explain?"+tenantQuery(t), nil, &out)
+	return out, err
+}
+
 func tenantQuery(t Tenant) string {
 	return "org=" + url.QueryEscape(t.Org) + "&owner=" + url.QueryEscape(t.Owner)
 }
 
-// Handler serves the seven spawn routes behind the shared bearer check;
+// Handler serves the eight spawn routes behind the shared bearer check;
 // the policy route's success response is immutable with ETag = digest.
 func Handler(server Client, token string) http.Handler {
 	inner := httpapi.Handle(token, func(r *http.Request) (any, error) {
@@ -378,6 +416,12 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.Effective(r.Context(), t, space)
+		case r.Method == http.MethodGet && len(rest) == 1 && rest[0] == "explain":
+			t, err := queryTenant(r)
+			if err != nil {
+				return nil, err
+			}
+			return client.Explain(r.Context(), t, space)
 		case r.Method == http.MethodGet && len(rest) == 2 && rest[0] == "policy":
 			t, err := queryTenant(r)
 			if err != nil {

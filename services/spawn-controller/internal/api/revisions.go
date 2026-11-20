@@ -69,6 +69,19 @@ func (c Contract) Effective(ctx context.Context, t spawnv1.Tenant, space string)
 	return spawnv1.EffectiveSpec{Space: out.Space, Digest: out.Digest, Documents: out.Documents}, nil
 }
 
+// Explain returns the space's per-leaf layer provenance.
+func (c Contract) Explain(ctx context.Context, t spawnv1.Tenant, space string) (spawnv1.ExplainReport, error) {
+	out, err := c.Revisions.Explain(ctx, tenantOf(t.Org, t.Owner), space)
+	if err != nil {
+		return spawnv1.ExplainReport{}, err
+	}
+	fields := make([]spawnv1.ExplainField, len(out.Fields))
+	for i, f := range out.Fields {
+		fields[i] = spawnv1.ExplainField{Doc: f.Doc, Path: f.Path, Value: f.Value, Layer: f.Layer}
+	}
+	return spawnv1.ExplainReport{Space: out.Space, Digest: out.Digest, Fields: fields}, nil
+}
+
 // PolicySlice projects one consumer's share of an effective spec.
 func (c Contract) PolicySlice(ctx context.Context, t spawnv1.Tenant, space, service, digest string) (spawnv1.PolicySlice, error) {
 	docs, err := c.Revisions.PolicySlice(ctx, tenantOf(t.Org, t.Owner), space, service, digest)

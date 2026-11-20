@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ type Server struct {
 type fakeEffective struct {
 	digest    string
 	documents map[string]json.RawMessage
+	layers    map[string]string
 }
 
 func spaceKey(t spawn.Tenant, space string) string { return t.Org + "/" + t.Owner + "/" + space }
@@ -203,9 +205,12 @@ func (s *Server) ActivateRevisions(ctx context.Context, space string, in spawn.A
 		rev.State = "active"
 	}
 	// Fabricate the effective row: digest of every active layer digest,
-	// documents merged from the active revisions' submissions.
+	// documents merged from the active revisions' submissions. The fake
+	// runs no compiler — each document's leaves are attributed to the
+	// layer that submitted it so Explain stays contract-shaped.
 	h := sha256.New()
 	docs := map[string]json.RawMessage{}
+	docLayers := map[string]string{}
 	for _, other := range s.revisions[key] {
 		if other.State != "active" {
 			continue
@@ -215,10 +220,11 @@ func (s *Server) ActivateRevisions(ctx context.Context, space string, in spawn.A
 			raw, err := json.Marshal(body)
 			if err == nil {
 				docs[d] = raw
+				docLayers[d] = other.Layer
 			}
 		}
 	}
-	s.effective[key] = fakeEffective{digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), documents: docs}
+	s.effective[key] = fakeEffective{digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), documents: docs, layers: docLayers}
 	out := make([]spawn.Revision, 0, len(in.Revisions))
 	for _, id := range in.Revisions {
 		rev, _ := s.find(t, space, id)
@@ -260,6 +266,58 @@ func (s *Server) PolicySlice(ctx context.Context, t spawn.Tenant, space, service
 		}
 	}
 	return spawn.PolicySlice{}, spawn.ErrNotFound
+}
+
+// Explain flattens the fabricated effective row: each leaf reports the
+// layer whose active revision submitted the document.
+func (s *Server) Explain(ctx context.Context, t spawn.Tenant, space string) (spawn.ExplainReport, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.ExplainReport{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	eff, ok := s.effective[spaceKey(t, space)]
+	if !ok {
+		return spawn.ExplainReport{}, spawn.ErrNotFound
+	}
+	fields := []spawn.ExplainField{}
+	for _, doc := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		raw, ok := eff.documents[doc]
+		if !ok {
+			continue
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return spawn.ExplainReport{}, err
+		}
+		flat := map[string]any{}
+		flattenFake(body, "", flat)
+		layer := eff.layers[doc]
+		paths := make([]string, 0, len(flat))
+		for p := range flat {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			fields = append(fields, spawn.ExplainField{Doc: doc, Path: p, Value: flat[p], Layer: layer})
+		}
+	}
+	return httpapi.Copy(spawn.ExplainReport{Space: space, Digest: eff.digest, Fields: fields})
+}
+
+func flattenFake(node map[string]any, prefix string, out map[string]any) {
+	for k, v := range node {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		if m, ok := v.(map[string]any); ok {
+			flattenFake(m, path, out)
+			continue
+		}
+		out[path] = v
+	}
 }
 
 // ListRevisions returns the space's rows, newest first, optionally by layer.

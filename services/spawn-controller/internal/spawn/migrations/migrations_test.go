@@ -45,5 +45,6 @@ func TestTenantInvariants(t *testing.T) {
 	add("workers", []string{"generation", "state"}, 1, "starting")
 	add("workers_history", []string{"seq", "at", "from_state", "event", "to_state"}, 1, now, "", "create", "starting")
 	add("image_pins", []string{"digest", "created_at"}, "sha256:x", now)
+	add("backups", []string{"last_success_at", "last_error", "last_archive", "retained", "last_drill_at", "drill_result", "drill_checked"}, now, "", "", 0, 0, "", 0)
 	storetest.TenantInvariants(t, cases...)
 }

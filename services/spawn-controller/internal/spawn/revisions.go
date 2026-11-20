@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
@@ -71,6 +72,22 @@ type EffectiveSpec struct {
 	Space     string                     `json:"space"`
 	Digest    string                     `json:"digest"`
 	Documents map[string]json.RawMessage `json:"documents"`
+}
+
+// ExplainField is one effective leaf: its value and the layer that set it
+// (one of LayerOrder, or "derived" for compiler-synthesized content).
+type ExplainField struct {
+	Doc   string `json:"doc"`
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+	Layer string `json:"layer"`
+}
+
+// ExplainReport is the per-leaf provenance of the space's active spec.
+type ExplainReport struct {
+	Space  string         `json:"space"`
+	Digest string         `json:"digest"`
+	Fields []ExplainField `json:"fields"`
 }
 
 // Revisions is the durable revision service: spaces, layered passport
@@ -267,7 +284,7 @@ func (r *Revisions) Validate(ctx context.Context, t store.Tenant, spaceID, id st
 		if err != nil {
 			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
 		}
-		_, _, _, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
+		_, _, _, _, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
 		if compileErr != nil {
 			if rev.State != "draft" {
 				return fmt.Errorf("%w: %v", store.ErrConflict, compileErr)
@@ -379,7 +396,7 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		if err != nil {
 			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
 		}
-		_, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
+		_, attr, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
 		if compileErr != nil {
 			return fmt.Errorf("%w: %s: %v", store.ErrConflict, locale.T(locale.Default, "spawn.revision-rejected"), compileErr)
 		}
@@ -420,7 +437,11 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 			return err
 		}
 		if have == 0 {
-			if err := q.Insert("effective_specs", []string{"id", "space_id", "documents", "created_at"}, digest, spaceID, string(canonical), now.Unix()); err != nil {
+			attrJSON, err := json.Marshal(attr)
+			if err != nil {
+				return err
+			}
+			if err := q.Insert("effective_specs", []string{"id", "space_id", "documents", "attribution", "created_at"}, digest, spaceID, string(canonical), string(attrJSON), now.Unix()); err != nil {
 				return err
 			}
 		}
@@ -505,6 +526,76 @@ func (r *Revisions) Effective(ctx context.Context, t store.Tenant, spaceID strin
 			return err
 		}
 		out = EffectiveSpec{Space: spaceID, Digest: digest, Documents: docs}
+		return nil
+	})
+	return out, err
+}
+
+// Explain answers the space's per-leaf provenance: every leaf of the
+// stored effective bundle with the layer the activating compile recorded
+// for it. The read never recompiles — attribution lands on the spec row
+// in the same transaction as the bundle itself.
+func (r *Revisions) Explain(ctx context.Context, t store.Tenant, spaceID string) (ExplainReport, error) {
+	var out ExplainReport
+	err := r.Store.ReadTx(ctx, func(tx *store.Tx) error {
+		q := tx.Scoped(t)
+		var digest string
+		err := q.QueryRow("SELECT effective_digest FROM spaces WHERE {tenant} AND id = ?", spaceID).Scan(&digest)
+		if err != nil {
+			return err
+		}
+		if digest == "" {
+			return store.ErrNotFound
+		}
+		var stored, attrRaw string
+		err = q.QueryRow("SELECT documents, attribution FROM effective_specs WHERE {tenant} AND space_id = ? AND id = ?", spaceID, digest).Scan(&stored, &attrRaw)
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: effective spec %s is gone", httpapi.ErrUnavailable, digest)
+		}
+		if err != nil {
+			return err
+		}
+		docs, err := bundlePassports([]byte(stored))
+		if err != nil {
+			return err
+		}
+		var attr map[string]map[string]string
+		if err := json.Unmarshal([]byte(attrRaw), &attr); err != nil {
+			return err
+		}
+		fields := []ExplainField{}
+		for _, doc := range passport.Names {
+			raw, ok := docs[doc]
+			if !ok {
+				continue
+			}
+			var full map[string]any
+			if err := json.Unmarshal(raw, &full); err != nil {
+				return err
+			}
+			body := map[string]any{}
+			for k, v := range full {
+				if k == "apiVersion" || k == "kind" || k == "metadata" {
+					continue
+				}
+				body[k] = v
+			}
+			flat := map[string]any{}
+			flattenJSON(body, "", flat)
+			paths := make([]string, 0, len(flat))
+			for p := range flat {
+				paths = append(paths, p)
+			}
+			sort.Strings(paths)
+			for _, p := range paths {
+				layer := attr[doc][p]
+				if layer == "" {
+					layer = passport.DerivedLayer
+				}
+				fields = append(fields, ExplainField{Doc: doc, Path: p, Value: flat[p], Layer: layer})
+			}
+		}
+		out = ExplainReport{Space: spaceID, Digest: digest, Fields: fields}
 		return nil
 	})
 	return out, err
@@ -749,7 +840,7 @@ func pruneSuperseded(q store.Scoped, spaceID, layer string, now time.Time) error
 // capability lists and ledger LayeredGrants derives, then Compile merges
 // the six layers, and the policy bundle yields the canonical document set
 // and its content digest.
-func compilePolicy(space, env string, byLayer map[string]map[string]map[string]any, cat catalog.Docs, now time.Time, reserved map[int]string) (passport.Revision, []byte, string, error) {
+func compilePolicy(space, env string, byLayer map[string]map[string]map[string]any, cat catalog.Docs, now time.Time, reserved map[int]string) (passport.Revision, passport.Attribution, []byte, string, error) {
 	var empty passport.Revision
 	layers := make([]passport.Layer, len(LayerOrder))
 	for i, name := range LayerOrder {
@@ -757,9 +848,9 @@ func compilePolicy(space, env string, byLayer map[string]map[string]map[string]a
 	}
 	folded, ledger, err := passport.LayeredGrants(layers)
 	if err != nil {
-		return empty, nil, "", err
+		return empty, nil, nil, "", err
 	}
-	rev, err := passport.Compile(passport.Inputs{
+	rev, attr, err := passport.CompileAttribution(passport.Inputs{
 		Space:            space,
 		Environment:      env,
 		PlatformCeiling:  folded[0],
@@ -775,17 +866,17 @@ func compilePolicy(space, env string, byLayer map[string]map[string]map[string]a
 		ReservedPorts:    reserved,
 	})
 	if err != nil {
-		return empty, nil, "", err
+		return empty, nil, nil, "", err
 	}
 	bundle, err := rev.PolicyBundle()
 	if err != nil {
-		return empty, nil, "", err
+		return empty, nil, nil, "", err
 	}
 	canonical, digest, err := bundle.Canonical()
 	if err != nil {
-		return empty, nil, "", err
+		return empty, nil, nil, "", err
 	}
-	return rev, canonical, digest, nil
+	return rev, attr, canonical, digest, nil
 }
 
 // rendersInfra resolves stack.identity.infra the way the invariant merge

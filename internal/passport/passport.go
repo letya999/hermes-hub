@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -191,15 +192,39 @@ func flatten(tree map[string]any, prefix string, out map[string]any) {
 	}
 }
 
+// Attribution is the per-leaf provenance of one compiled revision:
+// doc -> dotted leaf path -> the layer that wrote the effective value.
+// Leaves the compiler itself synthesizes (projected grants, the derived
+// workspace boundary, the pinned platform toolset, demoted toolsets) read
+// DerivedLayer.
+type Attribution map[string]map[string]string
+
+// DerivedLayer is the source label of a leaf no layer wrote directly.
+const DerivedLayer = "derived"
+
 // Compile resolves the layered sources into one six-passport revision.
 // Every rule failure is a compile error before a single byte is staged.
 func Compile(in Inputs) (Revision, error) {
+	rev, _, err := compileAttribution(in)
+	return rev, err
+}
+
+// CompileAttribution is the same single compile path additionally
+// returning each effective leaf's source layer, so the explain surface
+// can never drift from the emitted documents.
+func CompileAttribution(in Inputs) (Revision, Attribution, error) {
+	return compileAttribution(in)
+}
+
+func compileAttribution(in Inputs) (Revision, Attribution, error) {
 	var rev Revision
+	var none Attribution
+	attr := Attribution{}
 	layers := []Layer{in.PlatformCeiling, in.PlatformTemplate, in.OrgCeiling, in.OrgTemplate, in.User, in.Agent}
 	for i, l := range layers {
 		for doc := range l.Docs {
 			if doc == "grants" && (i == 1 || i == 3) {
-				return rev, fmt.Errorf("passport compile: template layer %q must not carry grants", l.Name)
+				return rev, none, fmt.Errorf("passport compile: template layer %q must not carry grants", l.Name)
 			}
 		}
 	}
@@ -209,7 +234,7 @@ func Compile(in Inputs) (Revision, error) {
 	// the offered set, a scalar chooses one member of it.
 	keyBounds, err := keysetBounds(layers)
 	if err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	bodies := map[string]map[string]any{}
 	for _, doc := range Names {
@@ -235,7 +260,7 @@ func Compile(in Inputs) (Revision, error) {
 				for p := range leaves {
 					class, base, ok := leafClass(doc, p)
 					if !ok {
-						return rev, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
+						return rev, none, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
 					}
 					if class == classKeysetNarrow {
 						if key := keyAfter(base, p); key != "" {
@@ -255,7 +280,7 @@ func Compile(in Inputs) (Revision, error) {
 					}
 					for k := range keys {
 						if _, ok := node[k]; !ok {
-							return rev, fmt.Errorf("passport compile: agent layer %q adds %s.%s.%s beyond the user layer", l.Name, doc, base, k)
+							return rev, none, fmt.Errorf("passport compile: agent layer %q adds %s.%s.%s beyond the user layer", l.Name, doc, base, k)
 						}
 					}
 				}
@@ -266,8 +291,9 @@ func Compile(in Inputs) (Revision, error) {
 					}
 					class, _, _ := leafClass(doc, p)
 					if err := narrowAgentLeaf(l.Name, doc, p, raw, class, above); err != nil {
-						return rev, err
+						return rev, none, err
 					}
+					recordAttribution(attr, doc, p, l.Name, body, raw)
 					setPath(body, p, raw)
 				}
 				continue
@@ -281,7 +307,7 @@ func Compile(in Inputs) (Revision, error) {
 				}
 				class, base, ok := leafClass(doc, p)
 				if !ok {
-					return rev, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
+					return rev, none, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
 				}
 				switch class {
 				case classKeysetNarrow:
@@ -316,7 +342,7 @@ func Compile(in Inputs) (Revision, error) {
 					}
 					if bounded {
 						if key := keyAfter(base, p); key != "" && !bound[key] {
-							return rev, fmt.Errorf("passport compile: layer %q writes %s.%s outside the ceiling key set", l.Name, doc, p)
+							return rev, none, fmt.Errorf("passport compile: layer %q writes %s.%s outside the ceiling key set", l.Name, doc, p)
 						}
 					}
 				case classNarrow:
@@ -325,13 +351,13 @@ func Compile(in Inputs) (Revision, error) {
 					// ceiling layer re-pins the bound for deeper layers.
 					list, isList := raw.([]any)
 					if !isList {
-						return rev, fmt.Errorf("passport compile: narrow field %s.%s expects a list", doc, p)
+						return rev, none, fmt.Errorf("passport compile: narrow field %s.%s expects a list", doc, p)
 					}
 					if isList {
 						if bound, ok := bounds[p]; ok {
 							for _, item := range list {
 								if !contains(bound, item) {
-									return rev, fmt.Errorf("passport compile: layer %q widens %s.%s outside the ceiling", l.Name, doc, p)
+									return rev, none, fmt.Errorf("passport compile: layer %q widens %s.%s outside the ceiling", l.Name, doc, p)
 								}
 							}
 						}
@@ -341,18 +367,19 @@ func Compile(in Inputs) (Revision, error) {
 					}
 				case classInvariant:
 					if fixed, set := invariants[p]; set && fmt.Sprint(fixed) != fmt.Sprint(raw) {
-						return rev, fmt.Errorf("passport compile: layer %q widens invariant %s.%s", l.Name, doc, p)
+						return rev, none, fmt.Errorf("passport compile: layer %q widens invariant %s.%s", l.Name, doc, p)
 					} else {
 						invariants[p] = raw
 					}
 				case classChoice:
 					if choices, bounded := offered[p]; bounded && !contains(choices, raw) {
-						return rev, fmt.Errorf("passport compile: layer %q picks %s.%s outside the ceiling", l.Name, doc, p)
+						return rev, none, fmt.Errorf("passport compile: layer %q picks %s.%s outside the ceiling", l.Name, doc, p)
 					}
 					if list, isList := raw.([]any); isList {
 						offered[p] = list
 					}
 				}
+				recordAttribution(attr, doc, p, l.Name, body, raw)
 				setPath(body, p, raw)
 			}
 		}
@@ -360,7 +387,7 @@ func Compile(in Inputs) (Revision, error) {
 	}
 	grants, err := projectGrants(in.Grants, in.Catalog, bodies["grants"]["allow"])
 	if err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	bodies["grants"] = grants
 	// The effective workspace boundary is derived before the cross-file
@@ -369,7 +396,7 @@ func Compile(in Inputs) (Revision, error) {
 	// passport see one boundary (SPEC-0092 R5.1).
 	nodes, err := mergeWorkspaceLayout(layers)
 	if err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	roSet := readOnlySet(bodies["workspace"], nodes)
 	roList := make([]any, 0, len(roSet))
@@ -400,7 +427,7 @@ func Compile(in Inputs) (Revision, error) {
 		}
 	}
 	if len(wrList) == 0 {
-		return rev, fmt.Errorf("passport compile: managed revision grants no writable workspace path")
+		return rev, none, fmt.Errorf("passport compile: managed revision grants no writable workspace path")
 	}
 	for _, p := range invariantWritable {
 		if have[p] {
@@ -425,22 +452,22 @@ func Compile(in Inputs) (Revision, error) {
 	// config channels reference the running set.
 	instances, err := checkStack(bodies, in.Catalog)
 	if err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	if err := checkWorkspace(bodies); err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	if err := checkConfig(bodies, instances, in); err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	if err := checkModels(bodies, instances); err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	if err := checkTools(bodies, in.Catalog); err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	if err := checkComplete(bodies, instances); err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	// A watcher a higher layer marked protected keeps that flag in the
 	// effective config: user watchers come and go, service watchers stay.
@@ -454,7 +481,7 @@ func Compile(in Inputs) (Revision, error) {
 		for p, raw := range leaves {
 			if strings.HasSuffix(p, ".protected") && raw == true {
 				if eff := configLeaves[p]; eff != true {
-					return rev, fmt.Errorf("passport compile: layer %q drops protected watcher %s", l.Name, p)
+					return rev, none, fmt.Errorf("passport compile: layer %q drops protected watcher %s", l.Name, p)
 				}
 			}
 		}
@@ -494,7 +521,7 @@ func Compile(in Inputs) (Revision, error) {
 	}
 	sum, err := yaml.Marshal(rev.Provenance)
 	if err != nil {
-		return rev, err
+		return rev, none, err
 	}
 	digest := sha256.Sum256(sum)
 	rev.ID = "r-" + hex.EncodeToString(digest[:])[:16]
@@ -503,11 +530,58 @@ func Compile(in Inputs) (Revision, error) {
 	for _, name := range Names {
 		raw, err := marshalDoc(name, rev.Provenance, bodies[name])
 		if err != nil {
-			return rev, err
+			return rev, none, err
 		}
 		rev.Docs[name] = raw
 	}
-	return rev, nil
+	// Provenance survives the compiler's rewrites: every leaf of the
+	// emitted body that a recorded layer still owns keeps that layer;
+	// anything the compiler added, moved or projected reads derived.
+	final := Attribution{}
+	for _, name := range Names {
+		flat := map[string]any{}
+		flatten(bodies[name], "", flat)
+		for p := range flat {
+			src := attr[name][p]
+			if src == "" {
+				src = DerivedLayer
+			}
+			if final[name] == nil {
+				final[name] = map[string]string{}
+			}
+			final[name][p] = src
+		}
+	}
+	return rev, final, nil
+}
+
+// recordAttribution attributes the write of leaf p in doc to layer: a
+// write that repeats the effective value keeps the existing source, so an
+// invariant or a repeated scalar stays the first writer's.
+func recordAttribution(attr Attribution, doc, p, layer string, body map[string]any, raw any) {
+	if prev, ok := getPath(body, p); ok && reflect.DeepEqual(prev, raw) {
+		return
+	}
+	if attr[doc] == nil {
+		attr[doc] = map[string]string{}
+	}
+	attr[doc][p] = layer
+}
+
+// getPath reads one dotted path out of the in-progress body; an absent
+// node yields (nil, false).
+func getPath(body map[string]any, path string) (any, bool) {
+	var cur any = body
+	for _, part := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if cur, ok = m[part]; !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 // projectGrants snapshots the trusted ledger into the grants passport: an

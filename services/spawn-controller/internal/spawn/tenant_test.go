@@ -80,5 +80,6 @@ func TestTenantInvariants(t *testing.T) {
 		machine(spawn.WorkerMachine),
 		history(spawn.WorkerMachine),
 		plain("image_pins", []string{"digest", "created_at"}, "sha256:x", now),
+		plain("backups", []string{"last_success_at", "last_error", "last_archive", "retained", "last_drill_at", "drill_result", "drill_checked"}, now, "", "", 0, 0, "", 0),
 	)
 }

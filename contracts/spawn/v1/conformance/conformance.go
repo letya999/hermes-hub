@@ -152,6 +152,28 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 		t.Fatalf("effective unstable: %v %s vs %s", err, eff2.Digest, eff.Digest)
 	}
 
+	// Explain: per-leaf provenance over the same active spec — the
+	// digest matches, every leaf carries a source layer.
+	rep, err := client.Explain(ctx, f.Tenant, f.Space)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if rep.Digest != eff.Digest || rep.Space != f.Space {
+		t.Fatalf("explain %+v, want digest %s space %s", rep, eff.Digest, f.Space)
+	}
+	if len(rep.Fields) == 0 {
+		t.Fatal("explain returns no fields")
+	}
+	for _, field := range rep.Fields {
+		if field.Doc == "" || field.Path == "" || field.Layer == "" {
+			t.Fatalf("explain field %+v", field)
+		}
+	}
+	rep2, err := client.Explain(ctx, f.Tenant, f.Space)
+	if err != nil || len(rep2.Fields) != len(rep.Fields) {
+		t.Fatalf("explain unstable: %v %d vs %d", err, len(rep2.Fields), len(rep.Fields))
+	}
+
 	// Policy slice: the consumer gets documents; unknown service or
 	// digest is not_found.
 	slice, err := client.PolicySlice(ctx, f.Tenant, f.Space, f.Consumer, eff.Digest)
@@ -180,6 +202,10 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 		},
 		"slice": func() error {
 			_, err := client.PolicySlice(ctx, f.Foreign, f.Space, f.Consumer, eff.Digest)
+			return err
+		},
+		"explain": func() error {
+			_, err := client.Explain(ctx, f.Foreign, f.Space)
 			return err
 		},
 		"submit": func() error {
