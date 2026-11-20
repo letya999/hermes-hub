@@ -38,6 +38,11 @@ evidence:
   - "de1eb7b9: TestTenantInvariants red (package absent, build failed), green on all nine tables in internal/spawn and internal/spawn/migrations (sqlite leg; postgres leg via HUB_TEST_POSTGRES_URL)."
   - "de1eb7b9: TestMinimalProfileAnswersMessage green after the skeleton move (hubctl launches spawn-controller, real message path intact)."
   - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./cmd/hubctl green."
+  - "018c126f: TestActiveRevisionNeverExpires red ('active revision swept to rejected'), green; retain self-loop re-arms the bound, history shows create/validate/activate/retain."
+  - "018c126f: TestSupersededRevisionStaysRollbackable red ('superseded revision swept to rejected'), green; rollback activates a year-old superseded revision."
+  - "018c126f: TestPassportRevisionTransitions re-run red on the new edge set ('forbidden expire from active' wanted, old machine allowed it), green with retain self-loops and expire forbidden from active/superseded."
+  - "963088d3: docs/state-machines.md Runtime and PassportRevision v1 target tables now state every deadline and deadline event plus S1 implementation notes; README carries the same values; last_verified re-read against machines.go."
+  - "Controller fix-up gates: go test -count=1 ./services/spawn-controller/... green; just check green."
 remaining: []
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
