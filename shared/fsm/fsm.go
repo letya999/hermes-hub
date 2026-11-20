@@ -9,6 +9,7 @@
 package fsm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -158,41 +159,36 @@ func Transition(q store.Scoped, m *Machine, id, event string, now time.Time) err
 	return q.Insert(m.History, []string{"id", "seq", "at", "from_state", "event", "to_state"}, id, seq+1, now.Unix(), from, event, to)
 }
 
-// Sweep fires the deadline event of every entity whose deadline passed and
-// returns how many moved. It reads only tenant keys across tenants; each
-// transition is scoped to the row's own tenant.
-func Sweep(tx *store.Tx, m *Machine, now time.Time) (int, error) {
+// Sweep fires the deadline event of up to limit expired entities and
+// returns how many moved. The cross-tenant read runs in a read-only
+// transaction and each transition commits in its own, scoped to the row's
+// own tenant — a row a concurrent actor already moved reports ErrStale and
+// is skipped, never a reason to roll the batch back.
+func Sweep(ctx context.Context, s *store.Store, m *Machine, now time.Time, limit int) (int, error) {
 	if err := m.check(); err != nil {
 		return 0, err
 	}
-	type due struct{ org, owner, id, state string }
-	rows, err := tx.QueryAllTenants("SELECT org, owner, id, state FROM "+m.Table+" WHERE deadline IS NOT NULL AND deadline <= ?", now.Unix())
-	if err != nil {
-		return 0, err
-	}
-	var expired []due
-	for rows.Next() {
-		var d due
-		if err := rows.Scan(&d.org, &d.owner, &d.id, &d.state); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		expired = append(expired, d)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
+	var expired []store.DueRow
+	if err := s.ReadTx(ctx, func(tx *store.Tx) error {
+		var err error
+		expired, err = tx.DueRows(m.Table, now.Unix(), limit)
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	moved := 0
 	for _, d := range expired {
-		deadline, ok := m.Deadlines[d.state]
+		deadline, ok := m.Deadlines[d.State]
 		if !ok {
 			continue
 		}
-		if err := Transition(tx.Scoped(store.Tenant{Org: d.org, Owner: d.owner}), m, d.id, deadline.Event, now); err != nil {
+		err := s.Tx(ctx, func(tx *store.Tx) error {
+			return Transition(tx.Scoped(store.Tenant{Org: d.Org, Owner: d.Owner}), m, d.ID, deadline.Event, now)
+		})
+		if errors.Is(err, ErrStale) {
+			continue
+		}
+		if err != nil {
 			return moved, err
 		}
 		moved++

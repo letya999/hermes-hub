@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +57,18 @@ func TestStoreRefusesUnscopedQuery(t *testing.T) {
 			},
 			"or widens the tenant predicate": func(q store.Scoped) error {
 				_, err := q.Exec("UPDATE items SET v = ? WHERE {tenant} OR id = ?", "hijacked", "i1")
+				return err
+			},
+			"update moves the tenant": func(q store.Scoped) error {
+				_, err := q.Exec("UPDATE items SET org = ?, owner = ? WHERE {tenant} AND id = ?", "org-b", "bob", "i1")
+				return err
+			},
+			"update moves only org": func(q store.Scoped) error {
+				_, err := q.Exec("UPDATE items SET org = 'org-b' WHERE {tenant} AND id = ?", "i1")
+				return err
+			},
+			"update moves owner beside a column": func(q store.Scoped) error {
+				_, err := q.Exec("UPDATE items SET v = ?, owner = ? WHERE {tenant} AND id = ?", "x", "bob", "i1")
 				return err
 			},
 			"query rows without marker": func(q store.Scoped) error {
@@ -162,39 +173,77 @@ func TestTxRollsBackOnError(t *testing.T) {
 	})
 }
 
-func TestQueryAllTenantsIsReadOnly(t *testing.T) {
+// DueRows is the one sanctioned cross-tenant read: fixed sweep columns,
+// a validated table name and a bound limit — arbitrary cross-tenant SQL is
+// gone, so a sweep can never widen past its own projection.
+func TestDueRowsReadsOnlyExpiredRowsAcrossTenants(t *testing.T) {
+	schema := fstest.MapFS{
+		"0001_due.sql": {Data: []byte(`CREATE TABLE due_items (org TEXT NOT NULL, owner TEXT NOT NULL, id TEXT NOT NULL, state TEXT NOT NULL, deadline BIGINT, PRIMARY KEY (org, owner, id));`)},
+	}
 	storetest.ForEach(t, func(t *testing.T, url string) {
-		s := storetest.Open(t, url, itemsSchema)
-		insertItem(t, s, alice, "i1", "x")
-		insertItem(t, s, store.Tenant{Org: "org-b", Owner: "bob"}, "i1", "y")
-		err := s.Tx(t.Context(), func(tx *store.Tx) error {
-			rows, err := tx.QueryAllTenants("SELECT org, owner FROM items")
+		s := storetest.Open(t, url, schema)
+		put := func(tenant store.Tenant, id, state string, deadline any) {
+			t.Helper()
+			err := s.Tx(t.Context(), func(tx *store.Tx) error {
+				return tx.Scoped(tenant).Insert("due_items", []string{"id", "state", "deadline"}, id, state, deadline)
+			})
 			if err != nil {
-				return err
+				t.Fatalf("insert %s/%s: %v", tenant.Owner, id, err)
 			}
-			defer rows.Close()
-			n := 0
-			for rows.Next() {
-				n++
-			}
-			if n != 2 {
-				return fmt.Errorf("rows %d", n)
-			}
-			return rows.Err()
+		}
+		put(alice, "expired", "queued", int64(10))
+		put(alice, "fresh", "queued", int64(9999))
+		put(alice, "nodeadline", "queued", nil)
+		put(store.Tenant{Org: "org-b", Owner: "bob"}, "expired", "running", int64(5))
+		var rows []store.DueRow
+		err := s.ReadTx(t.Context(), func(tx *store.Tx) error {
+			var err error
+			rows, err = tx.DueRows("due_items", 100, 10)
+			return err
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, query := range []string{"DELETE FROM items", "SELECT 1; DELETE FROM items", " update items set v = 'z'"} {
-			err := s.Tx(t.Context(), func(tx *store.Tx) error {
-				rows, err := tx.QueryAllTenants(query)
-				if err == nil {
-					_ = rows.Close()
-				}
+		if len(rows) != 2 {
+			t.Fatalf("due rows: %+v", rows)
+		}
+		seen := map[string]store.DueRow{}
+		for _, r := range rows {
+			seen[r.Owner+"/"+r.ID] = r
+		}
+		if seen["alice/expired"].State != "queued" || seen["bob/expired"].State != "running" || seen["alice/expired"].Org != "org-a" {
+			t.Fatalf("due rows: %+v", rows)
+		}
+		// The limit bounds the batch; the next call resumes where it left off.
+		err = s.ReadTx(t.Context(), func(tx *store.Tx) error {
+			rows, err = tx.DueRows("due_items", 100, 1)
+			return err
+		})
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("limit=1: rows %+v err %v", rows, err)
+		}
+	})
+}
+
+func TestDueRowsRejectsBadArguments(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		s := storetest.Open(t, url, itemsSchema)
+		for _, args := range []struct {
+			name  string
+			table string
+			limit int
+		}{
+			{"injected table", "items; DROP TABLE items", 10},
+			{"quoted table", "items' --", 10},
+			{"zero limit", "items", 0},
+			{"huge limit", "items", 1 << 20},
+		} {
+			err := s.ReadTx(t.Context(), func(tx *store.Tx) error {
+				_, err := tx.DueRows(args.table, 1, args.limit)
 				return err
 			})
-			if !errors.Is(err, store.ErrUnscoped) {
-				t.Errorf("%q: want ErrUnscoped, got %v", query, err)
+			if err == nil {
+				t.Errorf("%s: accepted", args.name)
 			}
 		}
 	})
@@ -233,15 +282,10 @@ func TestMigrationLockSerializesConcurrentStart(t *testing.T) {
 		if t.Failed() {
 			return
 		}
-		var applied, versions int
-		err := stores[0].Tx(t.Context(), func(tx *store.Tx) error {
-			if err := tx.QueryAllTenantsRow("SELECT count(*) FROM applied").Scan(&applied); err != nil {
-				return err
-			}
-			return tx.QueryAllTenantsRow("SELECT count(*) FROM schema_migrations").Scan(&versions)
-		})
-		if err != nil || applied != 2 || versions != 2 {
-			t.Fatalf("migrations applied %d times, %d versions recorded, err %v", applied, versions, err)
+		applied := storetest.AdminValue(t, url, "SELECT count(*) FROM applied")
+		versions := storetest.AdminValue(t, url, "SELECT count(*) FROM schema_migrations")
+		if applied != 2 || versions != 2 {
+			t.Fatalf("migrations applied %d times, %d versions recorded", applied, versions)
 		}
 	})
 }
@@ -312,6 +356,14 @@ func TestTenantInvariants(t *testing.T) {
 		Read: func(q store.Scoped, id string) error {
 			var v string
 			return q.QueryRow("SELECT v FROM items WHERE {tenant} AND id = ?", id).Scan(&v)
+		},
+		Write: func(q store.Scoped, id string) (bool, error) {
+			res, err := q.Exec("UPDATE items SET v = ? WHERE {tenant} AND id = ?", "hijacked", id)
+			if err != nil {
+				return false, err
+			}
+			n, err := res.RowsAffected()
+			return n > 0, err
 		},
 	})
 }

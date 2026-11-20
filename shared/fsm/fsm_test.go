@@ -2,6 +2,7 @@ package fsm_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -175,12 +176,7 @@ func TestSweepMovesExpiredState(t *testing.T) {
 			}
 		}
 		sweep := func(now time.Time) int {
-			var n int
-			err := tx(t, s, func(tx *store.Tx) error {
-				var err error
-				n, err = fsm.Sweep(tx, m, now)
-				return err
-			})
+			n, err := fsm.Sweep(t.Context(), s, m, now, 100)
 			if err != nil {
 				t.Fatalf("sweep at %v: %v", now, err)
 			}
@@ -210,6 +206,76 @@ func TestSweepMovesExpiredState(t *testing.T) {
 		}
 		if snap := read(t, s, alice, "run"); snap.state != "failed" || snap.deadline != nil {
 			t.Fatalf("uncertain after its deadline: %+v", snap)
+		}
+	})
+}
+
+// Sweep moves each due row in its own transaction, so one row another
+// actor took is skipped rather than rolling the batch back: two sweeps
+// racing one deadline move it exactly once between them.
+func TestSweepSkipsStaleAndConcurrentSweepersLoseCleanly(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		s := storetest.Open(t, url, schema)
+		m := jobMachine(t)
+		create(t, s, m, alice, "j1", t0)
+		create(t, s, m, alice, "j2", t0)
+		create(t, s, m, bob, "j3", t0)
+		// A concurrent actor moves j1 between the sweep's read and write: its
+		// compare-and-swap must report stale and the sweep must go on.
+		if err := tx(t, s, func(tx *store.Tx) error { return fsm.Transition(tx.Scoped(alice), m, "j1", "admit", t0) }); err != nil {
+			t.Fatal(err)
+		}
+		moved, err := fsm.Sweep(t.Context(), s, m, t0.Add(2*time.Hour), 100)
+		if err != nil {
+			t.Fatalf("sweep across tenants: %v", err)
+		}
+		if moved != 3 {
+			t.Fatalf("sweep moved %d, want 3 (j1 timeout, j2+j3 expired)", moved)
+		}
+		for id, want := range map[string]string{"j1": "uncertain", "j2": "expired", "j3": "expired"} {
+			var state string
+			err := tx(t, s, func(tx *store.Tx) error {
+				owner := alice
+				if id == "j3" {
+					owner = bob
+				}
+				return tx.Scoped(owner).QueryRow("SELECT state FROM jobs WHERE {tenant} AND id = ?", id).Scan(&state)
+			})
+			if err != nil || state != want {
+				t.Fatalf("%s state=%q want %q err %v", id, state, want, err)
+			}
+		}
+
+		// Two sweeps racing one deadline move the row exactly once between
+		// them; the loser reports its rows stale and skips them.
+		s2 := storetest.Open(t, url, schema)
+		defer s2.Close()
+		create(t, s, m, alice, "race", t0)
+		var wg sync.WaitGroup
+		counts := make([]int, 2)
+		errs := make([]error, 2)
+		start := make(chan struct{})
+		for i, st := range []*store.Store{s, s2} {
+			wg.Add(1)
+			go func(i int, st *store.Store) {
+				defer wg.Done()
+				<-start
+				counts[i], errs[i] = fsm.Sweep(t.Context(), st, m, t0.Add(2*time.Hour), 100)
+			}(i, st)
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("sweeper %d: %v", i, err)
+			}
+		}
+		var state string
+		err = tx(t, s, func(tx *store.Tx) error {
+			return tx.Scoped(alice).QueryRow("SELECT state FROM jobs WHERE {tenant} AND id = ?", "race").Scan(&state)
+		})
+		if err != nil || state != "expired" {
+			t.Fatalf("race row state=%q err %v (sweeps moved %v)", state, err, counts)
 		}
 	})
 }
@@ -252,12 +318,23 @@ func TestTenantInvariants(t *testing.T) {
 		Table: "jobs", Migrations: schema,
 		Create: func(q store.Scoped) (string, error) { return "j1", fsm.Create(q, m, "j1", t0) },
 		Read:   func(q store.Scoped, id string) error { _, err := fsm.State(q, m, id); return err },
+		Write: func(q store.Scoped, id string) (bool, error) {
+			return false, fsm.Transition(q, m, id, "admit", t0)
+		},
 	}, storetest.TenantCase{
 		Table: "job_history", Migrations: schema,
 		Create: func(q store.Scoped) (string, error) { return "j1", fsm.Create(q, m, "j1", t0) },
 		Read: func(q store.Scoped, id string) error {
 			var seq int
 			return q.QueryRow("SELECT seq FROM job_history WHERE {tenant} AND id = ?", id).Scan(&seq)
+		},
+		Write: func(q store.Scoped, id string) (bool, error) {
+			res, err := q.Exec("UPDATE job_history SET event = ? WHERE {tenant} AND id = ?", "forged", id)
+			if err != nil {
+				return false, err
+			}
+			n, err := res.RowsAffected()
+			return n > 0, err
 		},
 	})
 }

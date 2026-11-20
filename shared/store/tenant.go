@@ -69,6 +69,12 @@ var scopedWhere = regexp.MustCompile(`(?i)\bWHERE\s+\{tenant\}(\s+AND\b|\s+(ORDE
 var scopedFrom = regexp.MustCompile(`(?i)\bFROM\s+[a-z_][a-z0-9_]*\s+WHERE\s+\{tenant\}`)
 var sqlWords = regexp.MustCompile(`[a-zA-Z_]+`)
 
+// tenantColumnsAssigned matches an org or owner assignment in an UPDATE's
+// SET clause. The check runs on the literal-stripped form, so 'x”org' can
+// never spoof a column name, and the SET..WHERE bound keeps a coincidental
+// predicate mention from matching.
+var tenantColumnsAssigned = regexp.MustCompile(`(?i)\bSET\b[^;]*?\b(org|owner)\b\s*=`)
+
 // Insert adds one row whose org and owner come from the handle.
 func (q Scoped) Insert(table string, columns []string, values ...any) error {
 	if !q.tenant.valid() {
@@ -121,11 +127,14 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 		if strings.ContainsAny(plain, ";\"`[]$") || strings.Contains(plain, "--") || strings.Contains(plain, "/*") || strings.Contains(plain, "*/") {
 			return "", nil, ErrUnscoped
 		}
-		statements, wheres, froms := 0, 0, 0
+		statements, wheres, froms, updates := 0, 0, 0, 0
 		for _, word := range sqlWords.FindAllString(strings.ToUpper(plain), -1) {
 			switch word {
-			case "SELECT", "UPDATE", "DELETE":
+			case "SELECT", "DELETE":
 				statements++
+			case "UPDATE":
+				statements++
+				updates++
 			case "WHERE":
 				wheres++
 			case "FROM":
@@ -136,6 +145,11 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 		}
 		if statements != 1 || wheres != 1 || froms > 1 || (froms == 1 && !scopedFrom.MatchString(plain)) {
 			return "", nil, ErrUnscoped
+		}
+		// A scoped UPDATE can narrow or expire its own tenant's rows, never
+		// move them: org and owner are assigned only by Insert's tenant.
+		if updates == 1 && tenantColumnsAssigned.MatchString(plain) {
+			return "", nil, fmt.Errorf("%w: UPDATE assigns org or owner", ErrUnscoped)
 		}
 	}
 	var out strings.Builder

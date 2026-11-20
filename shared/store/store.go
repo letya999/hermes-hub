@@ -183,8 +183,33 @@ func (s *Store) Tx(ctx context.Context, fn func(*Tx) error) error {
 	return nil
 }
 
+// ReadTx runs fn in a transaction that is read-only on Postgres: the
+// sanctioned cross-tenant sweep read can never accidentally write there.
+// SQLite keeps the ordinary transaction — its read already holds no lock
+// another writer waits on.
+func (s *Store) ReadTx(ctx context.Context, fn func(*Tx) error) error {
+	sqlTx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: s.dialect == Postgres})
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = sqlTx.Rollback()
+		}
+	}()
+	if err := fn(&Tx{ctx: ctx, tx: sqlTx, dialect: s.dialect}); err != nil {
+		return err
+	}
+	if err := sqlTx.Commit(); err != nil {
+		return fmt.Errorf("store: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // Tx is one open transaction. Statements go through Scoped handles; the only
-// unscoped access is the read-only QueryAllTenants for background sweeps.
+// unscoped read is DueRows, the fixed-column projection background sweeps use.
 type Tx struct {
 	ctx     context.Context
 	tx      *sql.Tx
@@ -194,32 +219,44 @@ type Tx struct {
 // Dialect reports the SQL flavour of the transaction's store.
 func (tx *Tx) Dialect() Dialect { return tx.dialect }
 
-// QueryAllTenants runs one read-only SELECT across every tenant. It exists for
-// background sweepers that collect tenant keys; every write that follows must
-// go through Scoped with the row's own tenant.
-func (tx *Tx) QueryAllTenants(query string, args ...any) (*sql.Rows, error) {
-	bound, values, err := tx.crossTenant(query, args)
+// DueRow is one expired entity row's tenant key and state. Sweepers collect
+// these across tenants, then act scoped to each row's own tenant.
+type DueRow struct {
+	Org, Owner, ID, State string
+}
+
+// sweepRowLimit caps one DueRows batch; a sweeper loops until a batch comes
+// back short instead of reading the whole table at once.
+const sweepRowLimit = 1000
+
+// DueRows returns up to limit expired rows of table (a validated identifier)
+// in deadline order: fixed columns org/owner/id/state, deadline IS NOT NULL
+// and deadline <= deadline. It is the only cross-tenant read the store
+// exposes; every write that follows must go through Scoped with the row's
+// own tenant.
+func (tx *Tx) DueRows(table string, deadline int64, limit int) ([]DueRow, error) {
+	if !identifier.MatchString(table) || limit <= 0 || limit > sweepRowLimit {
+		return nil, fmt.Errorf("%w: sweep read arguments", ErrUnscoped)
+	}
+	query := "SELECT org, owner, id, state FROM " + table + " WHERE deadline IS NOT NULL AND deadline <= ? ORDER BY deadline LIMIT ?"
+	bound, values, err := bind(tx.dialect, query, []any{deadline, limit}, Tenant{}, false)
 	if err != nil {
 		return nil, err
 	}
-	return tx.tx.QueryContext(tx.ctx, bound, values...)
-}
-
-// QueryAllTenantsRow is QueryAllTenants for one row.
-func (tx *Tx) QueryAllTenantsRow(query string, args ...any) Row {
-	bound, values, err := tx.crossTenant(query, args)
+	rows, err := tx.tx.QueryContext(tx.ctx, bound, values...)
 	if err != nil {
-		return Row{err: err}
+		return nil, err
 	}
-	return Row{row: tx.tx.QueryRowContext(tx.ctx, bound, values...)}
-}
-
-func (tx *Tx) crossTenant(query string, args []any) (string, []any, error) {
-	head := strings.ToUpper(strings.TrimSpace(query))
-	if !strings.HasPrefix(head, "SELECT ") || strings.Contains(query, ";") || strings.Contains(query, tenantMarker) {
-		return "", nil, fmt.Errorf("%w: cross-tenant access is one read-only SELECT", ErrUnscoped)
+	defer rows.Close()
+	var due []DueRow
+	for rows.Next() {
+		var d DueRow
+		if err := rows.Scan(&d.Org, &d.Owner, &d.ID, &d.State); err != nil {
+			return nil, err
+		}
+		due = append(due, d)
 	}
-	return bind(tx.dialect, query, args, Tenant{}, false)
+	return due, rows.Err()
 }
 
 // Row is the result of a single-row query; a missing row is ErrNotFound.

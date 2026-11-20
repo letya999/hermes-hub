@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/shared/store"
@@ -85,13 +86,44 @@ func Open(t *testing.T, url string, migrations fs.FS) *store.Store {
 	return s
 }
 
+// AdminValue runs one read-only aggregate outside the tenant surface — test
+// assertions on the store's own bookkeeping tables (schema_migrations,
+// migration counters) that carry no tenant columns. It opens a second
+// connection to the same database URL; never use it for tenant data.
+func AdminValue(t *testing.T, url, query string) int {
+	t.Helper()
+	var db *sql.DB
+	var err error
+	switch {
+	case strings.HasPrefix(url, "sqlite://"):
+		db, err = sql.Open("sqlite", "file:"+strings.TrimPrefix(url, "sqlite://"))
+	case strings.HasPrefix(url, "postgres://"), strings.HasPrefix(url, "postgresql://"):
+		db, err = sql.Open("pgx", url)
+	default:
+		t.Fatalf("admin value: unsupported url scheme")
+	}
+	if err != nil {
+		t.Fatalf("admin value: open: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(context.Background(), query).Scan(&n); err != nil {
+		t.Fatalf("admin value %q: %v", query, err)
+	}
+	return n
+}
+
 // TenantCase describes one tenant-owned table: how to create a row as a
-// tenant and how to read it back by id.
+// tenant, read it back by id and attempt the service's normal write on it.
 type TenantCase struct {
 	Table      string
 	Migrations fs.FS
 	Create     func(q store.Scoped) (id string, err error)
 	Read       func(q store.Scoped, id string) error
+	// Write performs the service's update path on id. It reports wrote=true
+	// only when foreign data actually changed; a scoped statement that
+	// matches no rows is a safe no-op, not a breach.
+	Write func(q store.Scoped, id string) (wrote bool, err error)
 }
 
 // Owner, a colleague in the same org and a stranger in another org.
@@ -102,14 +134,19 @@ var (
 )
 
 // TenantInvariants checks every table on a fresh store per table and per
-// backend: the owner reads its row back; the same id read as a colleague or
-// a stranger is not_found, never data and never another error class.
+// backend: the owner reads its row back; the same id read or written as a
+// colleague or a stranger is not_found (reads) or rejected/a no-op
+// (writes), never data and never another error class; and an org/owner
+// move through a scoped UPDATE is refused before it reaches the database.
 func TenantInvariants(t *testing.T, cases ...TenantCase) {
 	t.Helper()
 	if len(cases) == 0 {
 		t.Fatal("tenant invariants: no tables")
 	}
 	for _, c := range cases {
+		if c.Write == nil {
+			t.Fatalf("tenant invariants for %s: Write is required — foreign records and tenant moves need a verdict", c.Table)
+		}
 		t.Run(c.Table, func(t *testing.T) {
 			ForEach(t, func(t *testing.T, url string) {
 				s := Open(t, url, c.Migrations)
@@ -132,6 +169,28 @@ func TenantInvariants(t *testing.T, cases ...TenantCase) {
 					if err := read(tenant); !errors.Is(err, store.ErrNotFound) {
 						t.Errorf("%s read of %s/%s: want not_found, got %v", name, c.Table, id, err)
 					}
+					var wrote bool
+					err := s.Tx(t.Context(), func(tx *store.Tx) error {
+						var werr error
+						wrote, werr = c.Write(tx.Scoped(tenant), id)
+						return werr
+					})
+					if err == nil && wrote {
+						t.Errorf("%s write of %s/%s changed foreign data", name, c.Table, id)
+					}
+					// A scoped UPDATE that assigns org or owner is a tenant
+					// move; the binder must refuse it outright.
+					err = s.Tx(t.Context(), func(tx *store.Tx) error {
+						_, err := tx.Scoped(tenant).Exec("UPDATE "+c.Table+" SET org = ?, owner = ? WHERE {tenant} AND id = ?", "org-b", "bob", id)
+						return err
+					})
+					if !errors.Is(err, store.ErrUnscoped) {
+						t.Errorf("%s tenant move on %s/%s: want unscoped, got %v", name, c.Table, id, err)
+					}
+				}
+				// Foreign attempts left the owner's row intact.
+				if err := read(Owner); err != nil {
+					t.Fatalf("owner read after foreign writes: %v", err)
 				}
 			})
 		})

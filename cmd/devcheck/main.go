@@ -142,6 +142,9 @@ func run(args []string) error {
 		if testExec != "" {
 			flags = append(flags, "-exec="+testExec, "-toolexec="+testExec)
 		}
+		if err := devcheck.TenantCoverage("."); err != nil {
+			return err
+		}
 		invariants := tenantInvariantTest(flags)
 		invariants.Stdout, invariants.Stderr = os.Stdout, os.Stderr
 		if err := invariants.Run(); err != nil {
