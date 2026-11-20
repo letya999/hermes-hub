@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -268,8 +269,8 @@ func (r *Revisions) Validate(ctx context.Context, t store.Tenant, spaceID, id st
 		if err != nil {
 			return err
 		}
-		var docs map[string]map[string]any
-		if err := json.Unmarshal(rev.documents, &docs); err != nil {
+		docs, err := decodeRevisionDocs(rev.documents)
+		if err != nil {
 			return err
 		}
 		byLayer[rev.Layer] = docs
@@ -369,11 +370,9 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 			if rev.State == "active" {
 				continue
 			}
-			var docs map[string]map[string]any
-			if len(rev.documents) != 0 {
-				if err := json.Unmarshal(rev.documents, &docs); err != nil {
-					return err
-				}
+			docs, err := decodeRevisionDocs(rev.documents)
+			if err != nil {
+				return err
 			}
 			byLayer[layer] = docs
 			atByLayer[layer] = rev.CreatedAt
@@ -706,11 +705,9 @@ func activeLayerDocs(q store.Scoped, spaceID string) (map[string]map[string]map[
 		if err := rows.Scan(&layer, &raw, &created); err != nil {
 			return nil, nil, err
 		}
-		var docs map[string]map[string]any
-		if len(raw) != 0 {
-			if err := json.Unmarshal(raw, &docs); err != nil {
-				return nil, nil, err
-			}
+		docs, err := decodeRevisionDocs(raw)
+		if err != nil {
+			return nil, nil, err
 		}
 		out[layer] = docs
 		at[layer] = created
@@ -753,11 +750,9 @@ func knownLayerDocs(q store.Scoped, spaceID, skipLayer string) (map[string]map[s
 		if cur, ok := picks[layer]; ok && cur.rank >= rank {
 			continue
 		}
-		var docs map[string]map[string]any
-		if len(raw) != 0 {
-			if err := json.Unmarshal(raw, &docs); err != nil {
-				return nil, 0, err
-			}
+		docs, err := decodeRevisionDocs(raw)
+		if err != nil {
+			return nil, 0, err
 		}
 		picks[layer] = pick{docs: docs, at: at, rank: rank}
 	}
@@ -909,4 +904,56 @@ func validDocName(name string) bool {
 		}
 	}
 	return false
+}
+
+// decodeRevisionDocs unmarshals a stored revision document set back into
+// compiler-shaped values. Passport docs arrive YAML-shaped (Go ints), but
+// the store round-trips them through JSON, where every number decodes as
+// float64 — the compiler's integer-leaf assertions then reject valid
+// content (the v0 import failed on tools.binding.generation). Decoding
+// with UseNumber plus yamlShape restores the YAML types.
+func decodeRevisionDocs(raw []byte) (map[string]map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var docs map[string]map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&docs); err != nil {
+		return nil, err
+	}
+	for name, body := range docs {
+		if shaped, ok := yamlShape(body).(map[string]any); ok {
+			docs[name] = shaped
+		}
+	}
+	return docs, nil
+}
+
+// yamlShape rewrites decoded JSON values to the Go types a YAML decode
+// would have produced, in place: integral numbers become int, fractional
+// ones stay float64.
+func yamlShape(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, e := range t {
+			t[k] = yamlShape(e)
+		}
+		return t
+	case []any:
+		for i, e := range t {
+			t[i] = yamlShape(e)
+		}
+		return t
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return t
+	default:
+		return v
+	}
 }

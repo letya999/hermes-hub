@@ -695,3 +695,55 @@ func TestBootstrapActivatesLayersTogether(t *testing.T) {
 		}
 	})
 }
+
+// Live S7a regression: the importer hands Submit YAML-shaped docs (Go
+// ints), Submit stores canonical JSON, and Validate/Activate decode it
+// back for the compile — json.Unmarshal makes every number a float64, so
+// an authored tools.binding.generation read back from the store failed
+// the compiler's int assertion and every imported space rejected.
+func TestRevisionCompileAcceptsJSONRoundTrippedInts(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		ctx := context.Background()
+		if _, err := revs.CreateSpace(ctx, tenant, "alice", "dev"); err != nil {
+			t.Fatalf("create space: %v", err)
+		}
+		layers := layerDocs()
+		user := userDocs("Europe/Berlin")
+		user["tools"]["binding"] = map[string]any{"profile_id": "alice-default", "generation": 1}
+		layers["user"] = user
+		ids := map[string]string{}
+		for _, layer := range spawn.LayerOrder {
+			docs, ok := layers[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Submit(ctx, tenant, "alice", layer, docs)
+			if err != nil {
+				t.Fatalf("submit %s: %v", layer, err)
+			}
+			ids[layer] = rev.ID
+		}
+		var all []string
+		for _, layer := range spawn.LayerOrder {
+			id, ok := ids[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Validate(ctx, tenant, "alice", id)
+			if err != nil {
+				t.Fatalf("validate %s %s: %v", layer, id, err)
+			}
+			if rev.State != "validated" {
+				t.Fatalf("validate %s %s: state %s detail %s", layer, id, rev.State, rev.Detail)
+			}
+			all = append(all, id)
+		}
+		if _, err := revs.Activate(ctx, tenant, "alice", all); err != nil {
+			t.Fatalf("activate set: %v", err)
+		}
+		if _, err := revs.Explain(ctx, tenant, "alice"); err != nil {
+			t.Fatalf("explain after bootstrap: %v", err)
+		}
+	})
+}
