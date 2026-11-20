@@ -9,6 +9,7 @@ import (
 
 	identity "github.com/letya999/hermes-hub/contracts/identity/v1"
 	"github.com/letya999/hermes-hub/contracts/identity/v1/conformance"
+	"github.com/letya999/hermes-hub/contracts/identity/v1/fake"
 )
 
 type fixture struct{}
@@ -50,8 +51,12 @@ func (fixture) Template(_ context.Context, query identity.TemplateRequest) (iden
 }
 
 func TestContractConformanceInProcAndHTTP(t *testing.T) {
-	server := fixture{}
-	conformance.Both(t, server, func(token string) http.Handler { return identity.Handler(server, token) }, identity.ChannelIdentity{Channel: identity.Telegram, ID: "7"}, identity.Principal{ID: "alice", Kind: identity.Human})
+	known := identity.Principal{ID: "alice", Kind: identity.Human}
+	server := fake.Server{
+		Principals: map[string]identity.Principal{known.ID: known},
+		Links:      []identity.ChannelBinding{{ID: "fixture-link", PrincipalID: known.ID, Channel: identity.ChannelIdentity{Channel: identity.Telegram, ID: "7"}}},
+	}
+	conformance.Both(t, server, func(token string) http.Handler { return identity.Handler(server, token) }, identity.ChannelIdentity{Channel: identity.Telegram, ID: "7"}, known)
 }
 
 type templateFixture struct {

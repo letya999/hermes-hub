@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	identity "github.com/letya999/hermes-hub/contracts/identity/v1"
+	"github.com/letya999/hermes-hub/shared/testkit"
 )
 
 func Run(t *testing.T, client identity.Client, channel identity.ChannelIdentity, known identity.Principal) {
@@ -67,12 +68,11 @@ func Run(t *testing.T, client identity.Client, channel identity.ChannelIdentity,
 
 func Both(t *testing.T, server identity.Client, handler func(string) http.Handler, channel identity.ChannelIdentity, known identity.Principal) {
 	t.Helper()
-	t.Run("inproc", func(t *testing.T) { Run(t, identity.NewInProc(server), channel, known) })
-	t.Run("http", func(t *testing.T) {
-		const token = "conformance-token"
+	const token = "conformance-token"
+	testkit.Transports(t, identity.NewInProc(server), handler(token), func(url string, hc *http.Client) identity.Client { return identity.NewHTTPClient(url, token, hc) }, func(t *testing.T, client identity.Client) { Run(t, client, channel, known) })
+	t.Run("forbidden", func(t *testing.T) {
 		srv := httptest.NewServer(handler(token))
 		defer srv.Close()
-		Run(t, identity.NewHTTPClient(srv.URL, token, srv.Client()), channel, known)
 		if _, err := identity.NewHTTPClient(srv.URL, "wrong", srv.Client()).Principal(context.Background(), known.ID); !errors.Is(err, identity.ErrForbidden) {
 			t.Fatalf("wrong token: %v", err)
 		}
