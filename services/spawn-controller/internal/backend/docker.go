@@ -95,7 +95,7 @@ func (d *dockerBackend) command(ctx context.Context, env []string, args ...strin
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, d.cfg.Docker, args...) // #nosec G204 -- configured docker binary, argv built internally
-	cmd.Env = dockerCLIEnv(env)
+	cmd.Env = d.dockerCLIEnv(env)
 	return cmd.CombinedOutput()
 }
 
@@ -107,7 +107,7 @@ func (d *dockerBackend) command(ctx context.Context, env []string, args ...strin
 // the caller injected can no longer redirect or reconfigure the CLI
 // itself (caller-facing DOCKER_* names are refused upstream in
 // Workers.Exec and the contract).
-func dockerCLIEnv(specEnv []string) []string {
+func (d *dockerBackend) dockerCLIEnv(specEnv []string) []string {
 	allow := map[string]bool{
 		"PATH": true, "HOME": true, "USERPROFILE": true,
 		"HOMEDRIVE": true, "HOMEPATH": true, "APPDATA": true,
@@ -119,11 +119,36 @@ func dockerCLIEnv(specEnv []string) []string {
 	out := make([]string, 0, len(specEnv)+16)
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
+		if name == "DOCKER_CONFIG" {
+			continue // pinned below — never inherited
+		}
 		if allow[name] || strings.HasPrefix(name, "DOCKER_") {
 			out = append(out, entry)
 		}
 	}
-	return append(out, specEnv...)
+	for _, entry := range specEnv {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "DOCKER_CONFIG" {
+			continue // a spec must never redirect the CLI's client config
+		}
+		out = append(out, entry)
+	}
+	// The CLI resolves its config under HOME/.docker by default — a spec
+	// HOME would redirect auth and contexts to caller-controlled content.
+	// Pin DOCKER_CONFIG to a controller-owned directory after spec env so
+	// no spec name can ever move it.
+	return append(out, "DOCKER_CONFIG="+d.dockerConfigDir())
+}
+
+// dockerConfigDir is the CLI client-config directory: a dedicated subdir
+// of the backend's state root (the OS temp dir when none is configured),
+// never influenced by spec env or the controller's own HOME.
+func (d *dockerBackend) dockerConfigDir() string {
+	root := d.cfg.StateRoot
+	if root == "" {
+		root = os.TempDir()
+	}
+	return filepath.Join(root, "docker-config")
 }
 
 func (d *dockerBackend) labels(spec Spec) map[string]string {
@@ -616,7 +641,7 @@ func (d *dockerBackend) Exec(ctx context.Context, id string, spec ExecSpec) (Exe
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, d.cfg.Docker, args...) // #nosec G204 -- configured docker binary, argv built internally
-	cmd.Env = dockerCLIEnv(spec.Env)
+	cmd.Env = d.dockerCLIEnv(spec.Env)
 	if spec.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(spec.Stdin)
 	}

@@ -7,6 +7,7 @@ package backend
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,8 @@ func TestExecArgsNeverCarryEnvValues(t *testing.T) {
 func TestDockerCLIEnvIsControllerOwned(t *testing.T) {
 	t.Setenv("HUB_STRAY_CONTROLLER_VAR", "should-not-pass")
 	t.Setenv("PATH", os.Getenv("PATH"))
-	env := dockerCLIEnv([]string{"TOOL_VAR=present"})
+	d := &dockerBackend{cfg: DockerConfig{}}
+	env := d.dockerCLIEnv([]string{"TOOL_VAR=present"})
 	has := func(name string) (string, bool) {
 		for _, entry := range env {
 			k, v, _ := strings.Cut(entry, "=")
@@ -71,6 +73,26 @@ func TestDockerCLIEnvIsControllerOwned(t *testing.T) {
 	}
 	if _, ok := has("PATH"); !ok {
 		t.Fatal("operator PATH missing from the CLI child environment")
+	}
+}
+
+// TestDockerCLIEnvPinsDockerConfig: spec env appends to the CLI's own
+// environment for -e forwarding, so a spec HOME (or a spec DOCKER_CONFIG)
+// would redirect where the CLI reads its client config — auth and
+// contexts. The controller pins DOCKER_CONFIG to its own directory after
+// spec env, exactly once.
+func TestDockerCLIEnvPinsDockerConfig(t *testing.T) {
+	d := &dockerBackend{cfg: DockerConfig{StateRoot: t.TempDir()}}
+	env := d.dockerCLIEnv([]string{"HOME=/attacker/home", "DOCKER_CONFIG=/attacker/.docker"})
+	want := filepath.Join(d.cfg.StateRoot, "docker-config")
+	var pins []string
+	for _, entry := range env {
+		if k, v, _ := strings.Cut(entry, "="); k == "DOCKER_CONFIG" {
+			pins = append(pins, v)
+		}
+	}
+	if len(pins) != 1 || pins[0] != want {
+		t.Fatalf("DOCKER_CONFIG must be pinned once to %q, env %v", want, env)
 	}
 }
 
