@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0333
+title: Live-stack wedges and lost updates
+status: done
+branch: fix/live-wedges
+updated: 2026-11-20
+phase: done
+github_issue: 598
+github_milestone: M40 - v1 Service Split
+implementation_status: implemented
+slices:
+  S1-uncertain: green
+  S2-leases: green
+  S3-running-deadline: green
+  S4-event-revision: green
+  S5-claimed-job: green
+  S6-goal-update: green
+  S7-dreaming: green
+  S8-store-path: green
+  S9-first-apply: green
+  S10-paused-assignment: green
+validation:
+  just_check: passed
+  affected_packages: passed
+  live_smoke: pending_owner_instruction
+  remote_acceptance: unavailable_unpublished
+evidence:
+  - "Source f4b0c239: just check passed; just test ./internal/routines/ ./internal/toolhub/automation/ ./internal/toolhub/ ./internal/stack/ ./internal/migration/ ./cmd/hubctl/ ./internal/communication/ ./internal/supervisor/ passed. No remote run URL: unpublished."
+  - "Six lifecycle fixtures updated to release anonymous Ensure holds, pin independent demand, or attach a caller-owned lease; targeted regressions and full supervisor package passed."
+  - "docs/runtime-sandbox.md rechecked against compose, Kubernetes runtime-class and sandbox validation paths; freshness corrected from the pre-existing stale date. docs/routines.md compacted to satisfy the 500-line limit."
+  - "Lease regression red on 56106e46: Ensure consumers empty; green on 71942292."
+  - "Named communication and supervisor regressions passed. Resolve localized in en/ru/kk/es."
+remaining:
+  - "Owner review, live-smoke decision and remote publication remain separate acceptance actions."
+limitations:
+  - "No push, PR or CI run authorized."

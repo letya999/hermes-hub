@@ -16,12 +16,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | Summary |
 |---|---|
-| [CHG-0333](in-progress/CHG-0333-live-wedges/plan.md) | Ten live-stack wedge fixes; local verification and owner decisions pending |
 
 ## Done — pre-release bookkeeping sweep (2026-11-15)
 
 | Change | State |
 |---|---|
+| [CHG-0333](done/CHG-0333-live-wedges/plan.md) | Ten fixes locally verified on fix/live-wedges; owner review, live smoke and dev merge pending |
 | [CHG-0292](done/CHG-0292-live-tools-repair/plan.md) | Five-prompt live terminal, media and speech incident repair; implementation and live verification in progress |
 | [CHG-0238](done/CHG-0238-storage-cleanup/plan.md) | Local spool and audit cleaned; deletion of 101 older ignored host files blocked by automatic approval review |
 | [CHG-0226](done/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
