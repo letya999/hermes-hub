@@ -134,3 +134,13 @@ TestTenantRunnerExcludesUserSpaces: real red when ./... ran the synthetic
 spaces test; green with repository source directories only. The table-first
 runner never implicitly selects real user spaces. TestProjectAndFormat fixture
 now creates the contracts/shared directories required by the moved format gate.
+
+## Final local gates
+
+Code source: dd0d473a. just check green; affected packages green across the broad
+run and the repaired devcheck package rerun through just test. GitLab deploy
+contract green separately (its Bash requirement is available in this execution
+environment). Root build green; credential-broker Linux cross-compilation green
+with CGO disabled, native Windows/SQLCipher runtime unavailable. just security and
+actionlint green. Final real Postgres store/FSM suite green; temporary container
+stopped and removed. No remote run URL exists because publication is unauthorized.

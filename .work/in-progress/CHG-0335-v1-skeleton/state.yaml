@@ -25,11 +25,23 @@ slices:
 validation:
   postgres_local: passed_disposable_container_stopped
   security: passed
-  just_check: pending_after_merge
-  all_modules_build: pending_after_merge
+  just_check: passed
+  root_build: passed
+  credential_broker_windows_build: unavailable_linux_only
+  credential_broker_linux_compile: passed_cgo_disabled_compile_only
+  affected_packages: passed_after_fixture_repair
+  tenant_first: passed_repository_source_roots
+  actionlint: passed
+  gitlab_deploy_contract: passed_separately
   minimal_message_topology: unavailable_core_binaries_not_extracted
   postgres_ci: unavailable_unpublished
 evidence:
+  - "Code source dd0d473a: just check passed. Broad just test passed shared/*, contracts/*, hubctl, package, agenttools, stack, toolhub/api/automation, identityhub, commops, communication, migration, routines, supervisor; devcheck fixture failure repaired and full cmd/devcheck + internal/devcheck then passed via just test."
+  - "TestTenantRunnerExcludesUserSpaces red on ./... (synthetic spaces test ran), green with cmd/contracts/internal/shared/services only. New real just test ran tenant invariants first without selecting spaces."
+  - "TestGitLabDeployPinsRenderedImages passed separately; current environment resolves working Bash. Broad run excluded it explicitly; no deployment occurred."
+  - "Final SQLite and real Postgres store/FSM suites passed after SQL/diagnostic fixes; final disposable container stopped/removed. docker ps confirms no hermes-m40-* containers remain."
+  - "Root go build -p=2 ./... passed. Credential-broker cross-compilation GOOS=linux CGO_ENABLED=0 passed; not native Windows, SQLCipher or runtime acceptance."
+  - "No remote run URL exists: all changes remain unpublished. Docker/CI/race/coverage acceptance not run locally or claimed by proxy."
   - "Integrated feat/m40-2-skeleton in e7b4a881; conflicts resolved in work/docs/ADR indexes and source packaging. engineering.md now links the real M40.2 tests and names the minimal topology skip."
   - "0b3ac931: TestPostgresConnectionErrorDoesNotEchoConfiguration red when driver parsing echoed configuration, green after returning opaque unavailable (context cancellation remains typed)."
   - "Sensitivity probes: duplicate migration, forbidden transition/history writes, disabled sweep and tool-name drift each made its named test fail; restored production code made all five named store/FSM/snapshot tests green."
@@ -45,10 +57,9 @@ evidence:
   - "Task and identity contracts already use shared/httpapi after c73e56da; fake task server passes the same in-process and HTTP conformance suite."
   - "rg and go list confirm no production imports of removed cmd/hub, contracts/toolsurface, deps gate, ReadSelfServicesFeatures or HUB_ACTIVE_FEATURES."
 remaining:
-  - "Final combined-tree local check and affected package gates pending."
   - "Real TestMinimalProfileAnswersMessage awaits M40.3/M40.4 core binaries; marked skipped, never green."
   - "Owner review and remote Postgres CI acceptance require separate publication authorization."
 limitations:
   - "No live smoke, push, PR, prune or worktree removal."
-  - "No original behavioral red artifact supplied for the four already committed store/fsm tests; preserve this evidence gap and report later sensitivity probes separately."
+  - "Original pre-extraction red logs for existing migration/FSM tests are unavailable; later sensitivity probes are recorded separately from actual bug red/green."
   - "Service descriptor covers hub processes; browser-runtime and workers remain per-space launches for M40.3/M40.4, not installation daemons."

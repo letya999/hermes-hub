@@ -30,6 +30,7 @@ validation:
   live_acceptance: not_applicable
   owner_review: pending
 evidence:
+  - "Final combined-tree just check passed on dd0d473a; full devcheck suite (including service README heading enforcement) passed after format fixture repair. Source archive regression includes shared and README template. Owner review remains pending."
   - "M40.2 merged as e7b4a881; engineering links actual infrastructure tests and explicitly marks the minimal topology skip. No ADR number collision (new dependency is ADR-0115)."
   - "2026-11-20: just check passed at 0a794569 plus archive fix. TestSourceArchiveContainsOnlyTrackedInputs failed before sourcePaths included the service README template, then passed; go vet -p=2 ./cmd/package passed."
   - "Source base: 380fb5aa on feat/m40-v1-platform; work step 1 (parking 6e6b53c6 on chore/park-chg-0332-run-tokens) done by the coordinator before this CHG. No push, no GitHub writes."
@@ -40,6 +41,8 @@ evidence:
   - "Re-verified and dated 2026-11-20: engineering.md, architecture.md (removed from the drift and oversize allowlists), state-machines.md, glossary.md, boundaries.md, docs/index.md, ADR-0105..0112, SPEC-0100..0102. docs/services/identity-hub.md: link fix after the CHG-0332 move; identifier-level re-check only (all 25 backticked identifiers found in code)."
   - "Commits: 59352c9c devcheck rule; 842f23d3 ADRs; fe012893 state machines; 285c402d rulebook; 864b587f architecture; 00cd413a glossary/boundaries/index; d6ce6dff SPEC-0100..0102; 5a086b83 record reconciliation."
 remaining:
+  - "Owner decision: CHG-0329/0330 are marked done before dev merge, contrary to status-hygiene rule 1."
+  - "Owner review of target states beyond the issue: PassportRevision rejected, ConnectorBinding removing, Goal cleared, Routine blocked."
   - "Owner review of docs/engineering.md, docs/architecture.md, docs/state-machines.md, services/README.template.md and ADR-0105..0112 (issue #599 acceptance)."
 limitations:
   - "Issue 612 still names branch wip/chg-0332-run-tokens; the parked work is on chore/park-chg-0332-run-tokens."
