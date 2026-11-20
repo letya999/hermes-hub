@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/letya999/hermes-hub/shared/auth"
@@ -141,6 +142,38 @@ func validLeaseReq(id string, in WorkerLeaseRequest) bool {
 	return validWorkerID(id) && validTenant(Tenant{in.Org, in.Owner}) && in.Lease != ""
 }
 
+// envNamePattern is the env grammar an exec request may carry — and
+// DOCKER_* is refused outright: a spec env value lands in the docker
+// CLI's own process environment for -e forwarding, and those names
+// reconfigure the CLI itself (host, context, config, TLS).
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validExecReq(id string, in WorkerExecRequest) bool {
+	if !validLeaseReq(id, WorkerLeaseRequest{Org: in.Org, Owner: in.Owner, Lease: in.Lease}) || len(in.Argv) == 0 || len(in.Argv) > 256 {
+		return false
+	}
+	for name := range in.Env {
+		if !envNamePattern.MatchString(name) || strings.HasPrefix(name, "DOCKER_") {
+			return false
+		}
+	}
+	return true
+}
+
+// execReadLimit sizes the exec response cap from the requested output
+// bound: both streams are server-side bounded at MaxOutput and travel
+// base64, so 3x plus envelope room covers the answer — the generic 1 MiB
+// cap applies when nothing larger is asked for.
+func execReadLimit(maxOutput int64) int64 {
+	limit := int64(1 << 20)
+	if maxOutput > 0 && maxOutput < (1<<40) {
+		if need := 3*maxOutput + 4096; need > limit {
+			limit = need
+		}
+	}
+	return limit
+}
+
 func (c inProc) ClaimWorker(ctx context.Context, space string, in ClaimWorkerRequest) (ClaimedWorker, error) {
 	if !validClaim(space, in) {
 		return ClaimedWorker{}, httpapi.Errorf(ErrInvalid, "invalid worker claim")
@@ -182,7 +215,7 @@ func (c inProc) DrainWorkers(ctx context.Context, space string, in DrainWorkersR
 }
 
 func (c inProc) ExecWorker(ctx context.Context, id string, in WorkerExecRequest) (WorkerExecResult, error) {
-	if !validLeaseReq(id, WorkerLeaseRequest{Org: in.Org, Owner: in.Owner, Lease: in.Lease}) || len(in.Argv) == 0 || len(in.Argv) > 256 {
+	if !validExecReq(id, in) {
 		return WorkerExecResult{}, httpapi.Errorf(ErrInvalid, "invalid worker exec")
 	}
 	out, err := c.server.ExecWorker(ctx, id, in)
@@ -229,11 +262,11 @@ func (c httpClient) DrainWorkers(ctx context.Context, space string, in DrainWork
 }
 
 func (c httpClient) ExecWorker(ctx context.Context, id string, in WorkerExecRequest) (WorkerExecResult, error) {
-	if !validLeaseReq(id, WorkerLeaseRequest{Org: in.Org, Owner: in.Owner, Lease: in.Lease}) || len(in.Argv) == 0 || len(in.Argv) > 256 {
+	if !validExecReq(id, in) {
 		return WorkerExecResult{}, httpapi.Errorf(ErrInvalid, "invalid worker exec")
 	}
 	var out WorkerExecResult
-	err := c.Do(ctx, http.MethodPost, "/v1/workers/"+url.PathEscape(id)+"/exec", in, &out)
+	err := c.DoLimit(ctx, http.MethodPost, "/v1/workers/"+url.PathEscape(id)+"/exec", in, &out, execReadLimit(in.MaxOutput))
 	return out, err
 }
 

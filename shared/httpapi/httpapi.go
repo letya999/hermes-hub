@@ -90,6 +90,14 @@ type Client struct {
 
 // Do sends in as JSON (no body when in is nil) and decodes a 200 body into out.
 func (c Client) Do(ctx context.Context, method, path string, in, out any) error {
+	return c.DoLimit(ctx, method, path, in, out, maxBody)
+}
+
+// DoLimit is Do with an explicit response-body cap: a caller that knows
+// the response shape (e.g. an exec whose streams are already bounded
+// server-side) sizes the cap from the request instead of the 1 MiB
+// default.
+func (c Client) DoLimit(ctx context.Context, method, path string, in, out any, limit int64) error {
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
@@ -122,7 +130,7 @@ func (c Client) Do(ctx context.Context, method, path string, in, out any) error 
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&failure)
 		return errorOf(resp.StatusCode, failure.Error)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out); err != nil {
 		return Errorf(ErrUnavailable, "decode response: %v", err)
 	}
 	return nil
