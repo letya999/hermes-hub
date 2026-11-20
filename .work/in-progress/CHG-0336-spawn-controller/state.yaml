@@ -17,7 +17,7 @@ slices:
   S2-revisions-and-contract: green
   S3-backends: green
   S4-runtime-lifecycle-and-warm-pool: green
-  S5-importer-explain-doctor: not_started
+  S5-importer-explain-doctor: green
   S6-workers-and-cells: not_started
   S7-consumers-cutover: not_started
   S8-delete-v0: not_started
@@ -85,6 +85,13 @@ evidence:
   - "S4 fix-up: TestWarmClaimRequiresMatchingDigest red on pre-fix code ('stale-digest warm row survived the sweep as warm'), green; planted stale-digest warm row is never reused and the sweep drains it."
   - "S4 mutation probes (temporary, restored, never committed): removing 'AND policy_digest = ?' from the claim reuse query -> TestWarmClaimRequiresMatchingDigest FAILS ('claim reused a warm row bound to a revoked digest'); pinning plan's tenant scope to alice -> TestWarmRuntimeNeverCrossesTenants FAILS ('cross-tenant reuse: rt-... serves two owners'); neutering the plan.wait case -> TestConcurrentClaimsStartOnce FAILS ('claim 0: unavailable: start : store: statement without tenant scope: incomplete tenant'); dropping the reconcile List-error guard -> TestDaemonErrorNeverMarksMissing FAILS ('daemon error moved the row to missing')."
   - "S4 fix-up gates: go vet clean on touched packages; just test ./services/spawn-controller/... ./contracts/spawn/... ./cmd/hubctl green (spawn 5.3s incl. new tests, backend incl. docker legs 29.8s, hubctl 59.3s); just check green post-commit; docker filters empty."
+  - "S5: TestExplainAttributesLayer red ('state rejected' — thin one-doc layer could not compile managed-complete), green after the fixture submits all six layers as drafts before validate: timezone -> user, stack.identity.user -> platform-ceiling, workspace.tree -> derived."
+  - "S5: TestImporterDryRunWritesNothing/Idempotent/MapsCurrentRevisionToActiveUserLayer/KeepsGenerationsMonotonic/NeverTouchesV0Files/ReportHasNoContents green on real-compiler-emitted fixtures; importer gates on spaces.effective_digest so a mid-space crash resumes the missing stages."
+  - "S5: emitted revision re-layered as user docs — envelope, workspace.tree and the injected tools.core.platform are compiler output, not authored content; grants.allow lands through LayeredGrants. Import runs Submit/Validate/Activate, never raw SQL."
+  - "S5: generation baseline = one absent runtimes row per (space, agent) at the v0 gen-N floor; claims take MAX(generation)+1 so v1 generations stay monotonic. supervisor runtimes/jobs/holds/pins/orphans and signals/transitions journals counted and dropped — no v1 reader this milestone (S3)."
+  - "S5: TestExplainGolden green — hubctl explain <space> prints header + doc.path = value [layer] through the in-proc contract; tenant isolation on --owner mismatch. Explain is a stored-read (attribution column on effective_specs), never a recompile; conformance covers success/stability/foreign-tenant on fake and real transports."
+  - "S5 doctor: no authored passport/config shape migration exists — authored passports are already v2 normative bodies and ReadAuthored rejects generated fields; UpdateProvisioningProfile is a profile refresh. No --fix implemented; TestDoctorHasNoShapeMigration pins the flag as rejected and passports byte-identical."
+  - "S5 gates: go vet clean; just check green (format, docs, boundaries, vet); just test affected — go test -short -count=1 ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl green (importer 2.2s, spawn 6.4s, api 2.1s, migrations 1.6s, fake 0.05s, passport 3.8s, hubctl 56.8s)."
 remaining:
   - "S5+: WorkerMachine rows are swept but not wired to HTTP; image_pins table exists but the claim stamps the image tag — the real pinned digest lands with image pins (S5/S7)."
   - "S7: /v1/leases/{id}/renew is wired but has no production caller yet — channel-hub's renew heartbeat is the consumer cutover's job."
