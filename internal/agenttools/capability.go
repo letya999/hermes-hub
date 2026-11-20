@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.7.0",
+		Version:      "18.7.1",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -165,7 +165,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("assignment_read", "assignments.read", "tasks.delegate", "Read one assignment card: state, applied schedule receipts, plan revision, grants, checkpoint counters, blocked reason.", api.ReadEffect, use("read", "assignments"), str("id")),
 			tool("assignment_plan", "assignments.plan", "tasks.delegate", "Dry-run a candidate plan object with nonempty sources[].schedule; do not pass assignment_id. Returns structural verdicts, does not fetch sources or save the plan. For a one-time first HTTP read, use watcher with deliver_mode=content; check unchanged needs a prior baseline.", api.ReadEffect, use("plan", "assignments"), objArg("plan", true)),
 			tool("assignment_create", "assignments.create", "tasks.delegate", "Save the owner's verbatim intent as a durable draft. If the owner explicitly requests planning first, call assignment_plan first; do not queue an unverified plan.", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), objArg("plan", false), boolArg("queue", false)),
-			tool("assignment_edit", "assignments.edit", "tasks.delegate", "Update a plan, apply only verified sources, pause/resume an applied assignment, or record progress from its real trigger job with job_id. Do not create standalone watches as assignment substitutes; removal is assignment_remove.", api.WriteEffect, use("update", "assignments"), str("id"), str("action"), intArg("expected_revision", true), objArg("plan", false), opt("job_id"), opt("summary"), opt("finding"), opt("next_step"), boolArg("complete", false)),
+			tool("assignment_edit", "assignments.edit", "tasks.delegate", "Update a plan, apply only verified sources, pause/resume an applied assignment, or record progress from its real trigger job with job_id. Updating a paused assignment stages the plan and keeps it paused; only resume lifts the pause and apply stays refused until then. Do not create standalone watches as assignment substitutes; removal is assignment_remove.", api.WriteEffect, use("update", "assignments"), str("id"), str("action"), intArg("expected_revision", true), objArg("plan", false), opt("job_id"), opt("summary"), opt("finding"), opt("next_step"), boolArg("complete", false)),
 			tool("assignment_remove", "assignments.remove", "tasks.delegate", "Delete one assignment record; does not recall messages already sent.", api.WriteEffect, use("remove", "assignments"), str("id"), intArg("expected_revision", true)),
 
 			// ---- goals (3)

@@ -1,4 +1,4 @@
-# hub-agent-tools@18.7.0
+# hub-agent-tools@18.7.1
 # name schema_sha256 effect required_rights
 assignment_create 767accbefa7cd749ba8fffef6a3af6ad329f7730cdf3753ecfbf740fee3c601a write tasks.delegate
 assignment_edit 8e658e3e206ba18d9691a9762b2724e28440069c5e58dbde236bb7ea27e44ddc write tasks.delegate

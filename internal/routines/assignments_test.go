@@ -288,8 +288,8 @@ func TestAssignmentLifecyclePropagates(t *testing.T) {
 }
 
 // A paused assignment must leave pause only through Resume: apply would mark
-// it active while its kept schedules stay paused, and a plan update would move
-// it to waiting the same way.
+// it active while its kept schedules stay paused. A plan update stages the
+// next generation without unpausing — the saved state stays paused.
 func TestApplyRefusesPausedAssignment(t *testing.T) {
 	e := testEngine(t)
 	if _, _, err := e.CreateAssignment(newTestAssignment("asg-paused"), assignmentCaller()); err != nil {
@@ -305,8 +305,12 @@ func TestApplyRefusesPausedAssignment(t *testing.T) {
 		t.Fatal("apply accepted a paused assignment")
 	}
 	plan := *newTestAssignment("asg-paused").Plan
-	if _, err := e.UpdateAssignmentPlan("asg-paused", plan, commodel.AssignmentGrants{MaxWakesPerDay: 10}, assignmentCaller()); err == nil {
-		t.Fatal("plan update accepted a paused assignment")
+	updated, err := e.UpdateAssignmentPlan("asg-paused", plan, commodel.AssignmentGrants{MaxWakesPerDay: 10}, assignmentCaller())
+	if err != nil {
+		t.Fatalf("plan update on paused must stage the new generation: %v", err)
+	}
+	if updated.State != "paused" || updated.Plan == nil || updated.Plan.Revision != plan.Revision+1 {
+		t.Fatalf("paused plan update must preserve pause and bump the plan: %+v", updated)
 	}
 	got, err := e.LoadAssignment("asg-paused", assignmentCaller())
 	if err != nil || got.State != "paused" {

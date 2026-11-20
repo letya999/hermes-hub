@@ -287,9 +287,8 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 	if err := checkAssignmentRevision(item, expected); err != nil {
 		return commodel.Assignment{}, err
 	}
-	if item.State == "paused" {
-		return commodel.Assignment{}, errors.New("assignment is paused; resume it first")
-	}
+	// A paused assignment keeps its pause across a plan update: the new plan
+	// generation is staged while the kept schedules stay paused until Resume.
 	if plan.Revision == 0 {
 		plan.Revision = 1
 	}
@@ -304,7 +303,9 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 	}
 	item.Plan = &plan
 	item.Grants = grants
-	item.State = "waiting"
+	if item.State != "paused" {
+		item.State = "waiting"
+	}
 	item.Revision++
 	item.UpdatedAt = time.Now().UTC()
 	return item, e.atomicJSON(e.AssignmentPath(id), item)
