@@ -71,6 +71,7 @@ func TestTenantInvariants(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).Unix()
 	storetest.TenantInvariants(t,
 		plain("spaces", []string{"created_at"}, now),
+		plain("effective_specs", []string{"space_id", "documents", "created_at"}, "s1", "{}", now),
 		machine(spawn.PassportRevisionMachine),
 		history(spawn.PassportRevisionMachine),
 		machine(spawn.RuntimeMachine),

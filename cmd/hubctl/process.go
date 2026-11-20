@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/shared/locale"
 	hublog "github.com/letya999/hermes-hub/shared/log"
@@ -97,6 +98,14 @@ func processEnv(svc ServiceDescriptor, services []ServiceDescriptor, data, token
 		"HUB_DATA_DIR="+filepath.Join(data, svc.DataDir),
 		"HUB_DATABASE_URL=sqlite://"+filepath.ToSlash(filepath.Join(data, svc.Name+".db")),
 		"HUB_SERVICE_TOKEN="+token)
+	// Pin the catalog root only when it actually resolved — an unset or
+	// unresolvable root stays out of the env so the child's own resolution
+	// (baked image path or its working-directory walk) decides.
+	if root := catalog.Root(); root != "" {
+		if _, err := os.Stat(filepath.Join(root, "platform", "catalogs", catalog.Release, catalog.ManifestFile)); err == nil {
+			env = append(env, "HUB_CATALOG_ROOT="+root)
+		}
+	}
 	for _, edge := range svc.Edges {
 		for _, dependency := range services {
 			if dependency.Name == edge {

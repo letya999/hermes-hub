@@ -90,10 +90,12 @@ func checkTable(t *testing.T, m *fsm.Machine, cases []struct {
 	})
 }
 
-// The revision machine: draft, validated, rejected, active, superseded.
-// Rollback is an activate on a superseded row; expire tombstones stale
-// drafts and unactivated validated rows, while retain is the sweeper's
-// self-loop that keeps active and superseded alive forever.
+// The revision machine: draft, validated, rejected, active, superseded,
+// pruned. Rollback is an activate on a superseded row; expire tombstones
+// stale drafts and unactivated validated rows, retain is the sweeper's
+// self-loop that keeps active and superseded alive forever, and prune is
+// the revision service's explicit retention edge — superseded rows beyond
+// the keep slack move to the final pruned state.
 func TestPassportRevisionTransitions(t *testing.T) {
 	checkTable(t, spawn.PassportRevisionMachine, []struct {
 		path  []string
@@ -109,11 +111,13 @@ func TestPassportRevisionTransitions(t *testing.T) {
 		{[]string{"validate", "activate"}, "retain", "active"},
 		{[]string{"validate", "activate", "supersede"}, "activate", "active"},
 		{[]string{"validate", "activate", "supersede"}, "retain", "superseded"},
+		{[]string{"validate", "activate", "supersede"}, "prune", "pruned"},
 	}, map[string][]string{
-		"validated":  {"supersede", "reject", "validate", "retain"},
-		"rejected":   {"validate", "activate", "expire", "supersede", "retain"},
-		"active":     {"validate", "reject", "activate", "expire"},
+		"validated":  {"supersede", "reject", "validate", "retain", "prune"},
+		"rejected":   {"validate", "activate", "expire", "supersede", "retain", "prune"},
+		"active":     {"validate", "reject", "activate", "expire", "prune"},
 		"superseded": {"validate", "reject", "supersede", "expire"},
+		"pruned":     {"validate", "reject", "activate", "expire", "supersede", "retain", "prune"},
 	})
 }
 

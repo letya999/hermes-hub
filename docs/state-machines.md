@@ -192,18 +192,22 @@ on.
 | validated | `expire` (never activated) | rejected | final |
 | active | `supersede` (a newer revision activates) | superseded | bound 30d, deadline `retain` (self-loop re-arm); owner rolls back |
 | superseded | `activate` (rollback activates it) | active | bound 30d, deadline `retain` (self-loop re-arm) |
+| superseded | `prune` (retention count passed) | pruned | final |
 | active, superseded | `retain` (bound passed, nothing else acted) | same state | re-arm only; `active` and `superseded` never expire |
 
 Rollback is activation of an older revision. Readers fetch a slice by
 digest; there is no `pending` pointer and no journal file.
 
-S1 implementation notes (`services/spawn-controller/internal/spawn`,
+S2 implementation notes (`services/spawn-controller/internal/spawn`,
 verified 2026-11-20): `active` is the space's only live policy and
 `superseded` is the rollback target (v0 `RestoreCurrent`), so the sweeper
 must never tombstone either — the `retain` self-loop only re-arms their
-bound and writes history. Pruning old superseded revisions is an explicit
-count-based action (S2), never the sweeper. `rejected` is the only
-tombstone.
+bound and writes history. Pruning is the explicit count-based edge
+`superseded --prune--> pruned`: the activation transaction keeps the
+newest `passport.RevisionKeepSlack` (3) superseded revisions per
+(space, layer) and moves older ones to the final `pruned` state.
+`rejected` and `pruned` are the tombstones. `rejected`/`pruned` content
+may be resubmitted — the digest dedup only binds non-pruned rows.
 
 ## ChannelLink
 

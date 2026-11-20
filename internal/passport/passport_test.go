@@ -143,6 +143,91 @@ func compileFixture(t *testing.T) passport.Revision {
 	return rev
 }
 
+// The agent layer merges below the user layer and may only narrow it:
+// every leaf it writes must already exist in the merged result — a list
+// may shrink to a subset, a scalar must repeat the value. Anything else is
+// a widening and fails the compile (ADR-0106).
+func TestAgentLayerOnlyNarrows(t *testing.T) {
+	agent := func(docs map[string]map[string]any) passport.Layer {
+		return passport.Layer{Name: "agent:alice:nova", Version: 1, Docs: docs}
+	}
+	cases := []struct {
+		name string
+		docs map[string]map[string]any
+		err  string
+	}{
+		{"narrow list subset", map[string]map[string]any{
+			"workspace": {"writable": []any{"/workspace"}},
+		}, ""},
+		{"widen narrow list", map[string]map[string]any{
+			"workspace": {"writable": []any{"/workspace", "/etc"}},
+		}, "beyond the user layer"},
+		{"narrowed-away ceiling path", map[string]map[string]any{
+			"workspace": {"writable": []any{"/vault"}},
+		}, "beyond the user layer"},
+		{"repeat scalar", map[string]map[string]any{
+			"config": {"runtime": map[string]any{"timezone": "Europe/Berlin"}},
+		}, ""},
+		{"change scalar", map[string]map[string]any{
+			"config": {"runtime": map[string]any{"timezone": "UTC"}},
+		}, "beyond the user layer"},
+		{"add absent leaf", map[string]map[string]any{
+			"config": {"runtime": map[string]any{"goals": map[string]any{"max_turns": 3}}},
+		}, "beyond the user layer"},
+		{"keyset repeat", map[string]map[string]any{
+			"tools": {"core": map[string]any{"native:file": map[string]any{"via": "native"}}},
+		}, ""},
+		{"keyset change", map[string]map[string]any{
+			"tools": {"core": map[string]any{"native:file": map[string]any{"via": "toolhub"}}},
+		}, "beyond the user layer"},
+		{"keyset new entry", map[string]map[string]any{
+			"tools": {"core": map[string]any{"evil": map[string]any{"via": "toolhub"}}},
+		}, "beyond the user layer"},
+		{"stack new service", map[string]map[string]any{
+			"stack": {"services": map[string]any{"evil": map[string]any{"mode": "per-space"}}},
+		}, "beyond the user layer"},
+		{"grants extra cap", map[string]map[string]any{
+			"grants": {"allow": []any{"workspace", "secrets"}},
+		}, "beyond the user layer"},
+		{"layout narrows ro", map[string]map[string]any{
+			"workspace": {"layout": []any{map[string]any{"path": "/workspace/work", "mode": "ro"}}},
+		}, ""},
+		{"layout new path", map[string]map[string]any{
+			"workspace": {"layout": []any{"/workspace/secret"}},
+		}, "outside"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := fixtureInputs(t)
+			in.Agent = agent(tc.docs)
+			if tc.name == "grants extra cap" || tc.name == "narrow list subset" || tc.name == "widen narrow list" || tc.name == "narrowed-away ceiling path" || tc.name == "layout narrows ro" || tc.name == "layout new path" {
+				in.Grants = map[string][]string{"workspace": {"read", "write"}, "tools": {"list", "use"}}
+			}
+			_, err := passport.Compile(in)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatalf("agent narrowing must compile: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("agent widening must fail with %q, got %v", tc.err, err)
+			}
+		})
+	}
+	// A narrowing subset still narrows grants below the merged ceiling:
+	// the merged cap list is the org ceiling's {workspace, tools}; the
+	// agent picks a subset and the trimmed ledger stays inside it.
+	in := fixtureInputs(t)
+	in.Grants = map[string][]string{"workspace": {"read", "write"}}
+	in.Agent = agent(map[string]map[string]any{
+		"grants": {"allow": []any{"workspace"}},
+	})
+	if _, err := passport.Compile(in); err != nil {
+		t.Fatalf("agent grants subset must compile: %v", err)
+	}
+}
+
 func TestCompiledPolicyCarriesOneSpaceAndRevision(t *testing.T) {
 	rev := compileFixture(t)
 	policy, err := rev.PolicyBundle()

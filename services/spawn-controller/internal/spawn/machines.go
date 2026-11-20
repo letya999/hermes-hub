@@ -17,14 +17,15 @@ import (
 //     Values are the S1 defaults S4's sweeper wiring may refine.
 
 // PassportRevisionMachine is the revision lifecycle: draft -> validated ->
-// active -> superseded, rollback reactivates a superseded revision, and
-// rejected is the final tombstone. The doc's "-" cells get fsm deadlines:
-// expire sweeps an uncompiled draft (the doc's draft TTL) or a validated
-// revision never activated, while retain is a self-loop that only re-arms
-// the bound — an active revision is the space's only live policy and a
-// superseded one is the rollback target (v0 RestoreCurrent), so the sweeper
-// must never tombstone either. Pruning old superseded rows is an explicit
-// count-based S2 action, never the sweeper.
+// active -> superseded, rollback reactivates a superseded revision,
+// rejected and pruned are the final tombstones. The doc's "-" cells get
+// fsm deadlines: expire sweeps an uncompiled draft (the doc's draft TTL)
+// or a validated revision never activated, while retain is a self-loop
+// that only re-arms the bound — an active revision is the space's only
+// live policy and a superseded one is the rollback target (v0
+// RestoreCurrent), so the sweeper must never tombstone either. Pruning is
+// the explicit count-based edge the revision service fires: superseded
+// rows beyond the v0 retention slack move to pruned, never the sweeper.
 var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 	Table:   "passport_revisions",
 	History: "passport_revisions_history",
@@ -39,6 +40,7 @@ var PassportRevisionMachine = must(fsm.New(fsm.Machine{
 		{From: "active", Event: "retain", To: "active"},
 		{From: "superseded", Event: "activate", To: "active"},
 		{From: "superseded", Event: "retain", To: "superseded"},
+		{From: "superseded", Event: "prune", To: "pruned"},
 	},
 	Deadlines: map[string]fsm.Deadline{
 		"draft":      {After: 10 * time.Minute, Event: "expire"},   // draft TTL; sweeper removes an uncompiled draft

@@ -32,6 +32,7 @@ func init() {
 		"supervisor.communication-service-auth-distinct": "La emisión para Communication requiere una credencial independiente",
 		"supervisor.dreaming-service-auth-distinct":      "La emisión para el procesamiento nocturno requiere una credencial independiente",
 		"supervisor.identity-unavailable":                "El registro de identidad no está disponible",
+		"spawn.revision-rejected":                        "La revisión del pasaporte no compiló",
 		"supervisor.identity-upkeep-pending":             "El mantenimiento del registro de identidad está pendiente",
 
 		"package.sources-unavailable":              "Las fuentes del paquete no están disponibles",

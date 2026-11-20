@@ -87,7 +87,9 @@ func parseLayout(v any, owner string) ([]layoutNode, error) {
 // effective directory inventory. Ceiling layers author the bound key set;
 // every deeper declaration must stay inside it — may drop nodes, mark
 // mode ro, or re-annotate — but never adds paths or flips ro back to rw
-// (SPEC-0092 R5.1: layers narrow, they do not widen).
+// (SPEC-0092 R5.1: layers narrow, they do not widen). The last slice entry
+// is the agent layer: its bound is the effective set the layers above it
+// produced, so a path narrowed away by a template stays denied to it.
 func mergeWorkspaceLayout(layers []Layer) ([]layoutNode, error) {
 	var bound map[string]layoutNode
 	var effective []layoutNode
@@ -101,6 +103,12 @@ func mergeWorkspaceLayout(layers []Layer) ([]layoutNode, error) {
 			return nil, err
 		}
 		ceiling := i == 0 || i == 2
+		if i == len(layers)-1 {
+			bound = map[string]layoutNode{}
+			for _, n := range effective {
+				bound[n.Path] = n
+			}
+		}
 		merged := make([]layoutNode, 0, len(nodes))
 		seen := map[string]bool{}
 		for _, n := range nodes {

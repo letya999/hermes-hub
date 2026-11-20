@@ -20,8 +20,14 @@ import (
 	"sync"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn/migrations"
 	"github.com/letya999/hermes-hub/shared/proctree"
+	"github.com/letya999/hermes-hub/shared/store"
+	_ "github.com/letya999/hermes-hub/shared/store/postgres" // pgx for HUB_DATABASE_URL postgres://
 )
 
 // Controller ensures one child runtime per (space, agent) pair and forwards
@@ -31,6 +37,7 @@ type Controller struct {
 	backend backend.Backend
 	token   string
 	max     int
+	spaces  http.Handler
 	mu      sync.Mutex
 	ensured map[string]backend.Runtime
 	client  *http.Client
@@ -116,6 +123,10 @@ func (c *Controller) guard(next http.HandlerFunc) http.HandlerFunc {
 func (c *Controller) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	if c.spaces != nil {
+		mux.Handle("/v1/spaces", c.guard(c.spaces.ServeHTTP))
+		mux.Handle("/v1/spaces/", c.guard(c.spaces.ServeHTTP))
+	}
 	mux.HandleFunc("/v1/runtimes", c.guard(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"runtimes": c.backend.List(r.Context())})
 	}))
@@ -173,6 +184,10 @@ func Serve(ctx context.Context) error {
 	if token == "" {
 		return errors.New("HUB_SERVICE_TOKEN is required")
 	}
+	databaseURL := os.Getenv("HUB_DATABASE_URL")
+	if databaseURL == "" {
+		return errors.New("HUB_DATABASE_URL is required")
+	}
 	max := defaultMaxRuntimes
 	if raw := os.Getenv("HUB_MAX_RUNTIMES"); raw != "" {
 		var parsed int
@@ -195,7 +210,29 @@ func Serve(ctx context.Context) error {
 		[]string{"TZ", "HUB_MANAGED_MODEL_URL", "HUB_MANAGED_MODEL_ID", "HUB_FEATURES"},
 		token, ctx, group,
 	)
-	controller := &Controller{backend: be, token: token, max: max, ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: 60 * time.Second}}
+	serviceStore, err := store.Open(ctx, databaseURL, migrations.FS)
+	if err != nil {
+		return err
+	}
+	defer serviceStore.Close()
+	// The pinned catalog resolves on first compile — the baked tree lives
+	// in the image while process-mode children inherit HUB_CATALOG_ROOT
+	// from the launcher; a compile that still cannot resolve fails
+	// unavailable instead of killing the boot.
+	var catalogOnce sync.Once
+	var catalogDocs catalog.Docs
+	var catalogErr error
+	controller := &Controller{
+		backend: be, token: token, max: max,
+		spaces: spawnv1.Handler(Contract{Revisions: &spawn.Revisions{
+			Store: serviceStore,
+			LoadCatalog: func() (catalog.Docs, error) {
+				catalogOnce.Do(func() { catalogDocs, catalogErr = catalog.LoadPinned() })
+				return catalogDocs, catalogErr
+			},
+		}}, token),
+		ensured: map[string]backend.Runtime{}, client: &http.Client{Timeout: 60 * time.Second},
+	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err

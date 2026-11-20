@@ -32,6 +32,7 @@ func init() {
 		"supervisor.communication-service-auth-distinct": "Communication қызметтік рұқсаттарын беру үшін бөлек кілт қажет",
 		"supervisor.dreaming-service-auth-distinct":      "Жадты түнде өңдеу рұқсаттары үшін бөлек кілт қажет",
 		"supervisor.identity-unavailable":                "Сәйкестендіру тізілімі қолжетімсіз",
+		"spawn.revision-rejected":                        "Паспорт ревизиясы компиляциядан өтпеді",
 		"supervisor.identity-upkeep-pending":             "Сәйкестендіру тізіліміне қызмет көрсету қайта орындалуды күтуде",
 
 		"package.sources-unavailable":              "Мұрағатқа арналған бастапқы файлдар қолжетімсіз",

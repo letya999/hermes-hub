@@ -36,6 +36,7 @@ func TestTenantInvariants(t *testing.T) {
 		})
 	}
 	add("spaces", []string{"created_at"}, now)
+	add("effective_specs", []string{"space_id", "documents", "created_at"}, "s1", "{}", now)
 	add("passport_revisions", []string{"state"}, "draft")
 	add("passport_revisions_history", []string{"seq", "at", "from_state", "event", "to_state"}, 1, now, "", "create", "draft")
 	add("runtimes", []string{"generation", "state"}, 1, "starting")

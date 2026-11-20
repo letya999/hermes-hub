@@ -48,9 +48,14 @@ type Inputs struct {
 	OrgCeiling       Layer
 	OrgTemplate      Layer
 	User             Layer
-	Grants           map[string][]string
-	Catalog          catalog.Docs
-	Now              time.Time
+	// Agent merges last, below the user layer (ADR-0106): it may only
+	// narrow the spec the layers above produced — a leaf must already
+	// exist, a list may shrink to a subset, a scalar must repeat the
+	// value. Empty means the space has no agent overlay.
+	Agent   Layer
+	Grants  map[string][]string
+	Catalog catalog.Docs
+	Now     time.Time
 	// RendersInfra marks the space that owns the shared control plane —
 	// only it may publish a shared service's host port. ReservedPorts
 	// carries the host ports sibling spaces already published
@@ -190,7 +195,7 @@ func flatten(tree map[string]any, prefix string, out map[string]any) {
 // Every rule failure is a compile error before a single byte is staged.
 func Compile(in Inputs) (Revision, error) {
 	var rev Revision
-	layers := []Layer{in.PlatformCeiling, in.PlatformTemplate, in.OrgCeiling, in.OrgTemplate, in.User}
+	layers := []Layer{in.PlatformCeiling, in.PlatformTemplate, in.OrgCeiling, in.OrgTemplate, in.User, in.Agent}
 	for i, l := range layers {
 		for doc := range l.Docs {
 			if doc == "grants" && (i == 1 || i == 3) {
@@ -216,6 +221,56 @@ func Compile(in Inputs) (Revision, error) {
 			leaves := map[string]any{}
 			if tree, ok := l.Docs[doc]; ok {
 				flatten(tree, "", leaves)
+			}
+			// The agent layer (always the last slice entry) narrows the
+			// spec the layers above produced — the merged body itself is
+			// its bound, so a template-narrowed list stays binding even
+			// when no ceiling re-pinned it. For a keyset map the agent's
+			// declared keys become the final key set: absence drops the
+			// entry, an unknown key is a widening add.
+			if i == len(layers)-1 {
+				above := map[string]any{}
+				flatten(body, "", above)
+				agentKeys := map[string]map[string]bool{}
+				for p := range leaves {
+					class, base, ok := leafClass(doc, p)
+					if !ok {
+						return rev, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
+					}
+					if class == classKeysetNarrow {
+						if key := keyAfter(base, p); key != "" {
+							if agentKeys[base] == nil {
+								agentKeys[base] = map[string]bool{}
+							}
+							agentKeys[base][key] = true
+						}
+					}
+				}
+				for base, keys := range agentKeys {
+					node := mapAt(body, base)
+					for k := range node {
+						if !keys[k] {
+							delete(node, k)
+						}
+					}
+					for k := range keys {
+						if _, ok := node[k]; !ok {
+							return rev, fmt.Errorf("passport compile: agent layer %q adds %s.%s.%s beyond the user layer", l.Name, doc, base, k)
+						}
+					}
+				}
+				for p, raw := range leaves {
+					// workspace.layout merges through mergeWorkspaceLayout.
+					if doc == "workspace" && p == "layout" {
+						continue
+					}
+					class, _, _ := leafClass(doc, p)
+					if err := narrowAgentLeaf(l.Name, doc, p, raw, class, above); err != nil {
+						return rev, err
+					}
+					setPath(body, p, raw)
+				}
+				continue
 			}
 			for p, raw := range leaves {
 				// workspace.layout merges through mergeWorkspaceLayout —
@@ -478,6 +533,38 @@ func projectGrants(ledger map[string][]string, docs catalog.Docs, ceiling any) (
 	return map[string]any{"allow": out}, nil
 }
 
+// narrowAgentLeaf checks one agent-layer leaf against the spec the layers
+// above produced (ADR-0106: lower layers only narrow). The leaf must
+// already exist in the merged result — a list may shrink to a subset (a
+// choice list narrows to one member) and a scalar must repeat the value.
+// Anything else — a new path, a new keyset entry, a wider list, a changed
+// scalar — is a widening and a compile error.
+func narrowAgentLeaf(name, doc, p string, raw any, class fieldClass, above map[string]any) error {
+	over, present := above[p]
+	if !present {
+		return fmt.Errorf("passport compile: agent layer %q adds %s.%s beyond the user layer", name, doc, p)
+	}
+	if list, isList := over.([]any); isList {
+		if class == classChoice {
+			if contains(list, raw) {
+				return nil
+			}
+		} else if rawList, ok := raw.([]any); ok {
+			for _, item := range rawList {
+				if !contains(list, item) {
+					return fmt.Errorf("passport compile: agent layer %q widens %s.%s beyond the user layer", name, doc, p)
+				}
+			}
+			return nil
+		}
+		return fmt.Errorf("passport compile: agent layer %q widens %s.%s beyond the user layer", name, doc, p)
+	}
+	if fmt.Sprint(raw) != fmt.Sprint(over) {
+		return fmt.Errorf("passport compile: agent layer %q widens %s.%s beyond the user layer", name, doc, p)
+	}
+	return nil
+}
+
 // contains reports whether item is a member of the offered bound list.
 func contains(bound []any, item any) bool {
 	for _, b := range bound {
@@ -500,6 +587,20 @@ func setPath(body map[string]any, path string, value any) {
 		m = next
 	}
 	m[parts[len(parts)-1]] = value
+}
+
+// mapAt navigates a dotted path through body; an absent or non-map node
+// yields nil.
+func mapAt(body map[string]any, path string) map[string]any {
+	m := body
+	for _, p := range strings.Split(path, ".") {
+		next, ok := m[p].(map[string]any)
+		if !ok {
+			return nil
+		}
+		m = next
+	}
+	return m
 }
 
 // meta projects the revision provenance into the short v2 file envelope:
