@@ -18,7 +18,7 @@ slices:
   S3-backends: green
   S4-runtime-lifecycle-and-warm-pool: green
   S5-importer-explain-doctor: green
-  S6-workers-and-cells: in_progress
+  S6-workers-and-cells: green
   S7-consumers-cutover: not_started
   S8-delete-v0: not_started
   S9-docs-and-acceptance: not_started
@@ -99,8 +99,8 @@ evidence:
   - "S6 ToolHub: cell lifecycle removed (cell_lifecycle.go deleted; cell.go/cell_init.go/cell_net.go reduced to shared constants, image/toolbox resolution, warm key and the MCP cred-proxy helpers), execCLI claims/renews/releases through contracts/spawn/v1, held-worker registry replaces the warm registry, ephemeral+shared-pool claim fresh workers per call (cross-user pool and its pool_size/pool_claim_wait_seconds config deleted), /cli-release drains via DrainWorkers, /cli-metrics reports worker counters, HUB_SPAWN_URL+HUB_SPAWN_TOKEN wire the client and TestToolHubCellsUnavailableWithoutSpawn covers the V5 refusal on both nil client and a cells-off server."
   - "S6 rg evidence: internal/toolhub docker surface for cells is down to `docker image inspect` + `docker info` (cell.go:93,:157 — image/runtime resolution only); the remaining `docker exec -i` in cell_net.go:52 is the MCP cred-proxy rules channel that stays in this milestone. No create/exec/rm for CLI cells anywhere in toolhub; deleted internals (cellUID, cellArgv, cellBinds, cellEgress, cellSquid, cellProfileProblem, cellDrifted, cellRegistry, cliCell, execPooled, claimPoolCell, returnPoolCell, execWarm, execInCell, cellRun, inspectCell, removeCell, cleanupCells, releaseCells, warmCell, createCell) have zero non-test references."
   - "S6 gates: go vet -p=2 clean on touched packages; just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/toolhub/... ./cmd/hubctl green (toolhub 207.9s, hubctl 127.1s, backend incl. docker legs 81.9s, spawn 6.8s, api 0.3s); just test ./internal/devcheck green. TestGitLabDeployPinsRenderedImages needed Git\\cmd ahead of Git\\mingw64\\bin on PATH (env quirk, unrelated to the slice). TestToolCatalogSnapshotUnchanged green — only the executor moved."
+  - "S6 e2e: devcheck docker-build hermes-hub-cli-tools:test cli-tools green; TestWorkerCellRealDocker green on the real daemon (9.3s — claim, docker exec echo, release; containers+network gone). docker ps/network filters for hermes.test=chg-0336 and hermes-hub-wkt/-wnt empty; just docker-clean after the build."
 remaining:
-  - "S6 e2e: TestWorkerCellRealDocker skips until hermes-hub-cli-tools:test is built locally; image build + live leg runs after the code commit (RAM-bound host — no parallel builds)."
   - "S5+: image_pins table exists but the claim stamps the image tag — the real pinned digest lands with image pins (S5/S7)."
   - "S7: /v1/leases/{id}/renew is wired but has no production caller yet — channel-hub's renew heartbeat is the consumer cutover's job."
   - "S4 note: runtime row ids are content-derived per generation (sha256 of tenant+space+agent+generation); backend_id equals the row id so reconcile keys the workload by the row."
