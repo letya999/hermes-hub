@@ -78,6 +78,20 @@ keeps working through the new service.
     digest on the space row in the same transaction; readers and claims use
     the stored digest and never recompile on the hot path.
 
+13. Supervisor scope in M40.3 (decided at S7). The v0 supervisor also hosts
+    jobs/execute/resume, wake, holds, control, artifact/usage/compact/goal,
+    self-env, skill-*, session-read and identity signers; those leave with
+    M40.6 (jobs) and M40.5 (identity). In M40.3 the supervisor stays in the
+    compose stack as that host and loses only container and passport
+    ownership: it claims runtimes through `contracts/spawn/v1` and forwards
+    to the returned endpoint; its spawn code is deleted in S8. S7 is split so
+    the dev stack works after every commit: S7a spawn-controller in the
+    stack + runtime claim/lease routes in the contract; S7b passport writer
+    cutover (apply, settings) with a transitional v0 file mirror; S7c
+    supervisor Ensure/respawn through spawn/v1, Hermes config render and
+    mount plan at spawn inside spawn-controller; S7d readers by digest over
+    HTTP, mirror/journal/`current`/config-view writers deleted.
+
 ## Slices
 
 Every slice: tests red first, delete what it replaces, `just check` and

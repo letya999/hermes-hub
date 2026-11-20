@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: "2026-11-19"
+last_verified: "2026-11-21"
 ---
 
 # Operations
@@ -400,6 +400,22 @@ Tool selection grants no authority; a managed profile binds the exact
    starts the shared plan first, then the user plan. Other users keep one
    per-space Compose project each. Run `hubctl` for lifecycle operations so a
    later up cannot rejoin the two plans.
+
+   In supervisor mode the shared plan also renders `spawn-controller`
+   beside the `supervisor` service (M40.3): the v1 container authority
+   that owns durable runtime rows, leases and worker cells through the
+   `contracts/spawn/v1` API. It runs the same `…-control` image and
+   hardening as the supervisor, binds the Docker socket, listens on
+   `127.0.0.1:8877`, keeps its SQLite store in the `spawn-controller-data`
+   volume, and imports the v0 supervisor state once from the read-only
+   `/spaces` mount on first boot. Its token resolves through the same
+   `supervisor.auth` chain (`${HUB_SUPERVISOR_AUTH}`); ToolHub and the
+   supervisor receive `HUB_SPAWN_URL`/`HUB_SPAWN_TOKEN` automatically.
+   `hubctl explain <space>` reaches it without extra configuration: the
+   command defaults to `http://127.0.0.1:8877` (override with
+   `HUB_SPAWN_CONTROLLER_URL`) and resolves the token from
+   `HUB_SERVICE_TOKEN`, `HUB_SUPERVISOR_AUTH`/`HUB_RUNTIME_AUTH` or the
+   infra space's `supervisor.auth`.
 
    A *managed* space additionally needs, before `up`: an execution selection
    (`execution.<env>.json` — `mode: supervisor`,

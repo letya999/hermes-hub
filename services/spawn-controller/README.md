@@ -35,9 +35,11 @@ the service's own — no runtime state lives in memory.
 | Method and path | Purpose | Effect | Idempotency key |
 |---|---|---|---|
 | `GET /healthz` | launcher readiness probe | read | - |
+| `POST /v1/spaces/{space}/runtimes` | claim the (space, agent) runtime on its stored effective digest: returns the runtime row (its `address` is the endpoint the caller forwards to), its generation and a fresh lease | write | - |
+| `POST /v1/leases/{id}/renew` | heartbeat: re-arm the held runtime's busy bound | write | `id` |
+| `DELETE /v1/leases/{id}?org=&owner=` | drop the hold; the last lease moves the runtime back to warm | write | `id` |
 | `GET /v1/runtimes?org=&owner=` | list the tenant's runtime rows, newest generation first | read | - |
-| `POST /v1/messages?org=&owner=` | claim the (space, agent) runtime on its stored effective digest, hold a lease, forward the message, release, relay the reply | write-local | `space` + `agent` |
-| `POST /v1/leases/{id}/renew?org=&owner=` | heartbeat: re-arm the held runtime's busy bound | write | `id` |
+| `POST /v1/messages?org=&owner=` | process-mode first message: claim, hold, forward, release, relay the reply | write-local | `space` + `agent` |
 | `POST /v1/spaces` | register the tenant space | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/layers/{layer}/revisions` | submit one layer's documents as a draft revision | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/revisions/{id}/validate` | compile the draft against the other layers | write | `idempotency_key` |
@@ -47,12 +49,12 @@ the service's own — no runtime state lives in memory.
 | `GET /v1/spaces/{space}/explain?org=&owner=` | per-leaf provenance of the effective spec: value plus the layer that set it | read | - |
 | `GET /v1/spaces/{space}/policy/{service}?digest=` | immutable policy slice for one consumer | read | - |
 
-`/v1/spaces*` is the spawn/v1 contract (`contracts/spawn/v1`): tenant
-(`org`, `owner`) travels in the body on writes and the query on reads; the
-policy route answers `Cache-Control: public, max-age=31536000, immutable`
-with `ETag` = digest. `/v1/messages`, `/v1/runtimes` and
-`/v1/leases/{id}/renew` take the same explicit tenant in the query —
-identity is never derived from a header.
+`/v1/spaces*`, `/v1/runtimes` and `/v1/leases*` are the spawn/v1 contract
+(`contracts/spawn/v1`): tenant (`org`, `owner`) travels in the body on
+writes and the query on reads and DELETE; the policy route answers
+`Cache-Control: public, max-age=31536000, immutable` with `ETag` = digest.
+`/v1/messages` stays the process-mode first-message path with the same
+explicit tenant in the query — identity is never derived from a header.
 
 `/v1/*` requires `Authorization: Bearer $HUB_SERVICE_TOKEN` (constant-time
 compare): an `Origin` header is refused 403, missing or wrong bearer 401, a
@@ -93,15 +95,18 @@ a restarted controller recovers its runtimes from the rows.
 `address`), `leases`, `workers` + `_history`, `image_pins`, `backups`;
 every tenant-owned table carries `org` and `owner`. `spaces`,
 `passport_revisions` and `effective_specs` serve the spawn/v1 contract;
-`runtimes` and `leases` serve the message path and `/v1/runtimes`.
-`image_pins` and `backups` receive the v0 import; `workers` is not yet
-wired.
+`runtimes` and `leases` serve the claim/lease contract surface and the
+message path. `image_pins` and `backups` receive the v0 import; `workers`
+serves the `/v1/spaces/.../workers` cell surface.
 
 ## Environment
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HUB_TRUSTED` | - | must be `true`; the service refuses otherwise |
+| `HUB_BACKEND` | `process` | launch backend for runtimes: `process` (trusted dev default, children are local processes) or `docker` (compose container authority) |
+| `HUB_TRUSTED` | - | trust flag: `process` mode requires `true`; `docker` mode accepts `true`, or `false` only with `HUB_CONTAINER_RUNTIME=runsc` (X6) |
+| `HUB_CONTAINER_RUNTIME` | `runc` | OCI runtime spec field docker-mode runtimes launch under; untrusted installs must set `runsc` |
+| `HUB_RUNTIME_IMAGE` | `harness-runtime` | image (docker) or binary name (process) claims launch |
 | `HUB_LISTEN` | - | `host:port` the controller binds |
 | `HUB_DATA_DIR` | - | own data dir; runtimes spawn under `runtimes/` |
 | `HUB_SERVICE_TOKEN` | - | bearer token required on `/v1/*` and forwarded to children; startup refuses without it |
@@ -154,6 +159,8 @@ runtime); backends apply the Spec or refuse it, they never decide policy.
 Providers: `process` (trusted single-user dev, wired to the message path)
 and `docker` (docker CLI on the same Spec, moved from the v0 supervisor;
 the shared conformance suite lives in `internal/backend/backendtest`).
+`HUB_BACKEND` selects the provider at startup; in the compose stack the
+service runs `docker` with `HUB_RUNTIME_IMAGE` set to the agent image tag.
 Kubernetes and firecracker arrive with M40.15.
 
 ## When a dependency is disabled

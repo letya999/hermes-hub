@@ -64,7 +64,8 @@ flowchart LR
     SV --> RT[hermes-runtime<br/>upstream agent · per user]
     RT <--> TH[ToolHub<br/>admission · memory · automation]
     GW <--> BK[credential-broker<br/>per-call leases]
-    TH --> CELL[workload cells<br/>egress allowlist]
+    TH -->|spawn/v1| SC[spawn-controller<br/>runtime &amp; cell authority]
+    SC --> CELL[workload cells<br/>egress allowlist]
     TH --> VAULT[(per-user vaults<br/>spaces/&lt;id&gt;)]
 ```
 
