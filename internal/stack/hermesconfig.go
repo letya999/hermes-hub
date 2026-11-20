@@ -1,15 +1,12 @@
 package stack
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"slices"
 
 	"github.com/letya999/hermes-hub/internal/media"
 	"gopkg.in/yaml.v3"
@@ -308,51 +305,6 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 		return fmt.Errorf("managed effective config differs from reviewed profile")
 	}
 	return nil
-}
-
-// SelfServiceState is the operator-edited feature list persisted beside the
-// runtime state.
-type SelfServiceState struct {
-	Features []string `json:"features"`
-}
-
-// ReadSelfServicesFeatures returns the validated self-service feature names
-// from the state file, or nil when it does not exist.
-func ReadSelfServicesFeatures(path string) ([]string, error) {
-	info, err := os.Lstat(path) // #nosec G304 -- operator-owned state path
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("self-services must be a regular file")
-	}
-	body, err := os.ReadFile(path) // #nosec G304 -- same validated path
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > 64*1024 {
-		return nil, errors.New("self-services file is too large")
-	}
-	var current SelfServiceState
-	if err := json.Unmarshal(body, &current); err != nil {
-		return nil, fmt.Errorf("invalid self-services file: %w", err)
-	}
-	seen := map[string]bool{}
-	for _, name := range current.Features {
-		info, ok := ServiceInfoByName(name)
-		if !ok || !info.SelfService {
-			return nil, fmt.Errorf("service %q is not self-service", name)
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("duplicate service %q", name)
-		}
-		seen[name] = true
-	}
-	slices.Sort(current.Features)
-	return current.Features, nil
 }
 
 // readHermesConfigMap loads the materialized config as a non-nil map: an

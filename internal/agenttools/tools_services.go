@@ -1,7 +1,6 @@
 package agenttools
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"github.com/letya999/hermes-hub/shared/locale"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -114,87 +112,8 @@ func (t *Tools) ServiceCatalog() (map[string]any, error) {
 	return map[string]any{"services": services, "secret_values_included": false}, nil
 }
 
-func (t *Tools) ServiceEnable(r Input) (map[string]any, error) {
-	if t.ToolPolicy != nil {
-		return nil, fmt.Errorf("%w: %s", api.ErrUnauthorized, locale.T(locale.LangOf(os.Getenv("HUB_WORKSPACE")), "tools.legacy-service-enable-unavailable"))
-	}
-	name := strings.TrimSpace(r.Service)
-	info, ok := stack.ServiceInfoByName(name)
-	if !ok {
-		return nil, fmt.Errorf("unknown service %q; call service_catalog first", name)
-	}
-	if !info.SelfService {
-		return nil, fmt.Errorf("service %q is host-managed; enable it in workspace.yaml", name)
-	}
-	if os.Getenv("HUB_ORG_SCOPED") == "true" {
-		return nil, fmt.Errorf("service changes are host-managed in organization scope")
-	}
-	features := map[string]bool{}
-	for feature := range mustServiceDependencies(name) {
-		features[feature] = true
-	}
-	features[name] = true
-	missing := []string{}
-	for feature := range features {
-		service, _ := stack.ServiceInfoByName(feature)
-		missing = append(missing, missingEnv(service.Requires)...)
-	}
-	slices.Sort(missing)
-	missing = slices.Compact(missing)
-	if len(missing) > 0 {
-		out := map[string]any{"service": name, "enabled": false, "missing_env": missing, "input": "protected-form", "secret_values_included": false}
-		if t.CommunicationURL != "" {
-			if form, formErr := t.credentialForm(context.Background(), name, missing); formErr == nil {
-				for key, value := range form {
-					out[key] = value
-				}
-			} else {
-				out["form_error"] = "protected credential form unavailable"
-			}
-		} else {
-			out["form_error"] = "configure HUB_COMMUNICATION_CONTROL_URL"
-		}
-		return out, nil
-	}
-	for feature := range features {
-		if _, _, _, err := stack.ServiceMCPConfig(feature); err != nil {
-			return nil, err
-		}
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.envLock != nil {
-		if err := t.envLock.Lock(); err != nil {
-			return nil, err
-		}
-		defer t.envLock.Unlock()
-	}
-	current, err := t.selfServices()
-	if err != nil {
-		return nil, err
-	}
-	for feature := range features {
-		current[feature] = true
-	}
-	selected := make([]string, 0, len(current))
-	for feature := range current {
-		selected = append(selected, feature)
-	}
-	slices.Sort(selected)
-	if err := writeSelfServices(filepath.Join(t.StateDir, "self-services.json"), selected); err != nil {
-		return nil, err
-	}
-	out := map[string]any{"service": name, "enabled": true, "enabled_features": selected, "restart_required": true, "secret_values_included": false}
-	if t.Restart == nil {
-		out["restart_scheduled"] = false
-		return out, fmt.Errorf("service saved; runtime restart unavailable")
-	}
-	if err := t.Restart(); err != nil {
-		out["restart_scheduled"] = false
-		return out, fmt.Errorf("service saved; restart required: %w", err)
-	}
-	out["restart_scheduled"] = true
-	return out, nil
+func (t *Tools) ServiceEnable(Input) (map[string]any, error) {
+	return nil, fmt.Errorf("%w: %s", api.ErrUnauthorized, locale.T(locale.LangOf(os.Getenv("HUB_WORKSPACE")), "tools.legacy-service-enable-unavailable"))
 }
 
 func (t *Tools) ServiceDisable(Input) (map[string]any, error) {
@@ -209,25 +128,6 @@ func missingEnv(keys []string) []string {
 		}
 	}
 	return missing
-}
-
-func mustServiceDependencies(name string) map[string]bool {
-	seen := map[string]bool{}
-	var visit func(string)
-	visit = func(current string) {
-		info, ok := stack.ServiceInfoByName(current)
-		if !ok {
-			return
-		}
-		for _, dependency := range info.Depends {
-			if !seen[dependency] {
-				seen[dependency] = true
-				visit(dependency)
-			}
-		}
-	}
-	visit(name)
-	return seen
 }
 
 func (t *Tools) selfServices() (map[string]bool, error) {
@@ -267,36 +167,6 @@ func (t *Tools) selfServices() (map[string]bool, error) {
 		result[name] = true
 	}
 	return result, nil
-}
-
-func writeSelfServices(path string, features []string) error {
-	body, err := json.Marshal(struct {
-		Features []string `json:"features"`
-	}{Features: features})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".self-services-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if chmodErr := tmp.Chmod(0600); chmodErr != nil {
-		_ = tmp.Close()
-		return chmodErr
-	}
-	_, err = tmp.Write(body)
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
 }
 
 func (t *Tools) allowsAction(action string) bool { return !t.OrgScoped || t.OrgActions[action] }

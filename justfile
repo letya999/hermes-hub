@@ -17,7 +17,7 @@ default:
 check:
     go run ./cmd/devcheck format
     go run ./cmd/devcheck docs
-    go run ./cmd/devcheck deps
+    go run ./cmd/devcheck boundaries
     go vet -p=2 ./...
 
 # Run the affected packages explicitly; the full suite runs in CI.
@@ -75,14 +75,13 @@ docs-check:
     go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= -config-file .github/actionlint.yaml .github/workflows/ci.yml .github/workflows/runner.yml .github/workflows/prune-images.yml
 
 fmt:
-    gofmt -w cmd internal contracts shared
+    gofmt -w cmd internal contracts shared shared
 
 security:
     go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
     npm --prefix docker/browser audit --omit=dev --audit-level=high
 
 build: config-check
-    go build -buildvcs=false -trimpath -o bin/hub ./cmd/hub
     go build -buildvcs=false -trimpath -o bin/hubctl ./cmd/hubctl
     go build -buildvcs=false -trimpath -o bin/hub-runtime ./cmd/runtime
     go build -buildvcs=false -trimpath -o bin/toolhub ./cmd/toolhub
