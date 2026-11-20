@@ -3,7 +3,7 @@ change: CHG-0336
 title: Extract spawn-controller - one container authority and owner of passports
 status: in_progress
 branch: feat/m40-v1-platform
-updated: 2026-11-20
+updated: 2026-11-21
 phase: implementation
 adr: ADR-0105
 spec: SPEC-0100
@@ -16,7 +16,7 @@ slices:
   S1-store-and-machines: green
   S2-revisions-and-contract: green
   S3-backends: green
-  S4-runtime-lifecycle-and-warm-pool: not_started
+  S4-runtime-lifecycle-and-warm-pool: green
   S5-importer-explain-doctor: not_started
   S6-workers-and-cells: not_started
   S7-consumers-cutover: not_started
@@ -68,7 +68,22 @@ evidence:
   - "482e29f6: TestUntrustedRefusesProcessBackend red (start attempted spawn instead of refusing), green with ErrUntrusted and no disk writes; TestUntrustedDockerRequiresRunsc red, green ('', runc, kata refused; runsc passes the guard)."
   - "482e29f6: TestDockerRunscSpecStarts skips on this machine: runsc not installed on the daemon (named reason)."
   - "482e29f6: TestMinimalProfileAnswersMessage green; just check and just test ./services/spawn-controller/... ./cmd/hubctl green; docker ps/networks empty under label hermes.test=chg-0336 after the suite."
+  - "S4 A1: TestMountOptionInjectionRefused red ('mount {Source:...src,readonly Target:/mnt}: start succeeded, want option-injection refusal'), green on process and docker legs; Spec refused before any daemon call, nothing left behind for the key."
+  - "S4 A2: Backend.List is (List(ctx) ([]Runtime, error)); docker leg proves a daemon/CLI failure surfaces as error, never a nil list. All callers migrated; backend_test map-access test updated."
+  - "S4 A3/migration: 0003_runtimes.sql adds spaces.effective_digest, runtime policy_digest/image_digest/backend_id/address, partial unique index runtimes_one_starting on (org,owner,space_id,agent) WHERE state='starting', and the runtimes_space lookup index. TestEffectiveDoesNotRecompile red ('Effective recompiled on read: catalog loads 6 -> 11'), green; Activate writes the bundle + pointer and drains stale-digest warm/busy rows in the same tx, Effective follows the stored pointer only."
+  - "S4: TestRuntimeTransitions red on the new edge ('renew forbidden from busy' wanted, machine lacked it), green; busy --renew--> busy self-loop re-arms the 2h hold bound."
+  - "S4: found a real Activate bug through TestRevisionRollbackActivatesOlder: latest was max(current-active, target) so a rollback to an older revision stamped a digest no active set ever had. Fixed by stamping the would-be set's per-layer max created_at; rollback now reproduces the original digest."
+  - "S4 lifecycle suite green on the real store with a controllable in-package fake backend (no mocks of spawn code): TestWarmClaimBindsTenantAndDigest, TestWarmRuntimeNeverCrossesTenants, TestRevokeDrainsOldDigest, TestStartingDeadlineFails, TestInspectNothingMarksMissing, TestDaemonErrorNeverMarksMissing, TestControllerRestartRecoversFromRows, TestLeaseRenewExtendsBusy, TestDrainRemovesLeaseRows, TestGenerationIncrementsPerStart, TestConcurrentClaimsStartOnce, TestClaimWithoutEffectiveSpecRefused, TestRenewRefusedOutsideBusy."
+  - "S4: claim concurrency — row inserted fully formed so the partial unique index fires at insert; a lost insert race waits on the winner's starting row and re-plans; at most one backend workload per (tenant,space,agent) under parallel claims."
+  - "S4: lease rows removed in the same tx whenever a runtime leaves warm/busy (draining, missing, quarantined); a draining row can never carry a hold into its next generation."
+  - "S4: api surface — in-memory ensured map deleted; /v1/messages is claim -> acquire -> forward -> release (release deferred on a fresh ctx), GET /v1/runtimes lists tenant rows, POST /v1/leases/{id}/renew heartbeats; tenant travels as ?org=&owner= on all three. Sweeper runs boot Tick before listen + Run loop on HUB_SWEEP_INTERVAL (default 5s)."
+  - "S4: spawn.runtime-unavailable localized in all four catalogs (en/ru/kk/es)."
+  - "S4: TestMinimalProfileAnswersMessage green in 8.5s — fixture bootstraps the space through contracts/spawn/v1 (CreateSpace, submit layers, validate, one activation), posts with tenant params, observes the durable row warm after release; HUB_CATALOG_ROOT set so pinned catalog resolves in the child."
+  - "S4 gates: go vet -p=2 on touched packages clean; just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./cmd/hubctl green (api 0.6s, backend incl. docker legs 28.7s, spawn 4.0s, migrations 0.4s, hubctl 59.2s). docker ps -a and docker network ls under name hermes-m40-test-* and label hermes.test=chg-0336 empty after the suite."
 remaining:
+  - "S5+: WorkerMachine rows are swept but not wired to HTTP; image_pins table exists but the claim stamps the image tag — the real pinned digest lands with image pins (S5/S7)."
+  - "S7: /v1/leases/{id}/renew is wired but has no production caller yet — channel-hub's renew heartbeat is the consumer cutover's job."
+  - "S4 note: runtime row ids are content-derived per generation (sha256 of tenant+space+agent+generation); backend_id equals the row id so reconcile keys the workload by the row."
   - "v0 supervisor docker spawn code stays until S8 (it still runs the dev stack): dockerBackend/ComputeBackend (internal/supervisor/backend.go), runArgs/runArgsWithGeneration/managedRunArgs (internal/supervisor/ensure.go), checkContainerRuntime/sandboxRelayHosts (internal/supervisor/sandbox.go), script sandbox argv (internal/supervisor/scripts.go), HUB_CONTAINER_RUNTIME default (internal/supervisor/supervisor.go:472-478)."
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
