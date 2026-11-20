@@ -68,6 +68,16 @@ func TestStoreRefusesUnscopedQuery(t *testing.T) {
 				return err
 			},
 		}
+
+		for name, query := range map[string]string{
+			"marker in a literal":         "SELECT '{tenant}' FROM items",
+			"marker in a comment":         "SELECT v FROM items WHERE 1=1 /* {tenant} */",
+			"union escapes scope":         "SELECT v FROM items WHERE {tenant} UNION SELECT v FROM items",
+			"negated scope":               "SELECT v FROM items WHERE NOT {tenant}",
+			"nested select escapes scope": "SELECT (SELECT v FROM items LIMIT 1) FROM items WHERE {tenant}",
+		} {
+			refused[name] = func(q store.Scoped) error { var v string; return q.QueryRow(query).Scan(&v) }
+		}
 		for name, call := range refused {
 			err := s.Tx(t.Context(), func(tx *store.Tx) error { return call(tx.Scoped(alice)) })
 			if !errors.Is(err, store.ErrUnscoped) {
@@ -106,7 +116,7 @@ func TestScopedQueryBindsTenantAndArguments(t *testing.T) {
 		// A literal containing ? and quotes is not a placeholder.
 		var n int
 		err := s.Tx(t.Context(), func(tx *store.Tx) error {
-			return tx.Scoped(alice).QueryRow("SELECT count(*) FROM items WHERE v <> 'it''s ?' AND {tenant} AND (id = ? OR id = ?)", "i1", "i2").Scan(&n)
+			return tx.Scoped(alice).QueryRow("SELECT count(*) FROM items WHERE {tenant} AND v <> 'it''s ?' AND (id = ? OR id = ?)", "i1", "i2").Scan(&n)
 		})
 		if err != nil || n != 2 {
 			t.Fatalf("count: %d %v", n, err)

@@ -65,6 +65,9 @@ func (q Scoped) QueryRow(query string, args ...any) Row {
 }
 
 var identifier = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+var scopedWhere = regexp.MustCompile(`(?i)\bWHERE\s+\{tenant\}(\s+AND\b|\s+(ORDER|GROUP|LIMIT)\b|\s*$)`)
+var scopedFrom = regexp.MustCompile(`(?i)\bFROM\s+[a-z_][a-z0-9_]*\s+WHERE\s+\{tenant\}`)
+var sqlWords = regexp.MustCompile(`[a-zA-Z_]+`)
 
 // Insert adds one row whose org and owner come from the handle.
 func (q Scoped) Insert(table string, columns []string, values ...any) error {
@@ -100,8 +103,39 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 		if !tenant.valid() {
 			return "", nil, fmt.Errorf("%w: incomplete tenant", ErrUnscoped)
 		}
-		if !strings.Contains(query, tenantMarker) {
+		if strings.Count(query, tenantMarker) != 1 || !scopedWhere.MatchString(query) {
 			return "", nil, fmt.Errorf("%w: missing %s predicate", ErrUnscoped, tenantMarker)
+		}
+		// Accept only single-table statements with scope as the first WHERE
+		// predicate. Joins, subqueries and comments need a reviewed API first.
+		var syntax strings.Builder
+		for i := 0; i < len(query); i++ {
+			if query[i] == '\'' {
+				i = literalEnd(query, i) - 1
+				syntax.WriteByte(' ')
+				continue
+			}
+			syntax.WriteByte(query[i])
+		}
+		plain := syntax.String()
+		if strings.ContainsAny(plain, ";\"`[]$") || strings.Contains(plain, "--") || strings.Contains(plain, "/*") || strings.Contains(plain, "*/") {
+			return "", nil, ErrUnscoped
+		}
+		statements, wheres, froms := 0, 0, 0
+		for _, word := range sqlWords.FindAllString(strings.ToUpper(plain), -1) {
+			switch word {
+			case "SELECT", "UPDATE", "DELETE":
+				statements++
+			case "WHERE":
+				wheres++
+			case "FROM":
+				froms++
+			case "JOIN", "UNION", "INTERSECT", "EXCEPT", "WITH", "RETURNING", "INTO":
+				return "", nil, ErrUnscoped
+			}
+		}
+		if statements != 1 || wheres != 1 || froms > 1 || (froms == 1 && !scopedFrom.MatchString(plain)) {
+			return "", nil, ErrUnscoped
 		}
 	}
 	var out strings.Builder
@@ -159,6 +193,9 @@ func bind(dialect Dialect, query string, args []any, tenant Tenant, scoped bool)
 		if d <= markerDepth {
 			return "", nil, fmt.Errorf("%w: OR beside the tenant predicate; parenthesize it", ErrUnscoped)
 		}
+	}
+	if scoped && markerDepth != 0 {
+		return "", nil, ErrUnscoped
 	}
 	if next != len(args) {
 		return "", nil, fmt.Errorf("store: %d placeholders for %d arguments", next, len(args))

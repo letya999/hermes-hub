@@ -6,6 +6,7 @@ last_verified: "2026-11-19"
 
 | Record | Decision |
 |---|---|
+| [ADR-0115](ADR-0115-postgres-driver.md) | Proposed: pgx database/sql driver for the shared SQLite/Postgres store |
 | [ADR-0109](ADR-0109-action-modes-owner-decisions.md) | Accepted direction — M40 (CHG-0348 pending): action modes read-only/plan/ask/ask-critical/full-access over declared effect classes, always-ask list, durable owner decisions; replaces the M34 proposal names |
 | [ADR-0108](ADR-0108-proactive-engine.md) | Accepted direction — M40 (CHG-0344..0347 pending): proactive-engine with listeners and event inbox, Watch/Routine/Assignment, seven-stage pipeline, task and progress ledgers, attention budgets; supersedes ADR-0041, partly supersedes ADR-0075/0082/0095 |
 | [ADR-0107](ADR-0107-execution-spawn-task-runtime.md) | Accepted direction — M40 (CHG-0333..0336, 0351 pending): spawn-controller as single container authority, instant spaces, one task-engine ledger with classes and lanes, harness-runtime isolation, browser tab leases; supersedes ADR-0040, partly supersedes ADR-0090 |
