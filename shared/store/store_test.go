@@ -282,6 +282,16 @@ func TestOpenRejectsUnknownURLWithoutEchoingIt(t *testing.T) {
 	}
 }
 
+func TestPostgresConnectionErrorDoesNotEchoConfiguration(t *testing.T) {
+	_, err := store.Open(t.Context(), "postgres://reader:private-credential@127.0.0.1/test?connect_timeout=private-diagnostic-marker", nil)
+	if err == nil {
+		t.Fatal("invalid connection configuration accepted")
+	}
+	if strings.Contains(err.Error(), "private-") {
+		t.Fatal("connection error exposes database configuration")
+	}
+}
+
 func TestNoRowsIsNotFound(t *testing.T) {
 	storetest.ForEach(t, func(t *testing.T, url string) {
 		s := storetest.Open(t, url, itemsSchema)

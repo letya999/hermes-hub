@@ -77,7 +77,11 @@ func Open(ctx context.Context, rawURL string, migrations fs.FS) (*Store, error) 
 	s := &Store{db: db, dialect: dialect}
 	fail := func(err error) (*Store, error) { _ = db.Close(); return nil, err }
 	if err := connect(ctx, db); err != nil {
-		return fail(fmt.Errorf("store: connect %s: %w", dialect, err))
+		if ctx.Err() != nil {
+			return fail(ctx.Err())
+		}
+		// Driver parse errors may echo connection options or credentials.
+		return fail(fmt.Errorf("store: connect %s: %w", dialect, httpapi.ErrUnavailable))
 	}
 	if path != "" {
 		if err := ensurePrivate(path); err != nil {
