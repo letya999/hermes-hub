@@ -14,7 +14,7 @@ design_status: accepted
 implementation_status: in_progress
 slices:
   S1-store-and-machines: green
-  S2-revisions-and-contract: not_started
+  S2-revisions-and-contract: green
   S3-backends: not_started
   S4-runtime-lifecycle-and-warm-pool: not_started
   S5-importer-explain-doctor: not_started
@@ -43,6 +43,20 @@ evidence:
   - "018c126f: TestPassportRevisionTransitions re-run red on the new edge set ('forbidden expire from active' wanted, old machine allowed it), green with retain self-loops and expire forbidden from active/superseded."
   - "963088d3: docs/state-machines.md Runtime and PassportRevision v1 target tables now state every deadline and deadline event plus S1 implementation notes; README carries the same values; last_verified re-read against machines.go."
   - "Controller fix-up gates: go test -count=1 ./services/spawn-controller/... green; just check green."
-remaining: []
+  - "9c796a00: TestAgentLayerNarrowsOnly red (agent overlay compiled: 'narrowed-away ceiling path', 'scalar change', 'add absent leaf' all returned nil error without the bound), green; lists subset, scalars repeat, keysets drop, workspace layout bounded by the pre-agent effective set."
+  - "9c796a00: TestLayeredGrants red first via the same fixture (widening op accepted before the check), green; authored {cap: [ops]} maps normalize to cap lists and the deepest trusted ops ledger is projected."
+  - "9c796a00: TestRevisionRollbackActivatesOlder green — rollback re-activates a superseded user revision and restores the original effective digest."
+  - "9c796a00: TestApplyCrashLeavesPreviousActive green — injected failure after the state move rolls the whole cut back; previous active still active, digest unchanged."
+  - "9c796a00: TestEffectiveSpecIntersectsLayers green — agent layer drops a toolset and narrows a grant op; a widening agent revision is rejected with a locale key."
+  - "9c796a00: TestAtMostOneActivePerLayer green — concurrent activations: one wins, loser gets conflict, never two active rows."
+  - "9c796a00: TestPruneKeepsNewestSuperseded green — 5 activations keep 3 newest superseded, 2 oldest take the explicit prune edge to pruned."
+  - "9c796a00: TestContractConformanceInProcAndHTTP red ('activate platform-ceiling: conflict' — bootstrap wedge where a partial-set compile stored an effective row then refused interdependent layers), green after compile-failure tolerance in Activate; both transports on the real handler."
+  - "9c796a00: TestPolicySliceByDigestImmutable red (same wedge), green — Cache-Control immutable + ETag=digest on 200, no cache signal on errors, foreign digest and unknown service are not_found."
+  - "9c796a00: TestFakePassesConformance red (second transport leg re-submitted an active row as draft; foreign space name reuse broke isolation), green after the suite handled dedup'd active rows and the foreign tenant got its own space id."
+  - "9c796a00: TestTenantInvariants covers spaces, effective_specs, passport_revisions and its history in internal/api; the internal/spawn suite already covers all tables."
+  - "9c796a00: TestMinimalProfileAnswersMessage red ('catalog: open \\opt\\hub\\platform\\catalogs\\42\\manifest.yaml: path not found'), green — catalog resolves lazily per compile and hubctl injects HUB_CATALOG_ROOT only when it resolved a real manifest."
+  - "just check green (format, docs, boundaries, vet); just test ./services/spawn-controller/... ./contracts/spawn/... ./internal/passport/... ./cmd/hubctl ./shared/locale/... green."
+remaining:
+  - "S2 known limitation: with no effective spec yet, Effective reports the active set's compile error as unavailable; activation never aborts on a partial merge — Validate is the quality gate."
 limitations:
   - "Implementation slices are delegated to Devin CLI; every slice is re-verified by the controlling agent before it is marked green."
