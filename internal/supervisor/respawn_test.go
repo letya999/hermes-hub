@@ -126,6 +126,41 @@ func TestRespawnBusyRuntimeDefers(t *testing.T) {
 	}
 }
 
+// A runtime holding a real job lease is serving traffic; an idle-looking
+// state flag is not the safety boundary — the lease alone must refuse the
+// respawn. The state arm is deliberately relaxed so only the lease arm is
+// exercised.
+func TestRespawnRefusedWithLiveLease(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Acquire(context.Background(), normalized, LeaseJob); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(normalized)]
+	entry.State = Idle
+	dropEnsureHolds(entry)
+	if len(entry.leases) != 1 {
+		m.mu.Unlock()
+		t.Fatalf("expected exactly one live job lease, got %d", len(entry.leases))
+	}
+	m.mu.Unlock()
+	request := httptest.NewRequest(http.MethodPost, "/v1/respawn", strings.NewReader(`{"principal_id":"alice","context_id":"alice"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) {
+		t.Fatalf("leased respawn status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if stub.drainCount() != 0 {
+		t.Fatalf("leased runtime was drained mid-lease: drains=%d", stub.drainCount())
+	}
+}
+
 // The endpoint names a managed runtime by identity: a malformed body or the
 // wrong method is a request error, not a silent no-op.
 func TestRespawnRejectsMalformedRequests(t *testing.T) {
