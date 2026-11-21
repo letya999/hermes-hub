@@ -29,6 +29,9 @@ type Runtime struct {
 	ImageDigest  string `json:"image_digest"`
 	BackendID    string `json:"backend_id"`
 	Address      string `json:"address,omitempty"`
+	RuntimeID    string `json:"runtime_id,omitempty"`
+	RuntimeMode  string `json:"runtime_mode,omitempty"`
+	HostPort     int    `json:"host_port,omitempty"`
 }
 
 // runtimeTransition applies one RuntimeMachine event inside the caller's
@@ -61,10 +64,25 @@ func runtimeTransition(q store.Scoped, id, event string, now time.Time) error {
 type Runtimes struct {
 	Store      *store.Store
 	Backend    backend.Backend
+	Revisions  *Revisions
 	Image      string
 	OCIRuntime string
 	MaxLive    int
 	Now        func() time.Time
+	// Managed-runtime launch wiring (S7c): the spaces root the spec
+	// builder mounts from, the workload's service port the control relay
+	// publishes, and the resource limits the v0 contract applies.
+	SpacesRoot  string
+	RuntimePort int
+	Limits      backend.Limits
+}
+
+const runtimeSelect = "SELECT id, space_id, agent, generation, state, policy_digest, image_digest, backend_id, address, runtime_id, runtime_mode, host_port FROM runtimes WHERE {tenant} "
+
+func scanRuntime(scan func(...any) error) (Runtime, error) {
+	var rt Runtime
+	err := scan(&rt.ID, &rt.Space, &rt.Agent, &rt.Generation, &rt.State, &rt.PolicyDigest, &rt.ImageDigest, &rt.BackendID, &rt.Address, &rt.RuntimeID, &rt.RuntimeMode, &rt.HostPort)
+	return rt, err
 }
 
 func (r *Runtimes) now() time.Time {
@@ -83,10 +101,7 @@ func runtimeRowID(t store.Tenant, spaceID, agent string, generation int64) strin
 }
 
 func loadRuntime(q store.Scoped, id string) (Runtime, error) {
-	var rt Runtime
-	err := q.QueryRow("SELECT id, space_id, agent, generation, state, policy_digest, image_digest, backend_id, address FROM runtimes WHERE {tenant} AND id = ?", id).
-		Scan(&rt.ID, &rt.Space, &rt.Agent, &rt.Generation, &rt.State, &rt.PolicyDigest, &rt.ImageDigest, &rt.BackendID, &rt.Address)
-	return rt, err
+	return scanRuntime(q.QueryRow(runtimeSelect+"AND id = ?", id).Scan)
 }
 
 // claimPlan is one transaction's decision: reuse an exact-key warm row,
@@ -117,15 +132,22 @@ var errStaleDigest = errors.New("spawn: policy digest revoked during start")
 // one backend workload; the losers wait on the starting row and reuse
 // it once ready.
 func (r *Runtimes) Claim(ctx context.Context, t store.Tenant, spaceID, agent string) (Runtime, error) {
+	return r.ClaimManaged(ctx, t, spaceID, ClaimRequest{Agent: agent})
+}
+
+// ClaimManaged is Claim with the caller's job binding: the routing and
+// identity fields bind to the started generation's row and spec, and a
+// warm row is reused only when every bound key still matches.
+func (r *Runtimes) ClaimManaged(ctx context.Context, t store.Tenant, spaceID string, req ClaimRequest) (Runtime, error) {
 	for {
-		plan, err := r.plan(ctx, t, spaceID, agent)
+		plan, err := r.plan(ctx, t, spaceID, req)
 		if err != nil {
 			if !errors.Is(err, errClaimLost) {
 				return Runtime{}, err
 			}
 			// The winner's starting row is visible now that both
 			// transactions settled; wait on it and re-plan.
-			winner, selErr := r.startingRow(ctx, t, spaceID, agent)
+			winner, selErr := r.startingRow(ctx, t, spaceID, req.Agent)
 			if selErr != nil {
 				return Runtime{}, err
 			}
@@ -142,6 +164,15 @@ func (r *Runtimes) Claim(ctx context.Context, t store.Tenant, spaceID, agent str
 				return Runtime{}, err
 			}
 		default:
+			// The spec builds outside the transaction: materialization is
+			// real file I/O the store must never hold a lock across. A
+			// spec failure fails the committed starting row.
+			spec, err := r.managedSpec(ctx, t, spaceID, plan.start.ID, plan.start.PolicyDigest, req, plan.start.Generation)
+			if err != nil {
+				_ = r.event(ctx, t, plan.start.ID, "fail")
+				return Runtime{}, err
+			}
+			plan.spec = spec
 			rt, err := r.start(ctx, plan)
 			if errors.Is(err, errStaleDigest) {
 				continue // revoked mid-start — re-plan for the current digest
@@ -166,7 +197,8 @@ func (r *Runtimes) startingRow(ctx context.Context, t store.Tenant, spaceID, age
 // effective digest, reuses an exact-key live row, defers to an in-flight
 // start, or creates the next generation's starting row. The backend call
 // never happens inside — plan hands the spec to the caller (B2).
-func (r *Runtimes) plan(ctx context.Context, t store.Tenant, spaceID, agent string) (claimPlan, error) {
+func (r *Runtimes) plan(ctx context.Context, t store.Tenant, spaceID string, req ClaimRequest) (claimPlan, error) {
+	agent := req.Agent
 	var out claimPlan
 	err := r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
@@ -178,11 +210,11 @@ func (r *Runtimes) plan(ctx context.Context, t store.Tenant, spaceID, agent stri
 		if digest == "" {
 			return httpapi.Errorf(httpapi.ErrUnavailable, "%s", locale.T(locale.Default, "spawn.runtime-unavailable"))
 		}
-		// Exact-key warm reuse only: same digests, same tenant — the row
-		// query is tenant-scoped, so nothing cross-tenant is even visible.
-		var rt Runtime
-		err = q.QueryRow("SELECT id, space_id, agent, generation, state, policy_digest, image_digest, backend_id, address FROM runtimes WHERE {tenant} AND space_id = ? AND agent = ? AND policy_digest = ? AND image_digest = ? AND state IN ('warm','busy') ORDER BY generation DESC LIMIT 1", spaceID, agent, digest, r.Image).
-			Scan(&rt.ID, &rt.Space, &rt.Agent, &rt.Generation, &rt.State, &rt.PolicyDigest, &rt.ImageDigest, &rt.BackendID, &rt.Address)
+		// Exact-key warm reuse only: same digests, same tenant, same
+		// claim binding — the row query is tenant-scoped, so nothing
+		// cross-tenant is even visible, and a runtime id or identity
+		// revision the row was not spawned under never reuses it.
+		rt, err := scanRuntime(q.QueryRow(runtimeSelect+"AND space_id = ? AND agent = ? AND policy_digest = ? AND image_digest = ? AND runtime_id = ? AND runtime_mode = ? AND identity_revision = ? AND state IN ('warm','busy') ORDER BY generation DESC LIMIT 1", spaceID, agent, digest, r.Image, req.RuntimeID, req.RuntimeMode, req.IdentityRevision).Scan)
 		switch {
 		case err == nil:
 			out.reuse = rt
@@ -221,17 +253,13 @@ func (r *Runtimes) plan(ctx context.Context, t store.Tenant, spaceID, agent stri
 		// the same pair at insert, not later. The deadline mirrors
 		// fsm.Create's write for the machine's starting bound.
 		deadline := now.Add(RuntimeMachine.Deadlines["starting"].After).Unix()
-		if err := q.Insert("runtimes", []string{"id", "space_id", "agent", "generation", "state", "deadline", "policy_digest", "image_digest", "backend_id"}, id, spaceID, agent, gen, "starting", deadline, digest, r.Image, id); err != nil {
+		if err := q.Insert("runtimes", []string{"id", "space_id", "agent", "generation", "state", "deadline", "policy_digest", "image_digest", "backend_id", "runtime_id", "runtime_mode", "identity_revision"}, id, spaceID, agent, gen, "starting", deadline, digest, r.Image, id, req.RuntimeID, req.RuntimeMode, req.IdentityRevision); err != nil {
 			return fmt.Errorf("%w: %v", errClaimLost, err)
 		}
 		if err := q.Insert("runtimes_history", []string{"id", "seq", "at", "from_state", "event", "to_state"}, id, 1, now.Unix(), "", "create", "starting"); err != nil {
 			return err
 		}
-		out.start = Runtime{ID: id, Space: spaceID, Agent: agent, Generation: gen, State: "starting", PolicyDigest: digest, ImageDigest: r.Image, BackendID: id}
-		out.spec = backend.Spec{
-			Key: id, Org: t.Org, Owner: t.Owner, Space: spaceID, Agent: agent,
-			Image: r.Image, OCIRuntime: r.OCIRuntime,
-		}
+		out.start = Runtime{ID: id, Space: spaceID, Agent: agent, Generation: gen, State: "starting", PolicyDigest: digest, ImageDigest: r.Image, BackendID: id, RuntimeID: req.RuntimeID, RuntimeMode: req.RuntimeMode}
 		return nil
 	})
 	return out, err
@@ -278,11 +306,12 @@ func (r *Runtimes) start(ctx context.Context, plan claimPlan) (Runtime, error) {
 		return Runtime{}, fmt.Errorf("%w: start %s: %v", httpapi.ErrUnavailable, rt.ID, err)
 	}
 	rt.Address = launched.Address
+	rt.HostPort = launched.HostPort
 	t := store.Tenant{Org: plan.spec.Org, Owner: plan.spec.Owner}
 	stale := false
 	err = r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
-		if _, err := q.Exec("UPDATE runtimes SET address = ? WHERE {tenant} AND id = ?", rt.Address, rt.ID); err != nil {
+		if _, err := q.Exec("UPDATE runtimes SET address = ?, host_port = ? WHERE {tenant} AND id = ?", rt.Address, rt.HostPort, rt.ID); err != nil {
 			return err
 		}
 		if err := runtimeTransition(q, rt.ID, "ready", r.now()); err != nil {
@@ -395,19 +424,87 @@ func (r *Runtimes) Renew(ctx context.Context, t store.Tenant, leaseID string) (R
 	return out, err
 }
 
+// Drain is the respawn/replace primitive: every live runtime row of the
+// space — optionally scoped to one agent lane — drains, its leases drop in
+// the same transaction, and the workload stops under the machine's stop
+// budget (an unconfirmed stop quarantines, it is never reported stopped).
+func (r *Runtimes) Drain(ctx context.Context, t store.Tenant, spaceID, agent string) (int, error) {
+	var rows []Runtime
+	err := r.Store.Tx(ctx, func(tx *store.Tx) error {
+		q := tx.Scoped(t)
+		query := runtimeSelect + "AND space_id = ? AND state IN ('starting','warm','busy','draining')"
+		args := []any{spaceID}
+		if agent != "" {
+			query += " AND agent = ?"
+			args = append(args, agent)
+		}
+		found, err := q.Query(query, args...)
+		if err != nil {
+			return err
+		}
+		defer found.Close()
+		for found.Next() {
+			rt, err := scanRuntime(found.Scan)
+			if err != nil {
+				return err
+			}
+			rows = append(rows, rt)
+		}
+		if err := found.Err(); err != nil {
+			return err
+		}
+		// Transitions run inside the selection transaction: a starting
+		// row's drain aborts its start (fail), warm and busy drain and
+		// drop their leases, an already-draining row needs no event.
+		for _, rt := range rows {
+			switch rt.State {
+			case "starting":
+				if err := runtimeTransition(q, rt.ID, "fail", r.now()); err != nil {
+					return err
+				}
+			case "warm", "busy":
+				if err := runtimeTransition(q, rt.ID, "drain", r.now()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	drained := 0
+	for _, rt := range rows {
+		if rt.State == "starting" {
+			drained++
+			continue // backend start never committed; nothing to stop
+		}
+		if rt.State == "draining" {
+			drained++ // already draining — the stop budget owns it
+			continue
+		}
+		if err := r.Backend.Stop(ctx, rt.BackendID); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			drained++ // unconfirmed — the draining row's quarantine deadline owns it
+			continue
+		}
+		drained++
+	}
+	return drained, nil
+}
+
 // List returns the tenant's runtime rows, newest generation first per
 // (space, agent) — tombstones included, they are the honest inventory.
 func (r *Runtimes) List(ctx context.Context, t store.Tenant) ([]Runtime, error) {
 	out := []Runtime{}
 	err := r.Store.ReadTx(ctx, func(tx *store.Tx) error {
-		rows, err := tx.Scoped(t).Query("SELECT id, space_id, agent, generation, state, policy_digest, image_digest, backend_id, address FROM runtimes WHERE {tenant} ORDER BY space_id, agent, generation DESC, id")
+		rows, err := tx.Scoped(t).Query(runtimeSelect + "ORDER BY space_id, agent, generation DESC, id")
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var rt Runtime
-			if err := rows.Scan(&rt.ID, &rt.Space, &rt.Agent, &rt.Generation, &rt.State, &rt.PolicyDigest, &rt.ImageDigest, &rt.BackendID, &rt.Address); err != nil {
+			rt, err := scanRuntime(rows.Scan)
+			if err != nil {
 				return err
 			}
 			out = append(out, rt)

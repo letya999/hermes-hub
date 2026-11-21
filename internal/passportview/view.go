@@ -6,6 +6,7 @@ package passportview
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -175,6 +176,57 @@ func loadRevisionGenerated(genDir, rev string) (Effective, error) {
 			catalogs = h.Metadata.Catalogs
 		} else if h.Metadata.Catalogs != catalogs {
 			return eff, fmt.Errorf("load effective: %s pins catalogs %q, siblings pin %q", name, h.Metadata.Catalogs, catalogs)
+		}
+		eff.Header = h
+		switch d := doc.(type) {
+		case *StackDoc:
+			eff.Stack = d.Stack
+		case *ConfigDoc:
+			eff.Config = d.Config
+		case *ModelsDoc:
+			eff.Models = d.Models
+		case *WorkspaceDoc:
+			eff.Workspace = d.Workspace
+		case *ToolsDoc:
+			eff.Tools = d.Tools
+		case *GrantsDoc:
+			eff.Grants = d.Grants
+		}
+	}
+	return eff, nil
+}
+
+// Assemble decodes one stored six-document policy bundle — the spawn
+// service's effective_specs row — into the same typed effective view the
+// published file tree loads. The bundle's JSON documents carry the full
+// envelope, so Decode's strict checks apply unchanged; the same
+// cross-document revision/space/environment/catalogs fence the file path
+// enforces applies here too.
+func Assemble(docs map[string]json.RawMessage) (Effective, error) {
+	var eff Effective
+	rev, space, environment, catalogs := "", "", "", ""
+	for _, name := range Names {
+		raw, ok := docs[name]
+		if !ok {
+			return eff, fmt.Errorf("load effective %s: document missing", name)
+		}
+		doc, err := Decode(name, raw)
+		if err != nil {
+			return eff, err
+		}
+		h := docHeader(doc)
+		if rev == "" {
+			rev, space, environment, catalogs = h.Metadata.Revision, h.Metadata.Space, h.Metadata.Environment, h.Metadata.Catalogs
+		} else {
+			if h.Metadata.Revision != rev {
+				return eff, fmt.Errorf("load effective: %s carries %s, siblings carry %s", name, h.Metadata.Revision, rev)
+			}
+			if h.Metadata.Space != space || h.Metadata.Environment != environment {
+				return eff, fmt.Errorf("load effective: %s belongs to a different space or environment", name)
+			}
+			if h.Metadata.Catalogs != catalogs {
+				return eff, fmt.Errorf("load effective: %s pins catalogs %q, siblings pin %q", name, h.Metadata.Catalogs, catalogs)
+			}
 		}
 		eff.Header = h
 		switch d := doc.(type) {

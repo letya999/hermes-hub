@@ -25,14 +25,17 @@ import (
 
 // Runtime is one space workload managed by the controller. Name is the
 // backend's own workload handle (docker: container name) — sidecar
-// endpoints are derived from it.
+// endpoints are derived from it. HostPort is the loopback-published
+// control endpoint the managed-runtime relay chose, when the spec asked
+// for one.
 type Runtime struct {
-	ID      string `json:"id"`
-	Space   string `json:"space"`
-	Agent   string `json:"agent"`
-	State   string `json:"state"`
-	Address string `json:"address"`
-	Name    string `json:"name,omitempty"`
+	ID       string `json:"id"`
+	Space    string `json:"space"`
+	Agent    string `json:"agent"`
+	State    string `json:"state"`
+	Address  string `json:"address"`
+	Name     string `json:"name,omitempty"`
+	HostPort int    `json:"host_port,omitempty"`
 }
 
 // Mount is one resolved bind: a host source mapped to a target inside the
@@ -122,6 +125,39 @@ type Spec struct {
 	// Labels are extra workload labels the caller stamps on top of the
 	// backend's ownership set (e.g. a cell's binding identity).
 	Labels map[string]string
+	// Managed-runtime fields (CHG-0336 S7c): the v0 managed spawn
+	// contract. Networks are literal docker network names the workload
+	// joins — existing, Compose-owned, never edge-derived or created by
+	// the backend. EnvFiles are --env-file paths the daemon reads —
+	// their secrets never enter argv or the spec. Port is the workload's
+	// service port the Relay forwards to; the backend picks the loopback
+	// host port and reports it on Runtime.HostPort. RelayHosts are the
+	// reviewed relay aliases the backend resolves on Networks[0] and pins
+	// as --add-host entries (v0 sandboxRelayHosts). A spec carrying none
+	// of these is a plain worker/runtime claim.
+	Networks   []string
+	EnvFiles   []string
+	Port       int
+	Relay      *RelaySpec
+	RelayHosts []string
+}
+
+// Managed reports whether the spec is a managed-runtime claim — the v0
+// spawn contract rather than a plain worker/runtime workload.
+func (s Spec) Managed() bool {
+	return s.Relay != nil || len(s.Networks) > 0 || len(s.EnvFiles) > 0
+}
+
+// RelaySpec is the managed runtime's control relay (v0 spawnControlRelay):
+// a dual-homed companion on the workload's first literal network plus the
+// control network, publishing its relay port on the host loopback — the
+// only inbound route to an internal-network runtime. The backend names it
+// <workload>-ctl and targets http://<workload>:Spec.Port.
+type RelaySpec struct {
+	Image    string
+	Control  string // control network name (created as a plain bridge)
+	MountDir string // optional identity bind for the relay's own host files
+	Limits   Limits
 }
 
 // ExecSpec is one bounded command inside a running workload: argv never
@@ -187,6 +223,32 @@ func validateSpec(spec Spec) error {
 			return fmt.Errorf("%w: tmpfs %q carries option-breaking characters", ErrSpec, t.Target)
 		}
 	}
+	for _, f := range spec.EnvFiles {
+		if f == "" || strings.ContainsAny(f, "\"\n\r") {
+			return fmt.Errorf("%w: env file %q carries option-breaking characters", ErrSpec, f)
+		}
+	}
+	for _, n := range spec.Networks {
+		if n == "" || strings.ContainsAny(n, ",=\"\n\r") {
+			return fmt.Errorf("%w: network %q carries option-breaking characters", ErrSpec, n)
+		}
+	}
+	for _, h := range spec.RelayHosts {
+		if !relayNamePattern.MatchString(h) {
+			return fmt.Errorf("%w: relay host %q", ErrSpec, h)
+		}
+	}
+	if spec.Relay != nil {
+		if spec.Relay.Control == "" || strings.ContainsAny(spec.Relay.Control, ",=\"\n\r") {
+			return fmt.Errorf("%w: relay control network %q", ErrSpec, spec.Relay.Control)
+		}
+		if spec.Relay.MountDir != "" && strings.ContainsAny(spec.Relay.MountDir, ":\"\n\r") {
+			return fmt.Errorf("%w: relay mount %q carries option-breaking characters", ErrSpec, spec.Relay.MountDir)
+		}
+		if spec.Port <= 0 || spec.Port > 65535 {
+			return fmt.Errorf("%w: relay needs the workload port", ErrSpec)
+		}
+	}
 	for _, s := range spec.Sidecars {
 		if !sidecarNamePattern.MatchString(s.Name) {
 			return fmt.Errorf("%w: sidecar name %q", ErrSpec, s.Name)
@@ -216,6 +278,10 @@ func validateSpec(spec Spec) error {
 }
 
 var sidecarNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// relayNamePattern bounds the relay aliases the managed spec asks the
+// backend to resolve — the same charset docker's own aliases use.
+var relayNamePattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 
 // Backend owns compute for space workloads: it starts, inspects, lists and
 // stops runtime instances; admission and passports stay elsewhere. List's
@@ -289,7 +355,33 @@ func (b *processBackend) envFor(spec Spec, port int) []string {
 			env = append(env, name+"="+value)
 		}
 	}
+	for _, file := range spec.EnvFiles {
+		lines, err := envFileLines(file)
+		if err != nil {
+			continue // an unreadable env file must not block the child's own wiring
+		}
+		env = append(env, lines...)
+	}
 	return append(env, spec.Env...)
+}
+
+// envFileLines parses one KEY=VALUE env file for the process child — the
+// same files docker's --env-file reads. Comments and blanks are skipped;
+// the file is read under the controller's own filesystem, never the spec's.
+func envFileLines(path string) ([]string, error) {
+	body, err := os.ReadFile(path) // #nosec G304 -- spec-declared env file
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, nil
 }
 
 // Start applies the spec's trust boundary first: a process child offers no

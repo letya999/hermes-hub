@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -317,6 +318,16 @@ func Serve(ctx context.Context) error {
 	runtimes := &spawn.Runtimes{
 		Store: serviceStore, Backend: be,
 		Image: image, OCIRuntime: ociRuntime, MaxLive: max,
+		// The managed-runtime spec builder (S7c) mounts the space's own
+		// tree, publishes the workload's service port through the control
+		// relay, and applies the v0 resource contract.
+		SpacesRoot:  os.Getenv("HUB_SPACES_ROOT"),
+		RuntimePort: managedRuntimePort(),
+		Limits: backend.Limits{
+			Memory: envOr("HUB_RUNTIME_MEMORY", "2g"),
+			CPUs:   envOr("HUB_RUNTIME_CPUS", "2"),
+			PIDs:   intEnv("HUB_RUNTIME_PIDS", 1024),
+		},
 	}
 	// Cells are the operator-opt-in worker surface (V5): enabled only when
 	// the tools image and the shipped cellinit binary are configured —
@@ -366,6 +377,7 @@ func Serve(ctx context.Context) error {
 		// service mounts the spaces root read-write for this.
 		SpacesRoot: os.Getenv("HUB_SPACES_ROOT"),
 	}
+	runtimes.Revisions = revisions
 	// One-time v0 import (D5): enabled by HUB_IMPORT_V0_DIR it runs once
 	// before the socket opens, while the spawn store still holds none of
 	// the v0 space rows. The report is stdout-safe: counts and ids only.
@@ -420,4 +432,27 @@ func Serve(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// managedRuntimePort resolves the managed workload's service port — the
+// v0 supervisor's cfg.RuntimePort contract (HUB_RUNTIME_PORT), defaulting
+// to the same 8080 the spawned runtime always listened on.
+func managedRuntimePort() int {
+	return intEnv("HUB_RUNTIME_PORT", 8080)
+}
+
+func envOr(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func intEnv(name string, fallback int) int {
+	if raw := strings.TrimSpace(os.Getenv(name)); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
 }

@@ -253,6 +253,9 @@ func (d *dockerBackend) Start(ctx context.Context, spec Spec) (Runtime, error) {
 			}
 		}
 	}
+	if spec.Managed() {
+		return d.startManaged(ctx, spec)
+	}
 	name := d.container(spec.Key)
 	labels := d.labels(spec)
 	networks := make([]string, 0, len(spec.Edges)+1)

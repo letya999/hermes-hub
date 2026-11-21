@@ -864,6 +864,31 @@ func (s *Server) ReleaseLease(ctx context.Context, id string, in spawn.LeaseRequ
 	return nil
 }
 
+// DrainRuntimes drains the space's live runtime rows — optionally scoped
+// to one agent lane — the way the service's drain does: lease rows drop
+// and the row leaves the reusable set so the next claim starts fresh.
+func (s *Server) DrainRuntimes(ctx context.Context, space string, in spawn.DrainRuntimesRequest) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
+	n := 0
+	for k, rt := range s.runtimes {
+		if rt.runtime.Space != space || !strings.HasPrefix(k, t.Org+"/"+t.Owner+"/") {
+			continue
+		}
+		if in.Agent != "" && rt.runtime.Agent != in.Agent {
+			continue
+		}
+		delete(s.runtimes, k)
+		n++
+	}
+	return n, nil
+}
+
 // ListRuntimes serves the tenant's runtime inventory.
 func (s *Server) ListRuntimes(ctx context.Context, t spawn.Tenant) ([]spawn.Runtime, error) {
 	if err := ctx.Err(); err != nil {

@@ -13,19 +13,29 @@ func runtimeOf(r spawn.Runtime) spawnv1.Runtime {
 	return spawnv1.Runtime{
 		ID: r.ID, Space: r.Space, Agent: r.Agent, Generation: r.Generation,
 		State: r.State, PolicyDigest: r.PolicyDigest, ImageDigest: r.ImageDigest,
-		Address: r.Address,
+		Address: r.Address, HostPort: r.HostPort,
 	}
 }
 
 // ClaimRuntime resolves one claim to a ready runtime plus a fresh lease:
 // the claim binds the space's stored digests, the lease minted here is
-// the hold the caller renews and releases around its forwards.
+// the hold the caller renews and releases around its forwards. The
+// request's routing and identity fields bind to the started generation.
 func (c Contract) ClaimRuntime(ctx context.Context, space string, in spawnv1.ClaimRuntimeRequest) (spawnv1.ClaimedRuntime, error) {
 	if c.Runtimes == nil {
 		return spawnv1.ClaimedRuntime{}, spawnv1.ErrUnavailable
 	}
 	t := tenantOf(in.Org, in.Owner)
-	rt, err := c.Runtimes.Claim(ctx, t, space, in.Agent)
+	rt, err := c.Runtimes.ClaimManaged(ctx, t, space, spawn.ClaimRequest{
+		Agent:            in.Agent,
+		RuntimeID:        in.RuntimeID,
+		RuntimeMode:      in.RuntimeMode,
+		UserID:           in.UserID,
+		OrganizationID:   in.OrganizationID,
+		PolicyVersion:    in.PolicyVersion,
+		IdentityRevision: in.IdentityRevision,
+		Restrictions:     in.Restrictions,
+	})
 	if err != nil {
 		return spawnv1.ClaimedRuntime{}, err
 	}
@@ -75,4 +85,13 @@ func (c Contract) ListRuntimes(ctx context.Context, t spawnv1.Tenant) ([]spawnv1
 		out = append(out, dto)
 	}
 	return out, err
+}
+
+// DrainRuntimes drains a space's live runtimes, optionally scoped to one
+// agent lane — the respawn/replace primitive.
+func (c Contract) DrainRuntimes(ctx context.Context, space string, in spawnv1.DrainRuntimesRequest) (int, error) {
+	if c.Runtimes == nil {
+		return 0, spawnv1.ErrUnavailable
+	}
+	return c.Runtimes.Drain(ctx, tenantOf(in.Org, in.Owner), space, in.Agent)
 }

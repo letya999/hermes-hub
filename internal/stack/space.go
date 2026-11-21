@@ -94,6 +94,17 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 	return ReadEffective(dir, environment)
 }
 
+// SettingsForEffective resolves a managed space's settings from an
+// already-decoded effective bundle — the spawn service's stored-document
+// path, equivalent to ReadEffective on the published file tree.
+func SettingsForEffective(dir string, eff passportview.Effective, environment string) (Settings, error) {
+	s, err := finishManagedRead(Settings{}, dir, eff)
+	if err != nil {
+		return s, err
+	}
+	return environmentTail(s, dir, environment)
+}
+
 // environmentTail is the post-load tail both read paths share: the
 // organization merge, the environment's execution selection and the dev
 // port offsets.

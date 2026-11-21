@@ -279,6 +279,7 @@ type Client interface {
 	RenewLease(context.Context, string, LeaseRequest) (Runtime, error)
 	ReleaseLease(context.Context, string, LeaseRequest) error
 	ListRuntimes(context.Context, Tenant) ([]Runtime, error)
+	DrainRuntimes(context.Context, string, DrainRuntimesRequest) (int, error)
 }
 
 func validTenant(t Tenant) bool {
@@ -604,6 +605,16 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.ClaimRuntime(r.Context(), space, in)
+		case r.Method == http.MethodPost && len(rest) == 2 && rest[0] == "runtimes" && rest[1] == "drain":
+			var in DrainRuntimesRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			n, err := client.DrainRuntimes(r.Context(), space, in)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]int{"drained": n}, nil
 		case r.Method == http.MethodPost && len(rest) == 2 && rest[0] == "workers" && rest[1] == "drain":
 			var in DrainWorkersRequest
 			if err := httpapi.Decode(r, &in); err != nil {
