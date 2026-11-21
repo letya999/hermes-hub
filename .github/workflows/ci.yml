@@ -48,6 +48,11 @@ jobs:
           POSTGRES_USER: hub_test
           POSTGRES_PASSWORD: local-test-only
           POSTGRES_DB: hub_test
+          # The service options tokenizer splits on whitespace, so the
+          # health check cannot carry arguments; PGUSER/PGDATABASE give
+          # pg_isready its identity through the container environment.
+          PGUSER: hub_test
+          PGDATABASE: hub_test
         ports: ['5432:5432']
         options: >-
           --health-cmd pg_isready
