@@ -135,52 +135,37 @@ without `warm`: `ready` lands `busy`, `unlease` and `drain` both leave
 
 S4 implementation notes (`services/spawn-controller/internal/spawn`,
 verified 2026-11-21): `absent` is final per generation — a claim creates
-a new-generation row in `starting`, it is not an edge out of `absent`.
-"any" fans out to every non-final state except the edge's own target. A
-`busy` hold that outlives its bound drains — the timed-out hold's runtime
-is reclaimed, not returned dirty to the warm pool. `renew` is the lease
-heartbeat (`POST /v1/leases/{id}/renew`): a `busy` self-loop that re-arms
-the hold bound, so an actively renewed hold never drains. Every move out
-of the leasable states (`warm`, `busy`) deletes the runtime's lease rows
-in the same transaction — a draining, missing or quarantined row can
-never carry a hold into its next generation. The claim binds tenant,
-policy digest and image digest to the row (Decision 10): warm reuse is
-exact-key only, and activation drains every runtime bound to the old
-digest in the activation transaction. A runtime whose backend Start
-outlives an activation is the gap activation cannot see — its ready
-move checks the space's stored digest in the same transaction and warms
-straight into draining on a mismatch, the claim re-plans for the current
-digest, and the sweeper drains any warm/busy row whose digest stops
-matching as the backstop for both.
+a new-generation row, it is not an edge out of `absent`. "any" fans out
+to every non-final state except the edge's own target. A `busy` hold
+that outlives its bound drains — the runtime is reclaimed, never
+returned dirty to the warm pool; `renew` (`POST /v1/leases/{id}/renew`)
+is a `busy` self-loop that re-arms the bound. Every move out of the
+leasable states deletes the row's leases in the same transaction. The
+claim binds tenant, policy digest and image digest (Decision 10): warm
+reuse is exact-key only, activation drains old-digest runtimes in its
+transaction, and the ready move plus the sweeper backstop drain any
+warm/busy row whose digest stops matching.
 
 ### v1 live (spawn-controller)
 
 S4 (M40.3) wires the durable target table to HTTP: `RuntimeMachine`
-drives the `runtimes` rows the message path claims — `POST /v1/messages`
-is claim -> acquire lease -> forward -> release, `GET /v1/runtimes`
-lists the tenant's rows, `POST /v1/leases/{id}/renew` fires `renew`. The
-sweeper (`HUB_SWEEP_INTERVAL`, default 5s) fires the deadline events and
-then, outside any transaction, applies the backend effects: `draining`
-rows get a confirmed `Stop` before `stopped`, an unconfirmed stop stays
-for the `quarantine` deadline, and a `failed` row's half-started workload
-is stopped. The same pass reconciles rows against a successful backend
-`List` — absent workloads become `missing` and labeled workloads without
-rows (orphans of a crashed controller) are stopped; a `List` error marks
-nothing.
+drives the `runtimes` rows — `POST /v1/messages` is claim -> acquire ->
+forward -> release, `GET /v1/runtimes` lists tenant rows, `POST
+/v1/leases/{id}/renew` fires `renew`. The sweeper (`HUB_SWEEP_INTERVAL`,
+default 5s) fires deadline events then applies backend effects outside
+the transaction: `draining` rows get a confirmed `Stop`, an unconfirmed
+stop stays for `quarantine`, `failed` rows get their half-started
+workload stopped, and a successful `List` reconciles orphans to
+`missing`/stopped. Process-backend children join a process group (Unix)
+or Job Object (Windows) so controller death cannot orphan them; a
+restarted controller recovers rows and reconciles before serving.
 
-Children are bound to a process group (Unix) or Job Object (Windows) so
-a controller death cannot orphan them; a restarted controller recovers
-its runtimes from the rows and reconciles the backend at boot before
-serving.
-
-S7 (M40.3) moved the consumer side: the supervisor's `Ensure` claims
-through `contracts/spawn/v1` (`ClaimRuntime` returns the row's `address`
-plus a lease), `Reap` releases the lease, restart/respawn/remediation
-all drain and re-claim, and a supervisor restart rediscovers its runtime
-by renewing the persisted lease rather than cold-claiming. `POST
-/v1/spaces/{space}/runtimes/drain` is the respawn/replace surface. The
-`docker` backend starts managed runtimes on the internal agent network
-with the dual-homed control relay as sole inbound route; `process`
+S7 (M40.3) moved the consumer side: supervisor `Ensure` claims through
+`contracts/spawn/v1`, `Reap` releases the lease, restart/respawn/remediation
+drain and re-claim, and a supervisor restart rediscovers its runtime by
+renewing the persisted lease. `POST /v1/spaces/{space}/runtimes/drain`
+is the respawn/replace surface. `docker` starts managed runtimes on the
+internal agent network behind the dual-homed control relay; `process`
 serves trusted dev.
 
 ## Worker
@@ -188,60 +173,36 @@ serves trusted dev.
 ### v0 today
 
 The ToolHub CLI cell (`internal/toolhub` `cell*.go`): an in-memory warm
-registry keyed on image and warm key — `claimPoolCell`, `returnPoolCell`,
-`execInCell`, `cellRegistry`, `execWarm`. No durable row, no lease: a
-ToolHub restart forgot live cells and orphaned their containers, the
-cross-user pool let one tenant's worker serve another, and drift was
-checked only when a cell was reused, never reconciled. Config keys
-`pool_size` and `pool_claim_wait_seconds` tuned the in-memory pool.
+registry (`cellRegistry`, `execWarm`, `claimPoolCell`) keyed on image and
+warm key. No durable row, no lease: a restart forgot live cells, the pool
+could serve a foreign tenant's exec, drift checked only on reuse.
 
-### Defects fixed by M40.3 (S6)
+### v1 live (spawn-controller, M40.3 S6)
 
-| Defect | Location | Resolution |
-|---|---|---|
-| Worker state lived in memory: restart orphaned running cells and lost who claimed what | `internal/toolhub/cell_lifecycle.go` | workers are durable `workers` rows under `WorkerMachine`; the sweeper reconciles |
-| Cross-user warm pool could serve a foreign tenant's exec | `execPooled`/`claimPoolCell` | claim binds tenant + space + cell key + image digest; pool config deleted |
-| Reused cells trusted the spec they were started with | `execWarm` | reuse re-runs `Cells.spec` + `Backend.VerifyWorker` + canary/procs probes; drift drains and re-plans |
-
-### v1 target (spawn-controller)
+`WorkerMachine` owns durable `workers` rows; the claim binds tenant,
+space, cell key and image digest.
 
 | From | Event | To | Deadline / next actor |
 |---|---|---|---|
-| - | claim for a cell key | starting | start budget 30s, deadline `fail`; backend probe, sweeper backstop |
-| starting | `ready` (verify probes pass) | busy | hold bound 2h, deadline `drain`; lease `renew` re-arms it |
-| starting | `fail` | failed | retention 24h, deadline `removed`; sweeper |
+| - | claim for a cell key | starting | start budget 30s, deadline `fail` |
+| starting | `ready` (verify probes pass) | busy | hold bound 2h, deadline `drain`; `renew` re-arms it |
+| starting | `fail` | failed | retention 24h, deadline `removed` |
 | busy | `renew` (lease heartbeat) | busy | re-arms the lease bound |
-| busy | `unlease` (release) or `drain` | draining | stop budget 30s, deadline `quarantine`; backend confirms stop |
+| busy | `unlease` (release) or `drain` | draining | stop budget 30s, deadline `quarantine` |
 | draining | `stopped` (inspect confirms stop) | absent | final for this generation |
 | any non-final | `quarantine` / `missing` | quarantined / missing | retention 24h, deadline `removed` |
 | failed, quarantined, missing | `removed` | absent | final |
 
-Differences from Runtime: **no `warm`** — release drains, a worker is
-never returned to a reusable pool, and a re-claim mints the next
-generation. The claim binds tenant, space, cell key and image digest, so
-an executor's worker can never serve a foreign space or a superseded
-image.
-
-### v1 live (spawn-controller)
-
-S6/S7 (M40.3) wired `WorkerMachine` to the contract: `POST
-/v1/spaces/{space}/workers` claims (org+owner tenant, space, cell key,
-image digest -> `starting` -> `busy` row plus a lease), `POST
-/v1/workers/{id}/exec` is lease-guarded bounded exec (env delivered by
-name through `docker exec -e`, never in argv; timeout and output caps
-enforced), `/v1/workers/{id}/renew` and `/release` drive the lease
-edges, and `POST /v1/spaces/{space}/workers/drain` filtered by
-binding/job backs ToolHub's `/cli-release`. The worker row carries the
-sanitized claim (brokered credential values stripped) and the reuse
-guard re-verifies profile before serving. Worker lease rows carry a 30m
-TTL — `renew` extends only the caller's hold, and the sweeper unleases a
-worker whose holds all expired into `draining`. ToolHub's `execCLI` claims,
-renews and releases through `contracts/spawn/v1`; the old cell files and
-the in-memory pool were deleted in the same slice (S2/S4 move-then-
-delete rule). `TestWorkerTransitionsWired`,
-`TestWorkerMountsOnlyOwnSpace`, `TestWorkerNeverCrossesTenants` and
-`TestExecNoSecretInArgv` cover the machine; `TestWorkerCellRealDocker`
-runs the real docker leg.
+Unlike Runtime there is **no `warm` reuse**: release drains and a
+re-claim mints the next generation. Lease rows carry a 30m TTL — `renew`
+extends only the caller's hold, and the sweeper drains a worker whose
+holds all expired. Contract surface: `POST /v1/spaces/{space}/workers`
+claims, `/v1/workers/{id}/exec` is lease-guarded bounded exec (env by
+name, never argv), `/renew` + `/release` drive the lease edges, `POST
+/v1/spaces/{space}/workers/drain` backs ToolHub's `/cli-release`; reuse
+re-runs `Cells.spec` + `Backend.VerifyWorker` + canary/procs probes.
+ToolHub's `execCLI` claims/renews/releases through `contracts/spawn/v1`;
+the cell files and in-memory pool were deleted in the same slice.
 
 ## PassportRevision
 
@@ -289,14 +250,12 @@ must never tombstone either — the `retain` self-loop only re-arms their
 bound and writes history. Pruning is the explicit count-based edge
 `superseded --prune--> pruned`: the activation transaction keeps the
 newest `passport.RevisionKeepSlack` (3) superseded revisions per
-(space, layer) and moves older ones to the final `pruned` state.
-`rejected` and `pruned` are the tombstones. `rejected`/`pruned` content
-may be resubmitted — the digest dedup only binds non-pruned rows.
-Activation is a set operation: one transaction takes one or more
-revisions (at most one per layer) and first compiles the would-be active
-set — a set that cannot compile writes nothing, so a space never loses
-its serving policy to a partial cut; bootstrap is one activation of all
-layers together.
+(space, layer). `rejected` and `pruned` are the tombstones; their content
+may be resubmitted — dedup only binds non-pruned rows. Activation is a
+set operation: one transaction takes one or more revisions (at most one
+per layer) and first compiles the would-be set — a set that cannot
+compile writes nothing, so a space never loses its serving policy to a
+partial cut; bootstrap activates all layers together.
 
 ### v1 live (spawn-controller)
 
@@ -305,26 +264,23 @@ S2/S7 (M40.3) run the machine end to end on the contract: `POST
 `/revisions/{id}/validate` compiles it into `validated` or `rejected`,
 `/activations` cuts a validated set in one transaction, and `POST
 /v1/spaces/{space}/apply` folds submit+validate+activate into one call
-on the `base_digest` compare-and-swap — a stale base gets `conflict`,
-never a silent overwrite (`TestActivateRefusesStaleBaseDirect`,
-`TestActivateConcurrentBaseRace`). `POST /v1/spaces/{space}/settings`
-applies one allowlisted config leaf through the same CAS; rollback is
-activation of a `superseded` revision (`TestRevisionRollbackActivatesOlder`),
-and a failed activation leaves the previous active set serving
-(`TestApplyCrashLeavesPreviousActive`). Every activation stores the new
-effective digest on the space row and drains runtimes bound to the old
-digest in the same transaction (`TestRevokeDrainsOldDigest`).
+on the `base_digest` CAS — a stale base gets `conflict`, never a silent
+overwrite (`TestActivateRefusesStaleBaseDirect`,
+`TestActivateConcurrentBaseRace`). `/settings` applies one allowlisted
+config leaf through the same CAS; rollback activates a `superseded`
+revision (`TestRevisionRollbackActivatesOlder`), a failed activation
+leaves the previous set serving (`TestApplyCrashLeavesPreviousActive`),
+and every activation stores the effective digest on the space row and
+drains old-digest runtimes in the same transaction (`TestRevokeDrainsOldDigest`).
 
 The v0 file triplet is gone (S7b/S7d): `generated/passports/current`,
 `.policy/<hex>` links, `apply-journal.json` and `internal/passportview`
 are deleted — consumers read `GET /v1/spaces/{space}/effective` or the
 immutable `GET /v1/spaces/{space}/policy/{service}?digest=` slice
-(`ETag` = digest, `Cache-Control: immutable`), and `apply` no longer
-keeps a journal; the activation transaction is the crash boundary.
-`GET /v1/spaces/{space}/explain` serves the stored per-leaf layer
-attribution. The v0 importer (`HUB_IMPORT_V0_DIR`) projects existing
-spaces into `spaces` + `active` user-layer revisions through the same
-Submit/Validate/Activate path.
+(`ETag` = digest, `Cache-Control: immutable`); the activation transaction
+is the crash boundary. `/explain` serves the stored per-leaf layer
+attribution, and the v0 importer (`HUB_IMPORT_V0_DIR`) projects existing
+spaces through the same Submit/Validate/Activate path.
 
 ## ChannelLink
 
