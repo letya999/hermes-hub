@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passport"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -47,13 +47,16 @@ func ManagedSupervisorCanary(ctx context.Context, image string) (result error) {
 	}
 	suffix := hex.EncodeToString(id)
 	userID := "mg" + suffix
+	user2 := "mh" + suffix
 	env := "prod"
 	containerRuntime := strings.TrimSpace(os.Getenv("HUB_CONTAINER_RUNTIME"))
 	if containerRuntime == "" {
 		containerRuntime = "runc"
 	}
 	agentNet := "hermes-hub-agent-" + userID + "-" + env
-	sharedNet, controlNet := "hermes-mgsup-runtime-"+suffix, "hermes-mgsup-control-"+suffix
+	// The spawn backend owns the control bridge under its canonical name —
+	// the dual-homed control relay joins the space's agent network plus it.
+	sharedNet, controlNet := "hermes-mgsup-runtime-"+suffix, "hermes-hub-control"
 	containers, ownedNetworks := []string{}, []string{}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -80,12 +83,10 @@ func ManagedSupervisorCanary(ctx context.Context, image string) (result error) {
 		return err
 	}
 	ownedNetworks = append(ownedNetworks, agentNet)
-	for _, network := range []string{sharedNet, controlNet} {
-		if _, err := docker("network", "create", network); err != nil {
-			return err
-		}
-		ownedNetworks = append(ownedNetworks, network)
+	if _, err := docker("network", "create", sharedNet); err != nil {
+		return err
 	}
+	ownedNetworks = append(ownedNetworks, sharedNet)
 	const toolhubFixture = `import json
 from http.server import BaseHTTPRequestHandler,HTTPServer
 class Handler(BaseHTTPRequestHandler):
@@ -177,12 +178,27 @@ sys.exit(1)`
 			result = errors.Join(result, fmt.Errorf("remove supervisor canary root: %w", err))
 		}
 	}()
-	contextRoot, err := managedCanaryContext(root, userID, env)
+	repoRoot, err := devcheckRepoRoot()
 	if err != nil {
 		return err
 	}
-	cfg := supervisor.Config{SpacesRoot: root, Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600, ContainerRuntime: containerRuntime}
-	registry, err := integrationIdentity(ctx, root, []commodel.User{{ID: userID, Enabled: true, TelegramIDs: []int64{11}}})
+	fx, err := startSpawnController(ctx, repoRoot, root, image)
+	if err != nil {
+		return err
+	}
+	defer fx.stop()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		RemoveSpawnOwned(cleanup, userID)
+		RemoveSpawnOwned(cleanup, user2)
+	}()
+	contextRoot, err := managedCanaryContext(ctx, root, userID, env, fx.Client)
+	if err != nil {
+		return err
+	}
+	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, RuntimeAuth: "supervisor-control-0123456789abcdef", Network: sharedNet, WarmTTL: time.Second, PortBase: 28600, ContainerRuntime: containerRuntime, Spawn: fx.Client}
+	registry, err := integrationIdentity(ctx, root, []commodel.User{{ID: userID, Enabled: true, TelegramIDs: []int64{11}}, {ID: user2, Enabled: true, TelegramIDs: []int64{12}}})
 	if err != nil {
 		return err
 	}
@@ -216,7 +232,12 @@ sys.exit(1)`
 	if err != nil {
 		return fmt.Errorf("managed supervised spawn: %w", err)
 	}
-	containers = append(containers, runtime.Container, runtime.Container+"-ctl")
+	wl, err := SpawnOwnedContainerID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	wlCtl := wl + "-ctl"
+	containers = append(containers, wl, wlCtl)
 	if !runtime.Managed || runtime.State != supervisor.Busy {
 		return fmt.Errorf("managed runtime not busy: %+v", runtime)
 	}
@@ -274,7 +295,7 @@ sys.exit(1)`
 		}
 		return decoded[0], nil
 	}
-	runtimeInspect, err := inspect(runtime.Container)
+	runtimeInspect, err := inspect(wl)
 	if err != nil {
 		return err
 	}
@@ -318,7 +339,7 @@ sys.exit(1)`
 			}
 		}
 	}
-	relayInspect, err := inspect(runtime.Container + "-ctl")
+	relayInspect, err := inspect(wlCtl)
 	if err != nil {
 		return err
 	}
@@ -402,7 +423,7 @@ sys.exit(1)`
 	}
 	// Live in-container attestations on the real spawned runtime.
 	execCheck := func(expected, name string, args ...string) error {
-		out, runErr := exec.CommandContext(ctx, "docker", append([]string{"exec", runtime.Container}, args...)...).CombinedOutput()
+		out, runErr := exec.CommandContext(ctx, "docker", append([]string{"exec", wl}, args...)...).CombinedOutput()
 		if expected == "success" && runErr != nil {
 			return fmt.Errorf("%s unexpectedly failed: %v: %s", name, runErr, out)
 		}
@@ -434,7 +455,7 @@ sys.exit(1)`
 	if err := execCheck("success", "workspace write", "sh", "-c", "printf sandbox-runtime > /workspace/managed-sandbox-marker"); err != nil {
 		return err
 	}
-	envOut, envErr := exec.CommandContext(ctx, "docker", "exec", runtime.Container, "env").CombinedOutput()
+	envOut, envErr := exec.CommandContext(ctx, "docker", "exec", wl, "env").CombinedOutput()
 	if envErr != nil {
 		return fmt.Errorf("managed env scan failed: %w", envErr)
 	}
@@ -451,7 +472,7 @@ sys.exit(1)`
 	// Mount immutability across a container restart: same mounts, same
 	// effective config, attestations still pass.
 	configHash := func() (string, error) {
-		out, hashErr := exec.CommandContext(ctx, "docker", "exec", runtime.Container, "sha256sum", "/state/hermes/config.yaml").CombinedOutput()
+		out, hashErr := exec.CommandContext(ctx, "docker", "exec", wl, "sha256sum", "/state/hermes/config.yaml").CombinedOutput()
 		if hashErr != nil {
 			return "", fmt.Errorf("config hash unavailable: %v: %s", hashErr, out)
 		}
@@ -485,7 +506,7 @@ sys.exit(1)`
 		return strings.Join(entries, "\n")
 	}
 	mountsBefore := mountSignature(runtimeInspect)
-	if _, err := docker("restart", runtime.Container); err != nil {
+	if _, err := docker("restart", wl); err != nil {
 		return fmt.Errorf("managed runtime restart: %w", err)
 	}
 	deadline := time.Now().Add(90 * time.Second)
@@ -504,7 +525,7 @@ sys.exit(1)`
 		}
 		time.Sleep(time.Second)
 	}
-	restartedInspect, err := inspect(runtime.Container)
+	restartedInspect, err := inspect(wl)
 	if err != nil {
 		return err
 	}
@@ -527,7 +548,6 @@ sys.exit(1)`
 	// Secondary-runtime parity: a second managed context gets its own internal
 	// network, its own relay and a distinct loopback port; neither runtime can
 	// name-resolve the other.
-	user2 := "mh" + suffix
 	agentNet2 := "hermes-hub-agent-" + user2 + "-" + env
 	if _, err := docker("network", "create", "--internal", agentNet2); err != nil {
 		return err
@@ -542,7 +562,7 @@ sys.exit(1)`
 			return fmt.Errorf("attach relay to second agent network: %w", err)
 		}
 	}
-	contextRoot2, err := managedCanaryContext(root, user2, env)
+	contextRoot2, err := managedCanaryContext(ctx, root, user2, env, fx.Client)
 	if err != nil {
 		return err
 	}
@@ -551,11 +571,15 @@ sys.exit(1)`
 	if err != nil {
 		return fmt.Errorf("secondary managed supervised spawn: %w", err)
 	}
-	containers = append(containers, runtime2.Container, runtime2.Container+"-ctl")
+	wl2, err := SpawnOwnedContainerID(ctx, user2)
+	if err != nil {
+		return err
+	}
+	containers = append(containers, wl2, wl2+"-ctl")
 	if runtime.Address == runtime2.Address {
 		return fmt.Errorf("two managed runtimes share loopback address %s", runtime.Address)
 	}
-	runtime2Inspect, err := inspect(runtime2.Container)
+	runtime2Inspect, err := inspect(wl2)
 	if err != nil {
 		return err
 	}
@@ -567,7 +591,7 @@ sys.exit(1)`
 	if len(networks2) != 1 || networks2[agentNet2] == nil {
 		return fmt.Errorf("secondary runtime joined unexpected networks: %v", networks2)
 	}
-	relay2Inspect, err := inspect(runtime2.Container + "-ctl")
+	relay2Inspect, err := inspect(wl2 + "-ctl")
 	if err != nil {
 		return err
 	}
@@ -579,32 +603,40 @@ sys.exit(1)`
 	if relay2Nets[agentNet2] == nil || relay2Nets[controlNet] == nil {
 		return fmt.Errorf("secondary control relay is not dual-homed: %v", relay2Nets)
 	}
-	if err := execCheck("failure", "sibling runtime resolution", "python", "-c", "import socket;socket.getaddrinfo('"+runtime2.Container+"',8080)"); err != nil {
+	if err := execCheck("failure", "sibling runtime resolution", "python", "-c", "import socket;socket.getaddrinfo('"+wl2+"',8080)"); err != nil {
 		return err
 	}
-	// Generation rollover: reaping and respawning the first context must
-	// produce a fresh runtime plus relay without leftover names or ports.
+	// Generation rollover: reaping only releases the spawn lease — the row
+	// goes warm, so the drain retires the workload+relay pair before the
+	// fresh claim (the same respawn primitive the supervisor restart uses).
 	if err := m.ReleaseBinding(binding); err != nil {
 		return err
 	}
 	if err := m.Reap(ctx, time.Now().Add(2*time.Second)); err != nil {
 		return err
 	}
-	if _, err := inspect(runtime.Container); err == nil {
+	if _, err := fx.Client.DrainRuntimes(ctx, userID, spawnv1.DrainRuntimesRequest{Org: "local", Owner: userID}); err != nil {
+		return fmt.Errorf("drain first generation: %w", err)
+	}
+	if _, err := inspect(wl); err == nil {
 		return fmt.Errorf("managed runtime container survived teardown")
 	}
-	if _, err := inspect(runtime.Container + "-ctl"); err == nil {
+	if _, err := inspect(wlCtl); err == nil {
 		return fmt.Errorf("control relay survived teardown")
 	}
 	runtime3, err := m.Ensure(ctx, binding)
 	if err != nil {
 		return fmt.Errorf("managed respawn after reap: %w", err)
 	}
-	containers = append(containers, runtime3.Container, runtime3.Container+"-ctl")
+	wl3, err := SpawnOwnedContainerID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	containers = append(containers, wl3, wl3+"-ctl")
 	if runtime3.Generation == runtime.Generation {
 		return errors.New("managed respawn did not advance generation")
 	}
-	runtime3Inspect, err := inspect(runtime3.Container)
+	runtime3Inspect, err := inspect(wl3)
 	if err != nil {
 		return err
 	}
@@ -612,7 +644,7 @@ sys.exit(1)`
 	if !ok || hostConfig3["Runtime"] != containerRuntime {
 		return fmt.Errorf("respawned managed runtime isolation drifted: %v", hostConfig3["Runtime"])
 	}
-	relay3Inspect, err := inspect(runtime3.Container + "-ctl")
+	relay3Inspect, err := inspect(wl3 + "-ctl")
 	if err != nil {
 		return err
 	}
@@ -637,7 +669,12 @@ sys.exit(1)`
 	if err != nil || stopped.State != supervisor.Stopped {
 		return fmt.Errorf("managed runtime did not stop: state=%s err=%v", stopped.State, err)
 	}
-	for _, name := range []string{runtime3.Container, runtime3.Container + "-ctl", runtime2.Container, runtime2.Container + "-ctl"} {
+	for _, space := range []string{userID, user2} {
+		if _, err := fx.Client.DrainRuntimes(ctx, space, spawnv1.DrainRuntimesRequest{Org: "local", Owner: space}); err != nil {
+			return fmt.Errorf("drain %s: %w", space, err)
+		}
+	}
+	for _, name := range []string{wl3, wl3 + "-ctl", wl2, wl2 + "-ctl"} {
 		if _, err := inspect(name); err == nil {
 			return fmt.Errorf("managed container %s survived teardown", name)
 		}
@@ -647,10 +684,13 @@ sys.exit(1)`
 }
 
 // managedCanaryContext publishes the synthetic passports and execution selection
-// one supervised context needs.
-func managedCanaryContext(root, userID, env string) (string, error) {
-	contextRoot := filepath.Join(root, userID)
+// one supervised context needs — through the spawn contract, like production.
+func managedCanaryContext(ctx context.Context, root, userID, env string, client spawnv1.Client) (string, error) {
+	contextRoot := filepath.Join(root, "spaces", userID)
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config", "skills"), 0755); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# managed canary\n"), 0644); err != nil {
@@ -680,15 +720,14 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 	if err := os.WriteFile(filepath.Join(exposureDir, "fixture-key.pem"), []byte("synthetic canary key"), 0640); err != nil {
 		return "", err
 	}
-	catalogDocs, err := catalog.Generate()
-	if err != nil {
-		return "", err
+	tenant := spawnv1.Tenant{Org: "local", Owner: userID}
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{
+		Org: tenant.Org, Owner: tenant.Owner, ID: userID, Environment: env,
+		IdempotencyKey: "devcheck-space-" + userID,
+	}); err != nil {
+		return "", fmt.Errorf("create space %s: %w", userID, err)
 	}
-	revision, err := passport.CompileAuthored(contextRoot, env, time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(contextRoot), map[string][]string{})
-	if err != nil {
-		return "", err
-	}
-	if err := publishGenerated(contextRoot, revision); err != nil {
+	if err := publishAuthoredPassports(ctx, client, tenant, userID, contextRoot); err != nil {
 		return "", err
 	}
 	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
@@ -699,7 +738,7 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 	if err := os.WriteFile(filepath.Join(contextRoot, stack.ExecutionPath(env)), selectionBody, 0600); err != nil {
 		return "", err
 	}
-	if err := stack.RenderEnvironment(context.Background(), generatedReader{contextRoot}, contextRoot, root, env); err != nil {
+	if err := stack.RenderEnvironment(context.Background(), client, contextRoot, root, env); err != nil {
 		return "", err
 	}
 	files := map[string][]byte{

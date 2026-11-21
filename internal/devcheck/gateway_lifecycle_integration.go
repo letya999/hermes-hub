@@ -20,11 +20,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/catalog"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
-	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
@@ -55,6 +54,9 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(root, "config", "skills"), 0755); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# gateway lifecycle canary\n"), 0644); err != nil {
 		return err
 	}
@@ -72,11 +74,20 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 		}
 	}()
 	control := "synthetic-gateway-control-0123456789"
+	repoRoot, err := devcheckRepoRoot()
+	if err != nil {
+		return err
+	}
+	fx, err := startSpawnController(ctx, repoRoot, root, image)
+	if err != nil {
+		return err
+	}
+	defer fx.stop()
 	// The deployment default warm window is now 30 min (SPEC-0053 S2), far
 	// beyond this check's budget, so the fixture pins its own five-minute
 	// window and verifies the extension+reap mechanics at that value.
 	const warmWindow = 5 * time.Minute
-	cfg := supervisor.Config{SpacesRoot: root, Image: image, Network: network, RuntimeAuth: control, PortBase: 32000, WarmTTL: warmWindow}
+	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, PortBase: 32000, WarmTTL: warmWindow, Spawn: fx.Client}
 	registry, err := integrationIdentity(ctx, root, nil)
 	if err != nil {
 		return err
@@ -113,7 +124,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	for i, name := range []string{"alice", "bob"} {
 		name = name + "-" + suffix
-		dir := filepath.Join(root, name)
+		dir := filepath.Join(root, "spaces", name)
 		agentNet := "hermes-hub-agent-" + name + "-prod"
 		if err := exec.CommandContext(ctx, "docker", "network", "create", "--internal", agentNet).Run(); err != nil {
 			return err
@@ -131,15 +142,14 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 				return err
 			}
 		}
-		catalogDocs, err := catalog.Generate()
-		if err != nil {
-			return err
+		tenant := spawnv1.Tenant{Org: "local", Owner: name}
+		if _, err := fx.Client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{
+			Org: tenant.Org, Owner: tenant.Owner, ID: name, Environment: "prod",
+			IdempotencyKey: "devcheck-space-" + name,
+		}); err != nil {
+			return fmt.Errorf("create space %s: %w", name, err)
 		}
-		revision, err := passport.CompileAuthored(dir, "prod", time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(dir), map[string][]string{})
-		if err != nil {
-			return err
-		}
-		if err := publishGenerated(dir, revision); err != nil {
+		if err := publishAuthoredPassports(ctx, fx.Client, tenant, name, dir); err != nil {
 			return err
 		}
 		initialSelection := stack.ExecutionSelection{Schema: 1, User: name, Environment: "prod", Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
@@ -163,7 +173,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		if err := api.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), api.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
-		if err := stack.RenderEnvironment(context.Background(), generatedReader{dir}, dir, root, "prod"); err != nil {
+		if err := stack.RenderEnvironment(context.Background(), fx.Client, dir, root, "prod"); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, "managed-runtime.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
@@ -191,7 +201,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 			return err
 		}
 
-		settingsValue, err := stack.ReadEffective(context.Background(), generatedReader{dir}, dir, "prod")
+		settingsValue, err := stack.ReadEffective(context.Background(), fx.Client, dir, "prod")
 		if err != nil {
 			return err
 		}
@@ -206,12 +216,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
 		for _, binding := range bindings {
-			if runtime, ok, err := manager.Status(binding); err == nil && ok && runtime.State != supervisor.Stopped {
-				if id, err := smokeOwnedContainerID(cleanupCtx, manager, runtime); err == nil {
-					_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", id).Run()
-					_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", runtime.Container+"-ctl").Run()
-				}
-			}
+			RemoveSpawnOwned(cleanupCtx, binding.UserID)
 		}
 	}()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -294,7 +299,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		}
 		audit.NativeCron = &snapshot
 		selection := stack.ExecutionSelection{Schema: 1, User: binding.UserID, Environment: "prod", Mode: "supervisor", SupervisorURL: endpoint, NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
-		if _, err := migration.SelectExecution(context.Background(), generatedReader{binding.ContextRoot}, binding.ContextRoot, selection, audit, true); err != nil {
+		if _, err := migration.SelectExecution(context.Background(), fx.Client, binding.ContextRoot, selection, audit, true); err != nil {
 			return err
 		}
 		// The host-side supervisor endpoint changes only execution routing;
@@ -374,7 +379,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 			return errors.New("completed gateway job did not release leases")
 		}
 		idleDeadlines[binding.UserID] = runtime.IdleDeadline
-		id, err := smokeOwnedContainerID(ctx, manager, runtime)
+		id, err := SpawnOwnedContainerID(ctx, binding.UserID)
 		if err != nil {
 			return err
 		}

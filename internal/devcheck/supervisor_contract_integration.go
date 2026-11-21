@@ -260,7 +260,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		removeSpawnOwned(cleanupCtx, userID)
+		RemoveSpawnOwned(cleanupCtx, userID)
 	}()
 	first, err := m.Ensure(ctx, binding)
 	if err != nil {
@@ -269,7 +269,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes-effective.prod.yaml")); err != nil {
 		return err
 	}
-	if id, err := spawnOwnedContainerID(ctx, userID); err != nil {
+	if id, err := SpawnOwnedContainerID(ctx, userID); err != nil {
 		return err
 	} else {
 		probe := "from gateway.run import _load_gateway_config; from hermes_cli.tools_config import _get_platform_tools; from model_tools import get_tool_definitions; c=_load_gateway_config(); p=c.get('platform_toolsets',{}).get('api_server',[]); d=c.get('agent',{}).get('disabled_toolsets',[]); g=sorted(_get_platform_tools(c, 'api_server')); n=[t['function']['name'] for t in get_tool_definitions(enabled_toolsets=g, disabled_toolsets=d, quiet_mode=True)]; print(int('terminal' in p),int('terminal' in d),int('terminal' in g),int('terminal' in n))"
@@ -341,7 +341,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		mapping, _, _ := spool.Mapping(job.ID)
 		reason := "native outcome unavailable"
 		if _, _, statusErr := m.Status(binding); statusErr == nil && mapping.RunID != "" {
-			if id, ownErr := spawnOwnedContainerID(ctx, userID); ownErr == nil {
+			if id, ownErr := SpawnOwnedContainerID(ctx, userID); ownErr == nil {
 				out := func(args ...string) ([]byte, error) { return dockerContractOutput(ctx, args...) }
 				if native, nativeErr := hermesHTTP(ctx, out, id, auth, http.MethodGet, "/v1/runs/"+mapping.RunID, "", ""); nativeErr == nil {
 					reason, _ = jsonString(native.body, "error")
@@ -398,7 +398,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil {
 		return err
 	}
-	readmitContainerID, err := spawnOwnedContainerID(ctx, userID)
+	readmitContainerID, err := SpawnOwnedContainerID(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -500,7 +500,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil || len(before.Consumers) == 0 {
 		return fmt.Errorf("disconnect released unresolved runtime hold")
 	}
-	containerID, err := spawnOwnedContainerID(ctx, userID)
+	containerID, err := SpawnOwnedContainerID(ctx, userID)
 	if err != nil {
 		return err
 	}

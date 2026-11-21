@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -19,17 +19,12 @@ func TestM32GroupFixtureUsesDedicatedGroupHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(f.StopSpawn)
 	for i, user := range f.Users {
 		dir := filepath.Join(f.Root, "spaces", user)
-		current, err := generatedRevisionID(dir)
+		revision, err := SpawnEffectiveRevision(context.Background(), f.Spawn, spawnv1.Tenant{Org: "local", Owner: user}, user)
 		if err != nil {
 			t.Fatal(err)
-		}
-		revision := passport.Revision{ID: current, Docs: map[string][]byte{}}
-		for _, name := range passport.Names {
-			if revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml")); err != nil {
-				t.Fatal(err)
-			}
 		}
 		eff, err := revision.Effective()
 		if err != nil {
@@ -54,6 +49,7 @@ func TestM32FixtureUsesSixAuthoredPassports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(f.StopSpawn)
 	store, err := toolhub.Load(f.StorePath)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +66,7 @@ func TestM32FixtureUsesSixAuthoredPassports(t *testing.T) {
 		if err != nil || len(entries) != 6 {
 			t.Fatalf("authored inputs: count=%d err=%v", len(entries), err)
 		}
-		current, err := generatedRevisionID(dir)
+		effective, err := SpawnEffectiveRevision(context.Background(), f.Spawn, spawnv1.Tenant{Org: "local", Owner: user}, user)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,11 +99,11 @@ func TestM32FixtureUsesSixAuthoredPassports(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := stack.RenderEnvironment(context.Background(), generatedReader{dir}, dir, f.Root, "prod"); err != nil {
+		if err := stack.RenderEnvironment(context.Background(), f.Spawn, dir, f.Root, "prod"); err != nil {
 			t.Fatal(err)
 		}
-		settings, eff, err := stack.ReadEffectiveSpaceBundle(context.Background(), generatedReader{dir}, dir)
-		if err != nil || settings.PassportRevision != current || settings.Model != "fixture" || !settings.Has("memory_vault") {
+		settings, eff, err := stack.ReadEffectiveSpaceBundle(context.Background(), f.Spawn, dir)
+		if err != nil || settings.PassportRevision != effective.ID || settings.Model != "fixture" || !settings.Has("memory_vault") {
 			t.Fatalf("retired configuration influenced effective state: %v", err)
 		}
 		registry, err := stack.LoadModelRegistryFor(dir, eff)

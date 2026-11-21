@@ -22,12 +22,12 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/identityhub"
-	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -194,6 +194,7 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 
 func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, environment string, f devcheck.M32Fixture, dreamingAuth string) *m32Lifecycle {
 	t.Helper()
+	t.Cleanup(f.StopSpawn)
 	h := &m32Lifecycle{f: f, image: image, environment: environment, control: strings.Repeat("m32-control-", 4), tokens: map[string]string{}}
 	bind := "127.0.0.1:0"
 	if image != "" {
@@ -221,19 +222,7 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
 		for _, user := range f.Users {
-			for _, mode := range []string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"} {
-				if h.manager == nil {
-					continue
-				}
-				auth := f.Auth[user]
-				rt, ok, err := h.manager.Status(supervisor.Binding{PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, UserID: user, RuntimeMode: mode})
-				if err != nil {
-					t.Errorf("lookup owned M32 runtime for cleanup: %v", err)
-				}
-				if ok {
-					h.containers = append(h.containers, rt.Container, rt.Container+"-ctl")
-				}
-			}
+			devcheck.RemoveSpawnOwned(cleanup, user)
 		}
 		for i := len(h.containers) - 1; i >= 0; i-- {
 			if err := exec.CommandContext(cleanup, "docker", "rm", "-f", h.containers[i]).Run(); err != nil {
@@ -281,7 +270,7 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 	if runtimeImage == "" {
 		runtimeImage = "m32-unspawned"
 	}
-	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command, Identity: registry, DreamingServiceAuth: dreamingAuth})
+	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command, Identity: registry, DreamingServiceAuth: dreamingAuth, Spawn: f.Spawn})
 	m32Require(t, err)
 	h.supervisor = httptest.NewServer(h.manager.Handler())
 	t.Cleanup(h.supervisor.Close)
@@ -297,14 +286,8 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 		h.tokens[user] = auth["HUB_RUNTIME_AUTH"]
 		m32Require(t, os.MkdirAll(filepath.Join(owners, user), 0700))
 		if dreamingAuth != "" {
-			cur, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+			revision, err := devcheck.SpawnEffectiveRevision(ctx, f.Spawn, spawnv1.Tenant{Org: "local", Owner: user}, user)
 			m32Require(t, err)
-			current := strings.TrimSpace(string(cur))
-			revision := passport.Revision{ID: current, Docs: make(map[string][]byte)}
-			for _, name := range passport.Names {
-				revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml"))
-				m32Require(t, err)
-			}
 			bundle, err := revision.PolicyBundle()
 			m32Require(t, err)
 			signed, err := registry.StagePassports(ctx, bundle)
@@ -397,6 +380,7 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 		"HUB_TOOLHUB_LISTEN": toolListen, "HUB_AGENT_EXEC_MODE": "supervisor", "HUB_VAULTS_BY_PRINCIPAL": vaultRoot,
 		"HUB_TOOL_GOVERNANCE": filepath.Join(filepath.Dir(f.StorePath), "governance.json"), "HUB_AUDIT_LEDGER": filepath.Join(f.Root, "audit.jsonl"),
 		"HUB_COMMUNICATION_AUTH": h.control, "HUB_SUPERVISOR_AUTH": h.control, "HUB_RUNTIME_SUPERVISOR_URL": h.supervisor.URL, "HUB_TOOLHUB_URL_PATTERN": h.toolURL,
+		"HUB_SPAWN_URL": f.SpawnURL, "HUB_SPAWN_TOKEN": f.SpawnToken,
 		"HUB_AUTOMATION_ROOT": filepath.Join(f.Root, "automation"), "HUB_AUTOMATION_OWNERS": owners, "HUB_AUTOMATION_LEGACY_SPOOL": filepath.Join(f.Root, "communication"), "HUB_AUTOMATION_ROUTING": routing,
 		"HUB_AUTOMATION_ENVIRONMENT": environment, "HUB_AUTOMATION_JOB_URL": h.supervisor.URL, "HUB_COMMUNICATION_CONTROL_URL": comm.URL,
 		"HUB_IDENTITY_URL": h.supervisor.URL, "HUB_IDENTITY_AUTH": h.control,
@@ -572,7 +556,9 @@ func (h *m32Lifecycle) assertRuntimeIsolation(t *testing.T, user string) {
 	if !ok || !rt.Managed {
 		t.Fatal("actual managed runtime missing")
 	}
-	data := h.docker(t, t.Context(), "inspect", "--format", "{{json .Mounts}}", rt.Container)
+	container, err := devcheck.SpawnOwnedContainerID(t.Context(), user)
+	m32Require(t, err)
+	data := h.docker(t, t.Context(), "inspect", "--format", "{{json .Mounts}}", container)
 	var mounts []struct{ Destination string }
 	m32Require(t, json.Unmarshal(data, &mounts))
 	for _, mount := range mounts {
@@ -582,11 +568,11 @@ func (h *m32Lifecycle) assertRuntimeIsolation(t *testing.T, user string) {
 			}
 		}
 	}
-	containerUser := strings.TrimSpace(string(h.docker(t, t.Context(), "inspect", "--format", "{{.Config.User}}", rt.Container)))
+	containerUser := strings.TrimSpace(string(h.docker(t, t.Context(), "inspect", "--format", "{{.Config.User}}", container)))
 	if containerUser != fmt.Sprintf("10001:%d", max(0, os.Getgid())) {
 		t.Fatal("runtime lost its non-root UID and controller group contract")
 	}
-	h.docker(t, t.Context(), "exec", rt.Container, "sh", "-ec", `for file in /config/stack.yaml /config/config.yaml /config/models.yaml /config/workspace.yaml /config/tools.yaml /config/grants.yaml /config/revision /config/tool-policy.json /config/tool-manifest.json; do test -r "$file"; done`)
+	h.docker(t, t.Context(), "exec", container, "sh", "-ec", `for file in /config/stack.yaml /config/config.yaml /config/models.yaml /config/workspace.yaml /config/tools.yaml /config/grants.yaml /config/revision /config/tool-policy.json /config/tool-manifest.json; do test -r "$file"; done`)
 }
 
 func (h *m32Lifecycle) runtimeStatus(user string) (supervisor.Runtime, bool, error) {

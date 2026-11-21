@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
@@ -20,11 +21,24 @@ import (
 
 // M32Fixture keeps authored configuration separate from operator-issued rights
 // and the derived registry. No running deployment is read or modified here.
+// Passports publish through the real spawn-controller contract: Spawn is the
+// authority for effective reads and managed runtime claims; the fixture stops
+// it via StopSpawn.
 type M32Fixture struct {
 	Root, Infra, StorePath string
 	GroupSpace             string
 	Users                  []string
 	Auth                   map[string]identity.Envelope
+	Spawn                  spawnv1.Client
+	SpawnURL, SpawnToken   string
+	stopSpawn              func()
+}
+
+// StopSpawn stops the fixture's spawn-controller subprocess.
+func (f M32Fixture) StopSpawn() {
+	if f.stopSpawn != nil {
+		f.stopSpawn()
+	}
 }
 
 func NewM32Fixture(root, environment, providerURL, suffix string) (M32Fixture, error) {
@@ -70,9 +84,31 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
 		return f, err
 	}
+	if err := os.MkdirAll(filepath.Join(root, "config", "skills"), 0755); err != nil {
+		return f, err
+	}
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# M32 isolated acceptance\n"), 0644); err != nil {
 		return f, err
 	}
+	repoRoot, err := devcheckRepoRoot()
+	if err != nil {
+		return f, err
+	}
+	image := os.Getenv("HUB_M32_IMAGE")
+	if image == "" {
+		image = "m32-unspawned"
+	}
+	spawn, err := startSpawnController(context.Background(), repoRoot, root, image)
+	if err != nil {
+		return f, err
+	}
+	done := false
+	defer func() {
+		if !done {
+			spawn.stop()
+		}
+	}()
+	f.Spawn, f.SpawnURL, f.SpawnToken, f.stopSpawn = spawn.Client, spawn.URL, spawn.Token, spawn.stop
 	rights := []api.RightRule{}
 	for capability, operations := range allow {
 		for _, operation := range operations {
@@ -130,17 +166,20 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 				}
 			}
 		}
-		revision, err := passport.CompileAuthored(dir, environment, now, docs, stack.ReservedSiblingPorts(dir), allow)
-		if err != nil {
-			return f, fmt.Errorf("compile M32 authored passports: %w", err)
+		tenant := spawnv1.Tenant{Org: "local", Owner: user}
+		if _, err := spawn.Client.CreateSpace(context.Background(), spawnv1.CreateSpaceRequest{
+			Org: tenant.Org, Owner: tenant.Owner, ID: user, Environment: environment,
+			IdempotencyKey: "devcheck-m32-" + user,
+		}); err != nil {
+			return f, fmt.Errorf("create M32 space %s: %w", user, err)
 		}
-		if err := publishGenerated(dir, revision); err != nil {
+		if err := publishAuthoredPassports(context.Background(), spawn.Client, tenant, user, dir); err != nil {
+			return f, fmt.Errorf("publish M32 authored passports %s: %w", user, err)
+		}
+		if err := stack.RenderEnvironment(context.Background(), spawn.Client, dir, root, environment); err != nil {
 			return f, err
 		}
-		if err := stack.RenderEnvironment(context.Background(), generatedReader{dir}, dir, root, environment); err != nil {
-			return f, err
-		}
-		settings, err := stack.ReadEffective(context.Background(), generatedReader{dir}, dir, environment)
+		settings, err := stack.ReadEffective(context.Background(), spawn.Client, dir, environment)
 		if err != nil {
 			return f, err
 		}
@@ -173,11 +212,11 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 		if err := store.PutCapabilityPolicy(policy); err != nil {
 			return f, err
 		}
-		current, err := generatedRevisionID(filepath.Join(root, "spaces", user))
+		effective, err := SpawnEffectiveRevision(context.Background(), f.Spawn, spawnv1.Tenant{Org: "local", Owner: user}, user)
 		if err != nil {
 			return f, err
 		}
-		profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: user, ContextID: user, RuntimeID: user, Environment: environment, Generation: 1, PolicyVersion: auth.PolicyVersion, PassportRevision: current, PolicyID: policy.PolicyID, PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: policy.Reason, Status: api.ActiveStatus, Rights: rights}
+		profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: user, ContextID: user, RuntimeID: user, Environment: environment, Generation: 1, PolicyVersion: auth.PolicyVersion, PassportRevision: effective.ID, PolicyID: policy.PolicyID, PolicyRevision: 1, Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: policy.Reason, Status: api.ActiveStatus, Rights: rights}
 		if err := api.Confirm(&profile, "operator", now); err != nil {
 			return f, err
 		}
@@ -195,23 +234,17 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 	}
 	for _, user := range f.Users {
 		dir := filepath.Join(root, "spaces", user)
-		current, err := generatedRevisionID(dir)
+		revision, err := SpawnEffectiveRevision(context.Background(), f.Spawn, spawnv1.Tenant{Org: "local", Owner: user}, user)
 		if err != nil {
 			return f, err
-		}
-		revision := passport.Revision{ID: current, Docs: map[string][]byte{}}
-		for _, name := range passport.Names {
-			revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml"))
-			if err != nil {
-				return f, err
-			}
 		}
 		if err := migration.DeriveSpaceRights(dir, user, environment, revision, docs, now); err != nil {
 			return f, err
 		}
 	}
-	if err := stack.EnrollSiblingRuntimeTokens(context.Background(), generatedReader{f.Infra}, f.Infra, environment); err != nil {
+	if err := stack.EnrollSiblingRuntimeTokens(context.Background(), f.Spawn, f.Infra, environment); err != nil {
 		return f, err
 	}
+	done = true
 	return f, nil
 }

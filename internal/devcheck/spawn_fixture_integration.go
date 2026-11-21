@@ -18,6 +18,7 @@ import (
 	"time"
 
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -89,9 +90,10 @@ func startSpawnController(ctx context.Context, repoRoot, platformRoot, image str
 		"HUB_RUNTIME_IMAGE="+image,
 		"HUB_SPACES_ROOT="+filepath.Join(platformRoot, "spaces"),
 		"HUB_PLATFORM_ROOT="+platformRoot,
-		// Bind sources are already host paths; non-emptiness is all the
-		// managed spec checks — the daemon validates the binds itself.
-		"HUB_DOCKER_HOST_ROOT=/",
+		// The controller runs host-native like its callers: no
+		// HUB_DOCKER_HOST_ROOT, so claims return the relay's published
+		// loopback port and mount sources stat as the host paths the
+		// fixture wrote.
 	)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -154,10 +156,10 @@ func spawnOwnedContainers(ctx context.Context, space string) ([]string, error) {
 	return ids, nil
 }
 
-// spawnOwnedContainerID resolves the workload container of a claimed runtime:
-// the relay shares the space label, so pick the one whose name lacks the
-// -ctl suffix.
-func spawnOwnedContainerID(ctx context.Context, space string) (string, error) {
+// SpawnOwnedContainerID resolves the workload container name of a claimed
+// runtime: the relay shares the space label, so pick the one whose name
+// lacks the -ctl suffix. The control relay is <name>-ctl.
+func SpawnOwnedContainerID(ctx context.Context, space string) (string, error) {
 	out, err := exec.CommandContext(ctx, "docker", "ps", "-aq",
 		"--filter", "label=hermes-hub.managed=spawn-controller",
 		"--filter", "label=hermes-hub.space="+space,
@@ -168,14 +170,14 @@ func spawnOwnedContainerID(ctx context.Context, space string) (string, error) {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && !strings.HasSuffix(fields[1], "-ctl") {
-			return fields[0], nil
+			return fields[1], nil
 		}
 	}
 	return "", errors.New("spawn-owned workload container unavailable")
 }
 
-// removeSpawnOwned force-removes every spawn-owned container of the space.
-func removeSpawnOwned(ctx context.Context, space string) {
+// RemoveSpawnOwned force-removes every spawn-owned container of the space.
+func RemoveSpawnOwned(ctx context.Context, space string) {
 	ids, err := spawnOwnedContainers(ctx, space)
 	if err != nil {
 		return
@@ -188,8 +190,10 @@ func removeSpawnOwned(ctx context.Context, space string) {
 // publishAuthoredPassports submits the fixture's authored passports/*.yaml
 // through the spawn contract as the space's user layer and activates it, so
 // Effective reads answer the same compiled passport the contract would.
-// Higher layers carry the same documents: the ceiling then always covers the
-// user layer, matching the permissive compile the fixture relied on.
+// Only the user layer is submitted: template layers may not carry grants,
+// and with nothing above it the user layer's own grants map folds into the
+// merged capability list and trusted ledger — the same effective documents
+// CompileAuthored produced for the retired file mirror.
 func publishAuthoredPassports(ctx context.Context, client spawnv1.Client, tenant spawnv1.Tenant, space, dir string) error {
 	docNames := []string{"stack", "config", "models", "tools", "workspace", "grants"}
 	docs := map[string]map[string]any{}
@@ -204,31 +208,67 @@ func publishAuthoredPassports(ctx context.Context, client spawnv1.Client, tenant
 		}
 		docs[name] = body
 	}
-	var ids []string
-	for _, layer := range spawnv1.Layers[:5] {
-		rev, err := client.SubmitRevision(ctx, space, layer, spawnv1.SubmitRevisionRequest{
-			Org: tenant.Org, Owner: tenant.Owner, Documents: docs,
-			IdempotencyKey: "devcheck-sub-" + space + "-" + layer,
-		})
-		if err != nil {
-			return fmt.Errorf("submit %s: %w", layer, err)
-		}
-		rev, err = client.ValidateRevision(ctx, space, rev.ID, spawnv1.RevisionRequest{
-			Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: "devcheck-val-" + space + "-" + layer,
-		})
-		if err != nil {
-			return fmt.Errorf("validate %s: %w", layer, err)
-		}
-		if rev.State != "validated" {
-			return fmt.Errorf("validate %s %s: state %s detail %s", layer, rev.ID, rev.State, rev.Detail)
-		}
-		ids = append(ids, rev.ID)
+	rev, err := client.SubmitRevision(ctx, space, "user", spawnv1.SubmitRevisionRequest{
+		Org: tenant.Org, Owner: tenant.Owner, Documents: docs,
+		IdempotencyKey: "devcheck-sub-" + space + "-user",
+	})
+	if err != nil {
+		return fmt.Errorf("submit user: %w", err)
+	}
+	rev, err = client.ValidateRevision(ctx, space, rev.ID, spawnv1.RevisionRequest{
+		Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: "devcheck-val-" + space + "-user",
+	})
+	if err != nil {
+		return fmt.Errorf("validate user: %w", err)
+	}
+	if rev.State != "validated" {
+		return fmt.Errorf("validate user %s: state %s detail %s", rev.ID, rev.State, rev.Detail)
 	}
 	if _, err := client.ActivateRevisions(ctx, space, spawnv1.ActivationRequest{
-		Org: tenant.Org, Owner: tenant.Owner, Revisions: ids,
+		Org: tenant.Org, Owner: tenant.Owner, Revisions: []string{rev.ID},
 		IdempotencyKey: "devcheck-act-" + space,
 	}); err != nil {
 		return fmt.Errorf("activate: %w", err)
 	}
 	return nil
+}
+
+// SpawnEffectiveRevision reads the space's active bundle through the spawn
+// contract and hands back the passport.Revision the retired generated tree
+// mirrored: the compiled revision id (the value /config/revision serves)
+// plus the six stored documents.
+func SpawnEffectiveRevision(ctx context.Context, client spawnv1.Client, tenant spawnv1.Tenant, space string) (passport.Revision, error) {
+	spec, err := client.Effective(ctx, tenant, space)
+	if err != nil {
+		return passport.Revision{}, fmt.Errorf("effective %s: %w", space, err)
+	}
+	eff, err := spawnv1.Assemble(spec.Documents)
+	if err != nil {
+		return passport.Revision{}, fmt.Errorf("effective %s: %w", space, err)
+	}
+	docs := make(map[string][]byte, len(spec.Documents))
+	for name, raw := range spec.Documents {
+		docs[name] = append([]byte(nil), raw...)
+	}
+	return passport.Revision{ID: eff.Header.Metadata.Revision, Docs: docs}, nil
+}
+
+// devcheckRepoRoot locates the repository root from the current working
+// directory — cmd/devcheck runs from the checkout root while go test runs
+// with the package directory as cwd.
+func devcheckRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("repository root (go.mod) not found from " + dir)
+		}
+		dir = parent
+	}
 }
