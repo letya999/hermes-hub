@@ -1,0 +1,382 @@
+package spawn_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/letya999/hermes-hub/services/spawn-controller/internal/spawn"
+	"github.com/letya999/hermes-hub/shared/httpapi"
+	"github.com/letya999/hermes-hub/shared/store"
+	"github.com/letya999/hermes-hub/shared/store/storetest"
+	"gopkg.in/yaml.v3"
+)
+
+// mirrorPendingCount counts the durable mirror-retry rows the activation
+// transaction leaves — the sweeper's recovery list.
+func mirrorPendingCount(t *testing.T, revs *spawn.Revisions) int {
+	t.Helper()
+	var n int
+	if err := revs.Store.ReadTx(context.Background(), func(tx *store.Tx) error {
+		return tx.Scoped(tenant).QueryRow("SELECT COUNT(*) FROM mirror_pending WHERE {tenant}").Scan(&n)
+	}); err != nil {
+		t.Fatalf("mirror_pending count: %v", err)
+	}
+	return n
+}
+
+// The apply CAS refuses a base that is not the space's effective digest
+// before anything writes: no revision activates, the digest stays.
+func TestApplyStaleBaseRefused(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+
+		_, err := revs.Apply(ctx, tenant, "alice", map[string]map[string]map[string]any{
+			"user": userDocs("UTC"),
+		}, "sha256:"+strings.Repeat("0", 64), false)
+		if err == nil || !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("stale base: %v", err)
+		}
+		if got := effectiveDigest(t, revs); got != base {
+			t.Fatalf("stale apply moved the digest to %s", got)
+		}
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "user")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		active := 0
+		for _, rev := range list {
+			if rev.State == "active" {
+				active++
+			}
+		}
+		if active != 1 {
+			t.Fatalf("stale apply left %d active user revisions", active)
+		}
+	})
+}
+
+// A dry-run compiles the would-be set — the receipt carries the new
+// digest and the classified diff — but activates nothing: the effective
+// digest and the active layer set do not move.
+func TestApplyDryRunActivatesNothing(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+
+		out, err := revs.Apply(ctx, tenant, "alice", map[string]map[string]map[string]any{
+			"user": userDocs("UTC"),
+		}, base, true)
+		if err != nil {
+			t.Fatalf("dry-run apply: %v", err)
+		}
+		if out.EffectiveDigest == "" || out.EffectiveDigest == base {
+			t.Fatalf("dry-run digest = %s, want a fresh compiled digest", out.EffectiveDigest)
+		}
+		if out.PreviousDigest != base || len(out.Changes) == 0 {
+			t.Fatalf("dry-run receipt: previous=%s changes=%v", out.PreviousDigest, out.Changes)
+		}
+		if got := effectiveDigest(t, revs); got != base {
+			t.Fatalf("dry-run moved the effective digest to %s", got)
+		}
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "user")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		active := 0
+		for _, rev := range list {
+			if rev.State == "active" {
+				active++
+			}
+		}
+		if active != 1 {
+			t.Fatalf("dry-run activated: %d active user revisions", active)
+		}
+	})
+}
+
+// The confirmed apply moves the digest atomically; a failed downstream
+// action re-activates the previous set anchored on the new digest — the
+// rollback replays and the previous spec serves again (Decision 13).
+func TestApplyFailedActionRollsBack(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+
+		out, err := revs.Apply(ctx, tenant, "alice", map[string]map[string]map[string]any{
+			"user": userDocs("UTC"),
+		}, base, false)
+		if err != nil || out.EffectiveDigest == base {
+			t.Fatalf("apply: %v digest=%s", err, out.EffectiveDigest)
+		}
+		if len(out.PreviousRevisions) == 0 {
+			t.Fatal("apply did not report the previous set")
+		}
+
+		// The action plan fails mid-run: hubctl re-activates the previous
+		// set with the CAS anchored on the digest it just committed.
+		if _, err := revs.Activate(ctx, tenant, "alice", out.PreviousRevisions, &out.EffectiveDigest); err != nil {
+			t.Fatalf("rollback activate: %v", err)
+		}
+		if got := effectiveDigest(t, revs); got != base {
+			t.Fatalf("rollback digest = %s, want %s", got, base)
+		}
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "user")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		var activeID string
+		for _, rev := range list {
+			if rev.State == "active" {
+				activeID = rev.ID
+			}
+		}
+		var rolled bool
+		for _, prev := range out.PreviousRevisions {
+			if prev == activeID {
+				rolled = true
+			}
+		}
+		if !rolled {
+			t.Fatalf("rolled-back active %s is not in the previous set %v", activeID, out.PreviousRevisions)
+		}
+	})
+}
+
+// A mirror failure after the activation commit never un-activates: the
+// digest moves, the durable pending row remains, and the sweeper's pass
+// publishes the same digest once the fault clears.
+func TestMirrorFailureNeverUnactivates(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		root := t.TempDir()
+		revs := testRevisions(t, url)
+		revs.SpacesRoot = root
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+
+		revs.BeforeMirror = func() error { return errors.New("injected mirror failure") }
+		second := submitValidated(t, revs, "user", userDocs("UTC"))
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{second.ID}, nil); err != nil {
+			t.Fatalf("mirror failure must not fail activation: %v", err)
+		}
+		revs.BeforeMirror = nil
+		next := effectiveDigest(t, revs)
+		if next == base {
+			t.Fatal("mirror failure kept the old digest — activation must commit")
+		}
+		if n := mirrorPendingCount(t, revs); n != 1 {
+			t.Fatalf("mirror_pending rows = %d, want 1", n)
+		}
+		pointer := filepath.Join(root, "alice", "generated", "passports", "current")
+		if body, err := os.ReadFile(pointer); err == nil && strings.TrimSpace(string(body)) == next {
+			t.Fatal("failed mirror published the digest pointer")
+		}
+
+		if err := revs.MirrorPending(ctx); err != nil {
+			t.Fatalf("sweeper mirror pass: %v", err)
+		}
+		if n := mirrorPendingCount(t, revs); n != 0 {
+			t.Fatalf("mirror_pending rows after sweep = %d", n)
+		}
+		body, err := os.ReadFile(pointer)
+		if err != nil || strings.TrimSpace(string(body)) != next {
+			t.Fatalf("swept mirror current = %q err=%v, want %s", body, err, next)
+		}
+	})
+}
+
+// The settings edit writes the authored config back, publishes a new
+// user revision and activates it on the digest CAS; the mirror's
+// `current` pointer follows the new digest. Stale bases and missing
+// config.edit_own refuse with localized contract errors.
+func TestSettingsEditEndToEnd(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		root := t.TempDir()
+		revs := testRevisions(t, url)
+		revs.SpacesRoot = root
+		ctx := context.Background()
+
+		settingsUserDocs := userDocs("Europe/Berlin")
+		settingsUserDocs["config"]["runtime"].(map[string]any)["compression"] = map[string]any{"enabled": false}
+		settingsUserDocs["grants"]["allow"].(map[string]any)["config"] = []any{"edit_own"}
+
+		if _, err := revs.CreateSpace(ctx, tenant, "alice", "dev"); err != nil {
+			t.Fatalf("create space: %v", err)
+		}
+		layers := layerDocs()
+		layers["user"] = settingsUserDocs
+		// The org ceiling must admit the config capability before the user
+		// layer may grant edit_own — ceilings intersect down the stack.
+		layers["org-ceiling"]["grants"]["allow"] = append(layers["org-ceiling"]["grants"]["allow"].([]any), "config")
+		ids := map[string]string{}
+		for _, layer := range spawn.LayerOrder {
+			docs, ok := layers[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Submit(ctx, tenant, "alice", layer, docs)
+			if err != nil {
+				t.Fatalf("submit %s: %v", layer, err)
+			}
+			ids[layer] = rev.ID
+		}
+		var all []string
+		for _, layer := range spawn.LayerOrder {
+			id, ok := ids[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Validate(ctx, tenant, "alice", id)
+			if err != nil {
+				t.Fatalf("validate %s: %v", layer, err)
+			}
+			if rev.State != "validated" {
+				t.Fatalf("validate %s %s: state %s detail %s", layer, id, rev.State, rev.Detail)
+			}
+			all = append(all, id)
+		}
+		if _, err := revs.Activate(ctx, tenant, "alice", all, nil); err != nil {
+			t.Fatalf("activate set: %v", err)
+		}
+		base := effectiveDigest(t, revs)
+
+		// The authored passport tree mirrors the stored user layer — the
+		// settings edit refuses to hide unpublished drift inside its commit.
+		authoredDir := filepath.Join(root, "alice", "passports")
+		for name, doc := range settingsUserDocs {
+			body, err := yaml.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(authoredDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(authoredDir, name+".yaml"), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, err := revs.GetSettings(ctx, tenant, "alice", "compression.enabled")
+		if err != nil {
+			t.Fatalf("settings read: %v", err)
+		}
+		if got.PublishedRevision != base || got.PublishedValues["compression.enabled"] != false || got.SecretValuesIncluded {
+			t.Fatalf("settings read: %+v", got)
+		}
+
+		stale := "sha256:" + strings.Repeat("0", 64)
+		enabled := "true"
+		if _, err := revs.EditSettings(ctx, tenant, "alice", "compression.enabled", &enabled, stale); err == nil || !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("stale base edit: %v", err)
+		}
+
+		out, err := revs.EditSettings(ctx, tenant, "alice", "compression.enabled", &enabled, base)
+		if err != nil {
+			t.Fatalf("settings edit: %v", err)
+		}
+		if !out.Changed || out.PublishedRevision == base {
+			t.Fatalf("settings edit result: %+v", out)
+		}
+		if digest := effectiveDigest(t, revs); digest != out.PublishedRevision {
+			t.Fatalf("effective digest = %s, edit reported %s", digest, out.PublishedRevision)
+		}
+
+		// The authored file carries the edit — the next `space apply`
+		// submits the same content instead of reverting it.
+		patched, err := os.ReadFile(filepath.Join(authoredDir, "config.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var patchedDoc map[string]any
+		if err := yaml.Unmarshal(patched, &patchedDoc); err != nil {
+			t.Fatal(err)
+		}
+		leaf := patchedDoc["runtime"].(map[string]any)["compression"].(map[string]any)["enabled"]
+		if leaf != true {
+			t.Fatalf("authored config compression.enabled = %v", leaf)
+		}
+		// The mirror points current at the new digest and .policy resolves it.
+		pointer := filepath.Join(root, "alice", "generated", "passports", "current")
+		body, err := os.ReadFile(pointer)
+		if err != nil || strings.TrimSpace(string(body)) != out.PublishedRevision {
+			t.Fatalf("mirror current = %q err=%v, want %s", body, err, out.PublishedRevision)
+		}
+		policy := filepath.Join(root, "alice", "generated", "passports", ".policy", strings.TrimPrefix(out.PublishedRevision, "sha256:"))
+		if _, err := os.Stat(policy); err != nil {
+			t.Fatalf("mirror .policy indirection missing: %v", err)
+		}
+
+		// A space whose grants lack config.edit_own refuses the same edit
+		// (denied) — the right must sit in the effective allow, not the file.
+		if _, err := revs.CreateSpace(ctx, tenant, "dana", "dev"); err != nil {
+			t.Fatalf("create dana: %v", err)
+		}
+		// Dana compiles a fresh layer set: no config ceiling (edit_own is
+		// refused) and no published port — alice already reserved 6080.
+		danaLayers := layerDocs()
+		danaLayers["user"] = userDocs("Europe/Berlin")
+		delete(danaLayers["platform-template"]["config"], "ports")
+		danaIDs := map[string]string{}
+		for _, layer := range spawn.LayerOrder {
+			docs, ok := danaLayers[layer]
+			if !ok {
+				continue
+			}
+			rev, err := revs.Submit(ctx, tenant, "dana", layer, docs)
+			if err != nil {
+				t.Fatalf("dana submit %s: %v", layer, err)
+			}
+			danaIDs[layer] = rev.ID
+		}
+		var danaAll []string
+		for _, layer := range spawn.LayerOrder {
+			if id, ok := danaIDs[layer]; ok {
+				rev, err := revs.Validate(ctx, tenant, "dana", id)
+				if err != nil {
+					t.Fatalf("dana validate %s: %v", layer, err)
+				}
+				if rev.State != "validated" {
+					t.Fatalf("dana validate %s %s: state %s detail %s", layer, id, rev.State, rev.Detail)
+				}
+				danaAll = append(danaAll, id)
+			}
+		}
+		if _, err := revs.Activate(ctx, tenant, "dana", danaAll, nil); err != nil {
+			t.Fatalf("dana activate: %v", err)
+		}
+		danaDigest := effectiveDigestFor(t, revs, "dana")
+		danaDir := filepath.Join(root, "dana", "passports")
+		for name, doc := range userDocs("Europe/Berlin") {
+			body, _ := yaml.Marshal(doc)
+			if err := os.MkdirAll(danaDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(danaDir, name+".yaml"), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := revs.EditSettings(ctx, tenant, "dana", "compression.enabled", &enabled, danaDigest); err == nil || !errors.Is(err, httpapi.ErrForbidden) {
+			t.Fatalf("edit without config.edit_own: %v", err)
+		}
+	})
+}
+
+func effectiveDigestFor(t *testing.T, revs *spawn.Revisions, space string) string {
+	t.Helper()
+	spec, err := revs.Effective(context.Background(), tenant, space)
+	if err != nil {
+		t.Fatalf("effective %s: %v", space, err)
+	}
+	return spec.Digest
+}

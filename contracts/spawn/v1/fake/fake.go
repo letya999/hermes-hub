@@ -18,6 +18,7 @@ import (
 	"time"
 
 	spawn "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/shared/httpapi"
 )
 
@@ -188,6 +189,9 @@ func (s *Server) ActivateRevisions(ctx context.Context, space string, in spawn.A
 	s.init()
 	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
 	key := spaceKey(t, space)
+	if in.BaseDigest != "" && s.effective[key].digest != in.BaseDigest {
+		return nil, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+	}
 	targets := map[string]*spawn.Revision{}
 	for _, id := range in.Revisions {
 		rev, err := s.find(t, space, id)
@@ -256,6 +260,268 @@ func (s *Server) ActivateRevisions(ctx context.Context, space string, in spawn.A
 		out = append(out, *rev)
 	}
 	return httpapi.Copy(out)
+}
+
+// Apply mirrors the service apply: every listed layer is submitted as a
+// draft, the would-be set fabricates a candidate spec, and without
+// dry_run the same atomic cut ActivateRevisions runs lands on the
+// base_digest CAS. Changes/actions stay empty — the fake runs no diff.
+func (s *Server) Apply(ctx context.Context, space string, in spawn.ApplyRequest) (spawn.ApplyResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.ApplyResponse{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
+	key := spaceKey(t, space)
+	if _, ok := s.spaces[key]; !ok {
+		return spawn.ApplyResponse{}, spawn.ErrNotFound
+	}
+	eff := s.effective[key]
+	currents := map[string]*fakeRevRef{}
+	targets := map[string]*spawn.Revision{}
+	previous := []string{}
+	for _, other := range s.revisions[key] {
+		if other.State == "active" {
+			currents[other.Layer] = &fakeRevRef{rev: other}
+			previous = append(previous, other.ID)
+		}
+	}
+	if eff.digest != in.BaseDigest {
+		return spawn.ApplyResponse{}, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+	}
+	out := spawn.ApplyResponse{PreviousDigest: eff.digest, PreviousRevisions: previous}
+	rows := []spawn.Revision{}
+	layers := make([]string, 0, len(in.Layers))
+	for layer := range in.Layers {
+		layers = append(layers, layer)
+	}
+	sort.Strings(layers)
+	for _, layer := range layers {
+		docs := in.Layers[layer]
+		raw, _ := json.Marshal(docs)
+		sum := sha256.Sum256(raw)
+		digest := "sha256:" + hex.EncodeToString(sum[:])
+		var rev *spawn.Revision
+		for _, cand := range s.revisions[key] {
+			if cand.Layer == layer && cand.Digest == digest && cand.State != "pruned" {
+				rev = cand
+			}
+		}
+		if rev == nil {
+			s.seq++
+			rev = &spawn.Revision{
+				ID: fmt.Sprintf("rev-%016x", s.seq), Space: space, Layer: layer,
+				State: "draft", Digest: digest, CreatedAt: time.Now().Unix(),
+			}
+			s.revisions[key] = append(s.revisions[key], rev)
+			if s.docs[rev.ID] == nil {
+				s.docs[rev.ID] = map[string]map[string]any{}
+			}
+			for d, body := range docs {
+				s.docs[rev.ID][d] = body
+			}
+		}
+		if rev.State == "draft" {
+			rev.State = "validated"
+			rev.BaseRevision = ""
+			if cur := currents[layer]; cur != nil {
+				rev.BaseRevision = cur.rev.ID
+			}
+		}
+		targets[layer] = rev
+		rows = append(rows, *rev)
+	}
+	out.Revisions = rows
+	for layer, ref := range currents {
+		targets[layer] = ref.rev
+	}
+	// Fabricate the candidate digest exactly as ActivateRevisions would:
+	// the revisions slice's insertion order — never a map, whose order is
+	// random and would leave dry-run and confirm digests diverging.
+	h := sha256.New()
+	candDocs := map[string]json.RawMessage{}
+	candLayers := map[string]string{}
+	for _, other := range s.revisions[key] {
+		if targets[other.Layer] != other {
+			continue
+		}
+		h.Write([]byte(other.Layer + "\x00" + other.Digest + "\x00"))
+		for d, body := range s.docs[other.ID] {
+			raw, err := json.Marshal(body)
+			if err == nil {
+				candDocs[d] = raw
+				candLayers[d] = other.Layer
+			}
+		}
+	}
+	out.EffectiveDigest = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	out.Documents = candDocs
+	if in.DryRun {
+		return httpapi.Copy(out)
+	}
+	for layer, rev := range targets {
+		if rev.State == "active" {
+			continue
+		}
+		cur := currents[layer]
+		curID := ""
+		if cur != nil {
+			curID = cur.rev.ID
+		}
+		if curID != rev.BaseRevision {
+			return spawn.ApplyResponse{}, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+		}
+	}
+	for layer, rev := range targets {
+		if rev.State == "active" {
+			continue
+		}
+		if cur := currents[layer]; cur != nil {
+			cur.rev.State = "superseded"
+			cur.rev.BaseRevision = rev.ID
+		}
+		rev.State = "active"
+	}
+	s.effective[key] = fakeEffective{digest: out.EffectiveDigest, documents: candDocs, layers: candLayers}
+	return httpapi.Copy(out)
+}
+
+// fakeRevRef names an active row the apply candidate replaces.
+type fakeRevRef struct{ rev *spawn.Revision }
+
+// GetSettings flattens the fabricated config document's scalar leaves —
+// the real owner filters through the reviewed allowlist.
+func (s *Server) GetSettings(ctx context.Context, t spawn.Tenant, space, key string) (spawn.SettingsResult, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.SettingsResult{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	eff, ok := s.effective[spaceKey(t, space)]
+	if !ok {
+		return spawn.SettingsResult{}, spawn.ErrNotFound
+	}
+	// The contract key is the published tool key; the service maps it to
+	// the config doc's leaf path through the reviewed allowlist — the fake
+	// walks the same mapping so both transports answer identically.
+	pathFilter := ""
+	if key != "" {
+		path, ok := selfsettings.PublishedPath(key)
+		if !ok {
+			return spawn.SettingsResult{}, fmt.Errorf("%w: settings key %q", spawn.ErrInvalid, key)
+		}
+		pathFilter = path
+	}
+	values := map[string]any{}
+	keys := []string{}
+	if raw, ok := eff.documents["config"]; ok {
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return spawn.SettingsResult{}, err
+		}
+		delete(body, "apiVersion")
+		delete(body, "kind")
+		delete(body, "metadata")
+		flat := map[string]any{}
+		flattenFake(body, "", flat)
+		for _, candidate := range selfsettings.AllowedKeys() {
+			path, _ := selfsettings.PublishedPath(candidate)
+			v, present := flat[path]
+			if !present {
+				continue
+			}
+			if pathFilter != "" && path != pathFilter {
+				continue
+			}
+			values[candidate] = v
+		}
+		if key == "" {
+			keys = append(keys, selfsettings.AllowedKeys()...)
+		} else {
+			keys = []string{key}
+		}
+	}
+	return httpapi.Copy(spawn.SettingsResult{
+		PublishedRevision: eff.digest, EffectiveRevision: eff.digest,
+		PublishedValues: values, ManageableKeys: keys,
+	})
+}
+
+// EditSettings applies the key as a config-doc leaf on the fabricated
+// effective row under the digest CAS — the real owner re-publishes the
+// user layer through the compiler.
+func (s *Server) EditSettings(ctx context.Context, space string, in spawn.SettingsEditRequest) (spawn.SettingsEditResult, error) {
+	if err := ctx.Err(); err != nil {
+		return spawn.SettingsEditResult{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	t := spawn.Tenant{Org: in.Org, Owner: in.Owner}
+	key := spaceKey(t, space)
+	eff, ok := s.effective[key]
+	if !ok {
+		return spawn.SettingsEditResult{}, spawn.ErrNotFound
+	}
+	if eff.digest != in.BaseRevision {
+		return spawn.SettingsEditResult{}, fmt.Errorf("%w: activation base moved", spawn.ErrConflict)
+	}
+	docs := map[string]json.RawMessage{}
+	for d, raw := range eff.documents {
+		docs[d] = raw
+	}
+	var config map[string]any
+	if raw, ok := docs["config"]; ok {
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return spawn.SettingsEditResult{}, err
+		}
+	}
+	if config == nil {
+		config = map[string]any{}
+	}
+	path, ok := selfsettings.PublishedPath(in.Key)
+	if !ok {
+		return spawn.SettingsEditResult{}, fmt.Errorf("%w: settings key %q", spawn.ErrInvalid, in.Key)
+	}
+	node := config
+	parts := strings.Split(path, ".")
+	for _, part := range parts[:len(parts)-1] {
+		next, _ := node[part].(map[string]any)
+		if next == nil {
+			next = map[string]any{}
+			node[part] = next
+		}
+		node = next
+	}
+	leaf := parts[len(parts)-1]
+	if in.Value == nil {
+		delete(node, leaf)
+	} else {
+		node[leaf] = *in.Value
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return spawn.SettingsEditResult{}, err
+	}
+	docs["config"] = raw
+	h := sha256.New()
+	names := make([]string, 0, len(docs))
+	for d := range docs {
+		names = append(names, d)
+	}
+	sort.Strings(names)
+	for _, d := range names {
+		h.Write([]byte(d + "\x00" + string(docs[d]) + "\x00"))
+	}
+	digest := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	s.effective[key] = fakeEffective{digest: digest, documents: docs, layers: eff.layers}
+	return httpapi.Copy(spawn.SettingsEditResult{
+		PublishedRevision: digest, PreviousRevision: eff.digest,
+		Changed: digest != eff.digest,
+	})
 }
 
 // Effective returns the fabricated effective row of the space.

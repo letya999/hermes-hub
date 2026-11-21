@@ -525,11 +525,7 @@ func run(ctx context.Context, args []string) error {
 			scriptImage = "hermes-hub:0.5.0-" + *environment + "-core"
 		}
 		var manager *supervisor.Manager
-		manager, err = supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, ScriptImage: scriptImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard,
-			SettingsEdit: func(ctx context.Context, principal, environment, key string, value *string, base string) (map[string]any, error) {
-				return runSettingsEdit(ctx, filepath.Join(*spacesRoot, principal), filepath.Dir(*spacesRoot), environment, key, value, base, func() error { _, err := manager.ReconcileSettingsRuntime(principal); return err })
-			},
-		})
+		manager, err = supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, ScriptImage: scriptImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard})
 		if err != nil {
 			return err
 		}

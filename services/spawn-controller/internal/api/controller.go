@@ -360,6 +360,11 @@ func Serve(ctx context.Context) error {
 	revisions := &spawn.Revisions{
 		Store:       serviceStore,
 		LoadCatalog: catalogLoader(catalog.LoadPinned),
+		// SpacesRoot feeds the transitional v0 mirror (S7b, deleted in
+		// S7d): every activation republishes the space's generated tree
+		// and the authored files the settings path edits. The compose
+		// service mounts the spaces root read-write for this.
+		SpacesRoot: os.Getenv("HUB_SPACES_ROOT"),
 	}
 	// One-time v0 import (D5): enabled by HUB_IMPORT_V0_DIR it runs once
 	// before the socket opens, while the spawn store still holds none of
@@ -377,7 +382,7 @@ func Serve(ctx context.Context) error {
 			return err
 		}
 	}
-	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be, WorkerBackend: workerBackend}
+	sweeper := &spawn.Sweeper{Store: serviceStore, Backend: be, WorkerBackend: workerBackend, Revisions: revisions}
 	// Boot recovery is one reconcile pass before the socket opens: runtime
 	// rows this process left behind are re-anchored against the backend.
 	if err := sweeper.Tick(ctx); err != nil {

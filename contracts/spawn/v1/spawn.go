@@ -147,12 +147,99 @@ type RevisionRequest struct {
 // /v1/spaces/{space}/activations): one or more revision ids, at most one
 // per layer, activated atomically — the cut commits only when the
 // would-be active set compiles, so a space can never lose a serving
-// policy to a partial move.
+// policy to a partial move. BaseDigest, when set, is the compare-and-swap
+// anchor on the space's effective digest — the apply rollback uses it to
+// prove the new set is still live before re-activating the previous one.
 type ActivationRequest struct {
 	Org            string   `json:"org"`
 	Owner          string   `json:"owner"`
 	Revisions      []string `json:"revisions"`
+	BaseDigest     string   `json:"base_digest,omitempty"`
 	IdempotencyKey string   `json:"idempotency_key"`
+}
+
+// Change is one classified diff leaf (POST /v1/spaces/{space}/apply
+// response): the concrete path, the rendered before/after and the effect
+// class the consumer registry assigns — the same shape passport.Diff
+// emits inside the service.
+type Change struct {
+	Path     string `json:"path"`
+	Before   string `json:"before"`
+	After    string `json:"after"`
+	Effect   string `json:"effect"`
+	Consumer string `json:"consumer"`
+}
+
+// Action is one deduplicated reconcile unit the apply response carries —
+// the caller executes it through its own effect handlers (compose,
+// supervisor respawn); spawn-controller never runs them.
+type Action struct {
+	Kind      string   `json:"kind"`
+	Target    string   `json:"target"`
+	Consumers []string `json:"consumers"`
+	Paths     []string `json:"paths"`
+}
+
+// ApplyRequest submits one or more layer document sets for compile and
+// — without dry_run — atomic activation (POST
+// /v1/spaces/{space}/apply). BaseDigest is the CAS anchor on the space's
+// current effective digest ("" on the first apply); a mismatch refuses
+// the whole call and writes nothing.
+type ApplyRequest struct {
+	Org            string                               `json:"org"`
+	Owner          string                               `json:"owner"`
+	Layers         map[string]map[string]map[string]any `json:"layers"`
+	BaseDigest     string                               `json:"base_digest"`
+	DryRun         bool                                 `json:"dry_run"`
+	IdempotencyKey string                               `json:"idempotency_key"`
+}
+
+// ApplyResponse is the apply receipt: the submitted layer rows, the
+// would-be (dry run) or new (confirm) effective digest, the digest it
+// replaced, the previous layer set for a rollback activation, the
+// classified diff and the action plan the caller executes. Documents
+// carries the compiled effective bundle so callers that must read its
+// leaves (rights ceilings, connector bindings) never recompile.
+type ApplyResponse struct {
+	Revisions         []Revision                 `json:"revisions"`
+	EffectiveDigest   string                     `json:"effective_digest"`
+	PreviousDigest    string                     `json:"previous_digest"`
+	PreviousRevisions []string                   `json:"previous_revisions"`
+	Changes           []Change                   `json:"changes"`
+	Actions           []Action                   `json:"actions"`
+	Documents         map[string]json.RawMessage `json:"documents"`
+}
+
+// SettingsResult is the self-settings read (GET
+// /v1/spaces/{space}/settings): the published values of the reviewed
+// allowlist plus its keys. The revision fields carry the effective
+// digest — the tool schema keeps the published_revision name.
+type SettingsResult struct {
+	PublishedRevision    string         `json:"published_revision"`
+	EffectiveRevision    string         `json:"effective_revision"`
+	PublishedValues      map[string]any `json:"published_values"`
+	ManageableKeys       []string       `json:"manageable_keys"`
+	SecretValuesIncluded bool           `json:"secret_values_included"`
+}
+
+// SettingsEditRequest is one allowlisted config leaf edit (POST
+// /v1/spaces/{space}/settings). BaseRevision carries the digest the
+// caller last read — the tool argument keeps its base_revision name.
+type SettingsEditRequest struct {
+	Org            string  `json:"org"`
+	Owner          string  `json:"owner"`
+	Key            string  `json:"key"`
+	Value          *string `json:"value,omitempty"`
+	BaseRevision   string  `json:"base_revision"`
+	IdempotencyKey string  `json:"idempotency_key"`
+}
+
+// SettingsEditResult reports the edit's activation; Changed is false
+// when the edit is a no-op on the published spec.
+type SettingsEditResult struct {
+	PublishedRevision string `json:"published_revision"`
+	PreviousRevision  string `json:"previous_revision"`
+	Changed           bool   `json:"changed"`
 }
 
 // Client is the spawn-controller surface. Path-shaped arguments come
@@ -163,6 +250,15 @@ type Client interface {
 	SubmitRevision(context.Context, string, string, SubmitRevisionRequest) (Revision, error)
 	ValidateRevision(context.Context, string, string, RevisionRequest) (Revision, error)
 	ActivateRevisions(context.Context, string, ActivationRequest) ([]Revision, error)
+	// Apply is the passport-writer surface: submit + validate + compile
+	// every changed layer in one call. dry_run stops before activation;
+	// without it the set cuts atomically on the base_digest CAS.
+	Apply(context.Context, string, ApplyRequest) (ApplyResponse, error)
+	// Settings is the reviewed self-settings surface: the read returns
+	// the published allowlist values; the edit applies one config leaf
+	// on the base digest CAS and activates the patched user layer.
+	GetSettings(context.Context, Tenant, string, string) (SettingsResult, error)
+	EditSettings(context.Context, string, SettingsEditRequest) (SettingsEditResult, error)
 	Effective(context.Context, Tenant, string) (EffectiveSpec, error)
 	PolicySlice(context.Context, Tenant, string, string, string) (PolicySlice, error)
 	ListRevisions(context.Context, Tenant, string, string) ([]Revision, error)
@@ -251,6 +347,52 @@ func (c inProc) ActivateRevisions(ctx context.Context, space string, in Activati
 	return httpapi.Copy(out)
 }
 
+func validApply(space string, in ApplyRequest) bool {
+	if !auth.ValidID(space) || !validTenant(Tenant{in.Org, in.Owner}) || len(in.Layers) == 0 || in.IdempotencyKey == "" {
+		return false
+	}
+	for layer, docs := range in.Layers {
+		if !ValidLayer(layer) || len(docs) == 0 {
+			return false
+		}
+	}
+	return in.BaseDigest == "" || auth.ValidDigest(in.BaseDigest)
+}
+
+func (c inProc) Apply(ctx context.Context, space string, in ApplyRequest) (ApplyResponse, error) {
+	if !validApply(space, in) {
+		return ApplyResponse{}, httpapi.Errorf(ErrInvalid, "invalid apply request")
+	}
+	out, err := c.server.Apply(ctx, space, in)
+	if err != nil {
+		return ApplyResponse{}, httpapi.Normalize(err)
+	}
+	return httpapi.Copy(out)
+}
+
+func (c inProc) GetSettings(ctx context.Context, t Tenant, space, key string) (SettingsResult, error) {
+	if !validTenant(t) || !auth.ValidID(space) {
+		return SettingsResult{}, httpapi.Errorf(ErrInvalid, "invalid settings request")
+	}
+	out, err := c.server.GetSettings(ctx, t, space, key)
+	if err != nil {
+		return SettingsResult{}, httpapi.Normalize(err)
+	}
+	return httpapi.Copy(out)
+}
+
+func (c inProc) EditSettings(ctx context.Context, space string, in SettingsEditRequest) (SettingsEditResult, error) {
+	if !auth.ValidID(space) || !validTenant(Tenant{in.Org, in.Owner}) || in.Key == "" || in.IdempotencyKey == "" ||
+		in.BaseRevision == "" || !auth.ValidDigest(in.BaseRevision) {
+		return SettingsEditResult{}, httpapi.Errorf(ErrInvalid, "invalid settings edit request")
+	}
+	out, err := c.server.EditSettings(ctx, space, in)
+	if err != nil {
+		return SettingsEditResult{}, httpapi.Normalize(err)
+	}
+	return httpapi.Copy(out)
+}
+
 func (c inProc) Effective(ctx context.Context, t Tenant, space string) (EffectiveSpec, error) {
 	if !validTenant(t) || !auth.ValidID(space) {
 		return EffectiveSpec{}, httpapi.Errorf(ErrInvalid, "invalid effective request")
@@ -335,6 +477,38 @@ func (c httpClient) ActivateRevisions(ctx context.Context, space string, in Acti
 	}
 	var out []Revision
 	err := c.Do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(space)+"/activations", in, &out)
+	return out, err
+}
+
+func (c httpClient) Apply(ctx context.Context, space string, in ApplyRequest) (ApplyResponse, error) {
+	if !validApply(space, in) {
+		return ApplyResponse{}, httpapi.Errorf(ErrInvalid, "invalid apply request")
+	}
+	var out ApplyResponse
+	err := c.Do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(space)+"/apply", in, &out)
+	return out, err
+}
+
+func (c httpClient) GetSettings(ctx context.Context, t Tenant, space, key string) (SettingsResult, error) {
+	if !validTenant(t) || !auth.ValidID(space) {
+		return SettingsResult{}, httpapi.Errorf(ErrInvalid, "invalid settings request")
+	}
+	var out SettingsResult
+	query := tenantQuery(t)
+	if key != "" {
+		query += "&key=" + url.QueryEscape(key)
+	}
+	err := c.Do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(space)+"/settings?"+query, nil, &out)
+	return out, err
+}
+
+func (c httpClient) EditSettings(ctx context.Context, space string, in SettingsEditRequest) (SettingsEditResult, error) {
+	if !auth.ValidID(space) || !validTenant(Tenant{in.Org, in.Owner}) || in.Key == "" || in.IdempotencyKey == "" ||
+		in.BaseRevision == "" || !auth.ValidDigest(in.BaseRevision) {
+		return SettingsEditResult{}, httpapi.Errorf(ErrInvalid, "invalid settings edit request")
+	}
+	var out SettingsEditResult
+	err := c.Do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(space)+"/settings", in, &out)
 	return out, err
 }
 
@@ -458,6 +632,24 @@ func Handler(server Client, token string) http.Handler {
 				return nil, err
 			}
 			return client.ActivateRevisions(r.Context(), space, in)
+		case r.Method == http.MethodPost && len(rest) == 1 && rest[0] == "apply":
+			var in ApplyRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			return client.Apply(r.Context(), space, in)
+		case r.Method == http.MethodGet && len(rest) == 1 && rest[0] == "settings":
+			t, err := queryTenant(r)
+			if err != nil {
+				return nil, err
+			}
+			return client.GetSettings(r.Context(), t, space, r.URL.Query().Get("key"))
+		case r.Method == http.MethodPost && len(rest) == 1 && rest[0] == "settings":
+			var in SettingsEditRequest
+			if err := httpapi.Decode(r, &in); err != nil {
+				return nil, err
+			}
+			return client.EditSettings(r.Context(), space, in)
 		case r.Method == http.MethodGet && len(rest) == 1 && rest[0] == "revisions":
 			t, err := queryTenant(r)
 			if err != nil {

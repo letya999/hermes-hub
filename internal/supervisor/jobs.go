@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -97,9 +96,9 @@ func (m *Manager) readRunRecord(ctx context.Context, id string) (task.RunRecord,
 		}
 		if !revoked && m.cfg.SpacesRoot != "" && identity.ValidID(record.Request.ContextID) {
 			space := filepath.Join(m.cfg.SpacesRoot, record.Request.ContextID)
-			journal := filepath.Join(space, "generated", "passports", passportview.ApplyJournalFile)
-			_, err := os.Stat(journal)
-			revoked = !errors.Is(err, os.ErrNotExist) || !passportview.MatchesPolicyPointer(space, record.PassportDigest)
+			// A mid-publish mirror pins `current` to pending —
+			// MatchesPolicyPointer already reports the divergence.
+			revoked = !passportview.MatchesPolicyPointer(space, record.PassportDigest)
 		}
 	}
 	capture := record.CaptureContext

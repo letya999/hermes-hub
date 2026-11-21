@@ -7,7 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +18,10 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
@@ -24,6 +29,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/shared/locale"
+	"gopkg.in/yaml.v3"
 )
 
 // passportEditRight maps each of the six passports to the distinct current
@@ -39,24 +45,31 @@ var passportEditRight = map[string][2]string{
 }
 
 // applyReceipt is the space apply JSON: the classified diff plus the
-// reconcile report once --confirm publishes.
+// reconcile report once --confirm publishes. The revision fields carry
+// effective digests — the contract's content-addressed revision identity.
 type applyReceipt struct {
 	Revision         string             `json:"revision"`
 	PreviousRevision string             `json:"previous_revision,omitempty"`
 	FirstApply       bool               `json:"first_apply,omitempty"`
-	Changes          []passport.Change  `json:"changes"`
+	Changes          []spawnv1.Change   `json:"changes"`
 	Actions          []reconcile.Action `json:"actions"`
 	Report           *reconcile.Report  `json:"report,omitempty"`
 	Confirmed        bool               `json:"confirmed"`
 }
 
+// runSpaceApply is the passport-writer client: it submits the authored
+// layer documents to spawn-controller, which validates, compiles and —
+// under --confirm — activates them atomically on the base-digest CAS.
+// Side effects stay here (Decision 13): every confirm first converges
+// them to the CURRENTLY active digest — the crash recovery the journal
+// used to carry — then activates, then converges to the new digest and
+// runs the action plan.
 func runSpaceApply(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("space apply", flag.ContinueOnError)
 	dir := f.String("dir", "", "space directory")
 	root := f.String("root", ".", "source root")
 	env := f.String("env", "prod", "dev or prod")
 	confirm := f.Bool("confirm", false, "publish the compiled revision and reconcile; default prints the classified diff receipt")
-	recoverRebuiltImage := f.Bool("recover-rebuilt-image", false, "")
 	_ = f.Bool("json", false, "accepted for symmetry; output is always the JSON receipt")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -72,8 +85,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		return err
 	}
 	// Applies on one space serialize on a file lock: a second apply refuses
-	// rather than interleaving compile, publish, render, rights derivation
-	// and reconcile into a mixed revision (SPEC-0095).
+	// rather than interleaving converge, apply and reconcile effects.
 	if err := os.MkdirAll(filepath.Join(abs, "generated"), 0700); err != nil {
 		return err
 	}
@@ -90,8 +102,39 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := recoverApplyWithRebuiltImage(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, rootAbs, *env), *recoverRebuiltImage); err != nil {
-		return fmt.Errorf("%s: %w", locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"), err)
+	space := filepath.Base(abs)
+	client, tenant, err := applySpawnClient(abs)
+	if err != nil {
+		return err
+	}
+	// The space row is the tenant record apply and settings write against;
+	// re-creating an existing one with the same environment is a no-op.
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{Org: tenant.Org, Owner: tenant.Owner, ID: space, Environment: *env, IdempotencyKey: "apply-space"}); err != nil && !errors.Is(err, spawnv1.ErrConflict) {
+		return err
+	}
+	// (a) Converge side effects to the currently active digest — the
+	// crash recovery a previous apply may have left mid-run.
+	if err := convergeApply(ctx, abs, rootAbs, *env, client, tenant); err != nil {
+		return fmt.Errorf("space apply: converge: %w", err)
+	}
+	authored, err := passport.ReadAuthored(abs)
+	if err != nil {
+		return err
+	}
+	if len(authored) == 0 {
+		return errors.New("space apply: no authored passports to apply")
+	}
+	eff, err := client.Effective(ctx, tenant, space)
+	var baseDigest string
+	var prevDocs map[string]json.RawMessage
+	firstApply := false
+	switch {
+	case errors.Is(err, spawnv1.ErrNotFound):
+		firstApply = true
+	case err != nil:
+		return err
+	default:
+		baseDigest, prevDocs = eff.Digest, eff.Documents
 	}
 	docs, err := catalog.Generate()
 	if err != nil {
@@ -102,51 +145,115 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("space apply: issued rights: %w", err)
 	}
-	rev, err := passport.CompileAuthored(abs, *env, time.Now().UTC(), docs, stack.ReservedSiblingPorts(abs), issued)
-	if err != nil {
-		return err
-	}
-	var prev passport.Effective
-	prevID := ""
-	firstApply := false
-	if id, err := passport.Current(abs); err == nil && id != "" {
-		loaded, err := passport.LoadEffective(abs)
-		if err != nil {
-			return fmt.Errorf("space apply: current revision %s is unreadable: %w", id, err)
-		}
-		prev, prevID = loaded, id
-	} else {
-		firstApply = true
-	}
-	next, err := rev.Effective()
+	// (b) Dry-run apply: the service validates + compiles the would-be
+	// set; the receipt feeds every client-side gate before confirmation.
+	dry, err := client.Apply(ctx, space, spawnv1.ApplyRequest{
+		Org: tenant.Org, Owner: tenant.Owner, BaseDigest: baseDigest, DryRun: true,
+		IdempotencyKey: "apply-dry-" + fmt.Sprint(time.Now().UnixNano()),
+		Layers:         map[string]map[string]map[string]any{"user": authored},
+	})
 	if err != nil {
 		return fmt.Errorf("space apply: %w", err)
 	}
-	deferred, err := migration.ValidateSelectedConnectors(abs, rev.Docs["tools"], docs)
+	nextDocs := dry.Documents
+	if err := applyGates(abs, *env, dry.Changes, nextDocs, prevDocs, issued, docs); err != nil {
+		return err
+	}
+	actions := reconcileActions(dry.Actions)
+	// The first publication establishes authority; `hubctl up` starts its
+	// containers after the operator has supplied images and service secrets.
+	if firstApply {
+		actions = nil
+	}
+	receipt := applyReceipt{
+		Revision:         dry.EffectiveDigest,
+		PreviousRevision: baseDigest,
+		FirstApply:       firstApply,
+		Changes:          dry.Changes,
+		Actions:          actions,
+		Confirmed:        *confirm,
+	}
+	if !*confirm {
+		return printApply(receipt)
+	}
+	applied, err := client.Apply(ctx, space, spawnv1.ApplyRequest{
+		Org: tenant.Org, Owner: tenant.Owner, BaseDigest: baseDigest,
+		IdempotencyKey: "apply-" + fmt.Sprint(time.Now().UnixNano()),
+		Layers:         map[string]map[string]map[string]any{"user": authored},
+	})
+	if err != nil {
+		return fmt.Errorf("space apply: %w", err)
+	}
+	receipt.Revision = applied.EffectiveDigest
+	// (c) Converge to the new digest and run the action plan; a failed
+	// action re-activates the previous set (CAS on the new digest) and
+	// converges back — the rollback reconcile.Run replays.
+	rollback := func() error {
+		if len(applied.PreviousRevisions) == 0 {
+			return nil
+		}
+		if _, err := client.ActivateRevisions(ctx, space, spawnv1.ActivationRequest{
+			Org: tenant.Org, Owner: tenant.Owner, Revisions: applied.PreviousRevisions,
+			BaseDigest: applied.EffectiveDigest, IdempotencyKey: "apply-rollback-" + fmt.Sprint(time.Now().UnixNano()),
+		}); err != nil {
+			return err
+		}
+		return convergeApply(context.WithoutCancel(ctx), abs, rootAbs, *env, client, tenant)
+	}
+	if err := convergeApply(ctx, abs, rootAbs, *env, client, tenant); err != nil {
+		return fmt.Errorf("space apply: converge: %w", err)
+	}
+	report := reconcile.Run(actions, applyHandlers(ctx, abs, rootAbs, *env), rollback, applied.EffectiveDigest, baseDigest)
+	if report.Failed != nil {
+		if !report.RolledBack {
+			return fmt.Errorf("space apply: %s %s failed and rollback diverged — activation state is uncertain", report.Failed.Kind, report.Failed.Target)
+		}
+		receipt.Report = &report
+		_ = printApply(receipt)
+		return fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, baseDigest)
+	}
+	receipt.Report = &report
+	return printApply(receipt)
+}
+
+// applyGates runs the operator-side publish checks the dry-run receipt
+// feeds: connector selection, organization binding, the immutable scope
+// kind, and the per-passport edit right (R1.4) — the same gates the local
+// compile enforced, now driven by the service's own diff and documents.
+func applyGates(abs, environment string, changes []spawnv1.Change, nextDocs, prevDocs map[string]json.RawMessage, issued map[string][]string, docs catalog.Docs) error {
+	lang := locale.LangOf(filepath.Join(abs, "workspace"))
+	toolsBody, err := yaml.Marshal(documentBody(nextDocs["tools"]))
+	if err != nil {
+		return err
+	}
+	deferred, err := migration.ValidateSelectedConnectors(abs, toolsBody, docs)
 	if err != nil {
 		return fmt.Errorf("space apply: connector selection: %w", err)
 	}
 	for _, name := range deferred {
 		fmt.Fprintf(os.Stderr, "space apply: connector %q deferred — no active binding; selections materialize when the connector goes live\n", name)
 	}
-	if next.Stack.Identity.Organization != "" {
-		lang := locale.LangOf(filepath.Join(abs, "workspace"))
-		if next.Tools.Binding == nil {
+	stackDoc := documentBody(nextDocs["stack"])
+	toolsDoc := documentBody(nextDocs["tools"])
+	organization, _ := leafAt(stackDoc, "identity.organization").(string)
+	if organization != "" {
+		profileID, _ := leafAt(toolsDoc, "binding.profile_id").(string)
+		if profileID == "" {
 			return errors.New(locale.T(lang, "hubctl.space-apply-organization-binding"))
 		}
+		generation, _ := leafAt(toolsDoc, "binding.generation").(float64)
 		store, err := toolhub.Load(api.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(abs), "runtime", "toolhub")))
 		if err != nil {
 			return errors.New(locale.T(lang, "hubctl.space-apply-organization-policy"))
 		}
-		if err := store.CheckOrganizationRights(filepath.Base(abs), *env, next.Stack.Identity.Organization, next.Tools.Binding.ProfileID, next.Tools.Binding.Generation, next.Grants.Allow); err != nil {
+		if err := store.CheckOrganizationRights(filepath.Base(abs), environment, organization, profileID, uint64(generation), grantsAllow(prevDocs["grants"])); err != nil {
 			return errors.New(locale.T(lang, "hubctl.space-apply-organization-policy"))
 		}
 	}
-	changes := passport.Diff(prev, next)
-	if prevID != "" {
+	if prevDocs != nil {
 		for _, change := range changes {
 			if change.Path == "stack.identity.kind" {
-				return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-scope-kind"))
+				return errors.New(locale.T(lang, "hubctl.space-apply-scope-kind"))
 			}
 		}
 		// R1.4: each passport's edits require its own current right — held
@@ -159,204 +266,168 @@ func runSpaceApply(ctx context.Context, args []string) error {
 				needed[right] = true
 			}
 		}
+		prevAllow := grantsAllow(prevDocs["grants"])
 		for right := range needed {
-			if !slices.Contains(issued[right[0]], right[1]) || !slices.Contains(prev.Grants.Allow[right[0]], right[1]) {
-				return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-passport-right", right[0]+"."+right[1]))
+			if !slices.Contains(issued[right[0]], right[1]) || !slices.Contains(prevAllow[right[0]], right[1]) {
+				return errors.New(locale.T(lang, "hubctl.space-apply-passport-right", right[0]+"."+right[1]))
 			}
 		}
 	}
-	actions := reconcile.Plan(changes, next.Stack.Services)
-	// The first publication establishes authority; `hubctl up` starts its
-	// containers after the operator has supplied images and service secrets.
-	if firstApply {
-		actions = nil
+	return nil
+}
+
+// reconcileActions converts the contract's plan into the reconcile units
+// the local effect handlers run.
+func reconcileActions(in []spawnv1.Action) []reconcile.Action {
+	out := make([]reconcile.Action, 0, len(in))
+	for _, a := range in {
+		out = append(out, reconcile.Action{Kind: reconcile.Kind(a.Kind), Target: a.Target, Consumers: a.Consumers, Paths: a.Paths})
 	}
-	receipt := applyReceipt{
-		Revision:         rev.ID,
-		PreviousRevision: prevID,
-		FirstApply:       firstApply,
-		Changes:          changes,
-		Actions:          actions,
-		Confirmed:        *confirm,
+	return out
+}
+
+// documentBody unwraps one emitted passport doc: the apiVersion/kind/
+// metadata envelope is compiler bookkeeping, the body is the document.
+func documentBody(raw json.RawMessage) map[string]any {
+	var full map[string]any
+	if err := json.Unmarshal(raw, &full); err != nil {
+		return map[string]any{}
 	}
-	if !*confirm {
-		return printApply(receipt)
+	body := map[string]any{}
+	for k, v := range full {
+		if k == "apiVersion" || k == "kind" || k == "metadata" {
+			continue
+		}
+		body[k] = v
 	}
-	report, err := applyConfirm(ctx, abs, rootAbs, *env, rev, prevID, actions, applyHandlers(ctx, abs, rootAbs, *env))
+	return body
+}
+
+func leafAt(doc map[string]any, path string) any {
+	var value any = doc
+	for _, part := range strings.Split(path, ".") {
+		section, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		value, ok = section[part]
+		if !ok {
+			return nil
+		}
+	}
+	return value
+}
+
+// grantsAllow extracts {allow: {family: [ops]}} from an emitted grants doc.
+func grantsAllow(raw json.RawMessage) map[string][]string {
+	out := map[string][]string{}
+	allow, _ := documentBody(raw)["allow"].(map[string]any)
+	for family, ops := range allow {
+		for _, op := range ops.([]any) {
+			if s, ok := op.(string); ok {
+				out[family] = append(out[family], s)
+			}
+		}
+	}
+	return out
+}
+
+// applyStep is the test seam for convergence progress.
+var applyStep = func(string) {}
+
+// convergeApply drives every apply-owned side effect to the space's
+// currently active digest — idempotent, so it doubles as crash recovery
+// at the head of every apply (Decision 13a). The mirror's .policy file
+// resolves the emitted revision the render and rights derivation consume;
+// a pending mirror surfaces as a retry-able error, never a guess.
+func convergeApply(ctx context.Context, dir, root, environment string, client spawnv1.Client, tenant spawnv1.Tenant) error {
+	space := filepath.Base(dir)
+	eff, err := client.Effective(ctx, tenant, space)
+	if errors.Is(err, spawnv1.ErrNotFound) {
+		return nil // nothing active yet — first apply has nothing to converge
+	}
 	if err != nil {
 		return err
 	}
-	receipt.Report = &report
-	return printApply(receipt)
-}
-
-// applyConfirm publishes the revision, stamps the managed-rights ledger and
-// runs the action plan.
-var applyStep = func(string) {}
-
-func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers, authored ...authoredConfigUpdate) (reconcile.Report, error) {
-	var report reconcile.Report
-	bound, _ := rev.Value("tools", "binding.profile_id")
-	profileID, _ := bound.(string)
-	if profileID == "" {
-		return report, fmt.Errorf("space apply: revision has no bound tools profile")
-	}
-	// The compiled diff, plan and derivation all assume prevID is still the
-	// active revision; a pointer that moved since means this apply is stale.
-	current, err := passport.Current(abs)
-	switch {
-	case err != nil && !errors.Is(err, os.ErrNotExist):
-		return report, fmt.Errorf("space apply: current revision: %w", err)
-	case errors.Is(err, os.ErrNotExist) && prevID != "":
-		return report, fmt.Errorf("space apply: stale base %s: no active revision", prevID)
-	case err == nil && current != prevID:
-		return report, fmt.Errorf("space apply: stale base %s: revision %s is active", prevID, current)
-	}
-	previousProfile, _, _, err := previousApplyAuthority(abs, prevID)
+	applyStep("converge")
+	revisionID, err := mirrorRevisionID(dir, eff.Digest)
 	if err != nil {
-		return report, fmt.Errorf("space apply: rollback source: %w", err)
+		return fmt.Errorf("mirror pending for %s: %w", eff.Digest, err)
 	}
-	record := applyJournal{Environment: env, Previous: prevID, Revision: rev.ID, PreviousProfile: previousProfile,
-		NextProfile: profileID, Phase: "preparing", Actions: actions}
-	if len(authored) != 0 {
-		record.AuthoredConfigBefore = authored[0].Before
-		record.AuthoredConfigAfter = authored[0].After
+	if err := renderRevisionEnvironment(dir, root, environment, revisionID); err != nil {
+		return err
 	}
-	if _, err := os.Stat(applyJournalPath(abs)); err == nil {
-		return report, errors.New("space apply: interrupted apply needs recovery")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return report, err
-	}
-	publisher, err := stageApplyPolicy(ctx, abs, rev, &record)
-	policyFailure := locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.policy-publication")
+	rev, err := loadMirrorRevision(dir, revisionID)
 	if err != nil {
-		return report, fmt.Errorf("%s: %w", policyFailure, err)
+		return err
 	}
-	if err := writeApplyJournal(abs, record); err != nil {
-		return report, fmt.Errorf("space apply: recovery journal: %w", err)
+	docs, err := catalog.LoadPinned()
+	if err != nil {
+		return err
 	}
-	advance := func(phase string) error {
-		record.Phase = phase
-		return writeApplyJournal(abs, record)
+	if err := migration.DeriveSpaceRights(dir, space, environment, rev, docs, time.Now().UTC()); err != nil {
+		return err
 	}
-	rollback := func() error {
-		return retryApplyRestore(func() error { return restoreApplyState(context.WithoutCancel(ctx), abs, rootAbs, record) })
-	}
-	fail := func(stage string, cause error) (reconcile.Report, error) {
-		restored := rollback()
-		if restored == nil {
-			restored = removeApplyJournal(abs)
-		}
-		if restored != nil {
-			_ = passport.PointCurrent(abs, "pending")
-		}
-		return report, fmt.Errorf("space apply: %s: %w", stage, errors.Join(cause, restored))
-	}
-	if err := rev.Prepare(abs, applyStep); err != nil {
-		return fail("prepare", err)
-	}
-	if record.PolicyDigest != "" {
-		if err := rev.LinkPolicyDigest(abs, record.PolicyDigest); err != nil {
-			return fail(policyFailure, err)
-		}
-	}
-	if err := advance("prepared"); err != nil {
-		return fail("journal", err)
-	}
-	applyStep("prepare")
-	// Reconcile acts on generated compose files — they must describe the
-	// revision just published, or rebuild/recreate hit "no such service".
-	if err := renderRevisionEnvironment(abs, rootAbs, env, rev.ID); err != nil {
-		return fail("render", err)
-	}
-	if err := advance("rendered"); err != nil {
-		return fail("journal", err)
-	}
-	applyStep("render")
-	// The published grants revision is the managed-rights authority: stamp
-	// the space's ToolHub profiles + ledger from it before reconcile acts —
-	// a reconcile failure re-derives the previous revision's allow so the
-	// ledger never advertises rights the active passport does not carry.
-	derive := func(revision passport.Revision) error {
-		docs, err := catalog.LoadPinned()
-		if err != nil {
+	if publisher, err := applyPolicyPublisher(); err != nil {
+		return err
+	} else if publisher != nil {
+		active, err := publisher.ActivePassports(ctx, space, environment)
+		if err != nil && !errors.Is(err, contract.ErrNotFound) {
 			return err
 		}
-		return migration.DeriveSpaceRights(abs, filepath.Base(abs), env, revision, docs, time.Now().UTC())
-	}
-	if err := derive(rev); err != nil {
-		return fail("rights derivation", err)
-	}
-	if err := advance("rights"); err != nil {
-		return fail("journal", err)
-	}
-	applyStep("rights")
-	if publisher != nil {
-		if err := publisher.ActivatePassports(ctx, filepath.Base(abs), env, record.PreviousPolicyDigest, record.PolicyDigest); err != nil {
-			return fail(policyFailure, err)
+		if active != eff.Digest {
+			bundle, err := rev.PolicyBundle()
+			if err != nil {
+				return err
+			}
+			staged, err := publisher.StagePassports(ctx, bundle)
+			if err != nil {
+				return err
+			}
+			if err := publisher.ActivatePassports(ctx, space, environment, active, staged.Digest); err != nil {
+				return err
+			}
 		}
 		applyStep("policy")
 	}
-	if err := rev.Activate(abs); err != nil {
-		return fail("activation", err)
+	if err := refreshSharedRuntimeTokens(dir, environment); err != nil {
+		return err
 	}
-	if err := refreshSharedRuntimeTokens(abs, env); err != nil {
-		return fail("runtime token enrollment", err)
+	bound, _ := rev.Value("tools", "binding.profile_id")
+	profileID, _ := bound.(string)
+	return migration.DeactivateStaleBoundProfiles(dir, space, environment, profileID, time.Now().UTC())
+}
+
+// mirrorRevisionID resolves an effective digest to its emitted revision
+// directory — the .policy/<hex> indirection the mirror publishes.
+func mirrorRevisionID(dir, digest string) (string, error) {
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", ".policy", hexDigest)) // #nosec G703 -- digest is a sha256 hex pointer under the space's generated tree
+	if err != nil {
+		return "", err
 	}
-	if err := advance("activated"); err != nil {
-		return fail("journal", err)
+	id := strings.TrimSpace(string(body))
+	if !identity.ValidID(id) {
+		return "", fmt.Errorf("invalid mirror revision %q", id)
 	}
-	applyStep("activate")
-	if previousProfile != "" && previousProfile != profileID {
-		if err := migration.SetSpaceProfileActive(abs, filepath.Base(abs), env, previousProfile, false, time.Now().UTC()); err != nil {
-			return fail("binding", err)
+	if _, err := os.Stat(filepath.Join(dir, "generated", "passports", id)); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// loadMirrorRevision rebuilds the passport.Revision the mirror published —
+// the immutable doc files DeriveSpaceRights and the publisher consume.
+func loadMirrorRevision(dir, revisionID string) (passport.Revision, error) {
+	rev := passport.Revision{ID: revisionID, Docs: map[string][]byte{}}
+	for _, name := range passport.Names {
+		body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", revisionID, name+".yaml")) // #nosec G703 -- validated revision dir under the space's generated tree
+		if err != nil {
+			return rev, err
 		}
+		rev.Docs[name] = body
 	}
-	if err := advance("binding"); err != nil {
-		return fail("journal", err)
-	}
-	if previousProfile != "" && previousProfile != profileID {
-		applyStep("binding")
-	}
-	if err := advance("effects"); err != nil {
-		return fail("journal", err)
-	}
-	report = reconcile.Run(actions, handlers, rollback, rev.ID, prevID)
-	if report.Failed != nil {
-		if !report.RolledBack {
-			_ = passport.PointCurrent(abs, "pending")
-			return report, fmt.Errorf("space apply: %s %s failed and rollback diverged — pointer/ledger state is uncertain", report.Failed.Kind, report.Failed.Target)
-		}
-		if err := removeApplyJournal(abs); err != nil {
-			report.RolledBack = false
-			_ = passport.PointCurrent(abs, "pending")
-			return report, fmt.Errorf("space apply: rollback journal: %w", err)
-		}
-		report.Pruned, _ = passport.PruneRevisions(abs, prevID)
-		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
-	}
-	if len(authored) != 0 {
-		if err := writeAuthoredConfig(abs, record.AuthoredConfigBefore, record.AuthoredConfigAfter); err != nil {
-			restored := rollback()
-			if restored == nil {
-				restored = reconcile.Replay(actions, handlers)
-			}
-			if restored == nil {
-				restored = removeApplyJournal(abs)
-			}
-			if restored != nil {
-				_ = passport.PointCurrent(abs, "pending")
-			}
-			return report, fmt.Errorf("space apply: authored config: %w", errors.Join(err, restored))
-		}
-		applyStep("authored")
-	}
-	if err := removeApplyJournal(abs); err != nil {
-		_ = passport.PointCurrent(abs, "pending")
-		return report, fmt.Errorf("space apply: completion journal: %w", err)
-	}
-	report.Pruned, _ = passport.PruneRevisions(abs, prevID)
-	return report, nil
+	return rev, nil
 }
 
 // printApply emits the JSON receipt — the classified diff, the ordered
@@ -497,7 +568,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			return respawnRuntime(ctx, dir, env)
 		},
 		Live: map[string]func() error{
-			// applyConfirm renders before reconcile runs: the new
+			// convergeApply renders before reconcile runs: the new
 			// runtime.<env>.policy.json is already on disk and the
 			// supervisor re-reads it per decision — the leaf is applied.
 			"supervisor-policy": func() error { return nil },
@@ -513,6 +584,56 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			"rights-ledger": func() error { return nil },
 		},
 	}
+}
+
+// applyPolicyPublisher resolves the identity-hub passport publisher the
+// converge stages and activates policy digests through — unchanged from
+// the v0 apply path; nil when the installation runs none.
+func applyPolicyPublisher() (contract.PassportPublisher, error) {
+	token := strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH"))
+	if token == "" {
+		return nil, nil
+	}
+	endpoint := strings.TrimSpace(os.Getenv("HUB_PASSPORT_PUBLISHER_URL"))
+	if endpoint == "" {
+		endpoint = "http://127.0.0.1:8876"
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "http" || !net.ParseIP(u.Hostname()).IsLoopback() || u.Port() == "" ||
+		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, contract.ErrInvalid
+	}
+	httpClient := &http.Client{Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return contract.NewPassportPublisherHTTPClient(endpoint, token, httpClient), nil
+}
+
+// applySpawnClient resolves the spawn-controller contract client the way
+// explain does: an explicit HUB_SPAWN_CONTROLLER_URL wins (process mode
+// exports it), else the compose stack's loopback publication. The service
+// token chain is HUB_SERVICE_TOKEN, the supervisor env, then the infra
+// space's supervisor.auth — resolved against the --dir space's infra
+// sibling. Tenant: org "local", owner the space itself (Decision 13's
+// managed-space tenant).
+func applySpawnClient(abs string) (spawnv1.Client, spawnv1.Tenant, error) {
+	explicit := os.Getenv("HUB_SPAWN_CONTROLLER_URL")
+	base := explicit
+	if base == "" {
+		base = "http://127.0.0.1:8877"
+	}
+	token := os.Getenv("HUB_SERVICE_TOKEN")
+	if token == "" {
+		token = supervisorAuthFromEnv()
+	}
+	if token == "" {
+		if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(abs), "supervisor.auth")); err == nil {
+			token = strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"])
+		}
+	}
+	if token == "" && explicit == "" {
+		return nil, spawnv1.Tenant{}, errors.New(locale.T(locale.Operator(), "hubctl.explain-no-controller"))
+	}
+	return spawnv1.NewHTTPClient(base, token, nil), spawnv1.Tenant{Org: "local", Owner: filepath.Base(abs)}, nil
 }
 
 func refreshSharedRuntimeTokens(dir, environment string) error {
@@ -563,8 +684,12 @@ func respawnRuntime(ctx context.Context, dir, env string) error {
 		if auth != "" {
 			req.Header.Set("Authorization", "Bearer "+auth)
 		}
-		if journal, err := readApplyJournal(dir); err == nil && journal.Phase == "effects" {
-			req.Header.Set("X-Hub-Apply-Revision", journal.Revision)
+		// The respawn gate binds the request to the digest the apply just
+		// committed — the supervisor authorizes it only while that pointer is live.
+		if pointer, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current")); err == nil { // #nosec G703 -- fixed pointer filename under the operator's space dir
+			if reference := strings.TrimSpace(string(pointer)); strings.HasPrefix(reference, "sha256:") {
+				req.Header.Set("X-Hub-Apply-Revision", reference)
+			}
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := respawnHTTPClient.Do(req) // #nosec G704 -- operator-configured hub endpoint

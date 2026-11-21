@@ -577,9 +577,6 @@ func (g *Gateway) requireActivated(auth identity.Envelope) (activationPin, error
 }
 
 func (g *Gateway) checkActivePassport(auth identity.Envelope, revision string) error {
-	if _, err := os.Stat(filepath.Join(g.PassportRoot, auth.PrincipalID, "passports", passportview.ApplyJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: passport apply incomplete", api.ErrUnauthorized)
-	}
 	if revision == "" {
 		return nil
 	}

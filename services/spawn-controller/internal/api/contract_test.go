@@ -84,7 +84,9 @@ func contractServer(t *testing.T, url string) api.Contract {
 	now := func() time.Time { clock = clock.Add(time.Second); return clock }
 	st := storetest.Open(t, url, migrations.FS)
 	return api.Contract{
-		Revisions: &spawn.Revisions{Store: st, Catalog: docs, Now: now},
+		// SpacesRoot points the transitional mirror and the settings
+		// edit's authored-file write-back at a throwaway tree.
+		Revisions: &spawn.Revisions{Store: st, Catalog: docs, Now: now, SpacesRoot: t.TempDir()},
 		Runtimes: &spawn.Runtimes{
 			Store: st, Backend: &stubBackend{}, Image: "harness-runtime",
 			Now: now, OCIRuntime: "runc",

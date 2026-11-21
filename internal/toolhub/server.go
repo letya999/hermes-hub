@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -563,7 +564,14 @@ func nonLoopbackListen(address string) bool {
 // fails closed.
 func agentBackendFromEnv() api.ToolBackend {
 	docker := api.EnvOr("HUB_DOCKER_BIN", "docker")
-	settings := settingsBackend(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), os.Getenv("HUB_COMMUNICATION_AUTH"))
+	// Settings go through the spawn/v1 contract (S7b): HUB_SPAWN_URL +
+	// HUB_SPAWN_TOKEN, the same wiring the cell controller uses. The
+	// supervisor URL stays for the transitional post-edit respawn (S7c).
+	var spawn spawnv1.Client
+	if url := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); url != "" {
+		spawn = spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), &http.Client{})
+	}
+	settings := settingsBackend(os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), os.Getenv("HUB_COMMUNICATION_AUTH"), spawn)
 	// The docker socket sees every host container; scope checks keep exec,
 	// inspect and lifecycle ops inside this stack's own project.
 	api.SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))

@@ -249,7 +249,7 @@ func setupSpaceAs(t *testing.T, revs *spawn.Revisions, tn store.Tenant) {
 		}
 		all = append(all, id)
 	}
-	if _, err := revs.Activate(ctx, tn, "alice", all); err != nil {
+	if _, err := revs.Activate(ctx, tn, "alice", all, nil); err != nil {
 		t.Fatalf("activate set %v: %v", all, err)
 	}
 }
@@ -403,7 +403,7 @@ func TestRevokeDrainsOldDigest(t *testing.T) {
 			t.Fatalf("claim: %v", err)
 		}
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		if got := runtimeStateAs(t, fx.store, tenant, old.ID); got != "draining" {
@@ -464,7 +464,7 @@ func TestStartingRuntimeUnderRevokedDigestNeverServes(t *testing.T) {
 			t.Fatalf("starting row: %v", err)
 		}
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		newDigest := effectiveDigest(t, fx.revs)
@@ -518,7 +518,7 @@ func TestWarmClaimRequiresMatchingDigest(t *testing.T) {
 			t.Fatalf("claim: %v", err)
 		}
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		newDigest := effectiveDigest(t, fx.revs)
@@ -725,7 +725,7 @@ func TestDrainRemovesLeaseRows(t *testing.T) {
 			t.Fatalf("holds %d leases, want 2", n)
 		}
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		if got := runtimeStateAs(t, fx.store, tenant, rt.ID); got != "draining" {
@@ -750,7 +750,7 @@ func TestGenerationIncrementsPerStart(t *testing.T) {
 			t.Fatalf("claim: %v", err)
 		}
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		if err := fx.sweeper.Tick(ctx); err != nil {
@@ -887,7 +887,7 @@ func TestUnconfirmedStopQuarantines(t *testing.T) {
 		}
 		fx.backend.stuck[rt.BackendID] = true
 		rev := submitValidated(t, fx.revs, "user", userDocs("UTC"))
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}); err != nil {
+		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		if err := fx.sweeper.Tick(ctx); err != nil {

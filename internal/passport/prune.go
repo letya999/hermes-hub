@@ -23,9 +23,6 @@ const RevisionKeepSlack = 3
 // hygiene, not a transaction.
 func PruneRevisions(spaceDir, keepPrevious string) (removed []string, errs error) {
 	root := filepath.Join(spaceDir, "generated", "passports")
-	if _, err := os.Lstat(filepath.Join(root, passportview.ApplyJournalFile)); err == nil {
-		return nil, nil
-	}
 	current, err := passportview.Current(spaceDir)
 	if err != nil {
 		return nil, nil

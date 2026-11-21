@@ -102,9 +102,18 @@ type Revisions struct {
 	// LoadCatalog resolves the pinned catalog lazily when set — services
 	// boot without the baked catalog tree reachable, and a compile that
 	// still cannot resolve it fails unavailable, never silently.
-	LoadCatalog  func() (catalog.Docs, error)
-	Now          func() time.Time
+	LoadCatalog func() (catalog.Docs, error)
+	Now         func() time.Time
+	// BeforeCommit fires inside the activation transaction after the
+	// revision moves and before the effective row lands — the crash
+	// seam for TestApplyCrashLeavesPreviousActive.
 	BeforeCommit func() error
+	// SpacesRoot is the operator's spaces root the transitional v0
+	// mirror republishes under after every committed activation; empty
+	// disables the mirror (unit tests, no mount). BeforeMirror is the
+	// mirror-failure seam for TestMirrorFailureNeverUnactivates.
+	SpacesRoot   string
+	BeforeMirror func() error
 }
 
 func (r *Revisions) now() time.Time {
@@ -335,8 +344,15 @@ func (r *Revisions) Validate(ctx context.Context, t store.Tenant, spaceID, id st
 // the effective spec is inserted if absent and superseded rows past the
 // keep slack are pruned. Activate is the authoritative gate — Validate is
 // only a pre-check against the newest known documents.
-func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string, ids []string) ([]Revision, error) {
+// When base is non-nil it is the digest CAS anchor: the space's current
+// effective digest must equal *base or nothing moves (apply and rollback
+// pass it; importers pass nil). After commit, the transitional v0 mirror
+// republishes the space's generated tree — the pending row the
+// transaction left makes the sweeper retry a failed or lost publish.
+func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string, ids []string, base *string) ([]Revision, error) {
 	var out []Revision
+	var mirrorRev passport.Revision
+	var mirrorDigest string
 	err := r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
 		if len(ids) == 0 {
@@ -361,6 +377,18 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		env, err := spaceEnvironment(q, spaceID)
 		if err != nil {
 			return err
+		}
+		if base != nil {
+			// The digest CAS: the caller compiled against base; if the
+			// pointer moved since, this activation is stale — nothing writes.
+			var currentDigest string
+			err = q.QueryRow("SELECT COALESCE(effective_digest, '') FROM spaces WHERE {tenant} AND id = ?", spaceID).Scan(&currentDigest)
+			if err != nil {
+				return err
+			}
+			if currentDigest != *base {
+				return fmt.Errorf("%w: %s", store.ErrConflict, locale.T(locale.Default, "spawn.apply-stale-base"))
+			}
 		}
 		byLayer, atByLayer, err := activeLayerDocs(q, spaceID)
 		if err != nil {
@@ -395,10 +423,11 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		if err != nil {
 			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
 		}
-		_, attr, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
+		compiled, attr, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
 		if compileErr != nil {
 			return fmt.Errorf("%w: %s: %v", store.ErrConflict, locale.T(locale.Default, "spawn.revision-rejected"), compileErr)
 		}
+		mirrorRev, mirrorDigest = compiled, digest
 		now := r.now()
 		moved := map[string]string{}
 		for layer, rev := range targets {
@@ -481,6 +510,17 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 				return err
 			}
 		}
+		if r.SpacesRoot != "" {
+			// The v0 mirror publish is a durable post-commit effect: the
+			// pending row commits with the activation so a crash between
+			// here and the file write can never lose it (S7b).
+			if _, err := q.Exec("DELETE FROM mirror_pending WHERE {tenant} AND id = ?", spaceID); err != nil {
+				return err
+			}
+			if err := q.Insert("mirror_pending", []string{"id", "state", "deadline"}, spaceID, "pending", now.Unix()); err != nil {
+				return err
+			}
+		}
 		out = make([]Revision, 0, len(targets))
 		for _, id := range ids {
 			got, err := loadRevision(q, spaceID, id)
@@ -491,7 +531,15 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if mErr := r.mirror(context.WithoutCancel(ctx), t, spaceID, mirrorRev, mirrorDigest); mErr != nil {
+		// Mirror failure never un-activates: the pending row makes the
+		// sweeper retry; the DB is the truth, files are a view.
+		r.mirrorFailed(spaceID, mErr)
+	}
+	return out, nil
 }
 
 // Effective answers the space's stored effective spec: the digest

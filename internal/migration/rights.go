@@ -109,6 +109,31 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, agenttools.HubToolsDefinitionID, selections, core, toolsets, now)
 }
 
+// DeactivateStaleBoundProfiles disables every active bound profile of the
+// space's principal/environment except the one the published revision
+// binds — the converge's idempotent form of the v0 apply's previous-
+// profile gate (S7b: the journal that carried the previous profile is
+// gone; convergence derives from the store itself).
+func DeactivateStaleBoundProfiles(dir, user, environment, keepProfileID string, now time.Time) error {
+	storePath := api.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
+	store, err := toolhub.Load(storePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("profile converge: %w", err)
+	}
+	for _, profile := range store.ActiveProfiles(user, environment) {
+		if profile.ProfileID == keepProfileID {
+			continue
+		}
+		if err := store.SetBoundProfileActive(user, environment, profile.ProfileID, false, now); err != nil {
+			return fmt.Errorf("profile converge: %w", err)
+		}
+	}
+	return nil
+}
+
 // SetSpaceProfileActive gates a rejected or superseded binding without
 // changing any issued grant or another principal/environment's profile.
 func SetSpaceProfileActive(dir, user, environment, profileID string, active bool, now time.Time) error {

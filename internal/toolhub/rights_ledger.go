@@ -61,6 +61,25 @@ func (s *Store) profilesForPrincipal(principal string) []api.CapabilityProfile {
 	return out
 }
 
+// ActiveProfiles lists the principal's active profiles for one
+// environment — the apply converge pass disables every profile the active
+// revision no longer binds (S7b: the journal that carried the previous
+// profile is gone, convergence derives from the store itself).
+func (s *Store) ActiveProfiles(principal, environment string) []api.CapabilityProfile {
+	if err := s.Reload(); err != nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []api.CapabilityProfile
+	for _, profile := range s.capabilityProfiles {
+		if profile.PrincipalID == principal && profile.Environment == environment && profile.Status == api.ActiveStatus {
+			out = append(out, profile)
+		}
+	}
+	return out
+}
+
 // SetBoundProfileActive changes only the named managed generation. Recovery
 // never revives an independently revoked profile or touches a sibling env.
 func (s *Store) SetBoundProfileActive(principal, environment, profileID string, active bool, now time.Time) error {

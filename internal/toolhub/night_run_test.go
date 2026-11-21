@@ -10,7 +10,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/memory/night"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
 	"github.com/letya999/hermes-hub/shared/locale"
@@ -85,10 +84,16 @@ func TestNightRunChecksRightAgainAfterModel(t *testing.T) {
 		t.Fatalf("revoked vault mutation: %v", err)
 	}
 	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-dreaming-2", "alice", "memory", "dreaming", "", "fixture", "operator", time.Now().Add(time.Hour)))
-	journal := filepath.Join(passports, "alice", "passports", passportview.ApplyJournalFile)
+	pointer := filepath.Join(passports, "alice", "passports", "current")
+	stable, err := os.ReadFile(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A mid-publish mirror pins current to pending — the same fence the
+	// deleted apply journal provided.
 	relay = func(context.Context, string, string) (string, error) {
 		calls++
-		if err := os.WriteFile(journal, []byte("{}\n"), 0600); err != nil {
+		if err := os.WriteFile(pointer, []byte("pending\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		return `{"summary":"tea","facts":[{"card":"notes/tea","fact":"prefers cedar tea","quote":"I prefer cedar tea"}]}`, nil
@@ -99,7 +104,7 @@ func TestNightRunChecksRightAgainAfterModel(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(vaultRoot, "runtime", "memory", "night", "2026-11-05.json")); !os.IsNotExist(err) {
 		t.Fatalf("mixed activation mutated the vault: %v", err)
 	}
-	if err := os.Remove(journal); err != nil {
+	if err := os.WriteFile(pointer, stable, 0600); err != nil {
 		t.Fatal(err)
 	}
 	relay = func(context.Context, string, string) (string, error) {

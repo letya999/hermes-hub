@@ -542,8 +542,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// spawn-controller (M40.3 S7a) rides the supervisor's topology:
 		// wherever the supervisor renders, the v1 container authority runs
 		// beside it — same control image, same bootstrap hardening, docker
-		// socket as its compute backend. The spaces bind is read-only: it
-		// feeds the one-time v0 importer and the cells' spaces root.
+		// socket as its compute backend. The spaces bind is read-write for
+		// S7b: the transitional v0 mirror republishes generated passports
+		// and the settings edit patches authored config — it narrows back
+		// to read-only in S7d when the mirror is deleted.
 		spawn := cloneMap(controlCommon)
 		spawn["user"] = fmt.Sprintf("0:%d", max(0, os.Getgid()))
 		spawn["cap_add"] = []string{"SETUID", "SETGID", "SETPCAP", "FOWNER"}
@@ -583,7 +585,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		spawn["volumes"] = []any{dockerSock,
 			M{"type": "volume", "source": "spawn-controller-data", "target": "/data"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "spawn-controller")), "target": "/cellstate"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces", "read_only": true}}
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"}}
 		spawn["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
 		spawn["ports"] = []string{"127.0.0.1:8877:8877"}
 		spawn["stop_grace_period"] = "30s"

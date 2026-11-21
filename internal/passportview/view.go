@@ -21,9 +21,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/media"
 )
 
-// ApplyJournalFile is present until publication and service effects converge.
-const ApplyJournalFile = "apply-journal.json"
-
 // Names is the fixed six-passport order.
 var Names = []string{"stack", "config", "models", "workspace", "tools", "grants"}
 

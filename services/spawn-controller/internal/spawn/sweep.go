@@ -28,7 +28,10 @@ type Sweeper struct {
 	// WorkerBackend is the backend worker rows reconcile against; nil
 	// means workers share Backend (one-backend installations, tests).
 	WorkerBackend backend.Backend
-	Now           func() time.Time
+	// Revisions is the revision service the mirror-pending pass uses;
+	// nil skips the pass (backend-only sweep fixtures).
+	Revisions *Revisions
+	Now       func() time.Time
 }
 
 // backendFor returns the backend a row's workload lives on — worker rows
@@ -64,6 +67,14 @@ func (s *Sweeper) Tick(ctx context.Context) error {
 	}
 	if err := s.drainStale(ctx, now); err != nil {
 		return err
+	}
+	if s.Revisions != nil {
+		// Mirror retries are part of recovery: an activation committed
+		// but its v0 file publish was lost or failed — republish from
+		// the DB truth before touching backend effects.
+		if err := s.Revisions.MirrorPending(ctx); err != nil {
+			return err
+		}
 	}
 	if err := s.effects(ctx); err != nil {
 		return err

@@ -6,8 +6,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 func publishRev(t *testing.T, dir, id string) {
@@ -99,7 +97,9 @@ func TestPruneRevisionsSkipsWhileJournalOpen(t *testing.T) {
 	if err := os.MkdirAll(stale, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", passportview.ApplyJournalFile), []byte("{}"), 0600); err != nil {
+	// A mid-publish mirror pins current to pending — the same fence the
+	// deleted apply journal provided.
+	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("pending\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	removed, err := PruneRevisions(dir, "")

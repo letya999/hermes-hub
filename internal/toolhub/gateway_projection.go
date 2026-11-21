@@ -52,9 +52,6 @@ func (g *Gateway) projectionFingerprint(auth identity.Envelope) ([32]byte, bool,
 	}
 	if g.PassportRoot != "" {
 		space := filepath.Join(g.PassportRoot, auth.PrincipalID)
-		if _, err := os.Stat(filepath.Join(space, "passports", passportview.ApplyJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
-			return empty, false, fmt.Errorf("%w: passport apply incomplete", api.ErrUnauthorized)
-		}
 		reference, rev, err := passportview.CurrentReferenceGenerated(space)
 		if err != nil {
 			return empty, false, err

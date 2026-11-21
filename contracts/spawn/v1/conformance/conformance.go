@@ -139,6 +139,68 @@ func Run(t *testing.T, client spawn.Client, f Fixture) {
 		t.Fatalf("list layer filter: %v %+v", err, userOnly)
 	}
 
+	// Apply is the writer surface: the dry run compiles the would-be
+	// receipt without moving the pointer, the confirmed call is an
+	// idempotent no-op on identical docs (the suite replays on the same
+	// server — a mutating apply would supersede the user row and break
+	// the second pass; digest movement is the service's own suite), and
+	// a stale base refuses before anything moves.
+	base, err := client.Effective(ctx, f.Tenant, f.Space)
+	if err != nil {
+		t.Fatalf("apply base effective: %v", err)
+	}
+	dry, err := client.Apply(ctx, f.Space, spawn.ApplyRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Layers: map[string]map[string]map[string]any{"user": f.Layers["user"]},
+		BaseDigest: base.Digest, DryRun: true, IdempotencyKey: "k-apply-dry",
+	})
+	if err != nil {
+		t.Fatalf("apply dry run: %v", err)
+	}
+	if dry.EffectiveDigest == "" || dry.EffectiveDigest != base.Digest || dry.PreviousDigest != base.Digest || len(dry.Documents) == 0 {
+		t.Fatalf("apply dry run receipt: %+v", dry)
+	}
+	if still, err := client.Effective(ctx, f.Tenant, f.Space); err != nil || still.Digest != base.Digest {
+		t.Fatalf("dry run activated: %v %s", err, still.Digest)
+	}
+	if _, err := client.Apply(ctx, f.Space, spawn.ApplyRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Layers: map[string]map[string]map[string]any{"user": f.Layers["user"]},
+		BaseDigest: "sha256:" + zeros(64), IdempotencyKey: "k-apply-stale",
+	}); !errors.Is(err, spawn.ErrConflict) {
+		t.Fatalf("apply stale base: want conflict, got %v", err)
+	}
+	if still, err := client.Effective(ctx, f.Tenant, f.Space); err != nil || still.Digest != base.Digest {
+		t.Fatalf("stale apply moved the pointer: %v %s", err, still.Digest)
+	}
+	applied, err := client.Apply(ctx, f.Space, spawn.ApplyRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Layers: map[string]map[string]map[string]any{"user": f.Layers["user"]},
+		BaseDigest: base.Digest, IdempotencyKey: "k-apply",
+	})
+	if err != nil {
+		t.Fatalf("apply confirm: %v", err)
+	}
+	if applied.EffectiveDigest != dry.EffectiveDigest || len(applied.PreviousRevisions) == 0 || len(applied.Revisions) == 0 {
+		t.Fatalf("apply receipt: %+v", applied)
+	}
+	if moved, err := client.Effective(ctx, f.Tenant, f.Space); err != nil || moved.Digest != applied.EffectiveDigest {
+		t.Fatalf("apply activation: %v %s", err, moved.Digest)
+	}
+
+	// Settings: the read answers the digest the writer just published; a
+	// stale base on the edit is a conflict, never a silent move.
+	settings, err := client.GetSettings(ctx, f.Tenant, f.Space, "")
+	if err != nil {
+		t.Fatalf("settings read: %v", err)
+	}
+	if settings.PublishedRevision != applied.EffectiveDigest || settings.EffectiveRevision != applied.EffectiveDigest ||
+		settings.PublishedValues == nil || settings.SecretValuesIncluded {
+		t.Fatalf("settings receipt: %+v", settings)
+	}
+	if _, err := client.EditSettings(ctx, f.Space, spawn.SettingsEditRequest{
+		Org: f.Tenant.Org, Owner: f.Tenant.Owner, Key: "compression.enabled", BaseRevision: "sha256:" + zeros(64), IdempotencyKey: "k-set-stale",
+	}); !errors.Is(err, spawn.ErrConflict) {
+		t.Fatalf("settings stale base: want conflict, got %v", err)
+	}
+
 	// Effective: a stable digest over the active set.
 	eff, err := client.Effective(ctx, f.Tenant, f.Space)
 	if err != nil {

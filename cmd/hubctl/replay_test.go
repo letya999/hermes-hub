@@ -89,7 +89,7 @@ func TestReplayConfigDigestRejectsIncompleteActivation(t *testing.T) {
 					err = os.WriteFile(config, bytes.ReplaceAll(body, []byte("r-0123456789abcdef"), []byte("r-other")), 0600)
 				}
 			case "journal":
-				err = os.WriteFile(filepath.Join(root, passportview.ApplyJournalFile), []byte("{}"), 0600)
+				err = os.WriteFile(filepath.Join(root, "current"), []byte("pending\n"), 0600)
 			case "view":
 				err = os.WriteFile(filepath.Join(space, "generated", "config-view", "dev", "revision"), []byte("r-other"), 0600)
 			}

@@ -7,33 +7,32 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"gopkg.in/yaml.v3"
 )
 
-func settingsBackend(root, environment, supervisorURL, auth string) func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+// settingsBackend serves the settings tool family through the spawn/v1
+// contract (S7b): spawn-controller owns the read and the edit — the
+// effective digest replaces the file revision everywhere the tool schema
+// says published_revision. Until the runtime cutover (S7c) the respawn
+// that env-carried config needs still goes to the supervisor's route —
+// spawn-controller owns the passport, the supervisor owns the container.
+func settingsBackend(environment, supervisorURL, auth string, spawn spawnv1.Client) func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	return func(ctx context.Context, effective api.EffectiveBinding, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
 		principal := effective.Binding.PrincipalID
-		if root == "" || !identity.ValidID(principal) || (environment != "dev" && environment != "prod") {
+		if !identity.ValidID(principal) || (environment != "dev" && environment != "prod") {
 			return api.BackendResult{}, api.ErrIsolation
 		}
-		genDir := filepath.Join(root, principal)
-		if _, err := os.Stat(filepath.Join(genDir, "passports", passportview.ApplyJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) { // #nosec G703 -- principal is a validated ID under an operator-owned root
-			return api.BackendResult{}, api.ErrUnauthorized
+		if spawn == nil {
+			return api.BackendResult{}, api.ErrIsolation
 		}
-		published, err := passportview.LoadEffectiveGenerated(genDir)
-		if err != nil || published.Header.Metadata.Space != principal || published.Header.Metadata.Environment != environment {
-			return api.BackendResult{}, api.ErrUnauthorized
-		}
+		tenant := spawnv1.Tenant{Org: "local", Owner: principal}
 		key, _ := arguments["key"].(string)
 		if key != "" {
 			if _, ok := selfsettings.PublishedPath(key); !ok {
@@ -42,34 +41,20 @@ func settingsBackend(root, environment, supervisorURL, auth string) func(context
 		}
 		switch tool.Name {
 		case "settings_read":
-			body, err := yaml.Marshal(published.Config)
+			result, err := spawn.GetSettings(ctx, tenant, principal, key)
 			if err != nil {
-				return api.BackendResult{}, err
-			}
-			var config map[string]any
-			if err := yaml.Unmarshal(body, &config); err != nil {
-				return api.BackendResult{}, err
-			}
-			values := map[string]any{}
-			for _, candidate := range selfsettings.AllowedKeys() {
-				if key != "" && key != candidate {
-					continue
-				}
-				path, _ := selfsettings.PublishedPath(candidate)
-				if value, present := publishedSetting(config, path); present {
-					values[candidate] = value
-				}
+				return api.BackendResult{IsError: true, Text: errorText(err)}, nil
 			}
 			return api.BackendResult{Structured: map[string]any{
-				"published_revision":     published.Header.Metadata.Revision,
-				"effective_revision":     published.Header.Metadata.Revision,
-				"published_values":       values,
-				"manageable_keys":        selfsettings.AllowedKeys(),
-				"secret_values_included": false,
+				"published_revision":     result.PublishedRevision,
+				"effective_revision":     result.EffectiveRevision,
+				"published_values":       result.PublishedValues,
+				"manageable_keys":        result.ManageableKeys,
+				"secret_values_included": result.SecretValuesIncluded,
 			}}, nil
 		case "settings_edit":
 			base, _ := arguments["base_revision"].(string)
-			if key == "" || base == "" || supervisorURL == "" || auth == "" {
+			if key == "" || base == "" {
 				return api.BackendResult{}, api.ErrInvalid
 			}
 			var value *string
@@ -80,50 +65,63 @@ func settingsBackend(root, environment, supervisorURL, auth string) func(context
 				}
 				value = &text
 			}
-			body, err := json.Marshal(map[string]any{"principal_id": principal, "environment": environment, "key": key, "value": value, "base_revision": base})
+			result, err := spawn.EditSettings(ctx, principal, spawnv1.SettingsEditRequest{
+				Org: tenant.Org, Owner: tenant.Owner, Key: key, Value: value,
+				BaseRevision:   base,
+				IdempotencyKey: "settings-" + principal + "-" + key,
+			})
 			if err != nil {
-				return api.BackendResult{}, err
+				return api.BackendResult{IsError: true, Text: errorText(err)}, nil
 			}
-			request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(supervisorURL, "/")+"/v1/settings", bytes.NewReader(body)) // #nosec G704 -- supervisor URL comes from the operator-owned service environment
-			if err != nil {
-				return api.BackendResult{}, err
-			}
-			request.Header.Set("Authorization", "Bearer "+auth)
-			request.Header.Set("Content-Type", "application/json")
-			response, err := client.Do(request) // #nosec G704 -- request targets the operator-owned supervisor endpoint
-			if err != nil {
-				return api.BackendResult{}, api.ErrIsolation
-			}
-			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK {
-				var failure map[string]string
-				if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&failure) == nil && failure["error"] != "" {
-					return api.BackendResult{IsError: true, Text: failure["error"]}, nil
+			// Transitional (S7b, removed in S7c): runtimes are still
+			// supervisor-owned, so the env-carried config change reaches
+			// the container through the supervisor respawn route.
+			if result.Changed && supervisorURL != "" {
+				if err := respawnSupervised(ctx, client, supervisorURL, auth, principal); err != nil {
+					return api.BackendResult{IsError: true, Text: errorText(err)}, nil
 				}
-				return api.BackendResult{}, api.ErrUnauthorized
 			}
-			var result map[string]any
-			if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&result); err != nil {
-				return api.BackendResult{}, api.ErrIsolation
-			}
-			return api.BackendResult{Structured: result}, nil
+			return api.BackendResult{Structured: map[string]any{
+				"published_revision": result.PublishedRevision,
+				"previous_revision":  result.PreviousRevision,
+				"changed":            result.Changed,
+			}}, nil
 		default:
 			return api.BackendResult{}, api.ErrInvalid
 		}
 	}
 }
 
-func publishedSetting(config map[string]any, path string) (any, bool) {
-	var value any = config
-	for _, part := range strings.Split(path, ".") {
-		section, ok := value.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		value, ok = section[part]
-		if !ok {
-			return nil, false
-		}
+// respawnSupervised asks the supervisor to replace the principal's
+// runtime — the same route hubctl's respawn action uses.
+func respawnSupervised(ctx context.Context, client *http.Client, supervisorURL, auth, principal string) error {
+	body, _ := json.Marshal(map[string]string{"principal_id": principal, "context_id": principal})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(supervisorURL, "/")+"/v1/respawn", bytes.NewReader(body)) // #nosec G704 -- supervisor URL comes from the operator-owned service environment
+	if err != nil {
+		return err
 	}
-	return value, true
+	if auth != "" {
+		req.Header.Set("Authorization", "Bearer "+auth)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req) // #nosec G704 -- request targets the operator-owned supervisor endpoint
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return errors.New("supervisor respawn: " + strings.TrimSpace(string(detail)))
+	}
+	return nil
+}
+
+// errorText surfaces the service's refusal text to the tool caller —
+// contract errors carry the localized reason the service produced.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

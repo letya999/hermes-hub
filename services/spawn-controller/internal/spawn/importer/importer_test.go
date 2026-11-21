@@ -478,7 +478,7 @@ func TestExplainAttributesLayer(t *testing.T) {
 			}
 			all = append(all, id)
 		}
-		if _, err := revs.Activate(ctx, tenant, "alice", all); err != nil {
+		if _, err := revs.Activate(ctx, tenant, "alice", all, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
 		rep, err := revs.Explain(ctx, tenant, "alice")

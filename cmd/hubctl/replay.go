@@ -341,9 +341,6 @@ func replaySpaceDigest(spaceDir string) (string, error) {
 			return "", denied
 		}
 	}
-	if _, err := root.Lstat("generated/passports/" + passportview.ApplyJournalFile); !errors.Is(err, os.ErrNotExist) {
-		return "", denied
-	}
 	current := "generated/passports/current"
 	info, err := root.Lstat(current)
 	if err != nil || !info.Mode().IsRegular() {
@@ -353,7 +350,17 @@ func replaySpaceDigest(spaceDir string) (string, error) {
 	if err != nil {
 		return "", denied
 	}
-	revision := strings.TrimSpace(string(pointer))
+	reference := strings.TrimSpace(string(pointer))
+	revision := reference
+	if strings.HasPrefix(reference, "sha256:") {
+		// The v1 mirror points `current` at the effective digest; the
+		// emitted revision dir resolves through the .policy indirection.
+		cached, err := root.ReadFile(filepath.Join("generated", "passports", ".policy", strings.TrimPrefix(reference, "sha256:")))
+		if err != nil {
+			return "", denied
+		}
+		revision = strings.TrimSpace(string(cached))
+	}
 	if !filepath.IsLocal(revision) || strings.ContainsAny(revision, "/\\") || revision == "." || revision == "pending" {
 		return "", denied
 	}
@@ -395,7 +402,7 @@ func replaySpaceDigest(spaceDir string) (string, error) {
 		h.Write([]byte{0})
 	}
 	latest, err := root.ReadFile(current)
-	if err != nil || strings.TrimSpace(string(latest)) != revision {
+	if err != nil || strings.TrimSpace(string(latest)) != reference {
 		return "", denied
 	}
 	if first.Environment != "dev" && first.Environment != "prod" {
@@ -408,9 +415,6 @@ func replaySpaceDigest(spaceDir string) (string, error) {
 	}
 	active, err := root.ReadFile(view)
 	if err != nil || strings.TrimSpace(string(active)) != revision {
-		return "", denied
-	}
-	if _, err := root.Lstat("generated/passports/" + passportview.ApplyJournalFile); !errors.Is(err, os.ErrNotExist) {
 		return "", denied
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

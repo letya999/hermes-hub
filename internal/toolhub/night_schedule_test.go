@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 func TestNightScheduleRequiresActivatedPassport(t *testing.T) {
@@ -29,7 +28,9 @@ func TestNightScheduleRequiresActivatedPassport(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.pending {
-				if err := os.WriteFile(filepath.Join(root, auth.PrincipalID, "passports", passportview.ApplyJournalFile), []byte("{}\n"), 0600); err != nil {
+				// A mid-publish mirror pins current to pending — the same
+				// fence the deleted apply journal provided.
+				if err := os.WriteFile(filepath.Join(root, auth.PrincipalID, "passports", "current"), []byte("pending\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}

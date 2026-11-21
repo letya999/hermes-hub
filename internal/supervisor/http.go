@@ -130,8 +130,6 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.wake(w, r)
 	case "/v1/self-env":
 		m.selfEnv(w, r)
-	case "/v1/settings":
-		m.settingsEditHTTP(w, r)
 	case "/v1/skill-apply":
 		m.skillApply(w, r)
 	case "/v1/skill-creds":
@@ -543,15 +541,6 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": applied, "applied": applied})
-}
-
-// ReconcileSettingsRuntime applies the authenticated local publisher's self-owned
-// runtime effect while its publication journal still blocks external admission.
-func (m *Manager) ReconcileSettingsRuntime(principal string) (bool, error) {
-	if !validID(principal) {
-		return false, errors.New("invalid publication principal")
-	}
-	return m.respawnRuntime(principal, principal, "")
 }
 
 func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, error) {

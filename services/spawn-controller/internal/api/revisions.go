@@ -53,7 +53,11 @@ func (c Contract) ValidateRevision(ctx context.Context, space, id string, in spa
 
 // ActivateRevisions cuts the listed revisions in one transaction.
 func (c Contract) ActivateRevisions(ctx context.Context, space string, in spawnv1.ActivationRequest) ([]spawnv1.Revision, error) {
-	rows, err := c.Revisions.Activate(ctx, tenantOf(in.Org, in.Owner), space, in.Revisions)
+	var base *string
+	if in.BaseDigest != "" {
+		base = &in.BaseDigest
+	}
+	rows, err := c.Revisions.Activate(ctx, tenantOf(in.Org, in.Owner), space, in.Revisions, base)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +66,55 @@ func (c Contract) ActivateRevisions(ctx context.Context, space string, in spawnv
 		out[i] = revisionOf(row)
 	}
 	return out, nil
+}
+
+// Apply is the passport-writer surface: submit + validate + compile the
+// changed layers, then — without dry_run — activate on the digest CAS.
+func (c Contract) Apply(ctx context.Context, space string, in spawnv1.ApplyRequest) (spawnv1.ApplyResponse, error) {
+	out, err := c.Revisions.Apply(ctx, tenantOf(in.Org, in.Owner), space, in.Layers, in.BaseDigest, in.DryRun)
+	if err != nil {
+		return spawnv1.ApplyResponse{}, err
+	}
+	res := spawnv1.ApplyResponse{
+		EffectiveDigest:   out.EffectiveDigest,
+		PreviousDigest:    out.PreviousDigest,
+		PreviousRevisions: out.PreviousRevisions,
+		Documents:         out.Documents,
+	}
+	for _, r := range out.Revisions {
+		res.Revisions = append(res.Revisions, revisionOf(r))
+	}
+	for _, ch := range out.Changes {
+		res.Changes = append(res.Changes, spawnv1.Change{Path: ch.Path, Before: ch.Before, After: ch.After, Effect: string(ch.Effect), Consumer: ch.Consumer})
+	}
+	for _, a := range out.Actions {
+		res.Actions = append(res.Actions, spawnv1.Action{Kind: string(a.Kind), Target: a.Target, Consumers: a.Consumers, Paths: a.Paths})
+	}
+	return res, nil
+}
+
+// GetSettings reads the space's reviewed self-settings leaves.
+func (c Contract) GetSettings(ctx context.Context, t spawnv1.Tenant, space, key string) (spawnv1.SettingsResult, error) {
+	out, err := c.Revisions.GetSettings(ctx, tenantOf(t.Org, t.Owner), space, key)
+	if err != nil {
+		return spawnv1.SettingsResult{}, err
+	}
+	return spawnv1.SettingsResult{
+		PublishedRevision:    out.PublishedRevision,
+		EffectiveRevision:    out.EffectiveRevision,
+		PublishedValues:      out.PublishedValues,
+		ManageableKeys:       out.ManageableKeys,
+		SecretValuesIncluded: out.SecretValuesIncluded,
+	}, nil
+}
+
+// EditSettings applies one reviewed config leaf edit on the digest CAS.
+func (c Contract) EditSettings(ctx context.Context, space string, in spawnv1.SettingsEditRequest) (spawnv1.SettingsEditResult, error) {
+	out, err := c.Revisions.EditSettings(ctx, tenantOf(in.Org, in.Owner), space, in.Key, in.Value, in.BaseRevision)
+	if err != nil {
+		return spawnv1.SettingsEditResult{}, err
+	}
+	return spawnv1.SettingsEditResult{PublishedRevision: out.PublishedRevision, PreviousRevision: out.PreviousRevision, Changed: out.Changed}, nil
 }
 
 // Effective returns the space's active effective spec.

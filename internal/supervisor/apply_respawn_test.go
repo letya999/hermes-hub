@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,29 +12,26 @@ import (
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
-func TestApplyRespawnUsesExactJournalWhilePDPIsFenced(t *testing.T) {
+func TestApplyRespawnBoundToLiveDigest(t *testing.T) {
 	m, space := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
 	effective, err := passportview.LoadEffective(space)
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal := map[string]any{
-		"environment": "prod", "previous": effective.Header.Metadata.Revision,
-		"revision": "r-next", "phase": "effects",
-		"actions": []map[string]string{{"kind": "respawn", "target": "hermes-runtime"}},
+	// The v1 mirror points `current` at the effective digest and resolves
+	// the emitted revision through the .policy indirection.
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	passports := filepath.Join(space, "generated", "passports")
+	if err := os.MkdirAll(filepath.Join(passports, ".policy"), 0700); err != nil {
+		t.Fatal(err)
 	}
-	path := filepath.Join(space, "generated", "passports", passportview.ApplyJournalFile)
-	writeJournal := func() {
-		t.Helper()
-		body, err := json.Marshal(journal)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, body, 0600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(passports, ".policy", strings.TrimPrefix(digest, "sha256:")), []byte(effective.Header.Metadata.Revision), 0600); err != nil {
+		t.Fatal(err)
 	}
-	writeJournal()
+	current := filepath.Join(passports, "current")
+	if err := os.WriteFile(current, []byte(digest+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
 	request := func(header string) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/v1/respawn", strings.NewReader(`{"principal_id":"alice","context_id":"alice"}`))
@@ -48,7 +44,7 @@ func TestApplyRespawnUsesExactJournalWhilePDPIsFenced(t *testing.T) {
 	for _, tc := range []struct {
 		name, header string
 		want         int
-	}{{"apply", "r-next", http.StatusOK}, {"missing proof", "", http.StatusForbidden}, {"wrong revision", "r-other", http.StatusForbidden}} {
+	}{{"apply", digest, http.StatusOK}, {"missing proof", "", http.StatusForbidden}, {"wrong digest", "sha256:" + strings.Repeat("cd", 32), http.StatusForbidden}} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			m.Handler().ServeHTTP(rec, request(tc.header))
@@ -57,30 +53,18 @@ func TestApplyRespawnUsesExactJournalWhilePDPIsFenced(t *testing.T) {
 			}
 		})
 	}
-	current := filepath.Join(space, "generated", "passports", "current")
+	// A mid-publish mirror pins current to pending — nothing is live to
+	// bind the respawn to.
 	if err := os.WriteFile(current, []byte("pending\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if !m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {
-		t.Fatal("journaled respawn denied while current revision is pending")
+	if m.applyRespawnAuthorized(request(digest), "alice", "alice", "") {
+		t.Fatal("pending pointer admitted a respawn")
 	}
-	journal["phase"] = "binding"
-	writeJournal()
-	if m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {
-		t.Fatal("non-effect journal admitted")
+	if err := os.WriteFile(current, []byte(digest+"\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	journal["phase"] = "effects"
-	journal["actions"] = []map[string]string{{"kind": "recreate", "target": "hermes-runtime"}}
-	writeJournal()
-	if !m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {
-		t.Fatal("journaled runtime recreate denied")
-	}
-	journal["actions"] = []map[string]string{{"kind": "live", "target": "tool-policy"}}
-	writeJournal()
-	if m.applyRespawnAuthorized(request("r-next"), "alice", "alice", "") {
-		t.Fatal("journal without respawn admitted")
-	}
-	if m.applyRespawnAuthorized(request("r-next"), "alice", "bob", "") {
+	if m.applyRespawnAuthorized(request(digest), "alice", "bob", "") {
 		t.Fatal("foreign context admitted")
 	}
 }

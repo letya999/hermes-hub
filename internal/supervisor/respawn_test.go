@@ -110,17 +110,14 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 		t.Fatalf("respawn left a phantom lease: state=%s leases=%d", state, leases)
 	}
 	mu.Unlock()
-	// Publication owns this effect locally while the journal blocks the PDP.
+	// The apply's respawn effect replaces the idle container locally.
 	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
-	if applied, err := m.ReconcileSettingsRuntime("alice"); err != nil || !applied {
+	if applied, err := m.respawnRuntime("alice", "alice", ""); err != nil || !applied {
 		t.Fatalf("local publication runtime effect: applied=%t err=%v", applied, err)
 	}
 	mu.Lock()
 	if runs != 3 {
 		t.Fatalf("publication did not replace runtime: runs=%d", runs)
-	}
-	if _, err := m.ReconcileSettingsRuntime("../alice"); err == nil {
-		t.Fatal("invalid publication principal accepted")
 	}
 }
 

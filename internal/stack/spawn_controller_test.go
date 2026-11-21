@@ -69,7 +69,10 @@ func TestSpawnControllerRendersIffSupervisorRenders(t *testing.T) {
 		t.Fatalf("HUB_SERVICE_TOKEN must reference supervisor.auth, got %q", token)
 	}
 	// The docker socket makes this service the container authority; the
-	// spaces bind carries the importer inputs and stays read-only.
+	// spaces bind carries the importer inputs and — transitional for S7b —
+	// is read-write so the v0 mirror can republish generated passports and
+	// the settings edit can patch authored config (narrows back to
+	// read-only in S7d).
 	var sawSocket, sawSpaces bool
 	for _, raw := range spawn["volumes"].([]any) {
 		v := raw.(M)
@@ -78,8 +81,8 @@ func TestSpawnControllerRendersIffSupervisorRenders(t *testing.T) {
 		}
 		if v["target"] == "/spaces" {
 			sawSpaces = true
-			if v["read_only"] != true {
-				t.Fatal("spaces/importer bind must be read-only")
+			if v["read_only"] == true {
+				t.Fatal("spaces bind must stay writable while the v0 mirror is transitional")
 			}
 		}
 	}

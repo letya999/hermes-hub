@@ -471,7 +471,7 @@ func (i *Importer) importSpace(ctx context.Context, spacesDir, name string, back
 			if _, err := i.Revisions.Validate(ctx, tenant, name, rev.ID); err != nil {
 				return stageError{"revision-validate", err}
 			}
-			if _, err := i.Revisions.Activate(ctx, tenant, name, []string{rev.ID}); err != nil {
+			if _, err := i.Revisions.Activate(ctx, tenant, name, []string{rev.ID}, nil); err != nil {
 				return stageError{"revision-activate", err}
 			}
 		}
