@@ -57,6 +57,7 @@ func TestSpawnControllerRendersIffSupervisorRenders(t *testing.T) {
 		"HUB_TRUSTED":           "${HUB_TRUSTED:-true}",
 		"HUB_CONTAINER_RUNTIME": "${HUB_CONTAINER_RUNTIME:-runc}",
 		"HUB_RUNTIME_IMAGE":     "hermes-hub:0.5.0-dev",
+		"HUB_PLATFORM_ROOT":     "/platform",
 	} {
 		if env[key] != want {
 			t.Errorf("%s = %v, want %s", key, env[key], want)
@@ -73,7 +74,7 @@ func TestSpawnControllerRendersIffSupervisorRenders(t *testing.T) {
 	// is read-write so the v0 mirror can republish generated passports and
 	// the settings edit can patch authored config (narrows back to
 	// read-only in S7d).
-	var sawSocket, sawSpaces bool
+	var sawSocket, sawSpaces, sawPlatform bool
 	for _, raw := range spawn["volumes"].([]any) {
 		v := raw.(M)
 		if v["target"] == "/var/run/docker.sock" {
@@ -85,9 +86,19 @@ func TestSpawnControllerRendersIffSupervisorRenders(t *testing.T) {
 				t.Fatal("spaces bind must stay writable while the v0 mirror is transitional")
 			}
 		}
+		if v["target"] == "/platform/config" {
+			sawPlatform = true
+			if v["read_only"] != true {
+				t.Fatal("platform config bind must be read-only")
+			}
+			wantSource := filepath.ToSlash(filepath.Join(root, "config"))
+			if v["source"] != wantSource {
+				t.Fatalf("platform config must bind the hub config tree: got %v, want %v", v["source"], wantSource)
+			}
+		}
 	}
-	if !sawSocket || !sawSpaces {
-		t.Fatalf("spawn-controller volumes must include the docker socket and the spaces bind: %v", spawn["volumes"])
+	if !sawSocket || !sawSpaces || !sawPlatform {
+		t.Fatalf("spawn-controller volumes must include the docker socket, the spaces bind and the platform config bind: %v", spawn["volumes"])
 	}
 	// The durable store lives in a named volume this service owns.
 	if _, ok := rendered["volumes"].(M)["spawn-controller-data"]; !ok {

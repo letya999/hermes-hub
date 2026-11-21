@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
+	"path/filepath"
 	"time"
 
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
@@ -75,6 +77,22 @@ type Runtimes struct {
 	SpacesRoot  string
 	RuntimePort int
 	Limits      backend.Limits
+	// PlatformRoot locates the hub's config tree (config/skills,
+	// config/SOUL.md, config/plugins) for spec materialization. Host-native
+	// installs leave it empty — the default sits beside SpacesRoot.
+	// Containerized deployments mount the tree read-only and set
+	// HUB_PLATFORM_ROOT to the container path.
+	PlatformRoot string
+}
+
+// platformRoot resolves the platform config parent: the wired override a
+// containerized deploy sets, else the host-native convention of the
+// spaces root's parent.
+func (r *Runtimes) platformRoot() string {
+	if r.PlatformRoot != "" {
+		return r.PlatformRoot
+	}
+	return filepath.Dir(r.SpacesRoot)
 }
 
 const runtimeSelect = "SELECT id, space_id, agent, generation, state, policy_digest, image_digest, backend_id, address, runtime_id, runtime_mode, host_port FROM runtimes WHERE {tenant} "
@@ -169,6 +187,9 @@ func (r *Runtimes) ClaimManaged(ctx context.Context, t store.Tenant, spaceID str
 			// spec failure fails the committed starting row.
 			spec, err := r.managedSpec(ctx, t, spaceID, plan.start.ID, plan.start.PolicyDigest, req, plan.start.Generation)
 			if err != nil {
+				// The contract strips untyped detail — log it here or a
+				// failed claim is opaque to the operator.
+				log.Printf("spawn: managed spec failed runtime=%s space=%s: %v", plan.start.ID, spaceID, err)
 				_ = r.event(ctx, t, plan.start.ID, "fail")
 				return Runtime{}, err
 			}
@@ -302,6 +323,7 @@ func (r *Runtimes) start(ctx context.Context, plan claimPlan) (Runtime, error) {
 	rt := plan.start
 	launched, err := r.Backend.Start(ctx, plan.spec)
 	if err != nil {
+		log.Printf("spawn: backend start failed runtime=%s space=%s: %v", rt.ID, rt.Space, err)
 		_ = r.event(ctx, store.Tenant{Org: plan.spec.Org, Owner: plan.spec.Owner}, rt.ID, "fail")
 		return Runtime{}, fmt.Errorf("%w: start %s: %v", httpapi.ErrUnavailable, rt.ID, err)
 	}

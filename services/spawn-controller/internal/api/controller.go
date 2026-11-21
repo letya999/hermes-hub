@@ -321,8 +321,9 @@ func Serve(ctx context.Context) error {
 		// The managed-runtime spec builder (S7c) mounts the space's own
 		// tree, publishes the workload's service port through the control
 		// relay, and applies the v0 resource contract.
-		SpacesRoot:  os.Getenv("HUB_SPACES_ROOT"),
-		RuntimePort: managedRuntimePort(),
+		SpacesRoot:   os.Getenv("HUB_SPACES_ROOT"),
+		PlatformRoot: os.Getenv("HUB_PLATFORM_ROOT"),
+		RuntimePort:  managedRuntimePort(),
 		Limits: backend.Limits{
 			Memory: envOr("HUB_RUNTIME_MEMORY", "2g"),
 			CPUs:   envOr("HUB_RUNTIME_CPUS", "2"),

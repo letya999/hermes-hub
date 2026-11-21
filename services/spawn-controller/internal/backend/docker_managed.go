@@ -166,7 +166,15 @@ func (d *dockerBackend) spawnControlRelay(ctx context.Context, spec Spec, name, 
 		_, _ = d.command(ctx, nil, "rm", "-f", relay)
 		return Runtime{}, fmt.Errorf("attach control relay: %w: %s", err, firstLine(out))
 	}
-	return Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running", Address: fmt.Sprintf("http://127.0.0.1:%d", port), Name: name, HostPort: port}, nil
+	// Address mirrors v0 runtimeAddress: a containerized deployment
+	// (HUB_DOCKER_HOST_ROOT set) shares the control network with its
+	// callers, who reach the relay by name; a host-native caller needs
+	// the published loopback port.
+	address := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if os.Getenv("HUB_DOCKER_HOST_ROOT") != "" {
+		address = fmt.Sprintf("http://%s:%d", relay, controlRelayContainerPort)
+	}
+	return Runtime{ID: spec.Key, Space: spec.Space, Agent: spec.Agent, State: "running", Address: address, Name: name, HostPort: port}, nil
 }
 
 // reclaimSidecarName removes a stale same-name container only when its

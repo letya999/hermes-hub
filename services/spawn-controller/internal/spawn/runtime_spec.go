@@ -110,7 +110,7 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	// prepareSpawnFiles: heal an Init SOUL stub from the repo template and,
 	// for the infra owner, enroll sibling runtime tokens before the
 	// container mount is built. A skipped heal never blocks the spawn.
-	template := filepath.Join(filepath.Dir(r.SpacesRoot), "config", "SOUL.md")
+	template := filepath.Join(r.platformRoot(), "config", "SOUL.md")
 	if info, terr := os.Stat(template); terr == nil && info.Mode().IsRegular() {
 		if herr := stack.HealUserSoul(dir, template); herr != nil {
 			log.Printf("spawn soul heal skipped")
@@ -149,8 +149,8 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 		Port:       r.RuntimePort,
 		Networks:   []string{managedAgentNetworkName(settings.User, env)},
 		EnvFiles: []string{
-			thapi.DockerBindSource(filepath.Join(dir, "managed-runtime."+env+".env")),
-			thapi.DockerBindSource(envFileFor(dir, spec)),
+			filepath.Join(dir, "managed-runtime."+env+".env"),
+			envFileFor(dir, spec),
 		},
 		Labels: map[string]string{"hermes-hub.generation": "gen-" + strconv.FormatInt(gen, 10)},
 	}
@@ -196,7 +196,7 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	// Skill contract: the hub-built effective view mounts read-only at
 	// /skills and a failed build refuses the spawn.
 	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
-		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(r.SpacesRoot), "config", "skills"))
+		settings.DefaultGlobalSkillsDir(filepath.Join(r.platformRoot(), "config", "skills"))
 		if err := os.MkdirAll(settings.GlobalSkillsDir, 0o755); err != nil {
 			return backend.Spec{}, fmt.Errorf("platform skills dir: %w", err)
 		}
@@ -224,7 +224,7 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	}
 	// Hub plugins: a feature-filtered copy materialized at spawn mounts
 	// read-only into upstream's bundled plugins dir.
-	if err := stack.MaterializeHubPlugins(dir, filepath.Dir(r.SpacesRoot), settings); err != nil {
+	if err := stack.MaterializeHubPlugins(dir, r.platformRoot(), settings); err != nil {
 		log.Printf("spawn plugins materialization skipped: %v", err)
 	}
 	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(dir)); err == nil {

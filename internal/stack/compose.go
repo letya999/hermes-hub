@@ -571,6 +571,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"HUB_CELL_ENV":          s.Environment,
 			"HUB_CELL_STATE_ROOT":   "/cellstate",
 			"HUB_SPACES_ROOT":       "/spaces",
+			// The hub config tree (skills catalog, SOUL template, plugins)
+			// mounts read-only at /platform/config — the spec builder reads
+			// it through HUB_PLATFORM_ROOT instead of guessing beside
+			// /spaces, where a containerized deploy cannot see the repo.
+			"HUB_PLATFORM_ROOT": "/platform",
 			// The importer consumes the supervisor's control dir and the
 			// spaces root once, before the socket opens — both read-only.
 			"HUB_IMPORT_V0_DIR":     "/spaces/.control",
@@ -585,7 +590,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		spawn["volumes"] = []any{dockerSock,
 			M{"type": "volume", "source": "spawn-controller-data", "target": "/data"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "spawn-controller")), "target": "/cellstate"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"}}
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(filepath.Dir(filepath.Dir(dir)), "config")), "target": "/platform/config", "read_only": true}}
 		spawn["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
 		spawn["ports"] = []string{"127.0.0.1:8877:8877"}
 		spawn["stop_grace_period"] = "30s"
