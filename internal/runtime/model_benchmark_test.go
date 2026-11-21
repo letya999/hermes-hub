@@ -35,7 +35,7 @@ func BenchmarkModelRelaySuccess(b *testing.B) {
 	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
 		b.Fatal(err)
 	}
-	registry, err := modelRelayRegistryHandler(path, filepath.Join(b.TempDir(), "selection.json"), "alice", "")
+	registry, err := ModelRelayRegistryHandler(path, filepath.Join(b.TempDir(), "selection.json"), "alice", "")
 	if err != nil {
 		b.Fatal(err)
 	}

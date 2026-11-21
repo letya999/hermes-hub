@@ -3,7 +3,6 @@ package catalog_test
 import (
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -29,7 +28,7 @@ func TestHubToolsRequiresAreCatalogRights(t *testing.T) {
 			}
 		}
 	}
-	def := agenttools.HubToolsDefinition()
+	def := catalog.HubToolsDefinition()
 	for _, spec := range def.Tools {
 		if len(spec.Requires) == 0 {
 			t.Fatalf("tool %s declares no requires", spec.Name)

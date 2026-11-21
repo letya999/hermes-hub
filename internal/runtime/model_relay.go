@@ -713,7 +713,7 @@ type relayRegistry struct {
 	admin     string
 	auth      string
 	decider   api.DecideClient
-	runs      *relayRunAuthority
+	runs      *RelayRunAuthority
 	mu        sync.Mutex
 	mtime     time.Time
 	reg       *relayRegistryFile
@@ -722,14 +722,14 @@ type relayRegistry struct {
 	meter     *relayMeter
 }
 
-func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
+func ModelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
 	hopTimeout, total, err := modelRelayLimits()
 	if err != nil {
 		return nil, err
 	}
 	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{},
 		decider: api.DecideClient{URL: strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), Token: strings.TrimSpace(env("HUB_TOOLHUB_CONTROL", os.Getenv("HUB_RUNTIME_AUTH"))), Principal: owner, Environment: strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))},
-		runs:    relayRunAuthorityFromEnv()}
+		runs:    RelayRunAuthorityFromEnv()}
 	brokerConfig, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_MODEL_")
 	if err != nil {
 		return nil, err
@@ -1425,7 +1425,7 @@ func ModelRelayHandlerFromEnv() (http.Handler, error) {
 				admin = strings.TrimSpace(string(b))
 			}
 		}
-		return modelRelayRegistryHandler(registry, state, os.Getenv("HUB_MODEL_RELAY_OWNER"), admin)
+		return ModelRelayRegistryHandler(registry, state, os.Getenv("HUB_MODEL_RELAY_OWNER"), admin)
 	}
 	hops, err := parseModelHops(os.Getenv("HUB_MODEL_RELAY_UPSTREAMS"))
 	if err != nil {

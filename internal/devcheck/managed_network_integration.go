@@ -258,7 +258,7 @@ func managedConfigPreflightCanary(ctx context.Context, image string) (result err
 		for _, override := range overrides {
 			args = append(args, "-e", override)
 		}
-		args = append(args, "--entrypoint", "hub-runtime", image, "serve")
+		args = append(args, "--entrypoint", "harness-runtime", image, "serve")
 		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 		if err == nil || !strings.Contains(string(out), expected) {
 			return fmt.Errorf("managed config preflight expected %q: %v: %s", expected, err, out)

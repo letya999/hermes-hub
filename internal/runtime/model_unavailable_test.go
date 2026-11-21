@@ -40,7 +40,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}

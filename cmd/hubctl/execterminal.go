@@ -70,9 +70,9 @@ func (w *terminalOutput) Write(p []byte) (int, error) {
 // on the controlling stream kills the whole process group, so a ToolHub crash
 // cannot leave a detached command running against stale authority.
 func runExecTerminal(ctx context.Context) error {
-	reader := bufio.NewReader(io.LimitReader(os.Stdin, toolsExecMaxRequest+1))
+	reader := bufio.NewReader(io.LimitReader(os.Stdin, api.AgentExecMaxRequest+1))
 	line, err := reader.ReadBytes('\n')
-	if err != nil || len(line) > toolsExecMaxRequest {
+	if err != nil || len(line) > api.AgentExecMaxRequest {
 		return errors.New("terminal start frame invalid")
 	}
 	var start terminalStart

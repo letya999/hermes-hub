@@ -11,7 +11,6 @@ import (
 	"time"
 
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -69,7 +68,7 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	}
 	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
 	toolsets = append(toolsets, connectorToolsets...)
-	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), rev.ID, agenttools.HubToolsDefinitionID, selections, core, toolsets, now)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), rev.ID, catalog.HubToolsDefinitionID, selections, core, toolsets, now)
 }
 
 // RestoreSpaceRights restores the bound profile after a failed apply. It
@@ -110,7 +109,7 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 	}
 	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
 	toolsets = append(toolsets, connectorToolsets...)
-	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, agenttools.HubToolsDefinitionID, selections, core, toolsets, now)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, catalog.HubToolsDefinitionID, selections, core, toolsets, now)
 }
 
 // DeactivateStaleBoundProfiles disables every active bound profile of the
@@ -293,7 +292,7 @@ func selectedHubDefinition(store *toolhub.Store, profileID string) (*api.ToolDef
 		}
 		var chosen *api.ToolBinding
 		for i := range bindings {
-			if bindings[i].DefinitionID != agenttools.HubToolsDefinitionID {
+			if bindings[i].DefinitionID != catalog.HubToolsDefinitionID {
 				continue
 			}
 			if chosen == nil || bindings[i].ProjectionRevision > chosen.ProjectionRevision ||
@@ -309,7 +308,7 @@ func selectedHubDefinition(store *toolhub.Store, profileID string) (*api.ToolDef
 			return &definition, nil
 		}
 	}
-	compiled := agenttools.HubToolsDefinition()
+	compiled := catalog.HubToolsDefinition()
 	registered, err := store.Definition(compiled.DefinitionID, compiled.Version)
 	if err != nil {
 		if errors.Is(err, api.ErrNotFound) {

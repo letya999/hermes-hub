@@ -990,7 +990,7 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 	}
 	// SPEC-0082 R3.3: healthchecks run a Go binary the role image carries —
 	// the lean images ship no curl, wget or shell-bound interpreters.
-	coreBinaries := map[string]bool{"hubctl": true, "hub-runtime": true, "toolhub": true, "communication-hub": true, "credential-broker": true, "hub-media": true, "cellinit": true, "cli-proxy-api": true}
+	coreBinaries := map[string]bool{"hubctl": true, "hub-runtime": true, "harness-runtime": true, "toolhub": true, "communication-hub": true, "credential-broker": true, "hub-media": true, "cellinit": true, "cli-proxy-api": true}
 	for name, raw := range services {
 		check, ok := raw.(M)["healthcheck"].(M)
 		if !ok {

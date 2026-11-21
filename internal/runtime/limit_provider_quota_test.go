@@ -47,7 +47,7 @@ func TestProviderQuotaEnforcedViaTelemetry(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "letya.json"), "letya", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "letya.json"), "letya", "")
 	if err != nil {
 		t.Fatal(err)
 	}

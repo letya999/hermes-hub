@@ -43,7 +43,7 @@ func decodeModel(r *http.Request) string {
 func TestModelRelayRegistryKeepsStrictContract(t *testing.T) {
 	registry, sel, upstream := registryFixture(t, "  default:\n    ladder:\n      - {provider: p, model: m1}\n")
 	defer upstream.Close()
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestModelRelayRegistryNeverFollowsReachableRedirect(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestModelRelayRegistryCatalogHidesUngranted(t *testing.T) {
       - {provider: p, model: m2}
 `)
 	defer upstream.Close()
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestModelRelayRegistryCorruptSelectionFallsBack(t *testing.T) {
 	if err := os.WriteFile(sel, []byte("not-json{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestModelRelayRegistryBuiltinCliproxyURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_MODEL_RELAY_CLIPROXY", upstream.URL)
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestModelRelayRegistryKeyEnvHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TEST_RELAY_KEY", "synthetic-key")
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestModelRelayRegistryReloadsOnChange(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)
 	}))
 	defer second.Close()
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestModelRelayRegistryReloadsOnChange(t *testing.T) {
 func TestModelRelayRegistryHopsHealth(t *testing.T) {
 	registry, sel, upstream := registryFixture(t, "  default:\n    ladder:\n      - {provider: p, model: m1}\n")
 	defer upstream.Close()
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestModelRelayRegistrySelectionWriteFailure(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(blocker, "sel.json"), "alice", "tok")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(blocker, "sel.json"), "alice", "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestModelServiceLadderQuotaIsolationAndStreamFence(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "letya.json"), "letya", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "letya.json"), "letya", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestModelServiceLadderQuotaIsolationAndStreamFence(t *testing.T) {
 		t.Fatalf("exhausted service did not advance: status=%d a=%v b=%d", response.Code, gotA, gotB)
 	}
 	// A second owner keeps her own meter and the same declared order.
-	other, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "mira.json"), "mira", "")
+	other, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "mira.json"), "mira", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -25,7 +24,7 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	}
 
 	// --- parity: every tool in the reviewed definition lands in a capability
-	def := agenttools.HubToolsDefinition()
+	def := HubToolsDefinition()
 	if docs.Capabilities.DefinitionID != def.DefinitionID || docs.Capabilities.DefinitionVersion != def.Version {
 		t.Fatalf("definition pin drift: %s@%s vs %s@%s", docs.Capabilities.DefinitionID, docs.Capabilities.DefinitionVersion, def.DefinitionID, def.Version)
 	}

@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/letya999/hermes-hub/services/harness-runtime/internal/hermes"
 )
 
 var modelClient = &http.Client{Timeout: 60 * time.Second}
@@ -165,7 +167,28 @@ func serve(ctx context.Context) error {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := serve(ctx); err != nil {
+	var err error
+	switch {
+	case len(os.Args) == 2 && os.Args[1] == "tools-exec":
+		err = runToolsExec(ctx)
+	case len(os.Args) == 2 && os.Args[1] == "tools-daemon":
+		err = runToolsDaemon(ctx)
+	case len(os.Args) == 2 && os.Args[1] == "exec-pack":
+		err = runExecPack(ctx)
+	case len(os.Args) > 1 && os.Args[1] == "tools":
+		err = runTools(ctx, os.Args[2:])
+	case len(os.Args) == 2 && os.Args[1] == "serve" && os.Getenv("HUB_TRUSTED") == "true":
+		// Trusted process mode (spawn-controller's process backend, M40.4):
+		// no container boundary exists to attest, so the workload serves the
+		// reduced dev surface. Container launches take the same "serve" argv
+		// into the real supervised Hermes path below.
+		err = serve(ctx)
+	case len(os.Args) > 1:
+		err = hermes.Run(os.Args[1:])
+	default:
+		err = serve(ctx)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "harness-runtime:", err)
 		os.Exit(1)
 	}

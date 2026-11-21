@@ -221,7 +221,7 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		var inputsB64 string
 		if relPath != "" {
 			pack, _ := json.Marshal(ScratchPackRequest{Path: relPath, Scopes: request.Scopes})
-			tarred, errb, err := run(ctx, bytes.NewReader(pack), "exec", "-i", runtime, "hubctl", "exec-pack")
+			tarred, errb, err := run(ctx, bytes.NewReader(pack), "exec", "-i", runtime, "harness-runtime", "exec-pack")
 			if err != nil {
 				return AgentExecResult{}, fmt.Errorf("input materialization failed: %s", ShortErr(errb))
 			}

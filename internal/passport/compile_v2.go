@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -638,7 +637,7 @@ var platformPinnedMembers = []string{
 func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 	t := bodies["tools"]
 	toolSpecs := map[string]api.ToolSpec{}
-	for _, tool := range agenttools.HubToolsDefinition().Tools {
+	for _, tool := range catalog.HubToolsDefinition().Tools {
 		toolSpecs[tool.Name] = tool
 	}
 	checkScope := func(name string, raw any) error {

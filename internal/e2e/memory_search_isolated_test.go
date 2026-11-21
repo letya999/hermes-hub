@@ -12,7 +12,7 @@ import (
 	"time"
 
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -138,7 +138,7 @@ func (tr runCorrelationTransport) RoundTrip(request *http.Request) (*http.Respon
 // a local fallback.
 func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	store := toolhub.NewStore()
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}

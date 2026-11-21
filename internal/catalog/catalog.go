@@ -21,12 +21,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "42"
+const Release = "43"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"
@@ -184,7 +183,7 @@ func mergeUnique(dst []string, values ...string) []string {
 // tool definition plus the control-plane operation and governance-section
 // vocabulary.
 func generateCapabilities() CapabilitiesDoc {
-	def := agenttools.HubToolsDefinition()
+	def := HubToolsDefinition()
 	caps := map[string]Capability{}
 	for _, spec := range def.Tools {
 		cap := caps[spec.CapabilityID]
@@ -295,7 +294,7 @@ func generateToolsets(caps CapabilitiesDoc) (map[string]Toolset, error) {
 	// model-audience tools only — a family with no model members (inbox)
 	// never mints a placeable surface.
 	specByName := map[string]api.ToolSpec{}
-	for _, spec := range agenttools.HubToolsDefinition().Tools {
+	for _, spec := range HubToolsDefinition().Tools {
 		specByName[spec.Name] = spec
 	}
 	families := map[string]bool{}

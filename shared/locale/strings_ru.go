@@ -14,6 +14,7 @@ func init() {
 		"run.authorization-denied":           "Запуску отказано в доступе",
 		"model.service-authorization-denied": "Служебный запрос к модели отклонён",
 		"run.authorization-invalid":          "Некорректное разрешение запуска",
+		"runtime.env-unknown":                "Неизвестная переменная окружения %s: рантайм принимает только отрендеренный набор HUB_*",
 		"hubctl.policy-publication":          "Не удалось опубликовать подписанную политику",
 		"hubctl.identity-usage":              "Использование: hubctl identity migrate --config <старый YAML> --control-dir <каталог control> --env dev|prod --import-id <id> [--oidc-links <старый JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":             "Путь к старой конфигурации каналов",

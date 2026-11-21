@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -26,7 +26,7 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	}
 	storePath := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	previous := agenttools.HubToolsDefinition()
+	previous := catalog.HubToolsDefinition()
 	previous.Version = "1.3.0"
 	previous.Tools = slices.DeleteFunc(previous.Tools, func(tool api.ToolSpec) bool { return tool.Name == "routine_get" })
 	if err := store.RegisterDefinition(previous); err != nil {
@@ -93,7 +93,7 @@ func TestAgentToolsRegistrationRetriesStaleStoreSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			old := agenttools.HubToolsDefinition()
+			old := catalog.HubToolsDefinition()
 			old.Version = "1.3.0"
 			if err := other.RegisterDefinition(old); err != nil {
 				t.Fatal(err)
@@ -117,7 +117,7 @@ func TestAgentToolsRegistrationRetriesStaleStoreSnapshot(t *testing.T) {
 func TestAgentToolsExplicitVersionPinsStoredDefinition(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store.json")
 	store := toolhub.NewStore()
-	pinned := agenttools.HubToolsDefinition()
+	pinned := catalog.HubToolsDefinition()
 	pinned.Version = "1.3.0"
 	pinned.Tools = slices.DeleteFunc(pinned.Tools, func(tool api.ToolSpec) bool { return tool.Name == "routine_get" })
 	if err := store.RegisterDefinition(pinned); err != nil {

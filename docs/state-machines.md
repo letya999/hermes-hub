@@ -29,6 +29,7 @@ table and this page is updated in the same change.
 | [Goal](#goal) | proactive-engine | M40.10 |
 | [ConnectorBinding](#connectorbinding) | tool-hub | M40.7 |
 | [OwnerDecision](#ownerdecision) | tool-hub | M40.7 |
+| [SessionSlot](#sessionslot) | harness-runtime | M40.4 |
 
 ## Job
 
@@ -497,3 +498,18 @@ Bound to `sha256(tool + canonical args)`, single use; timeout means deny
 ([ADR-0109](adr/ADR-0109-action-modes-owner-decisions.md)). Tests (M40.7):
 `TestApprovalSingleUseAndBoundToArgs`, `TestApprovalTimeoutDenies`,
 `TestToolResultCannotApprove`.
+
+## SessionSlot
+
+### v1 (harness-runtime, delivered M40.4)
+
+| From | Event | To | Actor |
+|---|---|---|---|
+| - | execute admits: session free and a slot open | held | `acquireSessionSlot` |
+| - | session busy or pool full (`HUB_SESSION_SLOTS`, default 5) | waits | admission |
+| held | run reaches a terminal status | open | `releaseRun` |
+
+The slot hands to the run table on `bindAuthorizedRun`; observe and
+control resolve only an admitted `(job, run, session)` row — a request
+can name an admission, never create one (issue #602).
+

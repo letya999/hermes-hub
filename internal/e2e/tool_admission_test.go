@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestAdmissionUsesOnlyExactOwnerRuntimeTokenAndActualToolList(t *testing.T) {
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, "routine_list")
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	server.AddTool(&mcp.Tool{Name: projected, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

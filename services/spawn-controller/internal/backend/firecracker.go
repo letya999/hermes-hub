@@ -391,7 +391,7 @@ func (f Firecracker) Start(ctx context.Context, spec Spec) (Runtime, error) {
 	// listener itself (hex port in /proc/net/tcp); serve warmup can take
 	// tens of seconds, so poll and surface the log on failure.
 	serve, err := f.client.Run(ctx, box.ID, uno.RunRequest{
-		Cmd: "cd /persist && setsid nohup /usr/local/bin/hub-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & " +
+		Cmd: "cd /persist && setsid nohup /usr/local/bin/harness-runtime serve >/persist/managed/serve.log 2>&1 < /dev/null & " +
 			"for i in $(seq 1 40); do grep -qi ':" + fmt.Sprintf("%04X", f.cfg.RuntimePort) + " ' /proc/net/tcp && exit 0; sleep 2; done; tail -20 /persist/managed/serve.log >&2; exit 1",
 		Env:            env,
 		TimeoutSeconds: 90,

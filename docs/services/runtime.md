@@ -1,33 +1,40 @@
 ---
-description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-11-19
+description: hub-runtime — the relay binary for the agent network (model/toolhub/egress/control relays); the workload modes moved to harness-runtime in M40.4.
+last_verified: 2026-11-21
 ---
 
 # hub-runtime
 
-One managed owner now has one Hermes process and one local MCP proxy for up to
-five concurrent conversations. The pinned Hermes client carries its run ID in
-the `tools/call` `_meta` field. The runtime resolves it to the admitted job
-and attaches control-issued credentials for the destination services. A sixth job waits, and one
-conversation remains FIFO. Older `gateway-2` through `gateway-5` job records
-remain routable during recovery, but new work uses `gateway`.
+M40.4 (issue #602, CHG-0337) split the v0 runtime: the workload — upstream
+Hermes, sessions, native tools — now lives in `services/harness-runtime`
+(image entrypoint `harness-runtime`), and `hub-runtime` serves only the
+relay modes below until M40.12/13 extract them. One managed owner has one
+Hermes process and one local MCP proxy for up to `HUB_SESSION_SLOTS`
+(default 5) concurrent sessions; the session table bounds each session to
+one run and is the only source of run identity — observe and control
+resolve an admitted `(job, run, session)` row and never re-bind from
+request data.
 
-`cmd/runtime` → `internal/runtime.Run`. One binary, several modes selected by
-argv[1] (`internal/runtime/runtime.go`): `idle`, `gateway`, `prepare`,
-`serve`, `health`, `model-relay`, `toolhub-relay`, `control-relay`,
-`egress-relay`.
+`services/harness-runtime` dispatches `tools`, `tools-exec`,
+`tools-daemon`, `exec-pack` itself and passes every other mode to
+`internal/hermes.Run`: `idle`, `gateway`, `prepare`, `serve`, `health`,
+`browser`, `fc-agent`, `verify-managed`.
+
+`cmd/runtime` → `internal/runtime.Run` dispatches only relays:
+`model-relay`, `toolhub-relay`, `control-relay`, `egress-relay`,
+`cliproxy-materialize`.
 
 ## Modes
 
-| Mode | Role |
-|---|---|
-| `serve` | Full agent runtime: spawns upstream Hermes, serves the HTTP contract on `HUB_RUNTIME_LISTEN` (default `0.0.0.0:8080`), runs readiness admission, health and event surfaces. |
-| `idle` | Parked container: no agent loop, keeps the container warm for fast spawn. |
-| `health` | In-container healthcheck (`CMD hub-runtime health` every 30s). |
-| `model-relay` | Per-space model switch endpoint on `0.0.0.0:8318` — see services/model-relay.md. |
-| `toolhub-relay` | Managed-mode bridge so agent-net code reaches the real ToolHub. |
-| `control-relay` | Control-plane relay for managed spaces. |
-| `egress-relay` | Allowlisted forward proxy for the managed agent network — see services/cell-proxy.md. |
+| Mode | Binary | Role |
+|---|---|---|
+| `serve` | harness-runtime | Full agent runtime: spawns upstream Hermes, serves the HTTP contract on `HUB_RUNTIME_LISTEN` (default `0.0.0.0:8080`), runs readiness admission, health and event surfaces. |
+| `idle` | harness-runtime | Parked container: no agent loop, keeps the container warm for fast spawn. |
+| `health` | harness-runtime | In-container healthcheck (`CMD harness-runtime health` every 30s). |
+| `model-relay` | hub-runtime | Per-space model switch endpoint on `0.0.0.0:8318` — see services/model-relay.md. |
+| `toolhub-relay` | hub-runtime | Managed-mode bridge so agent-net code reaches the real ToolHub. |
+| `control-relay` | hub-runtime | Control-plane relay for managed spaces. |
+| `egress-relay` | hub-runtime | Allowlisted forward proxy for the managed agent network — see services/cell-proxy.md. |
 
 ## Container contract
 

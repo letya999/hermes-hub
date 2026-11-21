@@ -112,7 +112,7 @@ func TestModelRelayStreamsFirstEventBeforeProviderFinishes(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			handler, err = modelRelayRegistryHandler(path, filepath.Join(t.TempDir(), "selection.json"), "alice", "")
+			handler, err = ModelRelayRegistryHandler(path, filepath.Join(t.TempDir(), "selection.json"), "alice", "")
 		} else {
 			hops, e := parseModelHops("p=" + upstream.URL)
 			if e != nil {
@@ -175,7 +175,7 @@ func TestRegistryMissingProviderKeyFailsBeforeUpstreamDispatch(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(path, filepath.Join(t.TempDir(), "selection.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(path, filepath.Join(t.TempDir(), "selection.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestModelRelayRegistryRejectsForeignCallerAndUnknownModels(t *testing.T) {
 	if err := os.WriteFile(file, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestModelRelayRuntimeAliasUsesGrantedSelection(t *testing.T) {
 	if err := os.WriteFile(selection, []byte(`{"model":"selected"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, selection, "alice", "admin-fixture")
+	handler, err := ModelRelayRegistryHandler(file, selection, "alice", "admin-fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestRegistryRelayUsesProviderCredentialInsteadOfRuntimeBearer(t *testing.T)
 	if err := os.WriteFile(file, []byte("models:\n  default:\n    ladder: [{provider: cliproxy, model: provider-model}]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestRegistryRelayPrivateEndpointRequiresExplicitTrust(t *testing.T) {
 			if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 				t.Fatal(err)
 			}
-			handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
+			handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -502,7 +502,7 @@ func TestRegistryRelayExplicitPrivateLANEndpoint(t *testing.T) {
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestRegistryRelayDoesNotLeakRuntimeBearerToAnonymousProvider(t *testing.T) 
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestRegistryRelayHealthAndCatalogAreOwnerAuthenticated(t *testing.T) {
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "admin-fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +616,7 @@ func TestRegistryProviderGrantDoesNotFollowSharedModelProfile(t *testing.T) {
 	for _, owner := range []string{"alice", "bob"} {
 		t.Run(owner, func(t *testing.T) {
 			t.Setenv("HUB_MODEL_RELAY_AUTH", owner+"-fixture")
-			handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, owner+".json"), owner, "")
+			handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, owner+".json"), owner, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -660,7 +660,7 @@ func TestRegistryModelRelayTotalDeadlineStopsRemainingHops(t *testing.T) {
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "selection.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}

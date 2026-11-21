@@ -14,6 +14,7 @@ func init() {
 		"run.authorization-denied":           "Іске қосуға рұқсат берілмеді",
 		"model.service-authorization-denied": "Модельге қызметтік сұрау қабылданбады",
 		"run.authorization-invalid":          "Іске қосу рұқсаты жарамсыз",
+		"runtime.env-unknown":                "Белгісіз орта айнымалысы %s: рантайм тек рендерленген HUB_* жинағын қабылдайды",
 		"hubctl.policy-publication":          "Қол қойылған саясатты жариялау мүмкін болмады",
 		"hubctl.identity-usage":              "Қолданылуы: hubctl identity migrate --config <ескі YAML> --control-dir <control каталогы> --env dev|prod --import-id <id> [--oidc-links <ескі JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":             "Ескі арна конфигурациясының жолы",

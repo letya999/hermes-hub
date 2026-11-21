@@ -141,6 +141,18 @@ func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBindin
 
 const agentExecMaxResponse = 4 << 20
 
+// AgentExecMaxRequest bounds one admitted tools-exec/exec-scratch request
+// body; the runtime-side executor and the sandbox entrypoint share it.
+const AgentExecMaxRequest = 8 << 20
+
+// Scratch pack wire bounds: the runtime-side exec-pack producer and the
+// sandbox-side exec-scratch consumer must agree on them verbatim.
+const (
+	ScratchPackFileMax  = 2 << 20
+	ScratchPackMaxFiles = 256
+	ScratchPackMaxTotal = 8 << 20
+)
+
 // AgentExecFrame carries one call on the persistent tools-daemon channel. The
 // request fields are the same verbatim admitted contract the one-shot
 // tools-exec consumes; id correlates multiplexed replies. A frame with Cancel
@@ -296,7 +308,7 @@ func (p *agentExecPool) session(container string) (*agentExecSession, error) {
 			return s, nil
 		}
 	}
-	cmd := exec.Command(p.docker[0], append(p.docker[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", container, "hubctl", "tools-daemon")...)
+	cmd := exec.Command(p.docker[0], append(p.docker[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", container, "harness-runtime", "tools-daemon")...)
 	s := &agentExecSession{pending: map[uint64]chan daemonOutcome{}, dead: make(chan struct{}), stderr: &bytes.Buffer{}}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -431,7 +443,7 @@ func DockerAgentExec(dockerArgv []string, container func(EffectiveBinding) (stri
 		if err != nil {
 			return AgentExecResult{}, err
 		}
-		cmd := exec.CommandContext(ctx, dockerArgv[0], append(dockerArgv[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", name, "hubctl", "tools-exec")...)
+		cmd := exec.CommandContext(ctx, dockerArgv[0], append(dockerArgv[1:], "exec", "-i", "-e", "HUB_DEFER_RUNTIME_RESTART=true", name, "harness-runtime", "tools-exec")...)
 		cmd.Stdin = bytes.NewReader(body)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout

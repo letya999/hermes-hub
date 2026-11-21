@@ -108,7 +108,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 	for _, owner := range []string{"alice", "bob"} {
 		t.Run(owner, func(t *testing.T) {
 			t.Setenv("HUB_MODEL_RELAY_AUTH", owner+"-fixture")
-			handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, owner+".json"), owner, "")
+			handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, owner+".json"), owner, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +130,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 	t.Run("failed-materialization-releases-lease", func(t *testing.T) {
 		materializeFails.Store(true)
 		t.Setenv("HUB_MODEL_RELAY_AUTH", "alice-fixture")
-		handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "failed.json"), "alice", "")
+		handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "failed.json"), "alice", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 		materializeFails.Store(false)
 		targetMissing.Store(true)
 		t.Setenv("HUB_MODEL_RELAY_AUTH", "alice-fixture")
-		handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "missing.json"), "alice", "")
+		handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "missing.json"), "alice", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +166,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 		targetMissing.Store(false)
 		releaseFails.Store(true)
 		t.Setenv("HUB_MODEL_RELAY_AUTH", "alice-fixture")
-		handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "release.json"), "alice", "")
+		handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "release.json"), "alice", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 		releaseFails.Store(false)
 		acquireFails.Store(true)
 		t.Setenv("HUB_MODEL_RELAY_AUTH", "alice-fixture")
-		handler, err := modelRelayRegistryHandler(file, filepath.Join(dir, "acquire.json"), "alice", "")
+		handler, err := ModelRelayRegistryHandler(file, filepath.Join(dir, "acquire.json"), "alice", "")
 		if err != nil {
 			t.Fatal(err)
 		}

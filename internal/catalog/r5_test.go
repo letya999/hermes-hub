@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -63,8 +62,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "42" {
-		t.Fatalf("catalog release = %q, want 42", Release)
+	if Release != "43" {
+		t.Fatalf("catalog release = %q, want 43", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {
@@ -148,7 +147,7 @@ func TestR5Vocabulary(t *testing.T) {
 		}
 	}
 	// --- audiences: non-model tools are never members
-	def := agenttools.HubToolsDefinition()
+	def := HubToolsDefinition()
 	audience := map[string]api.Audience{}
 	for _, spec := range def.Tools {
 		audience[spec.Name] = spec.Audience

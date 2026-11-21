@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
@@ -15,7 +14,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/letya999/hermes-hub/shared/locale"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log"
 	"net/http"
 	"os"
@@ -163,15 +161,6 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "capability" {
 		return runCapability(args[1:])
-	}
-	if op == "tools-exec" {
-		return runToolsExec(ctx)
-	}
-	if op == "tools-daemon" {
-		return runToolsDaemon(ctx)
-	}
-	if op == "exec-pack" {
-		return runExecPack(ctx)
 	}
 	if op == "exec-scratch" {
 		return runExecScratch(ctx)
@@ -434,11 +423,8 @@ func run(ctx context.Context, args []string) error {
 	profile := f.String("user", "me", "person identifier")
 	provisionProfile := f.String("profile", "", "provisioning profile for init (else org assignment/default)")
 	organization := f.String("org", "", "organization identifier")
-	organizationRoot := f.String("organization", "", "mounted organization docs root for tools")
 	organizationDir := f.String("org-dir", "", "organization configuration directory")
 	environment := f.String("env", "prod", "dev or prod")
-	workspace := f.String("workspace", "/workspace", "workspace root")
-	archive := f.String("archive", "/archive", "read-only archive root")
 	config := f.String("config", "companion.yaml", "native bridge config")
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
 	noBuild := f.Bool("no-build", false, "start existing images without rebuilding (up only)")
@@ -630,13 +616,6 @@ func run(ctx context.Context, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(stack.Features)
 	case "companion":
 		return companion.Run(ctx, *config)
-	case "tools":
-		t, err := agenttools.Open(*workspace, *archive, *organizationRoot)
-		if err != nil {
-			return err
-		}
-		defer t.Close()
-		return t.Server().Run(ctx, &mcp.StdioTransport{})
 	case "render":
 		return renderEnvironment(ctx, *dir, *root, *environment)
 	case "trace":

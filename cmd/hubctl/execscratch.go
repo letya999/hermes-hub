@@ -29,7 +29,7 @@ import (
 // byte budgets.
 func runExecScratch(ctx context.Context) error {
 	var request api.ScratchExecRequest
-	if err := json.NewDecoder(io.LimitReader(os.Stdin, toolsExecMaxRequest)).Decode(&request); err != nil {
+	if err := json.NewDecoder(io.LimitReader(os.Stdin, api.AgentExecMaxRequest)).Decode(&request); err != nil {
 		return fmt.Errorf("exec-scratch request: %w", err)
 	}
 	scratch := os.Getenv("HUB_SCRATCH_DIR")
@@ -151,13 +151,13 @@ func unpackInputs(b64, dir string) error {
 			return err
 		}
 		name := path.Clean(header.Name)
-		if header.Typeflag != tar.TypeReg || header.Size > scratchPackFileMax ||
+		if header.Typeflag != tar.TypeReg || header.Size > api.ScratchPackFileMax ||
 			strings.HasPrefix(name, "..") || path.IsAbs(name) {
 			continue
 		}
 		seen++
 		total += header.Size
-		if seen > scratchPackMaxFiles || total > scratchPackMaxTotal {
+		if seen > api.ScratchPackMaxFiles || total > api.ScratchPackMaxTotal {
 			return errors.New("input budget exceeded")
 		}
 		target := filepath.Join(dir, filepath.FromSlash(name))

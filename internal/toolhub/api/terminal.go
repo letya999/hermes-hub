@@ -166,7 +166,7 @@ func (e *terminalExecutor) start(ctx context.Context, effective EffectiveBinding
 	var pack string
 	if selected != "" {
 		body, _ := json.Marshal(ScratchPackRequest{Path: selected, Scopes: request.Scopes})
-		input, _, err := e.dockerCall(ctx, bytes.NewReader(body), "exec", "-i", runtime, "hubctl", "exec-pack")
+		input, _, err := e.dockerCall(ctx, bytes.NewReader(body), "exec", "-i", runtime, "harness-runtime", "exec-pack")
 		if err != nil || len(input) > scratchPackLimit {
 			return AgentExecResult{}, ErrIsolation
 		}

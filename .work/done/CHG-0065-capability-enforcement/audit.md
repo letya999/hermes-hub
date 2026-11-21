@@ -34,13 +34,13 @@ execution trust domains. A common facade must not inherit every backend's privil
 | Finding | Source at the audited baseline | Limit of the conclusion |
 |---|---|---|
 | Native terminal/file/web/skills/todo/cron/messaging/memory/session groups are assembled unconditionally | [Config](../../../internal/stack/render.go), `Config`, toolsets construction | Availability checks can suppress individual schemas; this is not default-deny policy |
-| Only CLI/Telegram platform toolsets are rendered; jobs use API `/v1/runs` | [render.go](../../../internal/stack/render.go), [server.go](../../../internal/runtime/server.go), `admitHermesRun` | API fallback verified below; not a production exploit |
-| Local hub registers file, lifecycle, routine and document operations together | [tools.go](../../../internal/agenttools/tools.go), `Server` | Existing scoped file operations are useful; registration lacks uniform per-operation profile gating |
+| Only CLI/Telegram platform toolsets are rendered; jobs use API `/v1/runs` | [render.go](../../../internal/stack/render.go), [server.go](../../../services/harness-runtime/internal/hermes/server.go), `admitHermesRun` | API fallback verified below; not a production exploit |
+| Local hub registers file, lifecycle, routine and document operations together | [tools.go](../../../services/harness-runtime/internal/agenttools/tools.go), `Server` | Existing scoped file operations are useful; registration lacks uniform per-operation profile gating |
 | Self-install is allowed absent a denying grant | [grants.go](../../../internal/toolhub/api/grants.go), `RequireSelfInstall` | Explicit existing behavior, also described by SPEC-0023 |
 | Infra-owner runtime and control services share the runtime state root | [render.go](../../../internal/stack/render.go), `compose`, `stateVolumes`, `stateBind` | Mount topology is proven statically; key theft or grant modification was not attempted |
-| Effective config is read-only, while Hermes extension directories are created under mutable state | [render.go](../../../internal/stack/render.go), [runtime.go](../../../internal/runtime/runtime.go) | YAML protection already exists; extension isolation is incomplete |
+| Effective config is read-only, while Hermes extension directories are created under mutable state | [render.go](../../../internal/stack/render.go), [runtime.go](../../../services/harness-runtime/internal/hermes/runtime.go) | YAML protection already exists; extension isolation is incomplete |
 | Name reservation does not define capability/implementation identity | [mcp.go](../../../internal/stack/mcp.go), `validateMCP` | Do not describe reserved server names as proof of semantic deduplication |
-| Authorization and isolation primitives already exist | [gateway.go](../../../internal/toolhub/gateway.go), [scope.go](../../../internal/stack/scope.go), [tools.go](../../../internal/agenttools/tools.go) | Reuse per-call ToolHub checks, org narrowing, audit, broker delivery and `os.Root`; coverage is not whole-system proof |
+| Authorization and isolation primitives already exist | [gateway.go](../../../internal/toolhub/gateway.go), [scope.go](../../../internal/stack/scope.go), [tools.go](../../../services/harness-runtime/internal/agenttools/tools.go) | Reuse per-call ToolHub checks, org narrowing, audit, broker delivery and `os.Root`; coverage is not whole-system proof |
 
 ## Pinned-image probes from this audit
 

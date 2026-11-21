@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -72,7 +72,7 @@ func admittedHubTool(ctx context.Context, client *http.Client, config communicat
 	if err != nil {
 		return false
 	}
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, name)
 	for _, tool := range listed.Tools {
 		if tool.Name == name || tool.Name == projected {

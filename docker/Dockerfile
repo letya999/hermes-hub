@@ -9,6 +9,7 @@ COPY services/credential-broker/go.mod ./services/credential-broker/
 RUN go mod download && cd services/credential-broker && go mod download
 COPY services/credential-broker ./services/credential-broker
 COPY services/spawn-controller ./services/spawn-controller
+COPY services/harness-runtime ./services/harness-runtime
 COPY cmd ./cmd
 COPY contracts ./contracts
 COPY shared ./shared
@@ -24,6 +25,9 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 # spawn-controller ships inside the shared core/control image — the v1
 # container authority rides the same image the supervisor service runs.
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /spawn-controller ./services/spawn-controller
+# harness-runtime is the v1 space workload (M40.4): the spawned cell's
+# entrypoint — serve/idle/health plus the tool-exec modes docker exec calls.
+RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /harness-runtime ./services/harness-runtime
 
 # Broker's activated store requires SQLCipher; a non-CGO binary refuses it.
 FROM golang:1.27.4-bookworm AS broker_build
@@ -140,7 +144,9 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../
 COPY --from=python_build /opt/hermes /opt/hermes
 COPY config/plugins/hub-run-auth /opt/hermes/plugins/hub-run-auth
 # Runtime services exec only these Go entrypoints; the daemons live in core.
-COPY --from=go_build /hubctl /hub-runtime /usr/local/bin/
+# hub-runtime stays for the reviewed relay modes the image still hosts;
+# harness-runtime is the workload entrypoint (M40.4).
+COPY --from=go_build /hubctl /hub-runtime /harness-runtime /usr/local/bin/
 COPY docker/hub-sidecar /usr/local/bin/hub-sidecar
 RUN chmod 0755 /usr/local/bin/hub-sidecar
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
@@ -148,7 +154,7 @@ RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/
 RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
 WORKDIR /workspace
 USER 10001:10001
-ENTRYPOINT ["hub-runtime"]
+ENTRYPOINT ["harness-runtime"]
 CMD ["idle"]
 
 FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS browser
@@ -172,13 +178,13 @@ COPY docker/meet-requirements.txt /opt/meet/requirements.txt
 RUN python -m venv /opt/meet/.venv && /opt/meet/.venv/bin/pip install --no-cache-dir --require-hashes -r /opt/meet/requirements.txt && /opt/meet/.venv/bin/python -m playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 COPY --from=python_build /opt/hermes/hermes_constants.py /opt/hermes/
 COPY --from=python_build /opt/hermes/plugins/google_meet /opt/hermes/plugins/google_meet
-COPY --from=go_build /hub-runtime /usr/local/bin/
+COPY --from=go_build /harness-runtime /usr/local/bin/
 ENV HOME=/state/home
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace && chown 10001:10001 /state /workspace
 RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
 WORKDIR /workspace
 USER 10001:10001
-ENTRYPOINT ["hub-runtime"]
+ENTRYPOINT ["harness-runtime"]
 CMD ["browser"]
 
 # OpenKnowledge knowledge surface (SPEC-0085 R8, ADR-0086 D8): the per-space

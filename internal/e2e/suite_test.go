@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 )
 
 func TestCoreScopeKeepsLocalToolsAndCredentialFreeInstalls(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRegistryCoversReviewedToolInventory(t *testing.T) {
 	for _, c := range cases {
 		found[c.Surface+":"+c.Name] = true
 	}
-	for _, tool := range agenttools.HubToolsDefinition().Tools {
+	for _, tool := range catalog.HubToolsDefinition().Tools {
 		if !found["hub:"+tool.Name] {
 			t.Errorf("reviewed tool has no acceptance case: %s", tool.Name)
 		}

@@ -18,7 +18,7 @@ func TestToolHubRelayOnlyForwardsReviewedRoutes(t *testing.T) {
 		_, _ = io.WriteString(w, "mcp-ok")
 	}))
 	defer upstream.Close()
-	handler, err := toolHubRelayHandler(upstream.URL)
+	handler, err := ToolHubRelayHandler(upstream.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestToolHubRelayRejectsUpstreamRedirect(t *testing.T) {
 		w.WriteHeader(http.StatusTemporaryRedirect)
 	}))
 	defer upstream.Close()
-	handler, err := toolHubRelayHandler(upstream.URL)
+	handler, err := ToolHubRelayHandler(upstream.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestToolHubRelayIgnoresEnvironmentProxy(t *testing.T) {
 	t.Setenv("http_proxy", proxy.URL)
 	t.Setenv("NO_PROXY", "")
 	t.Setenv("no_proxy", "")
-	handler, err := toolHubRelayHandler("http://toolhub-relay-proxy-test.invalid:8090")
+	handler, err := ToolHubRelayHandler("http://toolhub-relay-proxy-test.invalid:8090")
 	if err != nil {
 		t.Fatal(err)
 	}

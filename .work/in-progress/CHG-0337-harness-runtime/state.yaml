@@ -3,26 +3,34 @@ change: CHG-0337
 title: Isolate harness-runtime - Hermes with session slots and only its own workspace
 status: in_progress
 branch: feat/m40-v1-platform
-updated: 2026-11-20
-phase: design-complete
+updated: 2026-11-21
+phase: implementation
 adr: ADR-0105
 spec: SPEC-0100
 depends_on: [CHG-0336]
 github_milestone: M40 - v1 Service Split
 github_issue: 602
 design_status: accepted
-implementation_status: not_started
+implementation_status: implemented
 slices:
-  S1-move: not_started
-  S2-session-slots: not_started
-  S3-config-isolation-and-rights: not_started
-  S4-env-and-topology: not_started
-  S5-docs-and-acceptance: not_started
+  S1-move: done
+  S2-session-slots: done
+  S3-config-isolation-and-rights: done
+  S4-env-and-topology: done
+  S5-docs-and-acceptance: done
 validation:
-  just_check: not_run
-  affected_tests: not_run
-  live_acceptance: not_started
-evidence: []
+  just_check: pass
+  affected_tests: pass
+  live_acceptance: deferred_to_ci
+evidence:
+  - "S1: workload moved to services/harness-runtime/internal/{hermes,agenttools}; catalog defs to internal/catalog; contract DTOs+relays stay in internal/runtime; exec subcommands + binary wiring done (Dockerfile entrypoint, compose healthcheck, firecracker argv, dev-rebuild)."
+  - "S2: HUB_SESSION_SLOTS (1-64, default 5); sessionRuns table; acquireSessionSlot gate; strict resolveBoundRun for observe/control; tests TestSessionSlotsBoundConcurrentSessions, TestParallelSessionsIsolated, TestRunIdentityNotTakenFromRequest."
+  - "S3: per-call tool-policy.json re-read deleted (spawn-time snapshot only); children cwd pinned to state dir; tests TestWorkspaceConfigIgnored, TestNarrowerRightsNeedSeparateRuntime, TestGrantSnapshotIsTheRuntimeAuthority."
+  - "S4: env allowlist (env_check.go) enforced in managedPreflight; unknown HUB_* fails startup with localized runtime.env-unknown; README env table; TestMinimalProfileAnswersMessage + dispatch parity green."
+  - "S5: README rewritten from template; SessionSlot machine added to state-machines.md; runtime.md updated; just check green."
 remaining:
-  - "Blocked on CHG-0336 S7 (spec and policy slice from spawn-controller)."
-limitations: []
+  - "Docker/integration acceptance owned by CI (local unit+mock tests do not claim it)."
+  - "boundary() re-reads /config/workspace.yaml per filesystem op by design (SPEC-0092 R5.3 fail-closed on boundary mutation) - distinct from the removed tool-policy re-read; mounted-spec integrity requires it."
+limitations:
+  - "Fixed en route (pre-existing on HEAD, blocked green CI): catalog release 43 emitted for the CHG-0335 18.7.2 def bump; TestDeriveSpaceRightsScopesToBoundProfile fixture updated for six-doc Effective() decode."
+  - "Trusted process-mode dev serve bypasses the managed env allowlist by design (inherits the operator shell)."

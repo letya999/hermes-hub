@@ -32,7 +32,7 @@ func devService(name string) (devServiceSpec, bool) {
 	case "workload-controller", "supervisor":
 		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.5.0-dev-control"}, true
 	case "hermes-runtime":
-		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
+		return devServiceSpec{"harness-runtime", "./services/harness-runtime", "hermes-hub:0.5.0-dev"}, true
 	case "model-relay", "toolhub-relay":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
 	case "egress-relay":
@@ -146,11 +146,6 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	companions := filepath.Join(buildDir, "companions")
 	if err := os.Mkdir(companions, 0700); err != nil {
 		return err
-	}
-	if service == "hermes-runtime" {
-		if err := run("go", goEnv, rootAbs, "build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(companions, "hubctl"), "./cmd/hubctl"); err != nil {
-			return err
-		}
 	}
 	if err := stageDevCompanions(service, rootAbs, companions); err != nil {
 		return err

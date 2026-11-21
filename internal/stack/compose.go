@@ -117,8 +117,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.PassportWorkspace == nil {
 		stateVolumes = append(stateVolumes,
 			// The executor's compiled governance extract: written host-side,
-			// mounted read-only, consumed by `hubctl tools`/tools-exec via
-			// HUB_TOOL_POLICY. A published workspace passport carries it
+			// mounted read-only, consumed by `harness-runtime tools`/tools-exec
+			// via HUB_TOOL_POLICY. A published workspace passport carries it
 			// inside the /config view bind instead.
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
 			// The render-time expectation for the runtime tool surface; the
@@ -332,7 +332,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if !s.Has("telegram") && s.NativeCron != "unmigrated" {
 		runtimeService["command"] = []string{"idle"}
 	}
-	runtimeService["healthcheck"] = M{"test": []string{"CMD", "hub-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
+	runtimeService["healthcheck"] = M{"test": []string{"CMD", "harness-runtime", "health"}, "interval": "30s", "timeout": "5s", "retries": 3}
 	// The inner Python gateway freezes its event loop for up to ~15s while
 	// stopping MCP servers on SIGTERM (upstream known issue); under Docker's
 	// default 10s grace it is SIGKILLed and the lifecycle ledger records a

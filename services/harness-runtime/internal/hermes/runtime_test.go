@@ -1,0 +1,664 @@
+package hermes
+
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
+)
+
+type prepareFileInfo struct {
+	name string
+	mode fs.FileMode
+}
+
+func TestManagedStartupRejectsMismatchedConfigView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revision")
+	if err := os.WriteFile(path, []byte("r-old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMountedPassportRevision(path, "r-old"); err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []string{"", "r-new"} {
+		if err := checkMountedPassportRevision(path, revision); err == nil {
+			t.Fatalf("accepted revision %q with old mounted view", revision)
+		}
+	}
+	if err := checkMountedPassportRevision(filepath.Join(t.TempDir(), "missing"), "r-old"); err == nil {
+		t.Fatal("accepted missing config view revision")
+	}
+}
+
+func (i prepareFileInfo) Name() string       { return i.name }
+func (i prepareFileInfo) Size() int64        { return 0 }
+func (i prepareFileInfo) Mode() fs.FileMode  { return i.mode }
+func (i prepareFileInfo) ModTime() time.Time { return time.Time{} }
+func (i prepareFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i prepareFileInfo) Sys() any           { return nil }
+
+func TestPrepareEntrySkipsSpecialFiles(t *testing.T) {
+	entry := fs.FileInfoToDirEntry(prepareFileInfo{name: "runtime.sock", mode: os.ModeSocket})
+	called := false
+	err := prepareEntry("runtime.sock", entry, false, 1, 2, func(string, int, int) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("prepareEntry touched a special file")
+	}
+}
+
+func TestPrepareDoesNotFollowSymlinks(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(state, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("untouched"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(state, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	seen := map[string]bool{}
+	if err := Prepare([]string{state}, 1, 2, func(path string, _, _ int) error { seen[path] = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if seen[outside] || seen[filepath.Join(outside, "secret")] || seen[filepath.Join(state, "link")] {
+		t.Fatal("Prepare followed or modified a symlink")
+	}
+}
+
+func TestPrepareKeepsGlabConfigPrivate(t *testing.T) {
+	if filepath.Separator == '\\' {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	root := t.TempDir()
+	configDir := filepath.Join(root, "home", ".config", "glab-cli")
+	if err := os.MkdirAll(configDir, 0770); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.yml", "aliases.yml"} {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte("token: redacted\n"), 0660); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Prepare([]string{root}, 1, 2, func(string, int, int) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.yml", "aliases.yml"} {
+		info, err := os.Stat(filepath.Join(configDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+}
+
+func TestHealthAndRunValidation(t *testing.T) {
+	configureProcess(&exec.Cmd{})
+	if processAlive(-1) {
+		t.Fatal("invalid pid accepted")
+	}
+	path := filepath.Join(t.TempDir(), "runtime.json")
+	body, _ := json.Marshal(marker{PIDs: []int{os.Getpid()}})
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Health(path); err != nil {
+		t.Fatal(err)
+	}
+	oldState := state
+	state = filepath.Dir(path)
+	t.Cleanup(func() { state = oldState })
+	if err := Run([]string{"health"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("bad"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if Health(path) == nil || Run(nil) == nil || Run([]string{"bad"}) == nil {
+		t.Fatal("invalid state accepted")
+	}
+	body, _ = json.Marshal(marker{PIDs: []int{999999999}})
+	if err := os.WriteFile(path, body, 0600); err != nil || Health(path) == nil {
+		t.Fatal("dead process accepted")
+	}
+}
+
+func managedRuntimeConfig(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	previousPath := mountedPassportRevisionPath
+	mountedPassportRevisionPath = filepath.Join(dir, "revision")
+	t.Cleanup(func() { mountedPassportRevisionPath = previousPath })
+	const revision = "r-0123456789abcdef"
+	if err := os.WriteFile(mountedPassportRevisionPath, []byte(revision+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_PASSPORT_REVISION", revision)
+	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC"}
+	content, err := yaml.Marshal(stack.Config(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, effective := filepath.Join(dir, "source.yaml"), filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(source, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERMES_HOME", dir)
+	t.Setenv("HUB_MANAGED_MODEL_ID", s.Model)
+	t.Setenv("HUB_MANAGED_MODEL_URL", s.ModelURL)
+	t.Setenv("TZ", s.Timezone)
+	t.Setenv("HERMES_BUNDLES_DIR", filepath.Join(dir, "skill-bundles"))
+	t.Setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", "http://toolhub:8090/mcp")
+	t.Setenv("HUB_RUNTIME_AUTH", "synthetic-auth")
+	if err := stack.MaterializeHermesConfig(source, effective, stack.MaterializeOptions{
+		ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true, ToolHubReconnect: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return effective
+}
+
+func TestManagedRuntimeRefusesSharedState(t *testing.T) {
+	managedRuntimeConfig(t)
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "isolation unverified") {
+		t.Fatalf("managed runtime accepted shared state: %v", err)
+	}
+	t.Setenv("HERMES_BUNDLES_DIR", t.TempDir())
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "redirected extension discovery") {
+		t.Fatalf("managed runtime accepted alternate bundles directory: %v", err)
+	}
+	t.Setenv("HERMES_BUNDLES_DIR", filepath.Join(os.Getenv("HERMES_HOME"), "skill-bundles"))
+	t.Setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+	if _, err := superviseOnce("idle"); err == nil || !strings.Contains(err.Error(), "redirected extension discovery") {
+		t.Fatalf("managed runtime accepted project plugin discovery: %v", err)
+	}
+}
+
+func TestManagedRuntimeDoesNotLoadSelfEnvironment(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
+	config := managedRuntimeConfig(t)
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN")
+	t.Setenv("GITHUB_TOKEN", "original")
+	path := filepath.Join(state, "self-env.json")
+	body := []byte(`{"GITHUB_TOKEN":"injected","ATLASSIAN_EMAIL":"stale"}`)
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run([]string{"serve"}); err == nil || !strings.Contains(err.Error(), "isolation unverified") {
+		t.Fatalf("managed runtime loaded self environment: %v", err)
+	}
+	if err := os.WriteFile(config, []byte("invalid: ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run([]string{"serve"}); err == nil || !strings.Contains(err.Error(), "config preflight") {
+		t.Fatalf("managed runtime accepted malformed effective config: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(body) || os.Getenv("GITHUB_TOKEN") != "original" {
+		t.Fatalf("managed startup changed self environment: file=%q env=%q err=%v", got, os.Getenv("GITHUB_TOKEN"), err)
+	}
+}
+
+func TestRunRejectsInvalidGID(t *testing.T) {
+	t.Setenv("HUB_SHARED_GID", "bad")
+	if err := Run([]string{"prepare"}); err == nil {
+		t.Fatal("invalid gid accepted")
+	}
+}
+
+func TestBrowserHealthAndWait(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer server.Close()
+	oldURL := browserURL
+	browserURL = server.URL
+	t.Cleanup(func() { browserURL = oldURL })
+	path := filepath.Join(t.TempDir(), "runtime.json")
+	body, _ := json.Marshal(marker{PIDs: []int{os.Getpid()}, Browser: true})
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Health(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForBrowser(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBrowserWaitFailure(t *testing.T) {
+	oldURL, oldSleep := browserURL, sleep
+	browserURL, sleep = "http://127.0.0.1:1", func(time.Duration) {}
+	t.Cleanup(func() { browserURL, sleep = oldURL, oldSleep })
+	if err := waitForBrowser(nil); err == nil {
+		t.Fatal("unavailable browser accepted")
+	}
+}
+
+func TestBrowserWaitsForSlowReady(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts <= 250 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	oldURL, oldSleep := browserURL, sleep
+	browserURL, sleep = server.URL, func(time.Duration) {}
+	t.Cleanup(func() { browserURL, sleep = oldURL, oldSleep })
+	if err := waitForBrowser(nil); err != nil || attempts != 251 {
+		t.Fatalf("slow Chromium startup: attempts=%d err=%v", attempts, err)
+	}
+}
+
+func TestDisplayWaitFailure(t *testing.T) {
+	oldSleep, oldProbe := sleep, displayProbe
+	sleep = func(time.Duration) {}
+	displayProbe = func(string) error { return errors.New("display unavailable") }
+	t.Cleanup(func() { sleep, displayProbe = oldSleep, oldProbe })
+	if err := waitForDisplay(":99999", nil); err == nil {
+		t.Fatal("unavailable X display accepted")
+	}
+}
+
+func TestSupervisorCleansUpAfterStartFailure(t *testing.T) {
+	oldState := state
+	state = t.TempDir()
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	t.Cleanup(func() { state = oldState })
+	if err := Run([]string{"gateway"}); err == nil {
+		t.Fatal("missing Hermes executable accepted")
+	}
+	if _, err := os.Stat(filepath.Join(state, "runtime.json")); !os.IsNotExist(err) {
+		t.Fatal("runtime marker left behind")
+	}
+	if err := Run([]string{"serve"}); err == nil {
+		t.Fatal("runtime server started without authorization")
+	}
+}
+
+// SPEC-0082 R4.3: browser and meet flags no longer gate runtime startup on a
+// local display stack — the sidecar owns it. Under either flag the runtime
+// must not spawn X/VNC/Chromium.
+func TestSupervisorBrowserFlagsStartNoDisplay(t *testing.T) {
+	spawned, restore := captureCommands(t)
+	defer restore()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer server.Close()
+	oldURL := browserURL
+	browserURL = server.URL
+	t.Cleanup(func() { browserURL = oldURL })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "true")
+	// The meet plugin-enable child is a stub that exits cleanly after the
+	// test helper delay; supervise may return its error — only the spawn set
+	// matters here.
+	_ = supervise("idle")
+	for _, child := range *spawned {
+		for _, banned := range []string{"Xvfb", "fluxbox", "x11vnc", "websockify", "chromium"} {
+			if strings.Contains(child.argv, banned) {
+				t.Fatalf("meet runtime spawned %s: %s", banned, child.argv)
+			}
+		}
+	}
+}
+
+func TestSupervisorReportsChildExit(t *testing.T) {
+	oldState, oldCommand := state, command
+	state = t.TempDir()
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeExitHelper")
+		cmd.Env = append(os.Environ(), "HUB_TEST_EXIT_HELPER=1")
+		return cmd
+	}
+	t.Cleanup(func() { state, command = oldState, oldCommand })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := supervise("gateway"); err == nil {
+		t.Fatal("child exit accepted")
+	}
+}
+
+// stubPreflight lets supervise-loop tests run without the container-level
+// managed attestation, which only a real runtime mount can satisfy.
+func stubPreflight(t *testing.T) {
+	t.Helper()
+	old := preflight
+	preflight = func() error { return nil }
+	t.Cleanup(func() { preflight = old })
+}
+
+func TestSupervisorUsesConfiguredHermesAndHomeDirectories(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldCommand := state, command
+	state = t.TempDir()
+	root := t.TempDir()
+	hermesHome, home := filepath.Join(root, "hermes"), filepath.Join(root, "home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	t.Setenv("HOME", home)
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeExitHelper")
+		cmd.Env = append(os.Environ(), "HUB_TEST_EXIT_HELPER=1")
+		return cmd
+	}
+	t.Cleanup(func() { state, command = oldState, oldCommand })
+	if err := supervise("gateway"); err == nil {
+		t.Fatal("child exit accepted")
+	}
+	for _, path := range []string{home, hermesHome, filepath.Join(hermesHome, "memories")} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("configured runtime directory missing: %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "hermes")); !os.IsNotExist(err) {
+		t.Fatal("created a second Hermes home under runtime state")
+	}
+}
+
+func TestTextOnlyContextStartsNoBrowser(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldCommand := state, command
+	oldNotify, oldStop := signalNotify, signalStop
+	state = t.TempDir()
+	var mu sync.Mutex
+	var spawned []string
+	command = func(name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		spawned = append(spawned, name)
+		mu.Unlock()
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
+		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
+		return cmd
+	}
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() {
+		state, command, signalNotify, signalStop = oldState, oldCommand, oldNotify, oldStop
+	})
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := supervise("idle"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range spawned {
+		switch name {
+		case "Xvfb", "fluxbox", "x11vnc", "websockify", "chromium":
+			t.Fatalf("text-only context started %s", name)
+		}
+	}
+}
+
+func TestRuntimeHelperProcess(t *testing.T) {
+	if os.Getenv("HUB_TEST_HELPER") != "1" {
+		return
+	}
+	time.Sleep(10 * time.Second)
+	os.Exit(0)
+}
+
+func TestRuntimeExitHelper(t *testing.T) {
+	if os.Getenv("HUB_TEST_EXIT_HELPER") == "1" {
+		os.Exit(3)
+	}
+}
+
+func TestRunIdleShutdown(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldWorkspace := state, workspace
+	oldNotify, oldStop := signalNotify, signalStop
+	oldChown := chown
+	state, workspace = filepath.Join(t.TempDir(), "state"), filepath.Join(t.TempDir(), "workspace")
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	chown = func(string, int, int) error { return nil }
+	t.Cleanup(func() {
+		state, workspace, signalNotify, signalStop, chown = oldState, oldWorkspace, oldNotify, oldStop, oldChown
+	})
+	t.Setenv("HUB_SHARED_GID", "1000")
+	if err := Run([]string{"prepare"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run([]string{"idle"}) }()
+	markerPath := filepath.Join(state, "runtime.json")
+	for range 100 {
+		if _, err := os.Stat(markerPath); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+}
+
+func TestServeStartsPinnedGatewayChild(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldCommand, oldNotify, oldStop := state, command, signalNotify, signalStop
+	state = t.TempDir()
+	command = func(string, ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
+		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
+		return cmd
+	}
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, command, signalNotify, signalStop = oldState, oldCommand, oldNotify, oldStop })
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_PERSISTENT_HERMES", "false")
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	// A fixed 0.0.0.0:8080 bind flakes on hosts where the port is taken.
+	t.Setenv("HUB_RUNTIME_LISTEN", "127.0.0.1:0")
+	if err := supervise("serve"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "runtime.json")); !os.IsNotExist(err) {
+		t.Fatal("runtime marker was not cleaned")
+	}
+}
+
+func TestSupervisorRestartsInPlaceAfterEnvUpdate(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldNotify, oldStop := state, signalNotify, signalStop
+	state = t.TempDir()
+	calls := 0
+	signalNotify = func(ch chan os.Signal) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ch <- os.Interrupt
+	}
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, signalNotify, signalStop = oldState, oldNotify, oldStop })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := supervise("idle"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected in-place restart, got %d supervisor runs", calls)
+	}
+}
+
+func TestRunIdleStops(t *testing.T) {
+	stubPreflight(t)
+	oldState, oldNotify, oldStop := state, signalNotify, signalStop
+	state = t.TempDir()
+	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
+	signalStop = func(chan os.Signal) {}
+	t.Cleanup(func() { state, signalNotify, signalStop = oldState, oldNotify, oldStop })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "false")
+	if err := Run([]string{"idle"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadOnlyWriteRecognizesProtectedFiles(t *testing.T) {
+	if readOnlyWrite(nil) || !readOnlyWrite(errors.New("read-only file system")) || !readOnlyWrite(errors.New("EROFS")) || readOnlyWrite(errors.New("disk full")) {
+		t.Fatal("read-only detection")
+	}
+}
+
+func TestCopySoulUnlessEditedReplacesOnlyTheStub(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "template")
+	destination := filepath.Join(root, "SOUL.md")
+	if err := os.WriteFile(source, []byte("template soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("# User instructions\n\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySoulUnlessEdited(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(destination)
+	if string(body) != "template soul\n" {
+		t.Fatalf("stub kept: %q", body)
+	}
+	if err := os.WriteFile(destination, []byte("mine\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySoulUnlessEdited(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = os.ReadFile(destination)
+	if string(body) != "mine\n" {
+		t.Fatalf("edit overwritten: %q", body)
+	}
+}
+
+func TestClearBrowserLocksRemovesOnlySymlinks(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
+		if err := os.Symlink("stale", filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	regular := filepath.Join(dir, "SingletonRegular")
+	if err := os.WriteFile(regular, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearBrowserLocks(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatal(name, err)
+		}
+	}
+	if body, err := os.ReadFile(regular); err != nil || string(body) != "keep" {
+		t.Fatal("regular lock changed", err)
+	}
+}
+
+func TestClearDisplayLocksRemovesStaleFiles(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "X99-lock"), filepath.Join(dir, "X99")}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := clearDisplayLocks(paths...); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale display lock remains: %s", path)
+		}
+	}
+}
+
+func TestSweepBrowserOutputEnforcesPolicy(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, size int) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, size), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("report.pdf", 1024)
+	write("payload.exe", 128)
+	write("run.sh", 64)
+	write("huge.bin", browserOutputFileLimit+1)
+	if err := os.Symlink("/state/hermes/config.yaml", filepath.Join(dir, "link.pdf")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	sweepBrowserOutput(dir)
+	for _, gone := range []string{"payload.exe", "run.sh", "huge.bin", "link.pdf"} {
+		if _, err := os.Lstat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the output sweep", gone)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "report.pdf")); err != nil {
+		t.Fatalf("allowed download removed: %v", err)
+	}
+}
+
+func TestSweepBrowserOutputEvictsOldest(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{"a.csv", "b.csv", "c.csv", "d.csv", "e.csv"}
+	for i, name := range names {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, make([]byte, 55<<20), 0600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Now().Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepBrowserOutput(dir)
+	if _, err := os.Lstat(filepath.Join(dir, "a.csv")); !os.IsNotExist(err) {
+		t.Fatal("oldest download was not evicted first")
+	}
+	for _, name := range names[1:] {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("newer download evicted: %v", err)
+		}
+	}
+	sweepBrowserOutput(filepath.Join(dir, "missing"))
+}

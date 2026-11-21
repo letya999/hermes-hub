@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -316,7 +315,7 @@ func buildProvisionBundle(dir, user, env, root, profileName, expires, issuer str
 	// ResolveStorePath, not a hardcoded store.db: the SQLite substrate is
 	// authoritative only once it exists without a live store.json beside it.
 	storePath := api.ResolveStorePath(filepath.Join(infra, "runtime", "toolhub"))
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	digest := api.DefinitionDigest(definition)
 
 	// The capability ceiling ships with the provisioning profile as reviewed

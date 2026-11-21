@@ -165,7 +165,7 @@ func TestBrowserImageContents(t *testing.T) {
 	for _, want := range []string{
 		"chromium", "xvfb", "fluxbox", "x11vnc", "websockify", "x11-utils",
 		"/opt/browser", "/opt/novnc", "meet-requirements.txt", "playwright",
-		"hub-runtime",
+		"harness-runtime",
 	} {
 		if !strings.Contains(browser, want) {
 			t.Errorf("browser image missing %q", want)

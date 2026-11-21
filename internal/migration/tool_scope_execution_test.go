@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -20,7 +19,7 @@ func TestAuthoredToolScopeReachesExecutor(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := toolhub.NewStore()
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
@@ -79,21 +78,20 @@ func TestAuthoredToolScopeReachesExecutor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	root, err := os.OpenRoot(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	files := &agenttools.Tools{Workspace: root}
 	backendCalls := 0
 	gateway := &toolhub.Gateway{Store: store, AuditWrite: func(string, map[string]string) error { return nil },
 		Backend: api.RoutingBackend{Agent: api.AgentExecBackend{Exec: func(ctx context.Context, _ api.EffectiveBinding, request api.AgentExecRequest) (api.AgentExecResult, error) {
 			backendCalls++
-			result, err := files.ExecCall(ctx, request.Tool, request.Arguments, request.Scopes)
-			if err != nil {
-				return api.AgentExecResult{Error: err.Error()}, nil
+			// The executor itself is harness-runtime-internal (M40.4); the
+			// plumbing under test ends where the admitted scopes reach the
+			// backend verbatim. Scope enforcement is covered by the
+			// agenttools package's own isolation tests.
+			for _, scope := range request.Scopes {
+				if scope.Resource == "files" && scope.PathArgument == "path" && scope.PathPrefix != "" {
+					return api.AgentExecResult{Result: map[string]any{"ok": true}}, nil
+				}
 			}
-			return api.AgentExecResult{Result: result}, nil
+			return api.AgentExecResult{Error: "admitted file scope missing"}, nil
 		}}}}
 	call := func(name string, args map[string]any, wantBackend bool) error {
 		t.Helper()
@@ -106,13 +104,6 @@ func TestAuthoredToolScopeReachesExecutor(t *testing.T) {
 	}
 	if err := call("file_read", map[string]any{"path": "docs/a/ok.txt"}, true); err != nil {
 		t.Fatalf("allowed path: %v", err)
-	}
-	if err := os.Symlink(filepath.Join(workspace, "docs", "private", "no.txt"), filepath.Join(workspace, "docs", "a", "link.txt")); err == nil {
-		before := backendCalls
-		out, err := gateway.CallAuthorized(t.Context(), auth, "file_read", map[string]any{"path": "docs/a/link.txt"})
-		if err != nil || out == nil || !out.IsError || backendCalls != before+1 {
-			t.Fatalf("symlink escaped executor root: result=%+v err=%v calls=%d", out, err, backendCalls-before)
-		}
 	}
 	for _, args := range []map[string]any{
 		{"path": "docs/private/no.txt"}, {"path": "docs/a/../private/no.txt"},

@@ -76,7 +76,7 @@ func TestDevRebuildServiceBinaryMap(t *testing.T) {
 		"toolhub":             "toolhub",
 		"workload-controller": "hubctl",
 		"supervisor":          "hubctl",
-		"hermes-runtime":      "hub-runtime",
+		"hermes-runtime":      "harness-runtime",
 		"model-relay":         "hub-runtime",
 		"toolhub-relay":       "hub-runtime",
 		"egress-relay":        "hub-runtime",
@@ -227,7 +227,7 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.5.0-dev-core"},
 		{"toolhub", "./cmd/toolhub", "hermes-hub:0.5.0-dev-control"},
 		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.5.0-dev-control"},
-		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"},
+		{"hermes-runtime", "./services/harness-runtime", "hermes-hub:0.5.0-dev"},
 	} {
 		before, _ := os.ReadFile(log)
 		if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", tc.service}); err != nil {
@@ -235,8 +235,8 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		}
 		all, _ := os.ReadFile(log)
 		if tc.service == "hermes-runtime" {
-			if !strings.Contains(string(all[len(before):]), "./cmd/hubctl") {
-				t.Error("runtime overlay must rebuild its tools executor hubctl alongside hub-runtime")
+			if !strings.Contains(string(all[len(before):]), "./services/harness-runtime") {
+				t.Error("runtime overlay must rebuild the harness-runtime workload binary")
 			}
 			// Supervised runtimes never compose-up: the rebuilt tag is
 			// pinned for the next spawn instead.

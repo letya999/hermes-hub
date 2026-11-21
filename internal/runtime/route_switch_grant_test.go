@@ -44,7 +44,7 @@ models:
 	defer decider.Close()
 	t.Setenv("HUB_TOOLHUB_URL", decider.URL)
 	t.Setenv("HUB_TOOLHUB_CONTROL", "tok")
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}

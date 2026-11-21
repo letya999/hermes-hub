@@ -9,14 +9,14 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 const toolSnapshotPath = "internal/devcheck/testdata/tool-catalog.snapshot"
 
 func toolCatalogSnapshot() ([]byte, error) {
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	lines := []string{"# " + definition.DefinitionID + "@" + definition.Version, "# name schema_sha256 desc_sha256 effect required_rights"}
 	tools := slices.Clone(definition.Tools)
 	slices.SortFunc(tools, func(a, b api.ToolSpec) int { return strings.Compare(a.Name, b.Name) })

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
@@ -149,7 +148,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 		f.Auth[user] = auth
 	}
 	store := toolhub.NewStore()
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		return f, err
 	}

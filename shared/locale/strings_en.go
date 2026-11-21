@@ -14,6 +14,7 @@ func init() {
 		"run.authorization-denied":           "Run authorization denied",
 		"model.service-authorization-denied": "Model service authorization denied",
 		"run.authorization-invalid":          "Invalid run authorization",
+		"runtime.env-unknown":                "Unknown environment variable %s: the runtime accepts only the rendered HUB_* set",
 		"hubctl.policy-publication":          "Signed policy publication failed",
 		"hubctl.identity-usage":              "Usage: hubctl identity migrate --config <legacy YAML> --control-dir <control state> --env dev|prod --import-id <id> [--oidc-links <legacy JSON>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":             "Legacy communication configuration path",

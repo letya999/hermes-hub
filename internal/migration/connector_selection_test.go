@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
@@ -67,7 +66,7 @@ func TestPassportRemovalRevokesConnectorSelection(t *testing.T) {
 	}
 	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
 	store := toolhub.NewStore()
-	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
+	if err := store.RegisterDefinition(catalog.HubToolsDefinition()); err != nil {
 		t.Fatal(err)
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")

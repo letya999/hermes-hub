@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -158,7 +158,7 @@ func runCapability(args []string) error {
 			}
 			// The built-in catalog is compiled into this binary and reviewed with
 			// the release; binding carries only operator-supplied identity.
-			definition := agenttools.HubToolsDefinition()
+			definition := catalog.HubToolsDefinition()
 			if *definitionVersion != "" {
 				stored, err := store.Definition(definition.DefinitionID, *definitionVersion)
 				if err != nil {

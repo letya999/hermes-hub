@@ -11,7 +11,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-type relayRunAuthority struct {
+type RelayRunAuthority struct {
 	identities       identity.Client
 	runs             task.Client
 	assignments      task.AssignmentAuthority
@@ -19,13 +19,13 @@ type relayRunAuthority struct {
 	environment      string
 }
 
-func relayRunAuthorityFromEnv() *relayRunAuthority {
+func RelayRunAuthorityFromEnv() *RelayRunAuthority {
 	origin := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_URL"))
 	key := strings.TrimSpace(os.Getenv("HUB_RUN_VERIFY_AUTH"))
 	if origin == "" && key == "" {
 		return nil
 	}
-	a := &relayRunAuthority{environment: os.Getenv("HUB_ENVIRONMENT")}
+	a := &RelayRunAuthority{environment: os.Getenv("HUB_ENVIRONMENT")}
 	if origin != "" && key != "" {
 		client := &http.Client{Timeout: 5 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -39,7 +39,7 @@ func relayRunAuthorityFromEnv() *relayRunAuthority {
 	return a
 }
 
-func (a *relayRunAuthority) authorizeModelService(r *http.Request, space string, body []byte) (string, error) {
+func (a *RelayRunAuthority) authorizeModelService(r *http.Request, space string, body []byte) (string, error) {
 	values := r.Header.Values(identity.ModelServiceTokenHeader)
 	if a == nil || a.identities == nil || a.servicePassports == nil || len(values) != 1 ||
 		r.Header.Get("Origin") != "" || len(r.Header.Values(identity.RunTokenHeader)) != 0 ||
@@ -73,7 +73,7 @@ func (a *relayRunAuthority) authorizeModelService(r *http.Request, space string,
 	return audience, nil
 }
 
-func (a *relayRunAuthority) authorize(r *http.Request, audience, space string) (identity.PolicyBundle, error) {
+func (a *RelayRunAuthority) authorize(r *http.Request, audience, space string) (identity.PolicyBundle, error) {
 	header := identity.RunTokenHeader
 	if audience == identity.EgressAudience {
 		header = identity.EgressRunTokenHeader

@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
@@ -224,7 +223,7 @@ sys.exit(1)`
 	// The real ToolHub admission and private executor must reach the reviewed
 	// connection config in the supervisor-spawned container. No tunnel opens.
 	store := toolhub.NewStore()
-	definition := agenttools.HubToolsDefinition()
+	definition := catalog.HubToolsDefinition()
 	if err := store.RegisterDefinition(definition); err != nil {
 		return err
 	}
@@ -421,7 +420,7 @@ sys.exit(1)`
 	if err := execCheck("failure", "default route", "python", "-c", "import sys;sys.exit(0 if any(l.split()[1]=='00000000' for l in open('/proc/net/route').readlines()[1:]) else 1)"); err != nil {
 		return err
 	}
-	if err := execCheck("success", "managed config attestation", "hub-runtime", "verify-managed"); err != nil {
+	if err := execCheck("success", "managed config attestation", "harness-runtime", "verify-managed"); err != nil {
 		return err
 	}
 	// Secret isolation: no broker material, no other-context state, only the
@@ -519,7 +518,7 @@ sys.exit(1)`
 	if beforeHash != afterHash {
 		return errors.New("managed effective config changed across restart")
 	}
-	if err := execCheck("success", "managed config attestation after restart", "hub-runtime", "verify-managed"); err != nil {
+	if err := execCheck("success", "managed config attestation after restart", "harness-runtime", "verify-managed"); err != nil {
 		return err
 	}
 	if err := execCheck("failure", "sealed extension write after restart", "sh", "-c", "touch /state/hermes/hooks/injected"); err != nil {

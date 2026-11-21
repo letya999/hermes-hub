@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// toolHubRelayHandler exposes MCP and the caller-scoped connector inventory to the agent network.
-func toolHubRelayHandler(target string) (http.Handler, error) {
+// ToolHubRelayHandler exposes MCP and the caller-scoped connector inventory to the agent network.
+func ToolHubRelayHandler(target string) (http.Handler, error) {
 	upstream, err := url.Parse(target)
 	if err != nil || upstream.Scheme != "http" || upstream.Host == "" || upstream.Path != "" || upstream.RawQuery != "" || upstream.User != nil {
 		return nil, fmt.Errorf("ToolHub relay requires a fixed HTTP origin")
@@ -52,7 +52,7 @@ func runToolHubRelay(ctx context.Context) error {
 	if target == "" {
 		target = "http://toolhub-control:8090"
 	}
-	handler, err := toolHubRelayHandler(target)
+	handler, err := ToolHubRelayHandler(target)
 	if err != nil {
 		return err
 	}

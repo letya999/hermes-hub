@@ -14,6 +14,7 @@ func init() {
 		"run.authorization-denied":           "Autorización de ejecución denegada",
 		"model.service-authorization-denied": "Se denegó la autorización del servicio para usar el modelo",
 		"run.authorization-invalid":          "Autorización de ejecución no válida",
+		"runtime.env-unknown":                "Variable de entorno desconocida %s: el runtime solo acepta el conjunto HUB_* renderizado",
 		"hubctl.policy-publication":          "No se pudo publicar la política firmada",
 		"hubctl.identity-usage":              "Uso: hubctl identity migrate --config <YAML anterior> --control-dir <estado de control> --env dev|prod --import-id <id> [--oidc-links <JSON anterior>] [--legacy-env-user <id>] [--apply]",
 		"hubctl.identity-source":             "Ruta de la configuración de canales anterior",

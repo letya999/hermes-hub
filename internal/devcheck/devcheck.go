@@ -322,6 +322,9 @@ func Project(root string) error {
 		"docs/operations.md":          true,
 		"docs/prepared-connectors.md": true,
 		"docs/validation.md":          true,
+		// The v0+v1 machine catalog grows one section per extracted service
+		// (M40.3..M40.16); the detail is the extraction reference.
+		"docs/state-machines.md": true,
 	}
 	checkFile := func(rel, idx string) {
 		base := filepath.Base(rel)
@@ -525,7 +528,7 @@ func DockerSmoke(ctx context.Context, image string) error {
 		return strings.TrimSpace(string(out))
 	}
 	err = smokeWaitHealthy(ctx, func() error {
-		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").CombinedOutput()
+		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "harness-runtime", "health").CombinedOutput()
 		if runErr == nil {
 			return nil
 		}

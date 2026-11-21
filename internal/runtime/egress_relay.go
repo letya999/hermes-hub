@@ -29,10 +29,10 @@ import (
 var egressRelayResponseTimeout = 10 * time.Minute
 
 func egressRelayHandler(allow map[string]bool, connectTarget string) http.Handler {
-	return signedEgressRelayHandler(allow, connectTarget, "", nil)
+	return SignedEgressRelayHandler(allow, connectTarget, "", nil)
 }
 
-func signedEgressRelayHandler(allow map[string]bool, connectTarget, owner string, authority *relayRunAuthority) http.Handler {
+func SignedEgressRelayHandler(allow map[string]bool, connectTarget, owner string, authority *RelayRunAuthority) http.Handler {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		ResponseHeaderTimeout: egressRelayResponseTimeout,
@@ -206,7 +206,7 @@ func runEgressRelay() error {
 	if listen == "" {
 		listen = ":8319"
 	}
-	handler := signedEgressRelayHandler(allow, connectTarget, os.Getenv("HUB_EGRESS_RELAY_OWNER"), relayRunAuthorityFromEnv())
+	handler := SignedEgressRelayHandler(allow, connectTarget, os.Getenv("HUB_EGRESS_RELAY_OWNER"), RelayRunAuthorityFromEnv())
 	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	if err := server.ListenAndServe(); err != nil {
 		return fmt.Errorf("egress-relay: %w", err)

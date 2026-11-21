@@ -84,6 +84,7 @@ security:
 build: config-check
     go build -buildvcs=false -trimpath -o bin/hubctl ./cmd/hubctl
     go build -buildvcs=false -trimpath -o bin/hub-runtime ./cmd/runtime
+    go build -buildvcs=false -trimpath -o bin/harness-runtime ./services/harness-runtime
     go build -buildvcs=false -trimpath -o bin/toolhub ./cmd/toolhub
     go build -buildvcs=false -trimpath -o bin/communication-hub ./cmd/communication
     go build -buildvcs=false -trimpath -o bin/hub-supervisor ./cmd/supervisor

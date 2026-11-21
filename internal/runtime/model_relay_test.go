@@ -385,7 +385,7 @@ func TestModelRelayLocalQuotaExhaustedHasTypedError(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestModelRelayProviderQuotaExhaustedHasTypedError(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestModelOutageHasTypedCause(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(strings.Replace(string(content), fixture.URL, upstream.URL, 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	managed, err := modelRelayRegistryHandler(registry, selection, "alice", "")
+	managed, err := ModelRelayRegistryHandler(registry, selection, "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +590,7 @@ func TestModelRelayRegistryLadderRemapsModel(t *testing.T) {
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +696,7 @@ models:
 		t.Fatal(err)
 	}
 	sel := filepath.Join(dir, "sel.json")
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ models:
 		t.Fatal(err)
 	}
 	sel := filepath.Join(dir, "sel.json")
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +807,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -925,7 +925,7 @@ models:
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ models:
 		t.Fatal(err)
 	}
 	sel := filepath.Join(dir, "sel.json")
-	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	handler, err := ModelRelayRegistryHandler(registry, sel, "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1128,14 +1128,14 @@ models:
 		handler.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	alice, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-alice.json"), "alice", "admintoken")
+	alice, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel-alice.json"), "alice", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if code := put(alice, "default"); code != http.StatusForbidden {
 		t.Fatalf("switch=none accepted a logical model: %d", code)
 	}
-	carol, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-carol.json"), "carol", "admintoken")
+	carol, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel-carol.json"), "carol", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1145,7 +1145,7 @@ models:
 	if code := put(carol, "gemini-3.5-flash-lite"); code != http.StatusForbidden {
 		t.Fatalf("switch=logical accepted a catalog model: %d", code)
 	}
-	dave, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-dave.json"), "dave", "admintoken")
+	dave, err := ModelRelayRegistryHandler(registry, filepath.Join(dir, "sel-dave.json"), "dave", "admintoken")
 	if err != nil {
 		t.Fatal(err)
 	}

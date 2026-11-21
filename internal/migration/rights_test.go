@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -24,7 +23,7 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 		t.Fatal("selected toolset accepted without its registered definition")
 	}
 	store := toolhub.NewStore()
-	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
+	if err := store.RegisterDefinition(catalog.HubToolsDefinition()); err != nil {
 		t.Fatal(err)
 	}
 	selected, core, _, err := selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}}\nextended:\n  memory: {via: toolhub, access: read}\n"), docs, "")
@@ -63,7 +62,7 @@ func TestSelectedHubToolsPinsBoundDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := toolhub.NewStore()
-	compiled := agenttools.HubToolsDefinition()
+	compiled := catalog.HubToolsDefinition()
 	bound := compiled
 	bound.Version = "0.0.1"
 	if err := store.RegisterDefinition(bound); err != nil {
@@ -145,15 +144,15 @@ func TestConnectorRecoveryOmitsRevokedBinding(t *testing.T) {
 	}
 }
 
-// publishFixtureRevision stamps the smallest loadable managed revision: the
-// six published docs plus the current pointer the managed read requires.
-func publishFixtureRevision(t *testing.T, dir, user, revision string) {
-	t.Helper()
-	revDir := filepath.Join(dir, "generated", "passports", revision)
-	if err := os.MkdirAll(revDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	env := "apiVersion: six-passport/v2\nmetadata: {space: " + user + ", environment: dev, revision: " + revision + ", generated_at: 2026-11-02T00:00:00Z, catalogs: \"4\"}\n"
+// fixtureEnvelope is the shared v2 envelope every fixture doc carries.
+func fixtureEnvelope(user, revision string) string {
+	return "apiVersion: six-passport/v2\nmetadata: {space: " + user + ", environment: dev, revision: " + revision + ", generated_at: 2026-11-02T00:00:00Z, catalogs: \"4\"}\n"
+}
+
+// fixtureRevisionDocs returns the six published docs in their enveloped byte
+// form — the same shape Revision.Docs and the on-disk passports carry.
+func fixtureRevisionDocs(user, revision string) map[string][]byte {
+	env := fixtureEnvelope(user, revision)
 	docs := map[string]string{
 		"stack": "kind: stack\nidentity: {user: " + user + ", infra: false}\nservices:\n" +
 			"  hermes-runtime: {mode: supervised}\n" +
@@ -167,14 +166,32 @@ func publishFixtureRevision(t *testing.T, dir, user, revision string) {
 		"tools":     "kind: tools\nbinding: {profile_id: " + user + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n",
 		"grants":    "kind: grants\nallow: {}\n",
 	}
+	out := make(map[string][]byte, len(docs))
 	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(env+body), 0600); err != nil {
+		out[name] = []byte(env + body)
+	}
+	return out
+}
+
+// publishFixtureRevision stamps the smallest loadable managed revision: the
+// six published docs plus the current pointer the managed read requires.
+// Returns the doc bytes so callers can hand the same bundle to Revision.Docs.
+func publishFixtureRevision(t *testing.T, dir, user, revision string) map[string][]byte {
+	t.Helper()
+	revDir := filepath.Join(dir, "generated", "passports", revision)
+	if err := os.MkdirAll(revDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	docs := fixtureRevisionDocs(user, revision)
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(revision+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	return docs
 }
 
 // fixtureRightsDoc is the vocabulary slice the test grants and allow map use.
@@ -192,10 +209,13 @@ func fixtureRightsDoc() api.RightsDoc {
 func TestDeriveSpaceRightsScopesToBoundProfile(t *testing.T) {
 	now := time.Now().UTC()
 	dir := filepath.Join(t.TempDir(), "alice")
-	publishFixtureRevision(t, dir, "alice", "r-fixture0000001")
+	revDocs := publishFixtureRevision(t, dir, "alice", "r-fixture0000001")
 
 	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
 	store := toolhub.NewStore()
+	if err := store.RegisterDefinition(catalog.HubToolsDefinition()); err != nil {
+		t.Fatal(err)
+	}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Members: []string{"alice"}, Revision: 1,
 		IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
 	if err := api.Confirm(&policy, "operator", now); err != nil {
@@ -232,11 +252,14 @@ func TestDeriveSpaceRightsScopesToBoundProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rev := passport.Revision{ID: "r-fixture0000001", Docs: map[string][]byte{
-		"tools":  []byte("binding: {profile_id: alice-default, generation: 1}\n"),
-		"grants": []byte("allow:\n  workspace: [read]\n"),
-	}}
-	if err := DeriveSpaceRights(dir, "alice", "dev", rev, catalog.Docs{Rights: rights}, now); err != nil {
+	revDocs["grants"] = []byte(fixtureEnvelope("alice", "r-fixture0000001") + "kind: grants\nallow:\n  workspace: [read]\n")
+	rev := passport.Revision{ID: "r-fixture0000001", Docs: revDocs}
+	vocab, err := catalog.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vocab.Rights = rights
+	if err := DeriveSpaceRights(dir, "alice", "dev", rev, vocab, now); err != nil {
 		t.Fatal(err)
 	}
 
