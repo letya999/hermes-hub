@@ -49,16 +49,31 @@ func managedDockerRun(ctx context.Context, args ...string) error {
 	return nil
 }
 
+// relayProbe starts one long-lived container on hermes-hub-control so
+// every relay hop is a cheap docker exec instead of a fresh docker run —
+// under a loaded daemon a create+rm pair can outlast the runtime's 10s
+// run-authorization window, which made the streamed first message flaky.
+func relayProbe(t *testing.T, image, name string) string {
+	t.Helper()
+	if err := managedDockerRun(t.Context(), "run", "-d", "--name", name, "--network", "hermes-hub-control",
+		"--label", "hermes.test=chg-0336", "--entrypoint", "sh", image, "-c", "sleep 900"); err != nil {
+		t.Fatalf("relay probe container: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+	})
+	return name
+}
+
 // relayCurl issues one bounded request to a claimed managed runtime the
 // way the containerized controller reaches it: the control relay is
 // dual-homed on the internal agent network and hermes-hub-control, and
 // the claim answers its name on the control net (HUB_DOCKER_HOST_ROOT
 // set). The loopback -p publish the argv also carries is a no-op for a
 // container whose primary network is internal, so the host never owns a
-// route — probes ride a throwaway container on the control network.
-func relayCurl(ctx context.Context, image, url, auth, method string, body []byte, headers ...string) (int, []byte, error) {
-	args := []string{"run", "--rm", "-i", "--network", "hermes-hub-control", "--entrypoint", "curl",
-		"--log-driver", "none", image,
+// route — probes ride a shared container on the control network.
+func relayCurl(ctx context.Context, box, url, auth, method string, body []byte, headers ...string) (int, []byte, error) {
+	args := []string{"exec", "-i", box, "curl",
 		"-sS", "--max-time", "110", "-X", method, "-H", "Authorization: Bearer " + auth,
 		"-w", "\n%{http_code}"}
 	for _, h := range headers {
@@ -98,9 +113,8 @@ func relayCurl(ctx context.Context, image, url, auth, method string, body []byte
 // line by line — the caller must see run.admitted while the run is still
 // in flight so it can install the authorization grant the model proxy
 // waits on (the same handoff supervisor's deliverRunAuthorization makes).
-func relayCurlStream(ctx context.Context, image, url, auth string, headers []string, body []byte, consume func([]byte) error) error {
-	args := []string{"run", "--rm", "-i", "--network", "hermes-hub-control", "--entrypoint", "curl",
-		"--log-driver", "none", image,
+func relayCurlStream(ctx context.Context, box, url, auth string, headers []string, body []byte, consume func([]byte) error) error {
+	args := []string{"exec", "-i", box, "curl",
 		"-sS", "-N", "--max-time", "280", "-X", http.MethodPost,
 		"-H", "Authorization: Bearer " + auth,
 		"-H", "Content-Type: application/json",
@@ -440,9 +454,10 @@ func TestManagedRuntimeDockerAnswersMessage(t *testing.T) {
 	}
 
 	readyURL := claimed.Runtime.Address + "/readyz"
-	deadline := time.Now().Add(240 * time.Second)
+	box := relayProbe(t, image, "hermes-m40a-"+claimed.Runtime.ID+"-probe")
+	deadline := time.Now().Add(480 * time.Second)
 	for {
-		code, _, err := relayCurl(ctx, image, readyURL, auth, http.MethodGet, nil)
+		code, _, err := relayCurl(ctx, box, readyURL, auth, http.MethodGet, nil)
 		if err == nil && code == http.StatusOK {
 			break
 		}
@@ -486,7 +501,7 @@ func TestManagedRuntimeDockerAnswersMessage(t *testing.T) {
 	}
 	proof := hex.EncodeToString(proofBytes)
 	var final hubruntime.ExecuteResponse
-	streamErr := relayCurlStream(ctx, image, claimed.Runtime.Address+"/v1/execute", auth,
+	streamErr := relayCurlStream(ctx, box, claimed.Runtime.Address+"/v1/execute", auth,
 		[]string{hubruntime.RunDeliveryHeader + ": " + proof}, payload,
 		func(line []byte) error {
 			var event hubruntime.ExecuteResponse
@@ -502,7 +517,7 @@ func TestManagedRuntimeDockerAnswersMessage(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				code, out, err := relayCurl(ctx, image,
+				code, out, err := relayCurl(ctx, box,
 					claimed.Runtime.Address+hubruntime.RunAuthorizationPath, auth,
 					http.MethodPut, grantBody, hubruntime.RunDeliveryHeader+": "+proof)
 				if err != nil || code != http.StatusNoContent {
