@@ -410,3 +410,31 @@ func TestErrorBodyShape(t *testing.T) {
 		t.Fatalf("error body: %v %+v", err, body)
 	}
 }
+
+// Live S7a regression: routes() mounted /v1/spaces, /v1/runtimes and
+// /v1/leases but never /v1/workers/ — every exec, renew and release fell
+// through to the mux's plain-text 404 while claims under /v1/spaces
+// worked, leaving busy workers and containers leaked. The contract
+// handler must answer the workers subtree.
+func TestRoutesMountWorkersSurface(t *testing.T) {
+	st := storetest.Open(t, storetest.SQLiteURL(t), migrations.FS)
+	token := "tok"
+	c := &Controller{
+		token: token,
+		spaces: spawnv1.Handler(Contract{
+			Workers: &spawn.Workers{Store: st},
+		}, token),
+	}
+	body := `{"org":"org-a","owner":"alice","lease":"wl-0000000000000000","argv":["true"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workers/wk-0123456789abcdef/exec", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.routes().ServeHTTP(rec, req)
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&failure); err != nil || failure.Error == "" {
+		t.Fatalf("workers surface unmounted: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}

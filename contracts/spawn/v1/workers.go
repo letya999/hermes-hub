@@ -275,7 +275,7 @@ func (c httpClient) ExecWorker(ctx context.Context, id string, in WorkerExecRequ
 func handleWorker(client Client, r *http.Request) (any, error) {
 	rest := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/workers/"), "/")
 	if r.Method != http.MethodPost || len(rest) != 2 || rest[0] == "" {
-		return nil, ErrNotFound
+		return nil, httpapi.Errorf(ErrNotFound, "worker route %s %s", r.Method, r.URL.Path)
 	}
 	id, verb := rest[0], rest[1]
 	switch verb {

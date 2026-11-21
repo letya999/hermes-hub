@@ -597,13 +597,19 @@ func (w *Workers) Exec(ctx context.Context, t store.Tenant, workerID, leaseID st
 		q := tx.Scoped(t)
 		var owner string
 		if err := q.QueryRow("SELECT runtime_id FROM leases WHERE {tenant} AND id = ?", leaseID).Scan(&owner); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return httpapi.Errorf(httpapi.ErrNotFound, "exec: lease not found")
+			}
 			return err
 		}
 		if owner != workerID {
-			return store.ErrNotFound
+			return httpapi.Errorf(httpapi.ErrNotFound, "exec: lease not held by worker")
 		}
 		var state string
 		if err := q.QueryRow("SELECT state FROM workers WHERE {tenant} AND id = ?", workerID).Scan(&state); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return httpapi.Errorf(httpapi.ErrNotFound, "exec: worker not found")
+			}
 			return err
 		}
 		if state != "busy" {

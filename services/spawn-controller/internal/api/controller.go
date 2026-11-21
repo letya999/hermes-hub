@@ -148,6 +148,7 @@ func (c *Controller) routes() *http.ServeMux {
 		// spaces routes; only the process-mode first message stays here.
 		mux.Handle("/v1/runtimes", c.guard(c.spaces.ServeHTTP))
 		mux.Handle("/v1/leases/", c.guard(c.spaces.ServeHTTP))
+		mux.Handle("/v1/workers/", c.guard(c.spaces.ServeHTTP))
 	}
 	mux.HandleFunc("/v1/messages", c.guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
