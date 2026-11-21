@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	spawnfake "github.com/letya999/hermes-hub/contracts/spawn/v1/fake"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -75,25 +77,39 @@ func memorySearchAdmit(t *testing.T, store *toolhub.Store, gov *toolhub.Governan
 	return auth
 }
 
-// writeSearchPassport publishes a six-passport revision for user — the
-// server-owned enrollment record the vault resolver reads.
-func writeSearchPassport(t *testing.T, root, user, environment string, enabled bool) {
+// publishSearchPassport submits and activates a six-passport revision for
+// user through the spawn contract — the server-owned enrollment record the
+// vault resolver reads via HUB_SPAWN_URL.
+func publishSearchPassport(t *testing.T, client spawnv1.Client, user, environment string, enabled bool) {
 	t.Helper()
+	ctx := context.Background()
+	// The enrolled capability profile pins this revision; the gateway
+	// refuses calls whose active passport metadata does not match it.
 	revision := "r-0123456789abcdef"
-	dir := filepath.Join(root, user, "passports", revision)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	tenant := spawnv1.Tenant{Org: "local", Owner: user}
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{Org: tenant.Org, Owner: tenant.Owner, ID: user, Environment: environment, IdempotencyKey: "mk-" + user}); err != nil && !errors.Is(err, spawnv1.ErrConflict) {
 		t.Fatal(err)
 	}
+	docs := map[string]map[string]any{}
 	for _, name := range spawnv1.Names {
-		body := "apiVersion: six-passport/v2\nkind: " + name + "\nmetadata: {space: " + user + ", environment: " + environment + ", revision: " + revision + "}\n"
+		doc := map[string]any{
+			"apiVersion": "six-passport/v2",
+			"kind":       name,
+			"metadata":   map[string]any{"space": user, "environment": environment, "revision": revision},
+		}
 		if name == "config" {
-			body += "memory: {enabled: " + map[bool]string{true: "true", false: "false"}[enabled] + "}\n"
+			doc["memory"] = map[string]any{"enabled": enabled}
 		}
-		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		docs[name] = doc
 	}
-	if err := os.WriteFile(filepath.Join(root, user, "passports", "current"), []byte(revision+"\n"), 0o600); err != nil {
+	rev, err := client.SubmitRevision(ctx, user, "user", spawnv1.SubmitRevisionRequest{Org: tenant.Org, Owner: tenant.Owner, Documents: docs, IdempotencyKey: "sub-" + revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ValidateRevision(ctx, user, rev.ID, spawnv1.RevisionRequest{Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: "val-" + revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ActivateRevisions(ctx, user, spawnv1.ActivationRequest{Org: tenant.Org, Owner: tenant.Owner, Revisions: []string{rev.ID}, IdempotencyKey: "act-" + revision}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -165,12 +181,14 @@ func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	gov := toolhub.NewGovernanceStore(govPath)
 	store.RightsLedger = gov.Load
 
-	passports := t.TempDir()
+	spawnSrv := httptest.NewServer(spawnv1.Handler(spawnv1.NewInProc(&spawnfake.Server{}), "spawn-token"))
+	defer spawnSrv.Close()
+	spawnClient := spawnv1.NewHTTPClient(spawnSrv.URL, "spawn-token", spawnSrv.Client())
 	vaults := t.TempDir()
 	users := map[string]identity.Envelope{}
 	admit := func(user string, memoryRight, toolCall, memoryEnabled bool) identity.Envelope {
 		env := memorySearchAdmit(t, store, gov, doc, definition, digest, user, memoryRight, toolCall)
-		writeSearchPassport(t, passports, user, "dev", memoryEnabled)
+		publishSearchPassport(t, spawnClient, user, "dev", memoryEnabled)
 		users[user] = env
 		return env
 	}
@@ -241,6 +259,8 @@ func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	defer supervisor.Close()
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
 	t.Setenv("HUB_COMMUNICATION_AUTH", "comm-token")
+	t.Setenv("HUB_SPAWN_URL", spawnSrv.URL)
+	t.Setenv("HUB_SPAWN_TOKEN", "spawn-token")
 	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", vaults)
 	t.Setenv("HUB_TOOL_GOVERNANCE", govPath)
 	t.Setenv("HUB_AUDIT_LEDGER", filepath.Join(t.TempDir(), "audit.jsonl"))

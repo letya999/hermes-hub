@@ -147,17 +147,16 @@ func Handle(token string, fn func(*http.Request) (any, error)) http.HandlerFunc 
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		out, err := fn(r)
 		if err != nil {
-			// Refusals travel as fmt.Errorf("%w: <detail>", kind), so the
-			// typed sentinel alone carries no message — strip the code
-			// prefix from the wrapped chain instead of losing the detail.
-			// Untyped failures keep the empty body of before: their text
-			// is internal, not a contract detail.
+			// Refusals travel as fmt.Errorf("%w: <detail>", kind): only a
+			// message that follows the code prefix is contract detail.
+			// Anything else — a bare sentinel or a foreign wrap that puts
+			// its own text first — is a server-side diagnostic and stays
+			// off the wire.
 			message := ""
 			var typed *Error
 			if errors.As(err, &typed) {
-				message = strings.TrimPrefix(err.Error(), typed.Code+": ")
-				if message == typed.Code {
-					message = ""
+				if rest, ok := strings.CutPrefix(err.Error(), typed.Code+": "); ok {
+					message = rest
 				}
 			}
 			write(w, statusOf(err), map[string]string{"error": message})
@@ -204,10 +203,12 @@ func Normalize(err error) error {
 	}
 	if errors.As(err, &typed) {
 		// fmt.Errorf("%w: <detail>", kind) chains through the in-process
-		// leg before the wire writer runs — carry the detail forward.
-		msg := strings.TrimPrefix(err.Error(), typed.Code+": ")
-		if msg == typed.Code {
-			msg = ""
+		// leg before the wire writer runs — carry the detail forward, but
+		// only when it actually follows the code prefix; foreign wraps
+		// keep their diagnostics server-side.
+		msg := ""
+		if rest, ok := strings.CutPrefix(err.Error(), typed.Code+": "); ok {
+			msg = rest
 		}
 		return &Error{Code: typed.Code, Message: msg}
 	}

@@ -63,7 +63,7 @@ func TestRegistryCoversReviewedToolInventory(t *testing.T) {
 		if c.Test == "" {
 			continue
 		}
-		files, err := filepath.Glob(filepath.Join("..", c.Package, "*_test.go"))
+		files, err := filepath.Glob(filepath.Join("..", "..", c.Package, "*_test.go"))
 		if err != nil {
 			t.Fatal(err)
 		}

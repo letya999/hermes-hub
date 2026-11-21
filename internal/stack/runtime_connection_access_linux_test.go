@@ -11,7 +11,7 @@ import (
 func TestRuntimeConnectionReadableAsContainerUser(t *testing.T) {
 	dir := t.TempDir()
 	writeExposureConfig(t, dir)
-	s := Settings{Tools: map[string]ToolEntry{"exposure": {Via: ToolViaToolHub}}}
+	s := Settings{Tools: map[string]ToolEntry{"exposure": {Via: ToolViaToolHub}}, PassportServices: map[string]string{"egress-relay": "per-space"}}
 	if err := ValidateRuntimeConnections(s, dir); err != nil {
 		t.Fatal(err)
 	}

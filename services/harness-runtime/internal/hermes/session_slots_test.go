@@ -176,6 +176,11 @@ func TestParallelSessionsIsolated(t *testing.T) {
 	for key, value := range map[string]string{"HUB_RUNTIME_AUTH": "secret", "HUB_USER_ID": "alice", "HUB_ORGANIZATION_ID": "personal", "HUB_RUNTIME_ID": "alice", "HUB_POLICY_VERSION": "policy-1", "HUB_RUNTIME_GENERATION": "gen-1", "HUB_SESSION_SLOTS": "2"} {
 		t.Setenv(key, value)
 	}
+	// The admission journal is keyed by JobID: it must land in a writable
+	// state dir, not the default /state a bare test box does not have.
+	oldState := state
+	state = t.TempDir()
+	t.Cleanup(func() { state = oldState })
 	var admitted atomic.Int32
 	release := make(chan struct{})
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
