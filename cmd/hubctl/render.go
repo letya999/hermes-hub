@@ -58,6 +58,10 @@ func renderEnvironmentFor(ctx context.Context, client spawnv1.EffectiveReader, d
 // projection (the CHG-0230 live outage). Migration runs at render time so the
 // deploy that follows already finds matching state.
 func migrateToolhubBindings(dir string, s stack.Settings) error {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
 	manifest := stack.ExpectedToolManifest(s)
 	// A managed space's ToolHub state lives in the infra sibling's runtime
 	// dir — resolving only the caller's own root would miss the live store
