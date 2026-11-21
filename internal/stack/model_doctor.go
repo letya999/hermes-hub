@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // ModelDoctor reports effective provider scope and owner-local apply actions.
-func ModelDoctor(dir string, s Settings, secrets map[string]string) ([]string, error) {
-	registry, err := LoadModelRegistry(dir, s)
+func ModelDoctor(dir string, s Settings, eff spawnv1.Effective, secrets map[string]string) ([]string, error) {
+	registry, err := LoadModelRegistryFor(dir, eff)
 	if err != nil {
 		return nil, err
 	}

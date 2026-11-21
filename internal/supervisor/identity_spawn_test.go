@@ -25,7 +25,7 @@ func TestIdentityTemplateDriftRefusesMaterialization(t *testing.T) {
 	if err := r.SetLayer(context.Background(), "alice", "user:alice", contract.Restrictions{Mode: "read-only", Guardrails: []string{"owner-policy"}, MemoryScopes: []string{}}); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.ReadEffective(root, "prod")
+	settings, err := stack.ReadEffective(context.Background(), supTestReader{root}, root, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestParallelAgentProfilesKeepSeparateSkillViews(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	settings, err := stack.ReadEffective(root, "prod")
+	settings, err := stack.ReadEffective(context.Background(), supTestReader{root}, root, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

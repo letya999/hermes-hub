@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -144,7 +144,7 @@ func TestAgentRuntimeLeaseUsesEnrolledPublishedIdentity(t *testing.T) {
 			if err := os.MkdirAll(revision, 0700); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range passportview.Names {
+			for _, name := range spawnv1.Names {
 				body := fmt.Sprintf("apiVersion: six-passport/v2\nkind: %s\nmetadata: {space: alice, environment: prod, revision: r-test}\n", name)
 				if name == "stack" {
 					body += "identity: {user: alice, kind: " + scopeKind + "}\n"
@@ -205,7 +205,7 @@ func TestAgentRuntimeLeaseUsesEnrolledPublishedIdentity(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", server.URL)
-			gateway := &Gateway{Tokens: map[string]identity.Envelope{"runtime-token": auth}, PassportRoot: root, ControlToken: "service"}
+			gateway := &Gateway{Tokens: map[string]identity.Envelope{"runtime-token": auth}, Spawn: dirTreeReader{root: root}, ControlToken: "service"}
 			ctx, cancel := context.WithCancel(t.Context())
 			release, err := gateway.acquireAgentRuntime(ctx, effective)
 			if err != nil || release == nil {

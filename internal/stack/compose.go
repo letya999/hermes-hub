@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"net/url"
@@ -750,7 +749,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
 			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
-			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
 			toolhubEnv["HUB_INBOX_BY_PRINCIPAL"] = "/inboxes-by"
 			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
 			toolhubEnv["HUB_MODEL_USAGE_BY"] = "/model-state-by"
@@ -766,22 +764,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(ownerRoot), "target": "/automation-owners/" + sibling.Name()})
 						}
 					}
-					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
-					if info, err := os.Lstat(published); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
-						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
-					}
 					inbox := filepath.Join(parent, sibling.Name(), "managed", s.Environment, "workspace", "inbox")
 					if info, err := os.Lstat(inbox); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(inbox), "target": "/inboxes-by/" + sibling.Name()})
 					}
 					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
 					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
-						enabled := sibling.Name() == s.User && s.PassportRevision != "" && s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled
-						if !enabled && (sibling.Name() != s.User || s.PassportRevision == "") {
-							effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name()))
-							enabled = err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment
-						}
-						if enabled {
+						if s.siblingMemory[sibling.Name()] {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
 						}
 					}
@@ -1016,7 +1005,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// lifetime — an exiting companion would destroy the volumes.
 			init["entrypoint"] = []string{"sh", "-c", "hub-runtime cliproxy-materialize && exec sleep infinity"}
 			init["healthcheck"] = M{"test": []string{"CMD-SHELL", "test -f /run/cliproxy-cfg/config.yaml && ls /cliproxy/auths/*.json >/dev/null 2>&1"}, "interval": "2s", "timeout": "5s", "retries": 30}
-			init["environment"] = M{"HUB_CLIPROXY_INSTANCE": name, "HUB_USER_ID": s.User}
+			init["environment"] = M{"HUB_CLIPROXY_INSTANCE": name, "HUB_USER_ID": s.User, "HUB_ENVIRONMENT": s.Environment}
 			for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CLIPROXY_", "cliproxy", "hermes-cliproxy-session") {
 				init["environment"].(M)[key] = value
 			}

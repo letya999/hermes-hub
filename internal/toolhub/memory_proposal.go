@@ -281,7 +281,7 @@ func deliverMemoryProposal(ctx context.Context, auth identity.Envelope, prop car
 // confirmation — the /v1/confirmations endpoint routes the proposal id
 // namespace here. Denials are uniform.
 func (g *Gateway) consumeMemoryProposal(proof api.HumanConfirmation) error {
-	u, err := g.Vaults.resolveForProposal(proof.Actor.PrincipalID, proof.Actor.Environment)
+	u, err := g.Vaults.resolveForProposal(context.Background(), proof.Actor.PrincipalID, proof.Actor.Environment)
 	if err != nil {
 		return api.ErrUnauthorized
 	}
@@ -300,7 +300,7 @@ func (g *Gateway) consumeMemoryProposal(proof api.HumanConfirmation) error {
 			return api.ErrUnauthorized
 		}
 		if prop.State == "" && !prop.Used {
-			if !now.Before(prop.ExpiresAt) || memoryEnrollment(g.PassportRoot, prop.PrincipalID, prop.Environment) != nil {
+			if !now.Before(prop.ExpiresAt) || memoryEnrollment(context.Background(), g.Spawn, prop.PrincipalID, prop.Environment) != nil {
 				return proposalDenied(root, prop)
 			}
 			if err := g.Store.Reload(); err != nil {
@@ -414,7 +414,7 @@ func (g *Gateway) recoverMemoryProposals() error {
 			if prop.ID != id || prop.PrincipalID != principal || !prop.Used || prop.State != "applying" && prop.State != "" {
 				return fmt.Errorf("invalid consumed memory proposal %s", id)
 			}
-			u, err := g.Vaults.resolveForProposal(principal, prop.Environment)
+			u, err := g.Vaults.resolveForProposal(context.Background(), principal, prop.Environment)
 			if err != nil {
 				return err
 			}

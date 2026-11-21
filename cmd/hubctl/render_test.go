@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -64,10 +66,13 @@ func TestOperatorRenderKeepsToolHubMigration(t *testing.T) {
 	if err := os.WriteFile(store, []byte("not a ToolHub store\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := stack.RenderEnvironment(dir, root, "dev"); err != nil {
+	if err := stack.RenderEnvironment(context.Background(), spacesRootReader{root: filepath.Dir(dir)}, dir, root, "dev"); err != nil {
 		t.Fatalf("pure renderer failed: %v", err)
 	}
-	if err := renderEnvironment(dir, root, "dev"); !errors.Is(err, api.ErrInvalid) {
+	prev := renderClient
+	renderClient = func(string) (spawnv1.EffectiveReader, error) { return spacesRootReader{root: filepath.Dir(dir)}, nil }
+	t.Cleanup(func() { renderClient = prev })
+	if err := renderEnvironment(context.Background(), dir, root, "dev"); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("operator render skipped ToolHub migration: %v", err)
 	}
 }

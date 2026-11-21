@@ -415,7 +415,7 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 	if !current {
 		return
 	}
-	binding, err := m.bindingFor(record.Request)
+	binding, err := m.bindingFor(ctx, record.Request)
 	if err != nil {
 		return
 	}
@@ -519,7 +519,7 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 	// misses the pool stays durable and is collected again next sweep.
 	var workers sync.WaitGroup
 	for _, record := range requests {
-		binding, err := m.bindingFor(record.Request)
+		binding, err := m.bindingFor(ctx, record.Request)
 		if err != nil {
 			continue
 		}

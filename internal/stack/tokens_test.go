@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, outside, "alice", "r-0000000000000001")
-	if err := EnrollSiblingRuntimeTokens(outside, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(outside), outside, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "toolhub-tokens.json")); !os.IsNotExist(err) {
@@ -140,7 +141,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingRuntimeTokens(owner, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(path)
@@ -174,7 +175,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if _, ok := got[carol]; ok {
 		t.Fatal("removed sibling token retained")
 	}
-	settings, err := ReadEnvironment(sibling, "prod")
+	settings, err := ReadEnvironment(context.Background(), testReader(sibling), sibling, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 		t.Fatalf("policy=%s", bob.PolicyVersion)
 	}
 	kept := append([]byte(nil), body...)
-	if err := EnrollSiblingRuntimeTokens(owner, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	again, err := os.ReadFile(path)
@@ -195,7 +196,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err := os.Rename(sibling, filepath.Join(root, "retired-bob")); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingRuntimeTokens(owner, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -228,7 +229,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err := os.WriteFile(onlyPath, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingRuntimeTokens(lonely, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(lonely), lonely, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(onlyPath); !os.IsNotExist(err) {
@@ -263,7 +264,7 @@ func TestEnrollSiblingModelRelayAdmins(t *testing.T) {
 	}
 
 	path := filepath.Join(owner, "model-relay-admins.json")
-	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+	if err := EnrollSiblingModelRelayAdmins(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -291,7 +292,7 @@ func TestEnrollSiblingModelRelayAdmins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+	if err := EnrollSiblingModelRelayAdmins(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(path)
@@ -306,7 +307,7 @@ func TestEnrollSiblingModelRelayAdmins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+	if err := EnrollSiblingModelRelayAdmins(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -334,7 +335,7 @@ func TestEnrollSiblingRuntimeTokensReadsManagedRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(owner, "toolhub-tokens.json")
-	if err := EnrollSiblingRuntimeTokens(owner, "prod"); err != nil {
+	if err := EnrollSiblingRuntimeTokens(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -370,7 +371,7 @@ func TestEnrollSiblingModelRelayAdminsReadsManagedRevision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\nHUB_MODEL_RELAY_ADMIN="+admin+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+	if err := EnrollSiblingModelRelayAdmins(context.Background(), testReader(owner), owner, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(owner, "model-relay-admins.json"))
@@ -403,7 +404,7 @@ func TestRenderEnvironmentEnrollsModelRelayAdmins(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, managed, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(infra, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(infra), infra, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +427,7 @@ func TestRenderEnvironmentEnrollsModelRelayAdmins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(infra, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(infra), infra, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(infra, "model-relay-admins.json"))

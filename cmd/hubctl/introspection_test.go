@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 func TestRuntimeIntrospectionGateAuditsDeniedCall(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
-	if _, err := runtimeIntrospectionGate(dir, "dev", "exec"); err == nil {
+	if _, err := runtimeIntrospectionGate(context.Background(), dir, "dev", "exec"); err == nil {
 		t.Fatal("unpublished space passed the introspection gate")
 	}
 

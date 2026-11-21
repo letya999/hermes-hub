@@ -210,7 +210,7 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 	}
 
 	calls := 0
-	g := &Gateway{Store: store, PassportRoot: passports,
+	g := &Gateway{Store: store, Spawn: dirTreeReader{root: passports},
 		authorizeAssignmentRun: func(bound identity.Envelope, id string, revision uint64) error {
 			if bound.PrincipalID != auth.PrincipalID || id != "asg-owner" || revision != 1 {
 				return api.ErrUnauthorized

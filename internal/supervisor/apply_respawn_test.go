@@ -4,34 +4,18 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func TestApplyRespawnBoundToLiveDigest(t *testing.T) {
-	m, space := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	effective, err := passportview.LoadEffective(space)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The v1 mirror points `current` at the effective digest and resolves
-	// the emitted revision through the .policy indirection.
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	// The live digest is the contract's effective digest — the file mirror
+	// and its .policy indirection are gone (S7d).
 	digest := "sha256:" + strings.Repeat("ab", 32)
-	passports := filepath.Join(space, "generated", "passports")
-	if err := os.MkdirAll(filepath.Join(passports, ".policy"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(passports, ".policy", strings.TrimPrefix(digest, "sha256:")), []byte(effective.Header.Metadata.Revision), 0600); err != nil {
-		t.Fatal(err)
-	}
-	current := filepath.Join(passports, "current")
-	if err := os.WriteFile(current, []byte(digest+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	m.cfg.Spawn = &claimStub{spec: spawnv1.EffectiveSpec{Space: "alice", Digest: digest}}
 	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
 	request := func(header string) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/v1/respawn", strings.NewReader(`{"principal_id":"alice","context_id":"alice"}`))
@@ -53,17 +37,12 @@ func TestApplyRespawnBoundToLiveDigest(t *testing.T) {
 			}
 		})
 	}
-	// A mid-publish mirror pins current to pending — nothing is live to
-	// bind the respawn to.
-	if err := os.WriteFile(current, []byte("pending\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// No live spec means nothing to bind the respawn to.
+	m.cfg.Spawn = &claimStub{specErr: spawnv1.ErrNotFound}
 	if m.applyRespawnAuthorized(request(digest), "alice", "alice", "") {
-		t.Fatal("pending pointer admitted a respawn")
+		t.Fatal("missing spec admitted a respawn")
 	}
-	if err := os.WriteFile(current, []byte(digest+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	m.cfg.Spawn = &claimStub{spec: spawnv1.EffectiveSpec{Space: "alice", Digest: digest}}
 	if m.applyRespawnAuthorized(request(digest), "alice", "bob", "") {
 		t.Fatal("foreign context admitted")
 	}

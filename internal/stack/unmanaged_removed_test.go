@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func TestHermesMaterializationRejectsLegacyConfig(t *testing.T) {
@@ -53,8 +53,8 @@ func TestNoUnmanagedRenderPath(t *testing.T) {
 		}
 	}
 	for _, kind := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
-		body := "apiVersion: " + passportview.APIVersionV2 + "\nkind: " + kind + "\nmetadata: {space: alice, environment: prod, revision: r-1}\ncapability_mode: unmanaged\n"
-		if _, err := passportview.Decode(kind, []byte(body)); err == nil || !strings.Contains(err.Error(), "capability_mode") {
+		body := "apiVersion: " + spawnv1.APIVersionV2 + "\nkind: " + kind + "\nmetadata: {space: alice, environment: prod, revision: r-1}\ncapability_mode: unmanaged\n"
+		if _, err := spawnv1.Decode(kind, []byte(body)); err == nil || !strings.Contains(err.Error(), "capability_mode") {
 			t.Fatalf("%s passport accepted a capability_mode key: %v", kind, err)
 		}
 	}

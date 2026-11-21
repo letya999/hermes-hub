@@ -1,12 +1,13 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // writeSixPassports publishes a minimal revision under dir/generated/passports
@@ -77,7 +78,7 @@ func TestManagedWebPolicyFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\nuser: alice\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestComposePortsFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestEffectiveHermesConfigFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestGatewayChannelsFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,9 +269,9 @@ func TestSupervisorPolicyFileFromConfigPassport(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("empty supervision must not emit a policy file: %v", err)
 	}
-	s.PassportConfig = &passportview.Config{Supervision: passportview.Supervision{
+	s.PassportConfig = &spawnv1.Config{Supervision: spawnv1.Supervision{
 		IdleStop: "5m", Restart: "on-failure",
-		Watchers: map[string]passportview.Watcher{"stack-health": {Protected: true, Every: "1m"}},
+		Watchers: map[string]spawnv1.Watcher{"stack-health": {Protected: true, Every: "1m"}},
 	}}
 	if err := writeSupervisorPolicy(dir, s); err != nil {
 		t.Fatal(err)
@@ -303,7 +304,7 @@ func TestManagedMemoryRejectsLegacyBackend(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadEffective(dir, "prod"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(dir), dir, "prod"); err == nil {
 		t.Fatal("managed memory admitted the legacy Honcho backend")
 	}
 }

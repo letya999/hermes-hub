@@ -27,7 +27,7 @@ func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	g := &Gateway{Store: store, PassportRoot: root, AuditWrite: func(string, map[string]string) error { return nil },
+	g := &Gateway{Store: store, Spawn: dirTreeReader{root: root}, AuditWrite: func(string, map[string]string) error { return nil },
 		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
 			if jobID != "job-private" {
 				return api.RunContext{}, context.DeadlineExceeded
@@ -67,22 +67,22 @@ func TestMemoryPassportGateUsesAuthenticatedPrincipal(t *testing.T) {
 	root := t.TempDir()
 	writeMemoryPassport(t, root, "alice", true)
 	writeMemoryPassport(t, root, "bob", false)
-	if err := memoryEnrollment(root, "alice", "dev"); err != nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: root}, "alice", "dev"); err != nil {
 		t.Fatalf("alice's enabled memory denied: %v", err)
 	}
-	if err := memoryEnrollment(root, "alice", "prod"); err == nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: root}, "alice", "prod"); err == nil {
 		t.Fatal("prod call inherited dev memory switch")
 	}
-	if err := memoryEnrollment(root, "bob", "dev"); err == nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: root}, "bob", "dev"); err == nil {
 		t.Fatal("bob inherited alice's enabled memory")
 	}
-	if err := memoryEnrollment(root, "carol", "dev"); err == nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: root}, "carol", "dev"); err == nil {
 		t.Fatal("missing published passport enabled memory")
 	}
-	if err := memoryEnrollment(root, "../alice", "dev"); err == nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: root}, "../alice", "dev"); err == nil {
 		t.Fatal("invalid principal escaped passport root")
 	}
-	if err := memoryEnrollment("", "alice", "dev"); err == nil {
+	if err := memoryEnrollment(context.Background(), dirTreeReader{root: ""}, "alice", "dev"); err == nil {
 		t.Fatal("unmounted passport root enabled memory")
 	}
 }

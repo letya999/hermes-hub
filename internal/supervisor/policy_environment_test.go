@@ -16,17 +16,17 @@ func TestCurrentPolicyUsesSelectedManagerEnvironment(t *testing.T) {
 	_ = controlTestPolicy(t, root)
 	m.cfg.Environment = "dev"
 	t.Setenv("HUB_ENV", "prod")
-	settings, err := stack.ReadEnvironment(root, "dev")
+	settings, err := stack.ReadEnvironment(context.Background(), supTestReader{root}, root, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
 	r := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", stack.PolicyVersion(settings)), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Trigger: "cron"}
-	if err := m.authorizeCurrentPolicy(r); err != nil {
+	if err := m.authorizeCurrentPolicy(context.Background(), r); err != nil {
 		t.Fatal("dev policy rejected by prod process default", err)
 	}
 	r.PolicyVersion = "foreign-policy"
-	if m.authorizeCurrentPolicy(r) == nil {
+	if m.authorizeCurrentPolicy(context.Background(), r) == nil {
 		t.Fatal("foreign policy accepted")
 	}
 }

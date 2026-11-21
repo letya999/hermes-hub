@@ -609,7 +609,7 @@ func TestSupervisorBindingRejectsMalformedIdentityBeforeRuntimeAccess(t *testing
 		} else {
 			request.ExternalIdentityID = ""
 		}
-		if _, err := m.bindingFor(request); err == nil {
+		if _, err := m.bindingFor(context.Background(), request); err == nil {
 			t.Fatal("malformed identity accepted")
 		}
 	}
@@ -621,7 +621,7 @@ func TestSupervisorBindingRejectsMalformedIdentityBeforeRuntimeAccess(t *testing
 func controlTestPolicy(t *testing.T, root string) string {
 	t.Helper()
 	publishAliceRevision(t, root, nil)
-	settings, err := stack.ReadEnvironment(root, "prod")
+	settings, err := stack.ReadEnvironment(context.Background(), supTestReader{root}, root, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,17 +636,17 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 	}, func(context.Context, string, string) error { return nil })
 	policy := controlTestPolicy(t, root)
 	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}}, Action: "approve"}
-	if err := m.authorizeApproval(control); err != nil {
+	if err := m.authorizeApproval(context.Background(), control); err != nil {
 		t.Fatal(err)
 	}
 	forged := control
 	forged.ActorID = "another"
-	if err := m.authorizeApproval(forged); err == nil {
+	if err := m.authorizeApproval(context.Background(), forged); err == nil {
 		t.Fatal("another actor authorized")
 	}
 	forged = control
 	forged.OrganizationID = "acme"
-	if err := m.authorizeApproval(forged); err == nil {
+	if err := m.authorizeApproval(context.Background(), forged); err == nil {
 		t.Fatal("caller expanded organization")
 	}
 	// A republished revision that narrows a toolset to read-only projects a
@@ -654,13 +654,13 @@ func TestApprovalRejectsChangedUnavailableAndExpandedPolicy(t *testing.T) {
 	publishAliceRevision(t, root, func(docs map[string]string) {
 		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
 	})
-	if err := m.authorizeApproval(control); err == nil {
+	if err := m.authorizeApproval(context.Background(), control); err == nil {
 		t.Fatal("changed policy accepted old approval")
 	}
 	if err := os.Remove(filepath.Join(root, "generated", "passports", "current")); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.authorizeApproval(control); err == nil {
+	if err := m.authorizeApproval(context.Background(), control); err == nil {
 		t.Fatal("missing policy authorized")
 	}
 }
@@ -684,18 +684,18 @@ func TestApprovalRechecksOrganizationMembership(t *testing.T) {
 	if err := os.WriteFile(orgPath, org, 0600); err != nil {
 		t.Fatal(err)
 	}
-	policy := m.currentPolicyVersion("alice")
+	policy := m.currentPolicyVersion(context.Background(), "alice")
 	if policy == "" {
 		t.Fatal("organization policy unresolved")
 	}
 	control := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", policy), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "acme"}}, Action: "approve"}
-	if err := m.authorizeApproval(control); err != nil {
+	if err := m.authorizeApproval(context.Background(), control); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(orgPath, []byte("schema: 1\norganization: acme\nmembers: {}\nfeatures: [workspace]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.authorizeApproval(control); err == nil {
+	if err := m.authorizeApproval(context.Background(), control); err == nil {
 		t.Fatal("removed member authorized approval")
 	}
 }

@@ -15,7 +15,6 @@ import (
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	brokeridentity "github.com/letya999/credential-broker/identity"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // modelsLoginOnboardingID fits the broker's 40-char id budget: the readable
@@ -64,7 +63,7 @@ type modelsBrokerClient interface {
 // init companion's policy, relay under model-relay's: a grant pins its
 // grantor's policy, so each consumer's lease needs its own dedicated grant.
 func modelsLogin(ctx context.Context, dir, service string, control, relay modelsBrokerClient) (modelsLoginReport, error) {
-	eff, err := passportview.LoadEffective(dir)
+	eff, err := effectiveSpec(ctx, dir)
 	if err != nil {
 		return modelsLoginReport{}, fmt.Errorf("models login: %w", err)
 	}

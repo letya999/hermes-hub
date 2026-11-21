@@ -49,13 +49,13 @@ func TestKnowledgeOpenLinkChecksRunOwnerExpiryAndCurrentRights(t *testing.T) {
 	grantDefinitionRights(t, store, auth, definition)
 	vaults, passports := t.TempDir(), t.TempDir()
 	searchVaultFixture(t, vaults, passports, auth.PrincipalID, auth.Environment)
-	resolver, err := NewVaultResolver(vaults, passports)
+	resolver, err := NewVaultResolver(vaults, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	record := privateRunRecord(auth, "job-private", "run-private")
-	g := &Gateway{Store: store, Vaults: resolver, PassportRoot: passports, primaryToken: strings.Repeat("k", 32),
+	g := &Gateway{Store: store, Vaults: resolver, Spawn: dirTreeReader{root: passports}, primaryToken: strings.Repeat("k", 32),
 		Control: &ControlPlane{Store: store, FormOrigin: "http://127.0.0.1:8090", Now: func() time.Time { return now }},
 		Runs:    runAuthorityFunc(func(context.Context, string) (api.RunContext, error) { return record, nil }), Backend: api.RoutingBackend{}}
 	attachGatewayAudit(t, g)

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -20,7 +20,7 @@ import (
 // lifecycle authority. It runs before waiting for the vault and again inside
 // AuthorizeProjectedCall, so direct and nested calls deny before backend access.
 func (g *Gateway) requireMemoryAdmission(ctx context.Context, auth identity.Envelope, corr api.CallCorrelation) error {
-	if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+	if err := memoryEnrollment(ctx, g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 		return err
 	}
 	return g.requireLiveMemoryRun(ctx, auth, corr)
@@ -51,11 +51,11 @@ func (g *Gateway) requireLiveMemoryRun(ctx context.Context, auth identity.Envelo
 
 func memoryPolicyAllows(policy contract.PolicyBundle, scope string) bool {
 	scopes := policy.Identity.Restrictions.MemoryScopes
-	doc, err := passportview.Decode("config", policy.Passports["config"])
+	doc, err := spawnv1.Decode("config", policy.Passports["config"])
 	if err != nil || (scopes != nil && !slices.Contains(scopes, scope)) {
 		return false
 	}
-	memory := doc.(*passportview.ConfigDoc).Memory
+	memory := doc.(*spawnv1.ConfigDoc).Memory
 	return memory.Enabled != nil && *memory.Enabled
 }
 

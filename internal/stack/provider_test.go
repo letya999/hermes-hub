@@ -32,7 +32,7 @@ func TestProviderGrantGated(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,17 +45,17 @@ func TestProviderGrantGated(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadEffective(d, "prod"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err == nil {
 		t.Fatal("provider wish without a native:memory_provider grant must fail closed")
 	}
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 		activeToolGrant(t, doc, "alice", "native:memory_provider", time.Hour)
 	})
-	if _, err := ReadEffective(d, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err != nil {
 		t.Fatalf("granted provider wish must read: %v", err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(d, "vault", "runtime", "memory", "provider.json"))
@@ -94,7 +94,7 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 		activeToolGrant(t, doc, "alice", "native:memory_provider", time.Hour)
 	})
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(d, "vault", "runtime", "memory", "provider.json")
@@ -121,7 +121,7 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

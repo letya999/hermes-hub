@@ -63,9 +63,6 @@ func TestPassportRemovalRevokesConnectorSelection(t *testing.T) {
 		rev.Docs["tools"] = []byte(tools[:strings.Index(tools, "kind: tools")] + "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\ncore:\n" + selected)
 		body := string(rev.Docs["grants"])
 		rev.Docs["grants"] = []byte(body[:strings.Index(body, "kind: grants")] + "kind: grants\nallow: " + grants + "\n")
-		if err := rev.Publish(dir); err != nil {
-			t.Fatal(err)
-		}
 		return rev
 	}
 	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
@@ -161,9 +158,14 @@ func TestPassportRemovalRevokesConnectorSelection(t *testing.T) {
 	var session *mcp.ClientSession
 	var sessionID string
 	const token = "synthetic-connector-session-bearer-123456"
+	var rev passport.Revision
 	check := func(wantAlpha, wantBeta bool) {
 		t.Helper()
-		settings, err := stack.ReadEffective(dir, "dev")
+		eff, err := rev.Effective()
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings, err := stack.SettingsForEffective(dir, eff, "dev")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -255,7 +257,7 @@ func TestPassportRemovalRevokesConnectorSelection(t *testing.T) {
 		}
 	}
 	selected := "  github: {via: mcp}\n  gitlab: {via: mcp}\n"
-	rev := publish("r-1111111111111111", selected, "{tools: [use]}")
+	rev = publish("r-1111111111111111", selected, "{tools: [use]}")
 	if err := DeriveSpaceRights(dir, "alice", "dev", rev, docs, now); err != nil {
 		t.Fatal(err)
 	}

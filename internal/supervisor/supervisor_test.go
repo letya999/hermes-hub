@@ -207,7 +207,7 @@ func writeHermesSources(t *testing.T, ctxRoot string) {
 	// published revision: the real effective read rendered through the
 	// managed template — materialization attests it byte-for-byte, so it
 	// must carry the revision's actual admissions (browser, flags, tools).
-	settings, err := stack.ReadEffective(ctxRoot, "prod")
+	settings, err := stack.ReadEffective(context.Background(), supTestReader{ctxRoot}, ctxRoot, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	// Restart drains and re-claims through spawn; the claim's endpoint is
 	// what the forwarded request must reach.
 	m.cfg.Spawn = &claimStub{address: runtimeAPI.URL}
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 func TestWakeIsIdempotentAndCarriesNoText(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	if _, err := m.normalize(binding(root)); err != nil {
+	if _, err := m.normalize(context.Background(), binding(root)); err != nil {
 		t.Fatal(err)
 	}
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "wake"}
@@ -558,7 +558,7 @@ func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
 				}
 				return []byte("running"), nil
 			}, func(context.Context, string, string) error { return nil })
-			normalized, err := m.normalize(binding(root))
+			normalized, err := m.normalize(context.Background(), binding(root))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1910,21 +1910,21 @@ func TestReleaseStatusListAndBindingBoundaries(t *testing.T) {
 		t.Fatal("lease underflow accepted")
 	}
 	req := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "unknown:alice"}
-	if _, err := m.bindingFor(req); err == nil {
+	if _, err := m.bindingFor(context.Background(), req); err == nil {
 		t.Fatal("unknown scope accepted")
 	}
 	req.ScopeID = "user:bob"
-	if _, err := m.bindingFor(req); err == nil {
+	if _, err := m.bindingFor(context.Background(), req); err == nil {
 		t.Fatal("cross-user scope accepted")
 	}
 	org := filepath.Join(filepath.Dir(root), "acme")
 	if err := os.MkdirAll(org, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, OrganizationRoot: org, EnvFile: filepath.Join(root, "runtime.auth")}); err != nil {
+	if _, err := m.normalize(context.Background(), Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, OrganizationRoot: org, EnvFile: filepath.Join(root, "runtime.auth")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.normalize(Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, EnvFile: filepath.Join(filepath.Dir(root), "missing")}); err == nil {
+	if _, err := m.normalize(context.Background(), Binding{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", UserID: "alice", ContextRoot: root, EnvFile: filepath.Join(filepath.Dir(root), "missing")}); err == nil {
 		t.Fatal("external env file accepted")
 	}
 }

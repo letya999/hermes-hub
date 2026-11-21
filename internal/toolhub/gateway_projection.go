@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/systemguide"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -50,19 +50,14 @@ func (g *Gateway) projectionFingerprint(auth identity.Envelope) ([32]byte, bool,
 		}
 		h.Write(body)
 	}
-	if g.PassportRoot != "" {
-		space := filepath.Join(g.PassportRoot, auth.PrincipalID)
-		reference, rev, err := passportview.CurrentReferenceGenerated(space)
+	if g.Spawn != nil {
+		spec, err := g.Spawn.Effective(context.Background(), spawnv1.Tenant{Org: "local", Owner: auth.PrincipalID}, auth.PrincipalID)
 		if err != nil {
 			return empty, false, err
 		}
-		h.Write([]byte(reference))
-		for _, name := range passportview.Names {
-			body, err := os.ReadFile(filepath.Join(space, "passports", rev, name+".yaml")) // #nosec G703 -- rev is validated filepath.IsLocal; names come from the fixed passport view list.
-			if err != nil {
-				return empty, false, err
-			}
-			h.Write(body)
+		h.Write([]byte(spec.Digest))
+		for _, name := range spawnv1.Names {
+			h.Write(spec.Documents[name])
 		}
 	}
 	copy(empty[:], h.Sum(nil))
@@ -113,7 +108,7 @@ func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 }
 
 func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]api.ToolSpec, map[string]bool, error) {
-	activation, err := g.requireActivated(auth)
+	activation, err := g.requireActivated(context.Background(), auth)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -153,7 +148,7 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
 	}
-	if current, err := g.requireActivated(auth); err != nil || current != activation {
+	if current, err := g.requireActivated(context.Background(), auth); err != nil || current != activation {
 		return nil, nil, nil, fmt.Errorf("%w: passport activation changed during projection", api.ErrUnauthorized)
 	}
 	return server, tools, controls, nil
@@ -297,7 +292,7 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 			return nil
 		}
 	}
-	activation, err := g.requireActivated(projection.auth)
+	activation, err := g.requireActivated(context.Background(), projection.auth)
 	if err != nil {
 		return err
 	}
@@ -323,7 +318,7 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 		}
 		next[tool.Name] = tool.Tool
 	}
-	if current, err := g.requireActivated(projection.auth); err != nil || current != activation {
+	if current, err := g.requireActivated(context.Background(), projection.auth); err != nil || current != activation {
 		return fmt.Errorf("%w: passport activation changed during projection", api.ErrUnauthorized)
 	}
 	projection.mu.Lock()

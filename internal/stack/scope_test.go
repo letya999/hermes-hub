@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 	o.OrgActions = []string{"hh.apply", "slack.write"}
 	saveYAML(t, filepath.Join(orgDir, "settings.yaml"), o)
 
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 	if err := saveSpace(t, space, s); err != nil {
 		t.Fatal(err)
 	}
-	s, err = ReadEnvironment(space, "prod")
+	s, err = ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +118,12 @@ func TestOrganizationRejectsEscalationAndNonMember(t *testing.T) {
 		}
 		publishOrgRevision(t, space, user, "acme", "r-0000000000000001")
 		if user == "bob" {
-			if _, err := ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "not a member") {
+			if _, err := ReadEnvironment(context.Background(), testReader(space), space, "prod"); err == nil || !strings.Contains(err.Error(), "not a member") {
 				t.Fatalf("non-member accepted: %v", err)
 			}
 			continue
 		}
-		s, err := ReadEffective(space, "prod")
+		s, err := ReadEffective(context.Background(), testReader(space), space, "prod")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +131,7 @@ func TestOrganizationRejectsEscalationAndNonMember(t *testing.T) {
 		if err := saveSpace(t, space, s); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "user MCP definitions") {
+		if _, err = ReadEnvironment(context.Background(), testReader(space), space, "prod"); err == nil || !strings.Contains(err.Error(), "user MCP definitions") {
 			t.Fatalf("user MCP escalation accepted: %v", err)
 		}
 	}

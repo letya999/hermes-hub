@@ -30,7 +30,7 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 		// The write re-checks the live enrollment at the commit point — a
 		// republished disable that lands between admission and this lock
 		// still prevents the mutation.
-		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+		if err := memoryEnrollment(ctx, g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 			out = map[string]any{"status": "denied", "op": op}
 			return cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
 		}

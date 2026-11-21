@@ -21,7 +21,6 @@ import (
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
@@ -103,7 +102,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		return err
 	}
 	space := filepath.Base(abs)
-	client, tenant, err := applySpawnClient(abs)
+	client, tenant, err := spawnClientFor(abs)
 	if err != nil {
 		return err
 	}
@@ -203,7 +202,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err := convergeApply(ctx, abs, rootAbs, *env, client, tenant); err != nil {
 		return fmt.Errorf("space apply: converge: %w", err)
 	}
-	report := reconcile.Run(actions, applyHandlers(ctx, abs, rootAbs, *env), rollback, applied.EffectiveDigest, baseDigest)
+	report := reconcile.Run(actions, applyHandlers(ctx, abs, rootAbs, *env, applied.EffectiveDigest), rollback, applied.EffectiveDigest, baseDigest)
 	if report.Failed != nil {
 		if !report.RolledBack {
 			return fmt.Errorf("space apply: %s %s failed and rollback diverged — activation state is uncertain", report.Failed.Kind, report.Failed.Target)
@@ -342,7 +341,7 @@ var applyStep = func(string) {}
 // a pending mirror surfaces as a retry-able error, never a guess.
 func convergeApply(ctx context.Context, dir, root, environment string, client spawnv1.Client, tenant spawnv1.Tenant) error {
 	space := filepath.Base(dir)
-	eff, err := client.Effective(ctx, tenant, space)
+	spec, err := client.Effective(ctx, tenant, space)
 	if errors.Is(err, spawnv1.ErrNotFound) {
 		return nil // nothing active yet — first apply has nothing to converge
 	}
@@ -350,15 +349,19 @@ func convergeApply(ctx context.Context, dir, root, environment string, client sp
 		return err
 	}
 	applyStep("converge")
-	revisionID, err := mirrorRevisionID(dir, eff.Digest)
+	// The contract's documents are the revision (S7d): render and rights
+	// derivation consume exactly what activation stored — no .policy
+	// indirection, no generated tree.
+	eff, err := spawnv1.Assemble(spec.Documents)
 	if err != nil {
-		return fmt.Errorf("mirror pending for %s: %w", eff.Digest, err)
+		return fmt.Errorf("effective %s undecodable: %w", spec.Digest, err)
 	}
-	if err := renderRevisionEnvironment(dir, root, environment, revisionID); err != nil {
+	revisionDocs, err := spawnv1.EncodeDocuments(eff)
+	if err != nil {
 		return err
 	}
-	rev, err := loadMirrorRevision(dir, revisionID)
-	if err != nil {
+	rev := passport.Revision{ID: eff.Header.Metadata.Revision, Docs: revisionDocs}
+	if err := renderEnvironmentFor(ctx, client, dir, root, environment, eff); err != nil {
 		return err
 	}
 	docs, err := catalog.LoadPinned()
@@ -375,7 +378,7 @@ func convergeApply(ctx context.Context, dir, root, environment string, client sp
 		if err != nil && !errors.Is(err, contract.ErrNotFound) {
 			return err
 		}
-		if active != eff.Digest {
+		if active != spec.Digest {
 			bundle, err := rev.PolicyBundle()
 			if err != nil {
 				return err
@@ -390,44 +393,12 @@ func convergeApply(ctx context.Context, dir, root, environment string, client sp
 		}
 		applyStep("policy")
 	}
-	if err := refreshSharedRuntimeTokens(dir, environment); err != nil {
+	if err := refreshSharedRuntimeTokens(ctx, client, dir, environment); err != nil {
 		return err
 	}
 	bound, _ := rev.Value("tools", "binding.profile_id")
 	profileID, _ := bound.(string)
 	return migration.DeactivateStaleBoundProfiles(dir, space, environment, profileID, time.Now().UTC())
-}
-
-// mirrorRevisionID resolves an effective digest to its emitted revision
-// directory — the .policy/<hex> indirection the mirror publishes.
-func mirrorRevisionID(dir, digest string) (string, error) {
-	hexDigest := strings.TrimPrefix(digest, "sha256:")
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", ".policy", hexDigest)) // #nosec G703 -- digest is a sha256 hex pointer under the space's generated tree
-	if err != nil {
-		return "", err
-	}
-	id := strings.TrimSpace(string(body))
-	if !identity.ValidID(id) {
-		return "", fmt.Errorf("invalid mirror revision %q", id)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "generated", "passports", id)); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// loadMirrorRevision rebuilds the passport.Revision the mirror published —
-// the immutable doc files DeriveSpaceRights and the publisher consume.
-func loadMirrorRevision(dir, revisionID string) (passport.Revision, error) {
-	rev := passport.Revision{ID: revisionID, Docs: map[string][]byte{}}
-	for _, name := range passport.Names {
-		body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", revisionID, name+".yaml")) // #nosec G703 -- validated revision dir under the space's generated tree
-		if err != nil {
-			return rev, err
-		}
-		rev.Docs[name] = body
-	}
-	return rev, nil
 }
 
 // printApply emits the JSON receipt — the classified diff, the ordered
@@ -462,7 +433,7 @@ var applyImageBuild func(context.Context, []string) error
 
 func init() { applyImageBuild = run }
 
-func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handlers {
+func applyHandlers(ctx context.Context, dir, root, env, proof string) reconcile.Handlers {
 	composeFile := filepath.Join(dir, "generated", "compose."+env+".yaml")
 	composeFor := func(settings stack.Settings, service string) string {
 		if !settings.RendersInfra() || !stack.HasPerSpaceServices(settings) {
@@ -498,7 +469,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 		Rebuild: func(service string) error {
 			buildDir, selected := dir, []string{}
 			if service != "*" {
-				settings, err := stack.ReadEffective(dir, env)
+				settings, err := readEffectiveSettings(ctx, dir, env)
 				if err != nil {
 					return err
 				}
@@ -518,7 +489,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			return applyImageBuild(ctx, append(args, selected...))
 		},
 		Recreate: func(service string) error {
-			settings, err := stack.ReadEffective(dir, env)
+			settings, err := readEffectiveSettings(ctx, dir, env)
 			if err != nil {
 				return err
 			}
@@ -532,17 +503,17 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 				if service == "hermes-runtime" {
 					// Supervised runtimes render no compose service — the
 					// deferred-restart path replaces the container.
-					return respawnRuntime(ctx, dir, env)
+					return respawnRuntime(ctx, dir, env, proof)
 				}
 				// Shared services render in the infra space's project.
 				infraDir := stack.InfraSpaceDir(dir)
 				if service == "toolhub" && infraDir != dir {
-					if err := renderEnvironment(infraDir, filepath.Dir(filepath.Dir(dir)), env); err != nil {
+					if err := renderEnvironment(ctx, infraDir, filepath.Dir(filepath.Dir(dir)), env); err != nil {
 						return err
 					}
 				}
 				infraCompose := filepath.Join(infraDir, "generated", "compose."+env+".yaml")
-				if infraSettings, readErr := stack.ReadEffective(infraDir, env); readErr == nil && infraSettings.RendersInfra() && stack.HasPerSpaceServices(infraSettings) {
+				if infraSettings, readErr := readEffectiveSettings(ctx, infraDir, env); readErr == nil && infraSettings.RendersInfra() && stack.HasPerSpaceServices(infraSettings) {
 					infraCompose = filepath.Join(infraDir, "generated", "compose.shared."+env+".yaml")
 				}
 				return docker("compose", "-f", infraCompose, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", service)
@@ -558,14 +529,14 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 		// containers whose services no longer exist in the just-rendered
 		// file are compose orphans.
 		Remove: func() error {
-			settings, err := stack.ReadEffective(dir, env)
+			settings, err := readEffectiveSettings(ctx, dir, env)
 			if err != nil {
 				return err
 			}
 			return converge(settings)
 		},
 		Respawn: func() error {
-			return respawnRuntime(ctx, dir, env)
+			return respawnRuntime(ctx, dir, env, proof)
 		},
 		Live: map[string]func() error{
 			// convergeApply renders before reconcile runs: the new
@@ -615,6 +586,10 @@ func applyPolicyPublisher() (contract.PassportPublisher, error) {
 // space's supervisor.auth — resolved against the --dir space's infra
 // sibling. Tenant: org "local", owner the space itself (Decision 13's
 // managed-space tenant).
+// spawnClientFor is the contract-resolution seam — tests substitute an
+// in-proc fake server so apply paths never touch a real controller.
+var spawnClientFor = applySpawnClient
+
 func applySpawnClient(abs string) (spawnv1.Client, spawnv1.Tenant, error) {
 	explicit := os.Getenv("HUB_SPAWN_CONTROLLER_URL")
 	base := explicit
@@ -636,12 +611,12 @@ func applySpawnClient(abs string) (spawnv1.Client, spawnv1.Tenant, error) {
 	return spawnv1.NewHTTPClient(base, token, nil), spawnv1.Tenant{Org: "local", Owner: filepath.Base(abs)}, nil
 }
 
-func refreshSharedRuntimeTokens(dir, environment string) error {
+func refreshSharedRuntimeTokens(ctx context.Context, client spawnv1.EffectiveReader, dir, environment string) error {
 	if infra := stack.InfraSpaceDir(dir); infra != dir {
-		if err := stack.EnrollSiblingRuntimeTokens(infra, environment); err != nil {
+		if err := stack.EnrollSiblingRuntimeTokens(ctx, client, infra, environment); err != nil {
 			return err
 		}
-		return stack.RefreshAutomationRouting(infra, environment)
+		return stack.RefreshAutomationRouting(ctx, client, infra, environment)
 	}
 	return nil
 }
@@ -653,8 +628,12 @@ func refreshSharedRuntimeTokens(dir, environment string) error {
 // activated: the previous generation drains and a fresh one warms. A space
 // without a supervisor endpoint has no runtime to respawn, which is a no-op
 // rather than a failure.
-func respawnRuntime(ctx context.Context, dir, env string) error {
-	settings, err := stack.ReadEffective(dir, env)
+func respawnRuntime(ctx context.Context, dir, env, proof string) error {
+	client, _, err := spawnClientFor(dir)
+	if err != nil {
+		return err
+	}
+	settings, err := stack.ReadEffective(ctx, client, dir, env)
 	if err != nil {
 		return err
 	}
@@ -686,12 +665,8 @@ func respawnRuntime(ctx context.Context, dir, env string) error {
 		if auth != "" {
 			req.Header.Set("Authorization", "Bearer "+auth)
 		}
-		// The respawn gate binds the request to the digest the apply just
-		// committed — the supervisor authorizes it only while that pointer is live.
-		if pointer, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current")); err == nil { // #nosec G703 -- fixed pointer filename under the operator's space dir
-			if reference := strings.TrimSpace(string(pointer)); strings.HasPrefix(reference, "sha256:") {
-				req.Header.Set("X-Hub-Apply-Revision", reference)
-			}
+		if proof != "" {
+			req.Header.Set("X-Hub-Apply-Revision", proof)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := respawnHTTPClient.Do(req) // #nosec G704 -- operator-configured hub endpoint

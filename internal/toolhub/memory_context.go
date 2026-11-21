@@ -107,7 +107,7 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 			return api.MemoryContextResponse{}, http.StatusForbidden
 		}
 	}
-	if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+	if err := memoryEnrollment(r.Context(), g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 		return api.MemoryContextResponse{}, http.StatusForbidden
 	}
 	if code := g.memoryContextRights(auth); code != http.StatusOK {
@@ -122,7 +122,7 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 	}
 	result := api.MemoryContextResponse{Status: "ok"}
 	if err := u.Locked(func(root string) error {
-		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+		if err := memoryEnrollment(r.Context(), g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 			return err
 		}
 		if code := g.memoryContextRights(auth); code != http.StatusOK {

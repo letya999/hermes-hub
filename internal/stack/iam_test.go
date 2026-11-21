@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func iamSettings() Settings {
@@ -19,19 +19,19 @@ func iamSettings() Settings {
 	}
 }
 
-func iamEffective(services map[string]string) passportview.Effective {
-	specs := map[string]passportview.ServiceSpec{}
+func iamEffective(services map[string]string) spawnv1.Effective {
+	specs := map[string]spawnv1.ServiceSpec{}
 	for name, mode := range services {
-		specs[name] = passportview.ServiceSpec{Mode: mode}
+		specs[name] = spawnv1.ServiceSpec{Mode: mode}
 	}
-	var eff passportview.Effective
+	var eff spawnv1.Effective
 	eff.Stack.Services = specs
 	return eff
 }
 
 func TestApplyIAMExternalProjectsIssuerAndClient(t *testing.T) {
 	s := iamSettings()
-	in := &passportview.IAM{Mode: "external", Issuer: "https://idp.example.com/application/o/hermes", ClientID: " hermes "}
+	in := &spawnv1.IAM{Mode: "external", Issuer: "https://idp.example.com/application/o/hermes", ClientID: " hermes "}
 	if err := s.applyIAM(in, iamEffective(nil)); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestApplyIAMExternalProjectsIssuerAndClient(t *testing.T) {
 
 func TestApplyIAMExternalRejectsBundledServices(t *testing.T) {
 	s := iamSettings()
-	in := &passportview.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: "hermes"}
+	in := &spawnv1.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: "hermes"}
 	services := map[string]string{"identity-hub": "shared", "hub-postgres": "shared"}
 	if err := s.applyIAM(in, iamEffective(services)); err == nil || !strings.Contains(err.Error(), "external") {
 		t.Fatalf("external must not run bundled services: %v", err)
@@ -51,20 +51,20 @@ func TestApplyIAMExternalRejectsBundledServices(t *testing.T) {
 
 func TestApplyIAMExternalRequiresIssuerAndClient(t *testing.T) {
 	s := iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "external", Issuer: " ", ClientID: "x"}, iamEffective(nil)); err == nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "external", Issuer: " ", ClientID: "x"}, iamEffective(nil)); err == nil {
 		t.Fatal("empty issuer must fail closed")
 	}
 	s = iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: " "}, iamEffective(nil)); err == nil || !strings.Contains(err.Error(), "client_id") {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: " "}, iamEffective(nil)); err == nil || !strings.Contains(err.Error(), "client_id") {
 		t.Fatalf("external requires client_id: %v", err)
 	}
-	if err := s.applyIAM(&passportview.IAM{Mode: "external", Issuer: "http://idp.example.com", ClientID: "x"}, iamEffective(nil)); err == nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "external", Issuer: "http://idp.example.com", ClientID: "x"}, iamEffective(nil)); err == nil {
 		t.Fatal("plain http non-loopback issuer must fail")
 	}
 }
 
 func TestApplyIAMBundledRequiresSharedServices(t *testing.T) {
-	in := &passportview.IAM{Mode: "bundled"}
+	in := &spawnv1.IAM{Mode: "bundled"}
 	s := iamSettings()
 	if err := s.applyIAM(in, iamEffective(nil)); err == nil || !strings.Contains(err.Error(), "identity-hub") {
 		t.Fatalf("bundled without services must fail: %v", err)
@@ -81,30 +81,30 @@ func TestApplyIAMBundledRequiresSharedServices(t *testing.T) {
 func TestApplyIAMBundledIssuerShape(t *testing.T) {
 	services := map[string]string{"identity-hub": "shared", "hub-postgres": "shared"}
 	s := iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "bundled", Issuer: "https://sso.example.com", ClientID: "x"}, iamEffective(services)); err != nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "bundled", Issuer: "https://sso.example.com", ClientID: "x"}, iamEffective(services)); err != nil {
 		t.Fatal(err)
 	}
 	// A path issuer breaks the host-level ZITADEL contract.
 	s = iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "bundled", Issuer: "https://sso.example.com/realms/x", ClientID: "x"}, iamEffective(services)); err == nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "bundled", Issuer: "https://sso.example.com/realms/x", ClientID: "x"}, iamEffective(services)); err == nil {
 		t.Fatal("bundled issuer must not carry a path")
 	}
 	// Empty issuer is legal: the derived dev issuer lands at render.
 	s = iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "bundled"}, iamEffective(services)); err != nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "bundled"}, iamEffective(services)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestApplyIAMRejectsUnknownModeAndSiblingSpace(t *testing.T) {
 	s := iamSettings()
-	if err := s.applyIAM(&passportview.IAM{Mode: "saml"}, iamEffective(nil)); err == nil {
+	if err := s.applyIAM(&spawnv1.IAM{Mode: "saml"}, iamEffective(nil)); err == nil {
 		t.Fatal("unknown mode must fail closed")
 	}
 	infra := false
 	s = iamSettings()
 	s.Infra = &infra
-	err := s.applyIAM(&passportview.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: "x"}, iamEffective(nil))
+	err := s.applyIAM(&spawnv1.IAM{Mode: "external", Issuer: "https://idp.example.com", ClientID: "x"}, iamEffective(nil))
 	if err == nil || !strings.Contains(err.Error(), "infra") {
 		t.Fatalf("iam on a sibling space renders nothing — must fail: %v", err)
 	}

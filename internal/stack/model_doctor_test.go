@@ -1,7 +1,10 @@
 package stack
 
 import (
+	"context"
+
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,7 +35,7 @@ func TestModelRegistryReadableByRelayUID(t *testing.T) {
 	publishManagedRevision(t, dir, "alice", "r-permissions")
 	settings := Settings{User: "alice", Environment: "prod", Model: "logical", Cliproxy: "shared"}
 	for range 2 {
-		if err := writeModelRegistry(dir, settings); err != nil {
+		if err := writeModelRegistry(dir, settings, testLoadEffective(t, dir)); err != nil {
 			t.Fatal(err)
 		}
 		root := filepath.Join(dir, "generated", "model-registry", "prod")
@@ -116,7 +119,7 @@ services:
 		publishManagedDocs(t, dir, "alice", fmt.Sprintf("r-doctor-%d", sequence), docs)
 	}
 	write("https://old.invalid/v1", false)
-	if err := writeModelRegistry(dir, settings); err != nil {
+	if err := writeModelRegistry(dir, settings, testLoadEffective(t, dir)); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeEnvFile(filepath.Join(dir, "runtime.prod.env"), map[string]string{"MODEL_KEY": "private-fixture-value", "OPENAI_API_KEY": "builtin-fixture"}); err != nil {
@@ -125,7 +128,7 @@ services:
 	saveYAML(t, filepath.Join(dir, "generated", "compose.prod.yaml"), map[string]any{"services": map[string]any{"model-relay": map[string]any{"environment": map[string]string{"HUB_MODEL_RELAY_CLIPROXY": "http://cliproxy:8317"}}}})
 	check := func(expected []string, secrets map[string]string) {
 		t.Helper()
-		lines, err := ModelDoctor(dir, settings, secrets)
+		lines, err := ModelDoctor(dir, settings, testLoadEffective(t, dir), secrets)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,14 +149,14 @@ services:
 	settings.Cliproxy = "dedicated"
 	check([]string{"render registry; relay reloads", "recreate owner model-relay", "recreate owner proxy", "next owner runtime spawn"}, map[string]string{"MODEL_KEY": "rotated-fixture"})
 	write("https://broker-provider.invalid/v1", true)
-	if err := writeModelRegistry(dir, settings); err != nil {
+	if err := writeModelRegistry(dir, settings, testLoadEffective(t, dir)); err != nil {
 		t.Fatal(err)
 	}
 	check([]string{"credentials unchanged"}, map[string]string{"OPENAI_API_KEY": "unrelated-rotated-fixture"})
 	if err := os.WriteFile(filepath.Join(dir, "generated", "model-registry", "prod", "models.yaml"), []byte("[]"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ModelDoctor(dir, settings, nil); err == nil {
+	if _, err := ModelDoctor(dir, settings, testLoadEffective(t, dir), nil); err == nil {
 		t.Error("doctor trusted invalid rendered registry")
 	}
 	if err := os.Remove(filepath.Join(dir, "generated", "model-registry", "prod", "models.yaml")); err != nil {
@@ -163,7 +166,7 @@ services:
 	if err := os.WriteFile(filepath.Join(dir, "generated", "compose.prod.yaml"), []byte("["), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ModelDoctor(dir, settings, nil); err == nil {
+	if _, err := ModelDoctor(dir, settings, testLoadEffective(t, dir), nil); err == nil {
 		t.Error("doctor trusted invalid rendered compose")
 	}
 	for _, name := range []string{"generated/compose.prod.yaml", "runtime.prod.env"} {
@@ -175,14 +178,20 @@ services:
 	if err := os.WriteFile(filepath.Join(dir, "models.yaml"), []byte("unknown: fixture\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ModelDoctor(dir, settings, nil); err != nil {
+	if _, err := ModelDoctor(dir, settings, testLoadEffective(t, dir), nil); err != nil {
 		t.Fatal("retired registry influenced model doctor:", err)
 	}
-	current := filepath.Join(dir, "generated", "passports", fmt.Sprintf("r-doctor-%d", sequence), "models.yaml")
+	badRev := fmt.Sprintf("r-doctor-%d", sequence)
+	current := filepath.Join(dir, "generated", "passports", badRev, "models.yaml")
 	if err := os.WriteFile(current, []byte("unknown: fixture\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ModelDoctor(dir, settings, nil); err == nil {
-		t.Fatal("doctor accepted an invalid published model revision")
+	writeCurrentPointer(t, dir, badRev)
+	spec, err := testReader(dir).Effective(context.Background(), spawnv1.Tenant{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spawnv1.Assemble(spec.Documents); err == nil {
+		t.Fatal("an undecodable published model revision assembled cleanly")
 	}
 }

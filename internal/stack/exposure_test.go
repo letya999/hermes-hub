@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -76,7 +77,7 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeExposureConfig(t, d)
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +87,10 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err = RenderEnvironment(d, root, "prod"); err != nil {
+	if err = RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	s, err = ReadEffective(d, "prod")
+	s, err = ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +144,7 @@ func TestExposureRenderFailsClosedAndDoctor(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +155,7 @@ func TestExposureRenderFailsClosedAndDoctor(t *testing.T) {
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err = RenderEnvironment(d, root, "prod"); err == nil {
+	if err = RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err == nil {
 		t.Fatal("render accepted exposure without a config")
 	}
 	if !strings.Contains(strings.Join(Doctor(s, nil), " "), "connections/exposure/config.yaml") {

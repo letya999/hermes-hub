@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			seedGovernance(t, d, func(doc *api.Governance) {
 				activeToolGrant(t, doc, owner, api.SectionUserMCP, time.Hour)
 			})
-			s, err := ReadEnvironment(d, environment)
+			s, err := ReadEnvironment(context.Background(), testReader(d), d, environment)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,7 +77,7 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	p := filepath.Join(d, "settings.yaml")
 	for _, body := range []string{"schema: [bad", "unknown: true", "schema: 1\n---\nschema: 2"} {
 		_ = os.WriteFile(p, []byte(body), 0600)
-		if _, err := ReadEffective(p, "prod"); err == nil {
+		if _, err := ReadEffective(context.Background(), testReader(p), p, "prod"); err == nil {
 			t.Fatal(body)
 		}
 	}
@@ -99,16 +100,16 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	if Init(filepath.Join(p, "nested"), "me") == nil {
 		t.Fatal("file used as dir")
 	}
-	if Render(d, "../..") == nil {
+	if Render(context.Background(), testReader(d), d, "../..") == nil {
 		t.Fatal("invalid settings")
 	}
 	fresh := t.TempDir()
 	_ = Init(fresh, "me")
-	if Render(fresh, "/no-such-project") == nil {
+	if Render(context.Background(), testReader(fresh), fresh, "/no-such-project") == nil {
 		t.Fatal("missing SOUL")
 	}
 	_ = os.Remove(filepath.Join(fresh, "secrets.prod.env"))
-	if Render(fresh, "../..") == nil {
+	if Render(context.Background(), testReader(fresh), fresh, "../..") == nil {
 		t.Fatal("missing env")
 	}
 	if atomic(filepath.Join(d, "missing/file"), []byte("x")) == nil {
@@ -122,7 +123,7 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	// A well-formed published revision still reads.
 	fresh = t.TempDir()
 	publishManagedRevision(t, fresh, "me", "r-0000000000000001")
-	if _, err := ReadEffective(fresh, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(fresh), fresh, "prod"); err != nil {
 		t.Fatal(err)
 	}
 }

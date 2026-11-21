@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
@@ -64,7 +65,7 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(dirAbs, "dev")
+	settings, err := readEffectiveSettings(ctx, dirAbs, "dev")
 	if err != nil {
 		return err
 	}
@@ -72,10 +73,14 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	if _, present := services[service]; !present && !(service == "hermes-runtime" && settings.ExecutionMode == "supervisor") {
 		return fmt.Errorf("service %q is not in this dev stack", service)
 	}
-	if err := renderEnvironment(dirAbs, rootAbs, "dev"); err != nil {
+	if err := renderEnvironment(ctx, dirAbs, rootAbs, "dev"); err != nil {
 		return err
 	}
-	if err := refreshDevSiblingTokens(dirAbs); err != nil {
+	infraClient, _, clientErr := spawnClientFor(stack.InfraSpaceDir(dirAbs))
+	if clientErr != nil {
+		return clientErr
+	}
+	if err := refreshDevSiblingTokens(ctx, infraClient, dirAbs); err != nil {
 		return err
 	}
 	compose := filepath.Join(dirAbs, "generated", "compose.dev.yaml")
@@ -203,9 +208,9 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	return nil
 }
 
-func refreshDevSiblingTokens(dir string) error {
+func refreshDevSiblingTokens(ctx context.Context, client spawnv1.EffectiveReader, dir string) error {
 	if infra := stack.InfraSpaceDir(dir); infra != dir {
-		return stack.EnrollSiblingRuntimeTokens(infra, "dev")
+		return stack.EnrollSiblingRuntimeTokens(ctx, client, infra, "dev")
 	}
 	return nil
 }

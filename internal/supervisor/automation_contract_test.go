@@ -67,7 +67,7 @@ func TestAutomationClientRunsThroughSupervisorJobsHandler(t *testing.T) {
 		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
-	b, err := m.normalize(binding(root))
+	b, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}

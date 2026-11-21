@@ -14,7 +14,7 @@ import (
 
 func TestManagedJobsShareOneRuntimeWithFiveRunCap(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	b, err := m.normalize(binding(root))
+	b, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestManagedJobsShareOneRuntimeWithFiveRunCap(t *testing.T) {
 		if mode != "gateway" {
 			t.Fatalf("run %d uses runtime mode %s", i, mode)
 		}
-		bound, err := m.bindingFor(jobs[i])
+		bound, err := m.bindingFor(context.Background(), jobs[i])
 		if err != nil || bound.RuntimeMode != mode {
 			t.Fatalf("job route %d = %s, err=%v", i, bound.RuntimeMode, err)
 		}
@@ -57,7 +57,7 @@ func TestManagedJobsShareOneRuntimeWithFiveRunCap(t *testing.T) {
 
 func TestManagedSameConversationWaitsInAdmissionOrder(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	b, err := m.normalize(binding(root))
+	b, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}

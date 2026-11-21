@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -725,7 +726,7 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +747,7 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(d, "generated", "skills-effective", "platform-skill", "SKILL.md")); err != nil {
@@ -768,7 +769,7 @@ func TestOrganizationInitCreatesUnifiedSkillsStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +787,7 @@ func TestRenderMigratesLegacyHermesSkillsIntoStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,7 +812,7 @@ func TestRenderMigratesLegacyHermesSkillsIntoStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "skills", "registry.json"), []byte(registry), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(d, "skills", "consented-skill", "SKILL.md")); err != nil {
@@ -847,7 +848,7 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishOrgRevision(t, d, "alice", "acme", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +870,7 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 	if err := os.WriteFile(plugin, []byte("# test plugin"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, repo, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, repo, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {

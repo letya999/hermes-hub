@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -84,7 +84,7 @@ func writeSearchPassport(t *testing.T, root, user, environment string, enabled b
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		body := "apiVersion: six-passport/v2\nkind: " + name + "\nmetadata: {space: " + user + ", environment: " + environment + ", revision: " + revision + "}\n"
 		if name == "config" {
 			body += "memory: {enabled: " + map[bool]string{true: "true", false: "false"}[enabled] + "}\n"
@@ -241,7 +241,6 @@ func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	defer supervisor.Close()
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
 	t.Setenv("HUB_COMMUNICATION_AUTH", "comm-token")
-	t.Setenv("HUB_PASSPORTS_BY_PRINCIPAL", passports)
 	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", vaults)
 	t.Setenv("HUB_TOOL_GOVERNANCE", govPath)
 	t.Setenv("HUB_AUDIT_LEDGER", filepath.Join(t.TempDir(), "audit.jsonl"))

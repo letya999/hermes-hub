@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // Kind is the ordered action class — execution always runs rebuild, then
@@ -59,7 +59,7 @@ type Report struct {
 // target is the service instance a stack change names, "hermes-runtime" for
 // config/model changes (the runtime consumes them) and the consumer name for
 // live leaves. services is the new revision's stack.services set.
-func Plan(changes []passport.Change, services map[string]passportview.ServiceSpec) []Action {
+func Plan(changes []passport.Change, services map[string]spawnv1.ServiceSpec) []Action {
 	byKey := map[string]*Action{}
 	get := func(k Kind, target string) *Action {
 		key := string(k) + ":" + target

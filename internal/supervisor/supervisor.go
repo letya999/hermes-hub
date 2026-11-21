@@ -13,7 +13,6 @@ import (
 	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identityhub"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -839,7 +838,7 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 }
 
 func (m *Manager) Status(binding Binding) (Runtime, bool, error) {
-	binding, err := m.normalize(binding)
+	binding, err := m.normalize(context.Background(), binding)
 	if err != nil {
 		return Runtime{}, false, err
 	}
@@ -882,7 +881,7 @@ func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, values)
 }
 
-func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error) {
+func (m *Manager) bindingFor(ctx context.Context, request hubruntime.ExecuteRequest) (Binding, error) {
 	if err := request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion); err != nil {
 		return Binding{}, err
 	}
@@ -910,7 +909,7 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 		return Binding{}, errors.New("invalid runtime binding")
 	}
 	if strings.HasPrefix(request.ScopeID, "group:") {
-		eff, err := passportview.LoadEffective(filepath.Join(m.cfg.SpacesRoot, contextID))
+		eff, err := m.effectiveFor(ctx, contextID)
 		if err != nil || eff.Stack.Identity.Kind != string(stack.GroupScope) || eff.Stack.Identity.User != contextID {
 			return Binding{}, errors.New("group requires a dedicated group home")
 		}
@@ -945,7 +944,7 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 		return Binding{}, err
 	}
 	bound.IdentityRevision = revision
-	return m.normalize(bound)
+	return m.normalize(ctx, bound)
 }
 
 func runtimeKey(binding Binding) string {

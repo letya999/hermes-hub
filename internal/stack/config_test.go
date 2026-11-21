@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if err != nil || secrets["OPENAI_API_KEY"] != "" {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeSSHConfig(t, d)      // the all-features render includes ssh; it fails closed without a config
 	writeExposureConfig(t, d) // same contract for the exposure family
-	s, _ := ReadEffective(d, "prod")
+	s, _ := ReadEffective(context.Background(), testReader(d), d, "prod")
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.GoogleEmail = "me@example.org"
@@ -138,7 +139,7 @@ func TestRenderAllFeatures(t *testing.T) {
 			}
 		}
 	})
-	if err := Render(d, root); err != nil {
+	if err := Render(context.Background(), testReader(d), d, root); err != nil {
 		t.Fatal(err)
 	}
 	generatedConfig, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
@@ -147,7 +148,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	}
 	// Under managed mode the runtime is supervisor-spawned: its mounts live
 	// in the RuntimeService spawn contract, not the compose file.
-	spawned, err := ReadEffective(d, "prod")
+	spawned, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	}
 	soul := filepath.Join(d, "SOUL.md")
 	_ = os.WriteFile(soul, []byte("owner changes"), 0600)
-	if err := Render(d, root); err != nil {
+	if err := Render(context.Background(), testReader(d), d, root); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(soul)
@@ -252,7 +253,7 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	automationRoot := filepath.Join(d, "automation", "prod")
@@ -328,7 +329,7 @@ func TestRenderRoutesRelayEnvPairToGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +343,7 @@ func TestRenderRoutesRelayEnvPairToGateway(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	gatewayEnv, err := os.ReadFile(filepath.Join(d, "communication.prod.env"))
@@ -374,7 +375,7 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +405,7 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	gatewayEnv, err := os.ReadFile(filepath.Join(d, "communication.prod.env"))
@@ -1075,7 +1076,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	if err := saveSpace(t, dir, Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", CapabilityProfileID: "me-default", CapabilityGeneration: 1, Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
 		t.Fatal(err)
 	}
-	dev, err := ReadEnvironment(dir, "dev")
+	dev, err := ReadEnvironment(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1152,7 +1153,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,7 +1165,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
@@ -1178,7 +1179,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
@@ -1189,7 +1190,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	runtimeEnv, _ = os.ReadFile(filepath.Join(d, "runtime.prod.env"))
@@ -1199,7 +1200,7 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "SOUL.md"), []byte("mine"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if soul, _ := os.ReadFile(filepath.Join(d, "SOUL.md")); string(soul) != "mine" {
@@ -1312,7 +1313,7 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1324,7 +1325,7 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	effective, err := os.ReadFile(filepath.Join(d, "generated", "hermes-effective.prod.yaml"))
@@ -1353,7 +1354,7 @@ func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["tools"] += "connectors:\n  browser_guest: {url: \"https://evil.invalid/mcp\"}\n"
 	publishManagedDocs(t, d, "alice", "r-0123456789abcdef", docs)
-	if _, err := ReadEffective(d, "prod"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err == nil {
 		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }
@@ -1370,7 +1371,7 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1390,7 +1391,7 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
@@ -1412,7 +1413,7 @@ func TestSupervisedRenderNoProxyOmitsHumanBrowserSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1441,7 +1442,7 @@ func TestSupervisedRenderNoProxyOmitsHumanBrowserSidecar(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	env, err := ReadSecrets(filepath.Join(dir, "managed-runtime.prod.env"))
@@ -1519,24 +1520,15 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	s.siblingMemory = map[string]bool{"alice": true, "bob": true}
 	services := Compose(s, dir, dir)["services"].(M)
 	toolhub := services["toolhub"].(M)
-	if toolhub["environment"].(M)["HUB_PASSPORTS_BY_PRINCIPAL"] != "/passports-by" {
-		t.Fatal("ToolHub lacks the per-principal passport root")
-	}
 	if toolhub["environment"].(M)["HUB_VAULTS_BY_PRINCIPAL"] != "/vaults-by" {
 		t.Fatal("ToolHub lacks the per-principal vault root")
 	}
-	mounted := map[string]bool{}
 	vaultMounted := map[string]string{}
 	for _, raw := range toolhub["volumes"].([]any) {
 		volume := raw.(M)
-		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/passports-by/") {
-			if volume["read_only"] != true {
-				t.Fatalf("passport mount is writable: %v", volume)
-			}
-			mounted[target] = true
-		}
 		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/vaults-by/") {
 			if volume["read_only"] == true {
 				t.Fatalf("ToolHub vault writer received a read-only mount: %v", volume)
@@ -1545,9 +1537,6 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 		}
 	}
 	for _, user := range []string{"alice", "bob"} {
-		if !mounted["/passports-by/"+user+"/passports"] {
-			t.Fatalf("missing passport mount for %s: %v", user, mounted)
-		}
 		if got := vaultMounted["/vaults-by/"+user]; got != filepath.ToSlash(filepath.Join(spacesRoot, user, "vault")) {
 			t.Fatalf("vault mount for %s = %q", user, got)
 		}

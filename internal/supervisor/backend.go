@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -18,10 +19,11 @@ type ComputeBackend interface {
 }
 
 type SpawnRequest struct {
-	Binding  Binding
-	Runtime  Runtime
-	Settings stack.Settings
-	Port     int
+	Binding   Binding
+	Runtime   Runtime
+	Settings  stack.Settings
+	Effective spawnv1.Effective
+	Port      int
 }
 
 // ComputeObservation is deliberately free of raw provider messages and env.

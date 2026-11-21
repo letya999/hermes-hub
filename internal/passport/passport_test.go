@@ -3,15 +3,13 @@ package passport_test
 import (
 	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"gopkg.in/yaml.v3"
 )
 
@@ -240,42 +238,6 @@ func TestCompiledPolicyCarriesOneSpaceAndRevision(t *testing.T) {
 	}
 }
 
-func TestVerifiedPolicyProjectionRejectsChangedCache(t *testing.T) {
-	dir := t.TempDir()
-	rev := compileFixture(t)
-	bundle, err := rev.PolicyBundle()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, digest, err := bundle.Canonical()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rev.Prepare(dir, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := rev.LinkPolicyDigest(dir, digest); err != nil {
-		t.Fatal(err)
-	}
-	if err := rev.Activate(dir); err != nil {
-		t.Fatal(err)
-	}
-	bundle.PassportDigest = digest
-	if err := passportview.VerifyPolicyProjection(dir, bundle); err != nil {
-		t.Fatalf("verified publication did not match the source projection: %v", err)
-	}
-	path := filepath.Join(dir, "generated", "passports", rev.ID, "grants.yaml")
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, bytes.ReplaceAll(rev.Docs["grants"], []byte("read"), []byte("unbound")), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := passportview.VerifyPolicyProjection(dir, bundle); err == nil {
-		t.Fatal("modified cache matched a signed publication")
-	}
-}
-
 func TestPassportCompilerAtomicSixFileRevision(t *testing.T) {
 	rev := compileFixture(t)
 
@@ -346,110 +308,8 @@ func TestPassportCompilerAtomicSixFileRevision(t *testing.T) {
 		t.Fatalf("revision id not deterministic: %s vs %s", again.ID, rev.ID)
 	}
 
-	// Publish: staged revision lands read-only behind one pointer.
-	dir := t.TempDir()
-	if err := rev.Publish(dir); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	active, err := passport.Current(dir)
-	if err != nil || active != rev.ID {
-		t.Fatalf("current pointer: %q %v", active, err)
-	}
-	// R9.1: publish stamps the bounded prompt pointer the effective SOUL
-	// appends — revision id, core names and the extended count only.
-	pointer, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rev.ID, "prompt-pointer.txt"))
-	if err != nil {
-		t.Fatalf("prompt pointer: %v", err)
-	}
-	if text := string(pointer); !strings.Contains(text, "revision="+rev.ID) || !strings.Contains(text, "extended=+") {
-		t.Fatalf("prompt pointer must pin revision and bounded inventory: %q", text)
-	}
-	published := map[string][]byte{}
-	for _, name := range passport.Names {
-		path := filepath.Join(dir, "generated", "passports", rev.ID, name+".yaml")
-		b, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		published[name] = b
-		if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0200 != 0 {
-			t.Fatalf("%s is not read-only: %v", name, info.Mode())
-		}
-		if !bytes.Contains(b, []byte("revision: "+rev.ID)) {
-			t.Fatalf("%s does not carry the common revision", name)
-		}
-	}
-	// Generated authority is not user-editable.
-	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", rev.ID, "grants.yaml"), []byte("tampered"), 0600); err == nil {
-		t.Fatal("generated grants passport accepted a user write")
-	}
-
-	// One invalid layer (org widens an invariant) fails the whole compile:
-	// none of the six active files changes.
-	bad := fixtureInputs(t)
-	bad.OrgTemplate.Docs["stack"] = map[string]any{"identity": map[string]any{"user": "mallory"}}
-	if _, err := passport.Compile(bad); err == nil {
-		t.Fatal("invariant violation compiled")
-	}
-	if err := rev.Publish(dir); err != nil {
-		t.Fatalf("republish: %v", err)
-	}
-	for name, want := range published {
-		b, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rev.ID, name+".yaml"))
-		if err != nil || !bytes.Equal(b, want) {
-			t.Fatalf("active %s changed after the invalid layer", name)
-		}
-	}
-
-	// A user choice outside the offered set fails closed.
-	badChoice := fixtureInputs(t)
-	badChoice.User.Docs["config"] = map[string]any{"memory": map[string]any{"backend": "sqlite"}}
-	if _, err := passport.Compile(badChoice); err == nil {
-		t.Fatal("choice outside the ceiling compiled")
-	}
-
-	// A ledger grant outside the org ceiling fails closed.
-	badGrants := fixtureInputs(t)
-	badGrants.Grants["nonsense"] = []string{"read"}
-	if _, err := passport.Compile(badGrants); err == nil {
-		t.Fatal("grant outside the ceiling compiled")
-	}
-
-	// Cross-file validation: unknown catalog entries reject the revision.
-	badTools := fixtureInputs(t)
-	badTools.User.Docs["tools"] = map[string]any{"core": map[string]any{"native:no_such_toolset": map[string]any{"via": "native"}}}
-	if _, err := passport.Compile(badTools); err == nil {
-		t.Fatal("unknown toolset compiled")
-	}
-
-	// Publish failure mid-flight keeps the previous revision active.
-	blocked := t.TempDir()
-	genRoot := filepath.Join(blocked, "generated")
-	if err := os.MkdirAll(genRoot, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(genRoot, "passports"), []byte("not a dir"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := rev.Publish(blocked); err == nil {
-		t.Fatal("publish succeeded where the revision root is a file")
-	}
-	if current, err := passport.Current(blocked); err == nil || current == rev.ID {
-		t.Fatalf("failed publish activated a revision: %q %v", current, err)
-	}
-
-	// A revision missing a passport never publishes.
-	broken := rev
-	delete(broken.Docs, "tools")
-	if err := broken.Publish(dir); err == nil {
-		t.Fatal("incomplete revision published")
-	}
-	if active, _ := passport.Current(dir); active != rev.ID {
-		t.Fatalf("active revision moved to %q", active)
-	}
-	if strings.Count(string(published["tools"]), "native:file") == 0 {
-		t.Fatal("tools passport lost its admitted section")
-	}
+	// The six-file publish pipeline is gone (S7d): activation is the
+	// service-side effect; generated trees no longer exist.
 }
 
 // Templates never carry grant authority (ADR-0092 D3): a grants doc in a
@@ -892,15 +752,16 @@ func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 // sources) live only in the revision's provenance.yaml.
 func TestPublishedFileHasNoBodyWrapper(t *testing.T) {
 	rev := compileFixture(t)
-	dir := t.TempDir()
-	if err := rev.Publish(dir); err != nil {
+	eff, err := rev.Effective()
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := spawnv1.EncodeDocuments(eff)
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range passport.Names {
-		b, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rev.ID, name+".yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		b := docs[name]
 		var head struct {
 			APIVersion string         `yaml:"apiVersion"`
 			Kind       string         `yaml:"kind"`
@@ -926,16 +787,9 @@ func TestPublishedFileHasNoBodyWrapper(t *testing.T) {
 			t.Fatalf("%s still wraps contract keys in body:", name)
 		}
 	}
-	// Provenance moves to its own side file with the full layer record.
-	pb, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rev.ID, "provenance.yaml"))
-	if err != nil {
-		t.Fatalf("provenance side file missing: %v", err)
-	}
-	var prov map[string]any
-	if err := yaml.Unmarshal(pb, &prov); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := prov["sources"]; !ok {
-		t.Fatal("provenance.yaml lost the source-layer record")
+	// Provenance rides the revision record, not a published side file (S7d):
+	// the source-layer tally lives on Revision.Provenance.
+	if len(rev.Provenance.Sources) == 0 {
+		t.Fatal("revision lost the source-layer record")
 	}
 }

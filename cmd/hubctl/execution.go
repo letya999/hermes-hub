@@ -27,7 +27,7 @@ func selectExecution(ctx context.Context, dir, sourceRoot, spool string, selecti
 	if err := selection.Validate(); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(dir, selection.Environment)
+	settings, err := readEffectiveSettings(ctx, dir, selection.Environment)
 	if err != nil {
 		return err
 	}
@@ -74,14 +74,18 @@ func selectExecution(ctx context.Context, dir, sourceRoot, spool string, selecti
 		}
 		audit.NativeCron = &snapshot
 	}
-	report, err := migration.SelectExecution(dir, selection, audit, apply)
+	client, _, err := spawnClientFor(dir)
+	if err != nil {
+		return err
+	}
+	report, err := migration.SelectExecution(ctx, client, dir, selection, audit, apply)
 	if err != nil {
 		return err
 	}
 	// Rendering is explicit and reversible. A failure leaves the gateway stopped
 	// with the durable selection/report available for repair, never half-executed work.
 	if apply {
-		if err := renderEnvironment(dir, sourceRoot, selection.Environment); err != nil {
+		if err := renderEnvironment(ctx, dir, sourceRoot, selection.Environment); err != nil {
 			return fmt.Errorf("selection saved; render failed with services stopped: %w", err)
 		}
 	}

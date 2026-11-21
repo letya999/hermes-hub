@@ -2,9 +2,8 @@ package supervisor
 
 import (
 	"net/http"
-	"path/filepath"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // An operator apply respawns the runtime while the digest it just
@@ -17,7 +16,9 @@ func (m *Manager) applyRespawnAuthorized(r *http.Request, principal, contextID, 
 	if digest == "" || principal != contextID || runtimeID != "" {
 		return false
 	}
-	space := filepath.Join(m.cfg.SpacesRoot, principal)
-	reference, _, err := passportview.CurrentReferenceGenerated(filepath.Join(space, "generated"))
-	return err == nil && reference == digest
+	if m.cfg.Spawn == nil {
+		return false
+	}
+	spec, err := m.cfg.Spawn.Effective(r.Context(), spawnv1.Tenant{Org: "local", Owner: principal}, principal)
+	return err == nil && spec.Digest == digest
 }

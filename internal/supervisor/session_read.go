@@ -21,7 +21,7 @@ func (m *Manager) sessionRead(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "binding rejected"})
 		return

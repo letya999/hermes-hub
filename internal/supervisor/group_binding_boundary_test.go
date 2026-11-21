@@ -29,7 +29,7 @@ func TestGroupBindingRejectsMismatchedAuthorityFields(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "scope.yaml"), []byte("kind: group\nid: "+scopeID+"\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.bindingFor(r); err == nil {
+			if _, err := m.bindingFor(context.Background(), r); err == nil {
 				t.Fatalf("group accepted mismatched %s", mode)
 			}
 		})

@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,23 +40,12 @@ func TestBrokenPublishedRevisionFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeCurrentPointer(t, dir, "r-doesnotexist")
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err == nil {
 		t.Fatalf("broken published revision silently downgraded to legacy read (model=%q)", s.Model)
 	}
 	if !strings.Contains(err.Error(), "published revision") && !strings.Contains(err.Error(), "load effective") {
 		t.Fatalf("error does not name the failed published revision: %v", err)
-	}
-}
-
-func TestManagedReadRejectsViewRevisionMismatch(t *testing.T) {
-	dir := t.TempDir()
-	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
-	if err := os.WriteFile(filepath.Join(dir, "generated", "config-view", "dev", "revision"), []byte("r-0123456789abcdee\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadEffective(dir, "dev"); err == nil {
-		t.Fatal("managed read accepted a config view from another revision")
 	}
 }
 
@@ -343,7 +333,7 @@ func TestManagedReadProjectsScopeKind(t *testing.T) {
 	docs := managedDocs("team-a")
 	docs["stack"] = strings.Replace(docs["stack"], "identity: {user: team-a", "identity: {user: team-a, kind: group", 1)
 	publishManagedDocs(t, dir, "team-a", "r-0123456789abcdef", docs)
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatalf("group scope read: %v", err)
 	}
@@ -360,7 +350,7 @@ func TestManagedReadIgnoresRetiredScopeFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: group\nid: mallory\norganization: acme\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatalf("retired scope.yaml vetoed the published identity: %v", err)
 	}
@@ -384,10 +374,10 @@ func TestReadEffectiveRequiresPublishedRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := ReadEffective(dir, "dev"); err == nil || !strings.Contains(err.Error(), "published revision") {
+	if _, err := ReadEffective(context.Background(), testReader(dir), dir, "dev"); err == nil || !strings.Contains(err.Error(), "published revision") {
 		t.Fatalf("space without a published revision read cleanly: %v", err)
 	}
-	if err := RenderEnvironment(dir, dir, "dev"); err == nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, dir, "dev"); err == nil {
 		t.Fatal("render ran without a published revision")
 	}
 }
@@ -402,10 +392,10 @@ func TestManagedRenderRefusesWithoutRevision(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "passports"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadEffective(dir, "dev"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(dir), dir, "dev"); err == nil {
 		t.Fatal("managed claim without a published revision read cleanly")
 	}
-	if err := RenderEnvironment(dir, dir, "dev"); err == nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, dir, "dev"); err == nil {
 		t.Fatal("managed claim without a published revision rendered cleanly")
 	}
 }
@@ -427,11 +417,11 @@ func TestManagedRenderReadsNoLegacyFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatalf("managed read touched a retired file or failed: %v", err)
 	}
-	environment, err := ReadEnvironment(dir, "dev")
+	environment, err := ReadEnvironment(context.Background(), testReader(dir), dir, "dev")
 	if err != nil || environment.Model != s.Model || environment.ModelURL != s.ModelURL {
 		t.Fatalf("environment read diverged from the published revision: model=%q url=%q err=%v", environment.Model, environment.ModelURL, err)
 	}
@@ -467,7 +457,7 @@ func TestPublishedToolBindingOverridesAgentYAML(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["tools"] = strings.Replace(docs["tools"], "alice-default, generation: 1", "alice-current, generation: 2", 1)
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +467,7 @@ func TestPublishedToolBindingOverridesAgentYAML(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "agent.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	s, err = ReadEffectiveSpace(dir)
+	s, err = ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil || s.CapabilityProfileID != "alice-current" || s.CapabilityGeneration != 2 {
 		t.Fatalf("published binding requires agent.yaml: %q / %d, %v", s.CapabilityProfileID, s.CapabilityGeneration, err)
 	}
@@ -491,7 +481,7 @@ func TestManagedReadProjectsContextPolicy(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["config"] = strings.Replace(docs["config"], "runtime: {timezone: UTC}", "runtime: {timezone: UTC, context: {compaction: hub, engines: [hub, native]}, goals: {engine: native, judge: self, max_turns: 12}, compression: {threshold_tokens: 180000}, auxiliary: {summary_model: m, judge_model: m}}", 1)
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +512,7 @@ func TestManagedMemoryScheduleComesOnlyFromPassport(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["config"] += "memory: {enabled: true, nightly_rollup: '02:30', leaf_retention_days: 7, leaf_fold_bytes: 65536}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +524,7 @@ func TestManagedMemoryScheduleComesOnlyFromPassport(t *testing.T) {
 func TestManagedReadRejectsForeignSpaceRevisionWithoutScopeFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	publishManagedRevision(t, dir, "bob", "r-0123456789abcdef")
-	if _, err := ReadEffectiveSpace(dir); err == nil || !strings.Contains(err.Error(), "identity does not match") {
+	if _, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir); err == nil || !strings.Contains(err.Error(), "identity does not match") {
 		t.Fatalf("foreign published identity admitted without scope.yaml: %v", err)
 	}
 	if SpaceRendersInfra(dir) {
@@ -556,7 +546,7 @@ func TestPointerAloneClaimsManaged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte("\x00{{{{invalid: [unclosed\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "dev")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatalf("pointer-only managed space read a retired file or failed: %v", err)
 	}
@@ -588,7 +578,7 @@ func TestManagedRenderIgnoresRetiredFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, "config", "SOUL.md"), []byte("# soul\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, out, "dev"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, out, "dev"); err != nil {
 		t.Fatalf("managed render consulted a retired file: %v", err)
 	}
 }
@@ -601,13 +591,13 @@ func TestManagedConnectorsProjectRawMCP(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["tools"] = "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\ncore:\n  files: {via: toolhub}\nextended:\n  user_mcp: {via: mcp-raw}\nconnectors:\n  gitea: {url: \"https://mcp.example.com/gitea\", timeout: 60, tools: {exclude: [delete_repo]}}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	if _, err := ReadEffectiveSpace(dir); err == nil || !strings.Contains(err.Error(), "user_mcp") {
+	if _, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir); err == nil || !strings.Contains(err.Error(), "user_mcp") {
 		t.Fatalf("declared connector admitted without a user_mcp grant: %v", err)
 	}
 	seedGovernance(t, dir, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", api.SectionUserMCP, time.Hour)
 	})
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatalf("granted user_mcp still denied: %v", err)
 	}
@@ -650,7 +640,7 @@ func TestPassportRemovalRevokesRawMCPSelection(t *testing.T) {
 	seedGovernance(t, dir, func(doc *api.Governance) { activeToolGrant(t, doc, "alice", api.SectionUserMCP, time.Hour) })
 	check := func(wantGitea bool) {
 		t.Helper()
-		s, err := ReadEffectiveSpace(dir)
+		s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -677,7 +667,7 @@ func TestManagedToolsOffProjectsDeny(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["tools"] += "extended:\n  clickhouse: {via: off}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatalf("via: off entry failed the managed read: %v", err)
 	}
@@ -698,7 +688,7 @@ func TestManagedReadProjectsMemoryProvider(t *testing.T) {
 	docs["config"] = strings.Replace(docs["config"], "kind: config\n", "kind: config\nmemory: {enabled: true, provider: {adapter: hindsight, url: \"http://hindsight.invalid:8888\", token_env: HINDSIGHT_TOKEN}}\n", 1)
 	docs["tools"] += "extended:\n  memory_provider: {via: native}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +707,7 @@ func TestManagedReadProjectsHosting(t *testing.T) {
 	docs["config"] = strings.Replace(docs["config"], "kind: config\n",
 		"kind: config\nhosting: {slots: [site, blog], image: ghcr.io/example/site@sha256:"+strings.Repeat("a", 64)+", runtime: runsc}\n", 1)
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	s, err := ReadEffectiveSpace(dir)
+	s, err := ReadEffectiveSpace(context.Background(), testReader(dir), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,11 +734,10 @@ func TestManagedModelRegistryReadsNoLegacyLayer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "models.yaml"), []byte(legacy), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "dev")
-	if err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(dir), dir, "dev"); err != nil {
 		t.Fatal(err)
 	}
-	reg, err := LoadModelRegistry(dir, s)
+	reg, err := LoadModelRegistryFor(dir, testLoadEffective(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +771,7 @@ func TestMalformedCurrentPointerFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(passports, "current"), []byte("../escape\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadEffective(dir, "prod"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(dir), dir, "prod"); err == nil {
 		t.Fatal("malformed current pointer silently read as an unmanaged space")
 	}
 }

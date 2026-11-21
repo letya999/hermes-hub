@@ -22,13 +22,13 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -305,7 +305,7 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 				revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml"))
 				m32Require(t, err)
 			}
-			bundle, err := passportview.PolicyProjection(user, environment, current, revision.Docs)
+			bundle, err := spawnv1.PolicyProjection(user, environment, current, revision.Docs)
 			m32Require(t, err)
 			signed, err := registry.StagePassports(ctx, bundle)
 			m32Require(t, err)
@@ -396,7 +396,7 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 		"HUB_RUNTIME_AUTH": h.tokens[f.Users[0]], "HUB_TOOLHUB_TOKENS_FILE": filepath.Join(f.Infra, "toolhub-tokens.json"), "HUB_TOOLHUB_STORE": f.StorePath,
 		"HUB_USER_ID": auth.PrincipalID, "HUB_PRINCIPAL_ID": auth.PrincipalID, "HUB_CONTEXT_ID": auth.ContextID, "HUB_RUNTIME_ID": auth.RuntimeID, "HUB_POLICY_VERSION": auth.PolicyVersion,
 		"HUB_CAPABILITY_PROFILE_ID": auth.CapabilityProfile, "HUB_CAPABILITY_ENVIRONMENT": environment, "HUB_CAPABILITY_GENERATION": "1",
-		"HUB_TOOLHUB_LISTEN": toolListen, "HUB_AGENT_EXEC_MODE": "supervisor", "HUB_PASSPORTS_BY_PRINCIPAL": passportRoot, "HUB_VAULTS_BY_PRINCIPAL": vaultRoot,
+		"HUB_TOOLHUB_LISTEN": toolListen, "HUB_AGENT_EXEC_MODE": "supervisor", "HUB_VAULTS_BY_PRINCIPAL": vaultRoot,
 		"HUB_TOOL_GOVERNANCE": filepath.Join(filepath.Dir(f.StorePath), "governance.json"), "HUB_AUDIT_LEDGER": filepath.Join(f.Root, "audit.jsonl"),
 		"HUB_COMMUNICATION_AUTH": h.control, "HUB_SUPERVISOR_AUTH": h.control, "HUB_RUNTIME_SUPERVISOR_URL": h.supervisor.URL, "HUB_TOOLHUB_URL_PATTERN": h.toolURL,
 		"HUB_AUTOMATION_ROOT": filepath.Join(f.Root, "automation"), "HUB_AUTOMATION_OWNERS": owners, "HUB_AUTOMATION_LEGACY_SPOOL": filepath.Join(f.Root, "communication"), "HUB_AUTOMATION_ROUTING": routing,

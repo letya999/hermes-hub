@@ -17,8 +17,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -26,7 +26,7 @@ import (
 
 // APIVersion is the common envelope every passport file carries (v2:
 // kind is the passport name, contract keys are top-level).
-const APIVersion = passportview.APIVersionV2
+const APIVersion = spawnv1.APIVersionV2
 
 // Layer is one versioned source document: passport name -> field tree.
 type Layer struct {

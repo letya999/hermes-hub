@@ -3,7 +3,6 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -90,19 +89,12 @@ func InfraSpaceDir(dir string) string {
 	return dir
 }
 
-// spaceRendersInfra peeks at a space's own passport authority for the infra
+// spaceRendersInfra peeks at a space's authored stack passport for the infra
 // flag without running the full read — a settings load would recurse into
-// governance resolution. The published revision answers first; before the
-// first apply the authored stack passport is the pending claim. Absence
-// means the space does not render the shared control plane.
+// governance resolution, and the published file mirror the old peek used is
+// gone (S7d): the authored stack.yaml carries the claim activation made
+// true. Absence means the space does not render the shared control plane.
 func spaceRendersInfra(dir string) bool {
-	if _, err := passportview.Current(dir); err == nil {
-		eff, err := passportview.LoadEffective(dir)
-		if err != nil || eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir) {
-			return false
-		}
-		return eff.Stack.Identity.Infra != nil && *eff.Stack.Identity.Infra
-	}
 	identity, err := authoredStackIdentity(dir)
 	if err != nil || identity.User != filepath.Base(dir) {
 		return false
@@ -165,21 +157,10 @@ func ReservedSiblingPorts(dir string) map[int]string {
 	return out
 }
 
-// siblingPorts lists the host ports one space claims: its published config
-// passport first, the authored config passport before the first apply.
+// siblingPorts lists the host ports one space claims from its authored
+// config passport — the published-file peek the mirror fed is gone (S7d),
+// and the authored claim is what the space's next apply activates anyway.
 func siblingPorts(dir string) []int {
-	if rev, err := passportview.Current(dir); err == nil {
-		var probe struct {
-			Ports map[string]int `yaml:"ports"`
-		}
-		if b, rerr := os.ReadFile(filepath.Join(dir, "generated", "passports", rev, "config.yaml")); rerr == nil && yaml.Unmarshal(b, &probe) == nil { // #nosec G304 -- operator-owned space dir
-			out := make([]int, 0, len(probe.Ports))
-			for _, p := range probe.Ports {
-				out = append(out, p)
-			}
-			return out
-		}
-	}
 	var probe struct {
 		Ports map[string]int `yaml:"ports"`
 	}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func TestChannelContractExplainsBrowserWait(t *testing.T) {
@@ -267,7 +267,7 @@ func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	// The selected tool and the independent config switch must both admit
 	// the section. A disabled switch leaves the tool selected but inert.
 	enabled, disabled := true, false
-	governed := Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaToolHub}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
+	governed := Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaToolHub}}, PassportConfig: &spawnv1.Config{Memory: spawnv1.Memory{Enabled: &enabled}}}
 	if body := governed.channelContract(true); !strings.Contains(body, "memory_card") {
 		t.Fatal("enabled memory space lost the memory guidance")
 	}
@@ -275,7 +275,7 @@ func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	if body := governed.channelContract(true); strings.Contains(body, "memory_card") {
 		t.Fatal("disabled memory kept the memory guidance")
 	}
-	if body := (Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaOff}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}).channelContract(true); strings.Contains(body, "memory_card") {
+	if body := (Settings{Tools: map[string]ToolEntry{"memory": {Via: ToolViaOff}}, PassportConfig: &spawnv1.Config{Memory: spawnv1.Memory{Enabled: &enabled}}}).channelContract(true); strings.Contains(body, "memory_card") {
 		t.Fatal("disabled memory toolset kept the memory guidance")
 	}
 }

@@ -10,7 +10,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // `hubctl models` hosts model-service operator flows. `models login` enrolls
@@ -41,7 +40,7 @@ func runModels(ctx context.Context, args []string) error {
 	// {space, space, space, cliproxy-materialize}, so the operator envelope must
 	// present exactly that — a broker "operator" context can never own or grant
 	// the space's credentials (grants.go: in.ContextID == credential.ContextID).
-	eff, err := passportview.LoadEffective(*dir)
+	eff, err := effectiveSpec(ctx, *dir)
 	if err != nil {
 		return fmt.Errorf("models login: %w", err)
 	}

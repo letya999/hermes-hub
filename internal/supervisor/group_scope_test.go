@@ -68,12 +68,12 @@ func TestSupervisorGroupBindingRequiresDedicatedGroupHome(t *testing.T) {
 	}
 	m.cfg.Identity = registry
 	r := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "group:alice", OrganizationID: "personal"}
-	bound, err := m.bindingFor(r)
+	bound, err := m.bindingFor(context.Background(), r)
 	if err != nil || bound.ContextRoot != root || bound.PrincipalID != "alice" {
 		t.Errorf("dedicated group binding rejected: %+v %v", bound, err)
 	}
 	publishScopeKind(t, root, "user")
-	if _, err := m.bindingFor(r); err == nil {
+	if _, err := m.bindingFor(context.Background(), r); err == nil {
 		t.Error("group request selected a personal home")
 	}
 }

@@ -1,10 +1,12 @@
 package stack
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/vault"
 	"gopkg.in/yaml.v3"
@@ -50,34 +52,44 @@ func configuredEnvKeys(s Settings, dir string) []string {
 	slices.Sort(keys)
 	return keys
 }
-func RenderEnvironment(dir, root, environment string) error {
-	return renderEnvironment(dir, root, environment, "")
-}
-
-// RenderRevisionEnvironment prepares generated outputs from a staged bundle.
-// The active read path remains gated until the publisher commits current.
-func RenderRevisionEnvironment(dir, root, environment, revisionID string) error {
-	return renderEnvironment(dir, root, environment, revisionID)
-}
-
-func renderEnvironment(dir, root, environment, revisionID string) error {
+func RenderEnvironment(ctx context.Context, client spawnv1.EffectiveReader, dir, root, environment string) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
-	root, err = filepath.Abs(root)
+	eff, err := effectiveForDir(ctx, client, dir)
 	if err != nil {
 		return err
 	}
-	var s Settings
-	if revisionID == "" {
-		s, err = ReadEffective(dir, environment)
-	} else {
-		s, err = ReadEffectiveRevision(dir, environment, revisionID)
-	}
+	return renderEnvironment(ctx, client, dir, root, environment, eff)
+}
+
+// RenderEnvironmentFor prepares generated outputs from an effective bundle
+// the caller already fetched — the apply converge renders exactly the spec
+// it activated, never a staged or re-read candidate.
+func RenderEnvironmentFor(ctx context.Context, client spawnv1.EffectiveReader, dir, root, environment string, eff spawnv1.Effective) error {
+	var err error
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
+	return renderEnvironment(ctx, client, dir, root, environment, eff)
+}
+
+func renderEnvironment(ctx context.Context, client spawnv1.EffectiveReader, dir, root, environment string, eff spawnv1.Effective) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	s, err := finishManagedRead(Settings{}, dir, eff)
+	if err != nil {
+		return err
+	}
+	s, err = environmentTail(s, dir, environment)
+	if err != nil {
+		return err
+	}
+	s.siblingMemory = SiblingMemoryEnabled(ctx, client, dir, environment)
 	if s.ExecutionMode != "supervisor" {
 		return fmt.Errorf("managed runtime requires supervisor-executed runtimes; static managed launch is not proven")
 	}
@@ -211,7 +223,10 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			return err
 		}
 	}
-	if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
+	if err = writeModelRegistry(dir, s, eff); err != nil {
+		return err
+	}
+	if err = writeModelServices(dir, s, eff); err != nil {
 		return err
 	}
 	if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
@@ -249,10 +264,10 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 				return err
 			}
 		}
-		if err = enrollSiblingRuntimeTokens(dir, environment, s); err != nil {
+		if err = enrollSiblingRuntimeTokens(ctx, client, dir, environment, s); err != nil {
 			return err
 		}
-		if err = EnrollSiblingModelRelayAdmins(dir, environment); err != nil {
+		if err = EnrollSiblingModelRelayAdmins(ctx, client, dir, environment); err != nil {
 			return err
 		}
 	}
@@ -264,8 +279,11 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	// service URL and bearer must live there — compose env_file entries are
 	// not replayed for supervisor-spawned containers.
 	runtimeExtra := map[string]string{}
+	fetchSibling := func(candidate string) (Settings, error) {
+		return ReadEffective(ctx, client, candidate, s.Environment)
+	}
 	if s.Has("image_gen") {
-		auth, err := runtimeMediaAuth(dir, s)
+		auth, err := runtimeMediaAuth(dir, s, fetchSibling)
 		if err != nil {
 			return err
 		}
@@ -290,7 +308,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	managedEnv := map[string]string{
 		"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
 	}
-	if layer, loadErr := passportRegistryLayer(dir, revisionID); loadErr == nil {
+	if layer, loadErr := registryLayerFor(dir, eff); loadErr == nil {
 		if _, ok := layer.Models["vision"]; ok {
 			managedEnv["HUB_MEDIA_VISION_MODEL"] = "vision"
 		}
@@ -322,7 +340,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		}
 	}
 	if slices.Contains(managedEgressHosts(s, dir), mediaServiceName(s)) {
-		auth, err := runtimeMediaAuth(dir, s)
+		auth, err := runtimeMediaAuth(dir, s, fetchSibling)
 		if err != nil {
 			return err
 		}
@@ -380,6 +398,12 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		}
 	}
 	if err = materializeHermesConfig(dir, s); err != nil {
+		return err
+	}
+	// The runtime /config view is the render's own materialization of the
+	// effective bundle (S7d): written here for compose-mounted runtimes and
+	// fresh at claim for spawned ones — the v0 publish mirror is gone.
+	if err = MaterializeConfigView(dir, s, eff); err != nil {
 		return err
 	}
 	// The executor's governance extract is part of the same render contract:

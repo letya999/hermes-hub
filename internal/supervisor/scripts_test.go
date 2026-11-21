@@ -372,7 +372,7 @@ func TestM10UsageLookupActiveAndMalformedRequests(t *testing.T) {
 	}))
 	defer api.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { commands++; return nil, nil }, nil)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}

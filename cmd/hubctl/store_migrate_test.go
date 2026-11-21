@@ -107,6 +107,7 @@ func TestStoreMigrateCLIForBroker(t *testing.T) {
 	// Infra owner: the credential-broker is a declared shared service whose
 	// Docker volumes the broker store migration orchestrates.
 	writeManagedSpaceDocs(t, dir, "owner", managedInfraDocs("owner", false))
+	stubSpawnClient(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

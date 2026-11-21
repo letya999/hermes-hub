@@ -74,7 +74,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	if held {
 		return Runtime{}, errors.New("administrative hold")
 	}
-	binding, err := m.normalize(binding)
+	binding, err := m.normalize(ctx, binding)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -94,7 +94,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
-	managedSettings, managedErr := stack.ReadEffectiveSpace(binding.ContextRoot)
+	managedSettings, managedEff, managedErr := stack.ReadEffectiveSpaceBundle(ctx, m.cfg.Spawn, binding.ContextRoot)
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
@@ -436,7 +436,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	var computeID, computeGeneration, claimLease string
 	var computeConditions []Condition
 	if m.usingKubernetes() {
-		observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Port: port})
+		observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Effective: managedEff, Port: port})
 		if spawnErr != nil {
 			m.markDegraded(key)
 			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
@@ -506,7 +506,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	return result, nil
 }
 
-func (m *Manager) normalize(binding Binding) (Binding, error) {
+func (m *Manager) normalize(ctx context.Context, binding Binding) (Binding, error) {
 	if !validID(binding.PrincipalID) || !validID(binding.ContextID) || !validID(binding.RuntimeID) || !validID(binding.UserID) {
 		return Binding{}, errors.New("invalid runtime binding")
 	}
@@ -548,7 +548,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	if _, err := stack.ReadEffective(abs, m.environment()); err != nil && !os.IsNotExist(err) {
+	if _, err := stack.ReadEffective(ctx, m.cfg.Spawn, abs, m.environment()); err != nil && !os.IsNotExist(err) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", err)
 	}
 	runtimeEnv := "managed-runtime." + m.environment() + ".env"

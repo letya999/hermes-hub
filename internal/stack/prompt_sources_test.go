@@ -142,14 +142,8 @@ func TestManagedTurnHasSinglePinnedPromptAcrossEntrypoints(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("PLANTED-SECOND-AUTHORITY"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	rev := filepath.Join(dir, "generated", "passports", "r-0007")
-	if err := os.MkdirAll(rev, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rev, "prompt-pointer.txt"), []byte("revision=r-0007 core=terminal,files extended=+12 platform=tool_search+tool_call\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0007\n"), 0600); err != nil {
+	managed.promptPointer = "revision=r-0007 core=terminal,files extended=+12 platform=tool_search+tool_call\n"
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := MaterializeSoulEffective(dir, managed); err != nil {
@@ -208,14 +202,10 @@ func TestSoulEffectiveHonorsFamilyOff(t *testing.T) {
 // guidance even without an explicit `via: off`.
 func TestSoulEffectiveGovernedDropsAbsentFamilies(t *testing.T) {
 	dir := t.TempDir()
-	passports := filepath.Join(dir, "generated", "passports")
-	if err := os.MkdirAll(passports, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(passports, "current"), []byte("rev-test"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s := Settings{Environment: "dev", Tools: map[string]ToolEntry{
+	s := Settings{Environment: "dev", PassportRevision: "rev-test", Tools: map[string]ToolEntry{
 		"routines": {Via: ToolViaToolHub},
 	}}
 	if err := MaterializeSoulEffective(dir, s); err != nil {

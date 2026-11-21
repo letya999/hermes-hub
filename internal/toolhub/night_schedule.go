@@ -1,13 +1,12 @@
 package toolhub
 
 import (
+	"context"
 	"errors"
-	"path/filepath"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory/night"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -19,14 +18,14 @@ func (e *projectionEndpoint) NightSchedule(auth identity.Envelope) (night.Schedu
 		return night.Schedule{}, api.ErrUnauthorized
 	}
 	g := e.gateway
-	if g.PassportRoot == "" {
+	if g.Spawn == nil {
 		return night.Schedule{}, errors.New("night passport unavailable")
 	}
-	activation, err := g.requireActivated(auth)
+	activation, err := g.requireActivated(context.Background(), auth)
 	if err != nil || activation.revision == "" {
 		return night.Schedule{}, api.ErrUnauthorized
 	}
-	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, auth.PrincipalID))
+	eff, err := effectiveFor(context.Background(), g.Spawn, auth.PrincipalID)
 	if err != nil || eff.Header.Metadata.Revision != activation.revision || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment {
 		return night.Schedule{}, api.ErrUnauthorized
 	}
@@ -47,7 +46,7 @@ func (e *projectionEndpoint) NightSchedule(auth identity.Envelope) (night.Schedu
 	if _, err := time.LoadLocation(plan.Timezone); err != nil {
 		return night.Schedule{}, errors.New("night timezone unavailable")
 	}
-	if err := g.checkActivePassport(auth, activation.revision); err != nil {
+	if err := g.checkActivePassport(context.Background(), auth, activation.revision); err != nil {
 		return night.Schedule{}, err
 	}
 	return plan, nil

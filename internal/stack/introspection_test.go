@@ -3,13 +3,13 @@ package stack
 import (
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func TestRuntimeIntrospectionPolicy(t *testing.T) {
 	off, on := false, true
-	withFlag := func(v *bool) *passportview.Config {
-		return &passportview.Config{Runtime: passportview.Runtime{Introspection: v}}
+	withFlag := func(v *bool) *spawnv1.Config {
+		return &spawnv1.Config{Runtime: spawnv1.RuntimeConfig{Introspection: v}}
 	}
 
 	if !(Settings{PassportConfig: withFlag(nil)}).RuntimeIntrospectionAllowed() {

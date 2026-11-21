@@ -59,7 +59,7 @@ func runTrace(ctx context.Context, out io.Writer, jobID, user, spacesRoot string
 				return "", os.ErrInvalid
 			}
 			dir := filepath.Join(spacesRoot, contextID)
-			settings, err := stack.ReadEffective(dir, environment)
+			settings, err := readEffectiveSettings(ctx, dir, environment)
 			if err != nil {
 				// Trace is diagnostics: a space that was never applied (or
 				// whose published revision is broken) must still be

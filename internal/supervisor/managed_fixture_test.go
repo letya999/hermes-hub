@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -61,7 +62,18 @@ func publishSpaceRevision(t *testing.T, ctxRoot, user string, mutate func(map[st
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rev.Publish(ctxRoot); err != nil {
+	// S7d: fixtures lay down the same tree the deleted publish wrote — the
+	// test shim answers the contract read from it.
+	revDir := filepath.Join(ctxRoot, "generated", "passports", rev.ID)
+	if err := os.MkdirAll(revDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range rev.Docs {
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "passports", "current"), []byte(rev.ID+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -83,7 +95,7 @@ func writeManagedFixtures(t *testing.T, ctxRoot string) stack.Settings {
 	if err := os.WriteFile(filepath.Join(ctxRoot, stack.ExecutionPath("prod")), selectionBody, 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.ReadEnvironment(ctxRoot, "prod")
+	settings, err := stack.ReadEnvironment(context.Background(), supTestReader{ctxRoot}, ctxRoot, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

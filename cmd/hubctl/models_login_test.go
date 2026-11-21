@@ -182,7 +182,7 @@ func TestModelsLoginRejectsIncompleteRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	broker := &fakeModelsBroker{requests: map[string]brokerv1.Request{}}
-	if _, err := modelsLogin(context.Background(), dir, "google-pro-1", broker, broker); err == nil || !strings.Contains(err.Error(), "load effective") {
+	if _, err := modelsLogin(context.Background(), dir, "google-pro-1", broker, broker); err == nil || !strings.Contains(err.Error(), "models login:") {
 		t.Fatalf("incomplete revision must fail the load: %v", err)
 	}
 	if len(broker.grants) != 0 {

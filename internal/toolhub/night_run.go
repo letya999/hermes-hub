@@ -13,23 +13,24 @@ import (
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/memory/prune"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
 // NightRun executes the protected occurrence in its enrolled owner's vault.
 func (e *projectionEndpoint) NightRun(ctx context.Context, auth identity.Envelope, leafDate string, plan night.Schedule, lang locale.Lang, sink func(context.Context, night.IntentProposal) error) (string, error) {
-	if !identity.ValidID(auth.PrincipalID) || e.gateway.PassportRoot == "" {
+	if !identity.ValidID(auth.PrincipalID) || e.gateway.Spawn == nil {
 		return "", api.ErrUnauthorized
 	}
-	digest, err := passportview.CurrentPolicyDigestGenerated(filepath.Join(e.gateway.PassportRoot, auth.PrincipalID))
+	spec, err := e.gateway.Spawn.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: auth.PrincipalID}, auth.PrincipalID)
 	if err != nil {
 		return "", err
 	}
+	digest := spec.Digest
 	issuerURL := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 	bootstrap := strings.TrimSpace(os.Getenv(contract.DreamingServiceAuthEnv))
 	if issuerURL == "" || bootstrap == "" {

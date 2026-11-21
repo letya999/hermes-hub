@@ -54,7 +54,7 @@ func testSetIdentity(t *testing.T, m *Manager, organization string, users ...com
 
 func testWarmBinding(t *testing.T, m *Manager, input Binding) Binding {
 	t.Helper()
-	bound, err := m.normalize(input)
+	bound, err := m.normalize(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}

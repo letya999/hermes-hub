@@ -20,6 +20,7 @@ import (
 func TestRecreateRemovedHostingControllerSweepsOrphan(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	writeManagedSpaceFixture(t, dir, "alice")
+	stubSpawnClient(t, dir)
 	previous := dockerCompose
 	defer func() { dockerCompose = previous }()
 	var got []string
@@ -27,7 +28,7 @@ func TestRecreateRemovedHostingControllerSweepsOrphan(t *testing.T) {
 		got = append([]string(nil), args...)
 		return nil
 	}
-	if err := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev").Recreate("hosting-controller"); err != nil {
+	if err := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev", "").Recreate("hosting-controller"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, "--remove-orphans") || slices.Contains(got, "hosting-controller") {
@@ -46,7 +47,13 @@ func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	settings, err := stack.ReadEffective(sibling, "dev")
+	if err := os.MkdirAll(filepath.Join(infra, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infra, "passports", "stack.yaml"), []byte("identity: {user: alice, infra: true}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEffective(context.Background(), spacesRootReader{root: filepath.Dir(sibling)}, sibling, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +70,7 @@ func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(infra, "communication.users.yaml"), []byte(fmt.Sprintf("organization_id: personal\nusers:\n  - id: bob\n    enabled: true\n    runtime_id: bob\n    policy_version: %s\n    telegram_ids: [22]\n", stack.PolicyVersion(settings))), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshSharedRuntimeTokens(sibling, "dev"); err != nil {
+	if err := refreshSharedRuntimeTokens(context.Background(), spacesRootReader{root: filepath.Dir(sibling)}, sibling, "dev"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(infra, "toolhub-tokens.json"))
@@ -98,6 +105,7 @@ func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
 func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
 	dir := t.TempDir()
 	writeManagedSpaceDocs(t, dir, "alice", nil)
+	stubSpawnClient(t, dir)
 	var captured []string
 	old := dockerCompose
 	dockerCompose = func(ctx context.Context, dir string, args ...string) error {
@@ -106,7 +114,7 @@ func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
 	}
 	defer func() { dockerCompose = old }()
 
-	h := applyHandlers(context.Background(), dir, t.TempDir(), "dev")
+	h := applyHandlers(context.Background(), dir, t.TempDir(), "dev", "")
 	if h.Remove == nil {
 		t.Fatal("remove action has no handler")
 	}
@@ -123,6 +131,7 @@ func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
 	writeManagedSpaceFixture(t, dir, "alice")
+	stubSpawnClient(t, dir)
 	previous := applyImageBuild
 	defer func() { applyImageBuild = previous }()
 	var got []string
@@ -130,7 +139,7 @@ func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
 		got = append([]string(nil), args...)
 		return nil
 	}
-	if err := applyHandlers(context.Background(), dir, root, "dev").Rebuild("hermes-runtime"); err != nil {
+	if err := applyHandlers(context.Background(), dir, root, "dev", "").Rebuild("hermes-runtime"); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
@@ -140,7 +149,7 @@ func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
 }
 
 func TestApplyLiveHooksCoverNamedConsumers(t *testing.T) {
-	h := applyHandlers(context.Background(), t.TempDir(), t.TempDir(), "dev")
+	h := applyHandlers(context.Background(), t.TempDir(), t.TempDir(), "dev", "")
 	for _, name := range []string{"supervisor-policy", "model-relay", "file-admission", "tool-policy", "rights-ledger"} {
 		hook, ok := h.Live[name]
 		if !ok {
@@ -210,6 +219,12 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 	infraDocs := managedInfraDocs("infra", false)
 	infraDocs["stack"] = strings.Replace(infraDocs["stack"], "model-relay: {mode: shared}", "model-relay: {mode: per-space}", 1)
 	writeManagedSpaceDocs(t, infra, "infra", infraDocs)
+	if err := os.MkdirAll(filepath.Join(infra, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infra, "passports", "stack.yaml"), []byte("identity: {user: infra, infra: true}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var captured []string
 	old := dockerCompose
 	dockerCompose = func(ctx context.Context, dir string, args ...string) error {
@@ -217,7 +232,8 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 		return nil
 	}
 	defer func() { dockerCompose = old }()
-	h := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev")
+	stubSpawnClient(t, dir)
+	h := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev", "")
 	if err := h.Recreate("browser"); err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +341,7 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	stubSpawnClient(t, dir)
 	hit, applyHeader := false, ""
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/respawn" {
@@ -335,11 +352,11 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	defer api.Close()
 	// Without the env override the recorded in-network endpoint is attempted
 	// — unreachable here, but it must not silently no-op.
-	if err := respawnRuntime(context.Background(), dir, "dev"); err == nil {
+	if err := respawnRuntime(context.Background(), dir, "dev", ""); err == nil {
 		t.Fatal("recorded supervisor endpoint must be attempted, not skipped")
 	}
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", api.URL)
-	if err := respawnRuntime(context.Background(), dir, "dev"); err != nil {
+	if err := respawnRuntime(context.Background(), dir, "dev", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !hit {
@@ -348,21 +365,10 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	if applyHeader != "" {
 		t.Fatal("ordinary respawn carried an apply proof")
 	}
-	// The v1 mirror points `current` at the effective digest and .policy
-	// resolves it to the emitted revision — the apply respawn binds its
-	// proof header to that live pointer.
+	// S7d: the apply passes its activated digest as the proof — the v0
+	// .policy indirection that carried it on disk is gone.
 	digest := "sha256:" + strings.Repeat("ab", 32)
-	policyDir := filepath.Join(dir, "generated", "passports", ".policy")
-	if err := os.MkdirAll(policyDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(policyDir, strings.TrimPrefix(digest, "sha256:")), []byte(rev+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(digest+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := respawnRuntime(context.Background(), dir, "dev"); err != nil || applyHeader != digest {
+	if err := respawnRuntime(context.Background(), dir, "dev", digest); err != nil || applyHeader != digest {
 		t.Fatalf("apply respawn proof=%q err=%v", applyHeader, err)
 	}
 }
@@ -423,6 +429,7 @@ func TestRespawnRuntimeFallsBackToRestartRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	marked := false
+	stubSpawnClient(t, dir)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/respawn":
@@ -433,7 +440,7 @@ func TestRespawnRuntimeFallsBackToRestartRequest(t *testing.T) {
 	}))
 	defer api.Close()
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", api.URL)
-	if err := respawnRuntime(context.Background(), dir, "dev"); err != nil {
+	if err := respawnRuntime(context.Background(), dir, "dev", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !marked {

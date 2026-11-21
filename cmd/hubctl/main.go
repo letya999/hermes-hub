@@ -638,7 +638,7 @@ func run(ctx context.Context, args []string) error {
 		defer t.Close()
 		return t.Server().Run(ctx, &mcp.StdioTransport{})
 	case "render":
-		return renderEnvironment(*dir, *root, *environment)
+		return renderEnvironment(ctx, *dir, *root, *environment)
 	case "trace":
 		explicitUser := ""
 		f.Visit(func(fl *flag.Flag) {
@@ -652,7 +652,11 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q", op)
 	}
 	if op == "doctor" || op == "up" {
-		s, err := stack.ReadEffective(*dir, *environment)
+		eff, err := effectiveSpec(ctx, *dir)
+		if err != nil {
+			return err
+		}
+		s, err := stack.SettingsForEffective(*dir, eff, *environment)
 		if err != nil {
 			return err
 		}
@@ -680,7 +684,7 @@ func run(ctx context.Context, args []string) error {
 			for key, value := range secrets {
 				modelSecrets[key] = value
 			}
-			plan, err := stack.ModelDoctor(*dir, s, modelSecrets)
+			plan, err := stack.ModelDoctor(*dir, s, eff, modelSecrets)
 			if err != nil {
 				return err
 			}
@@ -736,7 +740,7 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	if op == "build" || op == "up" {
-		if err := renderEnvironment(*dir, *root, *environment); err != nil {
+		if err := renderEnvironment(ctx, *dir, *root, *environment); err != nil {
 			return err
 		}
 	}
@@ -765,7 +769,7 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("compose configuration preflight: %w", err)
 		}
 		if op == "up" {
-			s, readErr := stack.ReadEffective(*dir, *environment)
+			s, readErr := readEffectiveSettings(ctx, *dir, *environment)
 			if readErr != nil {
 				return readErr
 			}
@@ -814,7 +818,7 @@ func run(ctx context.Context, args []string) error {
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
 			// Managed Compose services carry fixed hub image tags without build sections.
 			// Build the selected tags explicitly; Compose alone reports a no-op.
-			envSettings, readErr := stack.ReadEffective(*dir, *environment)
+			envSettings, readErr := readEffectiveSettings(ctx, *dir, *environment)
 			if readErr != nil {
 				return readErr
 			}
@@ -885,7 +889,7 @@ func run(ctx context.Context, args []string) error {
 		if op == "build" {
 			return nil
 		}
-		s, readErr := stack.ReadEffective(*dir, *environment)
+		s, readErr := readEffectiveSettings(ctx, *dir, *environment)
 		if readErr != nil {
 			return readErr
 		}
@@ -955,7 +959,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	switch op {
 	case "down":
-		if s, err := stack.ReadEffective(abs, *environment); err == nil && s.RendersInfra() && stack.HasPerSpaceServices(s) {
+		if s, err := readEffectiveSettings(ctx, abs, *environment); err == nil && s.RendersInfra() && stack.HasPerSpaceServices(s) {
 			for _, part := range []string{"user", "shared"} {
 				file := filepath.Join(abs, "generated", "compose."+part+"."+*environment+".yaml")
 				if err := dockerCmd("compose", "-f", file, "down", "--remove-orphans").Run(); err != nil {
@@ -971,12 +975,12 @@ func run(ctx context.Context, args []string) error {
 		if f.NArg() == 0 {
 			return fmt.Errorf("exec requires -- command arguments")
 		}
-		if _, err := runtimeIntrospectionGate(abs, *environment, "exec"); err != nil {
+		if _, err := runtimeIntrospectionGate(ctx, abs, *environment, "exec"); err != nil {
 			return err
 		}
 		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
-		s, err := runtimeIntrospectionGate(abs, *environment, "chat")
+		s, err := runtimeIntrospectionGate(ctx, abs, *environment, "chat")
 		if err != nil {
 			return err
 		}
@@ -995,7 +999,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return dockerCmd("run", "--rm", "--entrypoint", "/opt/telegram/.venv/bin/python", image, "/opt/telegram/session_string_generator.py", "--phone").Run()
 	case "meet-auth":
-		if _, err := runtimeIntrospectionGate(abs, *environment, "meet_auth"); err != nil {
+		if _, err := runtimeIntrospectionGate(ctx, abs, *environment, "meet_auth"); err != nil {
 			return err
 		}
 		return docker("exec", "hermes-runtime", "hermes", "meet", "auth")
@@ -1109,7 +1113,7 @@ func brokerStoreCommand(ctx context.Context, dir, root, env, op string) error {
 	if err != nil {
 		return err
 	}
-	if err := renderEnvironment(abs, rootAbs, env); err != nil {
+	if err := renderEnvironment(ctx, abs, rootAbs, env); err != nil {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+env+".yaml")

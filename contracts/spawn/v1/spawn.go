@@ -245,6 +245,15 @@ type SettingsEditResult struct {
 // Client is the spawn-controller surface. Path-shaped arguments come
 // first on the write calls (space, layer, revision id) so a server can
 // never take them from a body field.
+// EffectiveReader is the read-only passport slice consumers need (S7d): the
+// durable effective spec and an immutable policy slice by digest. Callers
+// with a full Client pass it directly; narrower seams (supervisor, toolhub
+// gateways) carry just this surface.
+type EffectiveReader interface {
+	Effective(context.Context, Tenant, string) (EffectiveSpec, error)
+	PolicySlice(context.Context, Tenant, string, string, string) (PolicySlice, error)
+}
+
 type Client interface {
 	CreateSpace(context.Context, CreateSpaceRequest) (Space, error)
 	SubmitRevision(context.Context, string, string, SubmitRevisionRequest) (Revision, error)

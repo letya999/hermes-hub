@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -187,7 +188,7 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	passwd := filepath.Join(d, "browser-novnc.passwd")
@@ -217,7 +218,7 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	}
 	// Render twice: secrets must be stable, never rotated by re-render.
 	passBefore, _ := os.ReadFile(passwd)
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	passAfter, _ := os.ReadFile(passwd)

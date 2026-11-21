@@ -49,7 +49,7 @@ func memoryContextFixtureWithGrants(t *testing.T) (*Gateway, identity.Envelope, 
 	vaultDirWithMarker(t, bindings, "bob", "bob curated core")
 	writeMemoryPassportDecl(t, passports, "alice", "alice", "r-0123456789abcdef", "dev", true)
 	writeMemoryPassportDecl(t, passports, "bob", "bob", "r-0123456789abcdee", "dev", true)
-	resolver, err := NewVaultResolver(bindings, passports)
+	resolver, err := NewVaultResolver(bindings, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +91,8 @@ func memoryContextFixtureWithGrants(t *testing.T) (*Gateway, identity.Envelope, 
 		"bob-1": memoryContextRecord(bobAuth, "bob-1", "adm-bob", "bob private text"),
 	}
 	g := &Gateway{Store: store, ControlToken: memoryContextControl,
-		Tokens:       map[string]identity.Envelope{aliceToken: auth, bobToken: bobAuth},
-		PassportRoot: passports, Vaults: resolver,
+		Tokens: map[string]identity.Envelope{aliceToken: auth, bobToken: bobAuth},
+		Spawn:  dirTreeReader{root: passports}, Vaults: resolver,
 		Audit: func(string, map[string]string) {},
 		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
 			record, ok := records[jobID]
@@ -347,11 +347,11 @@ func TestMemoryContextEndpointDenials(t *testing.T) {
 	g.Vaults = vaults
 	// Republished disabled memory denies the next request, not the next
 	// restart — the enrollment is re-read per call.
-	writeMemoryPassportDecl(t, g.PassportRoot, "alice", "alice", "r-0123456789abcdff", "dev", false)
+	writeMemoryPassportDecl(t, g.Spawn.(dirTreeReader).root, "alice", "alice", "r-0123456789abcdff", "dev", false)
 	if rec := memoryContextCall(t, g, "alice", valid, nil); rec.Code != http.StatusForbidden {
 		t.Fatalf("disabled memory admitted: %d", rec.Code)
 	}
-	writeMemoryPassportDecl(t, g.PassportRoot, "alice", "alice", "r-0123456789abcdef", "dev", true)
+	writeMemoryPassportDecl(t, g.Spawn.(dirTreeReader).root, "alice", "alice", "r-0123456789abcdef", "dev", true)
 	if rec := memoryContextCall(t, g, "alice", valid, nil); rec.Code != http.StatusOK {
 		t.Fatalf("re-enabled memory denied: %d", rec.Code)
 	}

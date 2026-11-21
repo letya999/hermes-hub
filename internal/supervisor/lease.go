@@ -182,7 +182,7 @@ func (m *Manager) ReleaseLease(leaseID string) error {
 }
 
 func (m *Manager) ReleaseBinding(binding Binding) error {
-	binding, err := m.normalize(binding)
+	binding, err := m.normalize(context.Background(), binding)
 	if err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(payload.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), payload.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return

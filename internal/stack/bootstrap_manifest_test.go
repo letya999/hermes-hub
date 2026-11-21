@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -16,7 +17,7 @@ func TestWorkspaceBootstrapManifestReachesRuntime(t *testing.T) {
 	docs := managedDocs("alice")
 	docs["workspace"] = "kind: workspace\nwritable: [/workspace]\nread_only: [/vault/memory]\ngoal: prepare-toolchain\nbootstrap_revision: 2\n"
 	publishManagedDocs(t, dir, "alice", "r-0000000000000001", docs)
-	s, err := ReadEnvironment(dir, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

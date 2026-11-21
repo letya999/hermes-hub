@@ -36,7 +36,7 @@ func searchVaultFixture(t *testing.T, vaults, passports, user, environment strin
 func TestSearchToolEvidenceRefs(t *testing.T) {
 	vaults, passports := t.TempDir(), t.TempDir()
 	searchVaultFixture(t, vaults, passports, "alice", "dev")
-	resolver, err := NewVaultResolver(vaults, passports)
+	resolver, err := NewVaultResolver(vaults, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestReadToolExactOwnSearchHit(t *testing.T) {
 	if err := vault.Ensure(filepath.Join(vaults, "bob")); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewVaultResolver(vaults, passports)
+	resolver, err := NewVaultResolver(vaults, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}

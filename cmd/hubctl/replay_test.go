@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -25,7 +26,7 @@ var replayWhen = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 func TestReplayConfigDigestUsesPublishedBundle(t *testing.T) {
 	space := t.TempDir()
 	writeManagedSpaceFixture(t, space, "alice")
-	before, err := replaySpaceDigest(space)
+	before, err := replaySpaceDigest(context.Background(), space)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,25 +38,38 @@ func TestReplayConfigDigestUsesPublishedBundle(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(space, "passports"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		if err := os.WriteFile(filepath.Join(space, "passports", name+".yaml"), []byte("unpublished: poisoned\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	after, err := replaySpaceDigest(space)
+	after, err := replaySpaceDigest(context.Background(), space)
 	if err != nil || after != before {
 		t.Fatal("retired or unpublished inputs changed replay configuration evidence", err)
 	}
-	for _, name := range passportview.Names {
+	mutations := map[string][2]string{
+		"stack":     {"user: alice", "user: alicia"},
+		"config":    {"timezone: UTC", "timezone: GMT"},
+		"models":    {"endpoint: http://model-relay:8318", "endpoint: http://model-relay:9318"},
+		"workspace": {"writable: [/workspace]", "writable: [/workspace, /tmp]"},
+		"tools":     {"generation: 1", "generation: 2"},
+		"grants":    {"allow: {}", "allow: {notes: [read]}"},
+	}
+	for _, name := range spawnv1.Names {
 		path := filepath.Join(space, "generated", "passports", "r-0123456789abcdef", name+".yaml")
 		original, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, append(append([]byte{}, original...), '\n'), 0600); err != nil {
+		mutation := mutations[name]
+		mutated := bytes.ReplaceAll(original, []byte(mutation[0]), []byte(mutation[1]))
+		if bytes.Equal(mutated, original) {
+			t.Fatalf("fixture %s lacks %q to mutate", name, mutation[0])
+		}
+		if err := os.WriteFile(path, mutated, 0600); err != nil {
 			t.Fatal(err)
 		}
-		changed, err := replaySpaceDigest(space)
+		changed, err := replaySpaceDigest(context.Background(), space)
 		if err != nil || changed == before {
 			t.Fatalf("published %s omitted from digest: %v", name, err)
 		}
@@ -66,7 +80,7 @@ func TestReplayConfigDigestUsesPublishedBundle(t *testing.T) {
 }
 
 func TestReplayConfigDigestRejectsIncompleteActivation(t *testing.T) {
-	for _, kind := range []string{"unpublished", "pending", "missing", "malformed", "mixed", "journal", "view"} {
+	for _, kind := range []string{"unpublished", "pending", "missing", "malformed", "mixed"} {
 		t.Run(kind, func(t *testing.T) {
 			space := t.TempDir()
 			writeManagedSpaceFixture(t, space, "alice")
@@ -88,15 +102,11 @@ func TestReplayConfigDigestRejectsIncompleteActivation(t *testing.T) {
 				if err == nil {
 					err = os.WriteFile(config, bytes.ReplaceAll(body, []byte("r-0123456789abcdef"), []byte("r-other")), 0600)
 				}
-			case "journal":
-				err = os.WriteFile(filepath.Join(root, "current"), []byte("pending\n"), 0600)
-			case "view":
-				err = os.WriteFile(filepath.Join(space, "generated", "config-view", "dev", "revision"), []byte("r-other"), 0600)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := replaySpaceDigest(space); err == nil {
+			if _, err := replaySpaceDigest(context.Background(), space); err == nil {
 				t.Fatal("invalid or incomplete activation accepted for replay evidence")
 			}
 		})
@@ -121,7 +131,7 @@ func TestReplayConfigDigestRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(outside, path); err != nil {
 		t.Skip("symlink creation unavailable")
 	}
-	if _, err := replaySpaceDigest(space); err == nil {
+	if _, err := replaySpaceDigest(context.Background(), space); err == nil {
 		t.Fatal("replay digest followed a published-document symlink")
 	}
 }

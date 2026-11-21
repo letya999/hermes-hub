@@ -16,23 +16,23 @@ func TestGroupApprovalRequiresCurrentGroupScopeAndPolicy(t *testing.T) {
 		return nil, nil
 	}, nil)
 	publishScopeKind(t, root, "group")
-	settings, err := stack.ReadEnvironment(root, "prod")
+	settings, err := stack.ReadEnvironment(context.Background(), supTestReader{root}, root, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "skills"))
 	policy := stack.PolicyVersion(settings)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", policy), UserID: "alice", ActorID: "alice", ScopeID: "group:alice", OrganizationID: "personal"}
-	if err := m.authorizeCurrentPolicy(request); err != nil {
+	if err := m.authorizeCurrentPolicy(context.Background(), request); err != nil {
 		t.Error("current group policy rejected", err)
 	}
 	request.PolicyVersion = "foreign"
-	if m.authorizeCurrentPolicy(request) == nil {
+	if m.authorizeCurrentPolicy(context.Background(), request) == nil {
 		t.Error("foreign group policy accepted")
 	}
 	request.PolicyVersion = policy
 	publishScopeKind(t, root, "user")
-	if m.authorizeCurrentPolicy(request) == nil {
+	if m.authorizeCurrentPolicy(context.Background(), request) == nil {
 		t.Error("group approval switched to personal home")
 	}
 }

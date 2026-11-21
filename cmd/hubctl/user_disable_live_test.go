@@ -61,7 +61,7 @@ func TestLiveIntrospectionDeny(t *testing.T) {
 			"  toolhub: {mode: shared}\n" +
 			"  credential-broker: {mode: shared}\n",
 	})
-	if _, err := runtimeIntrospectionGate(spaceDir, "dev", "exec"); err == nil {
+	if _, err := runtimeIntrospectionGate(context.Background(), spaceDir, "dev", "exec"); err == nil {
 		t.Fatal("group scope without introspection flag was allowed")
 	}
 	body, err := os.ReadFile(filepath.Join(spaceDir, "runtime", "toolhub", "audit.jsonl"))

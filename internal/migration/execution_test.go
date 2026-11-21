@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -83,16 +84,16 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	}
 	audit.NativeCron = &NativeCronSnapshot{HermesPin: HermesMigrationPin, ActiveJobs: 0}
 	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://host.docker.internal:8765", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
-	if report, err := SelectExecution(alice, selection, audit, false); err != nil || report.Mode != "dry-run" {
+	if report, err := SelectExecution(context.Background(), migTestReader{alice}, alice, selection, audit, false); err != nil || report.Mode != "dry-run" {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(alice, stack.ExecutionPath("prod"))); !os.IsNotExist(err) {
 		t.Fatal("dry run wrote routing")
 	}
-	if report, err := SelectExecution(alice, selection, audit, true); err != nil || report.Mode != "applied" {
+	if report, err := SelectExecution(context.Background(), migTestReader{alice}, alice, selection, audit, true); err != nil || report.Mode != "applied" {
 		t.Fatal(err)
 	}
-	s, err := stack.ReadEnvironment(alice, "prod")
+	s, err := stack.ReadEnvironment(context.Background(), migTestReader{alice}, alice, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +105,7 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	if _, ok := stack.Compose(s, "", alice)["services"].(stack.M)["hermes-runtime"]; ok {
 		t.Fatal("migrated context resident")
 	}
-	bobSettings, err := stack.ReadEnvironment(bob, "prod")
+	bobSettings, err := stack.ReadEnvironment(context.Background(), migTestReader{bob}, bob, "prod")
 	if err != nil || bobSettings.ExecutionMode != "" {
 		t.Fatal("Bob selection changed")
 	}
@@ -112,10 +113,10 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 		t.Fatal("Bob selection file written")
 	}
 	selection.Mode, selection.SupervisorURL = "static", ""
-	if report, err := SelectExecution(alice, selection, audit, true); err != nil || report.Previous == nil || report.Previous.Mode != "supervisor" {
+	if report, err := SelectExecution(context.Background(), migTestReader{alice}, alice, selection, audit, true); err != nil || report.Previous == nil || report.Previous.Mode != "supervisor" {
 		t.Fatal(err)
 	}
-	s, err = stack.ReadEnvironment(alice, "prod")
+	s, err = stack.ReadEnvironment(context.Background(), migTestReader{alice}, alice, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestExecutionSelectionPreservesQueueAndRollsBackOnlyOneContext(t *testing.T
 	}
 	// A managed space rolled back to a resident-runtime mode is a refused
 	// render, not a silent static stack.
-	if err := stack.RenderEnvironment(alice, root, "prod"); err == nil || !strings.Contains(err.Error(), "supervisor-executed") {
+	if err := stack.RenderEnvironment(context.Background(), migTestReader{alice}, alice, root, "prod"); err == nil || !strings.Contains(err.Error(), "supervisor-executed") {
 		t.Fatalf("managed static render accepted: %v", err)
 	}
 	after, _ := os.ReadFile(filepath.Join(spoolDir, "pending", "queued.json"))
@@ -182,7 +183,7 @@ func TestExecutionAuditRejectsUncertainAdmittedAndForgedMappings(t *testing.T) {
 				t.Fatal(err)
 			}
 			selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://localhost:8765", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
-			if _, err := SelectExecution(dir, selection, audit, true); err == nil {
+			if _, err := SelectExecution(context.Background(), migTestReader{dir}, dir, selection, audit, true); err == nil {
 				t.Fatal("uncertain executor transfer accepted")
 			}
 		})
@@ -216,7 +217,7 @@ func TestExecutionSelectionRejectsWrongOwnerCronAndConcurrentSelectors(t *testin
 			case "environment":
 				bad.Environment = "unknown"
 			}
-			if _, err := SelectExecution(root, bad, audit, true); err == nil {
+			if _, err := SelectExecution(context.Background(), migTestReader{root}, root, bad, audit, true); err == nil {
 				t.Fatal("unsafe selection accepted")
 			}
 		})
@@ -224,7 +225,7 @@ func TestExecutionSelectionRejectsWrongOwnerCronAndConcurrentSelectors(t *testin
 	if err := os.WriteFile(filepath.Join(root, ".execution-lock"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SelectExecution(root, selection, ExecutionReport{User: "alice", NativeCron: &NativeCronSnapshot{HermesPin: HermesMigrationPin}}, true); err == nil {
+	if _, err := SelectExecution(context.Background(), migTestReader{root}, root, selection, ExecutionReport{User: "alice", NativeCron: &NativeCronSnapshot{HermesPin: HermesMigrationPin}}, true); err == nil {
 		t.Fatal("concurrent selector accepted")
 	}
 }

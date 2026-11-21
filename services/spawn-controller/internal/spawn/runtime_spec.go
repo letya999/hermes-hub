@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	identityv1 "github.com/letya999/hermes-hub/contracts/identity/v1"
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/stack"
 	thapi "github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/services/spawn-controller/internal/backend"
@@ -91,7 +91,7 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	if err != nil {
 		return backend.Spec{}, err
 	}
-	eff, err := passportview.Assemble(spec.Documents)
+	eff, err := spawnv1.Assemble(spec.Documents)
 	if err != nil {
 		return backend.Spec{}, err
 	}
@@ -117,7 +117,7 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 		}
 	}
 	if settings.RendersInfra() {
-		if err := stack.EnrollSiblingRuntimeTokens(dir, env); err != nil {
+		if err := stack.EnrollSiblingRuntimeTokens(ctx, storeReader{r.Revisions}, dir, env); err != nil {
 			log.Printf("spawn token enrollment skipped")
 		}
 	}
@@ -251,6 +251,16 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	if err != nil {
 		return backend.Spec{}, fmt.Errorf("materialize tool policy: %w", err)
 	}
+	// The claim's /config view is materialized fresh from THIS claim's
+	// effective bundle (S7d): the runtime never sees a stale render output
+	// or the deleted publish mirror. The manifest rides inside the view so
+	// the single read-only /config bind covers the executor contract.
+	if err := stack.MaterializeConfigView(dir, settings, eff); err != nil {
+		return backend.Spec{}, fmt.Errorf("materialize config view: %w", err)
+	}
+	if err := stack.MaterializeToolManifest(stack.ConfigViewDir(dir, env), settings); err != nil {
+		return backend.Spec{}, fmt.Errorf("materialize tool manifest: %w", err)
+	}
 	// A published workspace passport owns /config as one read-only
 	// directory bind: nested per-file mounts cannot create mountpoints
 	// under it, so the snapshot and manifest ride inside the view instead
@@ -382,4 +392,26 @@ func materializeManagedConfig(dir string, settings stack.Settings, env string) (
 func fileExists(path string) bool {
 	info, err := os.Lstat(path) // #nosec G703 -- paths are assembled under the validated space root
 	return err == nil && info.Mode().IsRegular()
+}
+
+// storeReader adapts the service's own durable store to the contract's
+// EffectiveReader so shared stack helpers read sibling effectives through
+// the same code path contract clients use (S7d): the DB answers, files do
+// not.
+type storeReader struct{ revisions *Revisions }
+
+func (s storeReader) Effective(ctx context.Context, t spawnv1.Tenant, spaceID string) (spawnv1.EffectiveSpec, error) {
+	spec, err := s.revisions.Effective(ctx, store.Tenant{Org: t.Org, Owner: t.Owner}, spaceID)
+	if err != nil {
+		return spawnv1.EffectiveSpec{}, err
+	}
+	return spawnv1.EffectiveSpec{Space: spec.Space, Digest: spec.Digest, Documents: spec.Documents}, nil
+}
+
+func (s storeReader) PolicySlice(ctx context.Context, t spawnv1.Tenant, spaceID, service, digest string) (spawnv1.PolicySlice, error) {
+	docs, err := s.revisions.PolicySlice(ctx, store.Tenant{Org: t.Org, Owner: t.Owner}, spaceID, service, digest)
+	if err != nil {
+		return spawnv1.PolicySlice{}, err
+	}
+	return spawnv1.PolicySlice{Space: spaceID, Service: service, Digest: digest, Documents: docs}, nil
 }

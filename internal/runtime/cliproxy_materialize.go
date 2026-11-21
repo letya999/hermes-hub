@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // cliproxyPlane is the credential-delivery seam the init companion uses: File
@@ -96,8 +96,16 @@ type modelGrantFile map[string]map[string]map[string]string
 // share a ref — grants are deduplicated by ref, and a ref enrolled under any
 // matching service satisfies all of them. Nothing touches the persistent bind.
 func cliproxyMaterialize(ctx context.Context, plane cliproxyPlane, args cliproxyMaterializeArgs) error {
-	eff, err := passportview.LoadEffectiveGenerated(args.GeneratedDir)
+	// The render's model-services projection is the effective models doc as
+	// the contract served it (S7d): the init companion reads the mounted
+	// generated view, never a published passport tree.
+	servicesPath := filepath.Join(args.GeneratedDir, "model-services."+env("HUB_ENVIRONMENT", "prod")+".json")
+	rawServices, err := os.ReadFile(servicesPath)
 	if err != nil {
+		return fmt.Errorf("cliproxy materialize: %w", err)
+	}
+	var services map[string]spawnv1.ModelService
+	if err := json.Unmarshal(rawServices, &services); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
 	}
 	var grantMap modelGrantFile
@@ -108,9 +116,9 @@ func cliproxyMaterialize(ctx context.Context, plane cliproxyPlane, args cliproxy
 	if err := json.Unmarshal(raw, &grantMap); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
 	}
-	matched := map[string]passportview.ModelService{}
+	matched := map[string]spawnv1.ModelService{}
 	sessionGrants, keyGrants := map[string]string{}, map[string]string{}
-	for name, svc := range eff.Models.Services {
+	for name, svc := range services {
 		if svc.Via != "cliproxy" {
 			continue
 		}

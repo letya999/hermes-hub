@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
@@ -29,7 +29,7 @@ func writeMemoryPassportDecl(t *testing.T, root, dirName, space, revision, envir
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		body := "apiVersion: six-passport/v2\nkind: " + name + "\nmetadata: {space: " + space + ", environment: " + environment + ", revision: " + revision + "}\n"
 		if name == "config" {
 			body += "memory: {enabled: " + map[bool]string{true: "true", false: "false"}[enabled] + "}\n"
@@ -86,7 +86,7 @@ func TestToolHubVaultResolverIsolatesUsers(t *testing.T) {
 	vaultDirWithMarker(t, root, "alice", "alice-vault-marker")
 	vaultDirWithMarker(t, root, "bob", "bob-vault-marker")
 	vaultDirWithMarker(t, root, "mallory", "mallory-vault-marker")
-	resolver, err := NewVaultResolver(root, passports)
+	resolver, err := NewVaultResolver(root, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestVaultResolverRejectsUnsafeBindings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "plain"), []byte("not a vault"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewVaultResolver(root, passports)
+	resolver, err := NewVaultResolver(root, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestVaultResolverRejectsUnsafeBindings(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	writeMemoryPassportEnv(t, passports, "sneaky", "dev", true)
-	resolver, err = NewVaultResolver(root, passports)
+	resolver, err = NewVaultResolver(root, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestVaultResolverStartupBoundaries(t *testing.T) {
 	passports := t.TempDir()
 	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
 	root := t.TempDir()
-	resolver, err := NewVaultResolver(root, passports)
+	resolver, err := NewVaultResolver(root, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,19 +203,19 @@ func TestVaultResolverStartupBoundaries(t *testing.T) {
 	if _, err := resolver.Resolve("alice", "dev"); err == nil {
 		t.Fatal("a post-startup binding resolved without a render")
 	}
-	if _, err := NewVaultResolver(filepath.Join(root, "missing"), passports); err == nil {
+	if _, err := NewVaultResolver(filepath.Join(root, "missing"), dirTreeReader{root: passports}); err == nil {
 		t.Fatal("missing bindings root accepted")
 	}
 	file := filepath.Join(t.TempDir(), "file-root")
 	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewVaultResolver(file, passports); err == nil {
+	if _, err := NewVaultResolver(file, dirTreeReader{root: passports}); err == nil {
 		t.Fatal("non-directory bindings root accepted")
 	}
 	link := filepath.Join(t.TempDir(), "linked-root")
 	if err := os.Symlink(root, link); err == nil {
-		if _, err := NewVaultResolver(link, passports); err == nil {
+		if _, err := NewVaultResolver(link, dirTreeReader{root: passports}); err == nil {
 			t.Fatal("symlinked bindings root accepted")
 		}
 	}
@@ -230,7 +230,6 @@ func TestEndpointHandlerWiresVaultResolver(t *testing.T) {
 	writeMemoryPassportEnv(t, passports, auth.PrincipalID, "dev", true)
 	root := t.TempDir()
 	vaultDirWithMarker(t, root, auth.PrincipalID, "prod-wiring-marker")
-	t.Setenv("HUB_PASSPORTS_BY_PRINCIPAL", passports)
 	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", root)
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth,
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {

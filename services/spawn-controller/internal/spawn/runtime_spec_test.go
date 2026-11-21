@@ -83,7 +83,7 @@ func newManagedFixture(t *testing.T, url string) *managedFixture {
 	// env file with its reviewed auth, and the effective-hermes source —
 	// marshalled through the same stack.Config the real render uses.
 	writeFixtureFile(t, filepath.Join(dir, "managed-runtime.dev.env"), "HUB_RUNTIME_AUTH=fixture-runtime-auth\n")
-	settings, err := stack.ReadEffective(dir, "dev")
+	settings, err := stack.ReadEffective(context.Background(), revReader{revs: revs}, dir, "dev")
 	if err != nil {
 		t.Fatalf("effective settings: %v", err)
 	}

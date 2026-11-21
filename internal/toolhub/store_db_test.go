@@ -16,8 +16,8 @@ import (
 	_ "modernc.org/sqlite"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -565,12 +565,12 @@ func TestProjectionFingerprintTracksPersistedInputs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(passportRoot, "alice", "passports", "current"), []byte("r1"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		if err := os.WriteFile(filepath.Join(revisionDir, name+".yaml"), []byte(name), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	g := &Gateway{Store: loaded, Governance: NewGovernanceStore(filepath.Join(filepath.Dir(path), "governance.json")), PassportRoot: passportRoot}
+	g := &Gateway{Store: loaded, Governance: NewGovernanceStore(filepath.Join(filepath.Dir(path), "governance.json")), Spawn: dirTreeReader{root: passportRoot}}
 	first, cacheable, err := g.projectionFingerprint(aliceAuth())
 	if err != nil || !cacheable {
 		t.Fatalf("initial fingerprint: cacheable=%t err=%v", cacheable, err)

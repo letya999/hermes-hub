@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/iam"
 	"github.com/letya999/hermes-hub/internal/media"
-	passportview "github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // The published passport revision is the imperative authority for managed
@@ -24,8 +24,11 @@ var ErrRevisionUnloadable = errors.New("published revision does not load")
 
 // applyEffective carries one loaded revision's fields onto the settings the
 // validated managed settings.
-func (s *Settings) applyEffective(eff passportview.Effective) error {
+func (s *Settings) applyEffective(eff spawnv1.Effective) error {
 	s.PassportRevision = eff.Header.Metadata.Revision
+	if s.PassportRevision != "" {
+		s.promptPointer = eff.PromptPointer()
+	}
 	if s.Schema == 0 {
 		s.Schema = 3 // a published revision implies the v3 vocabulary
 	}
@@ -51,13 +54,13 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if len(eff.Config.Runtime.Context.Engines) > 0 {
 		s.Context.Compact.Engines = slices.Clone(eff.Config.Runtime.Context.Engines)
 	}
-	if goals := eff.Config.Runtime.Goals; goals != (passportview.RuntimeGoals{}) {
+	if goals := eff.Config.Runtime.Goals; goals != (spawnv1.RuntimeGoals{}) {
 		s.Goals = ContextGoals{Engine: goals.Engine, Judge: goals.Judge, MaxTurns: goals.MaxTurns}
 	}
 	if len(eff.Config.Runtime.Compression) > 0 {
 		s.Compression = eff.Config.Runtime.Compression
 	}
-	if aux := eff.Config.Runtime.Auxiliary; aux != (passportview.RuntimeAuxiliary{}) {
+	if aux := eff.Config.Runtime.Auxiliary; aux != (spawnv1.RuntimeAuxiliary{}) {
 		s.SummaryModel = aux.SummaryModel
 		s.JudgeModel = aux.JudgeModel
 	}
@@ -100,8 +103,8 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if h := eff.Config.Hosting; h != nil {
 		s.Hosting = HostingSettings{Slots: h.Slots, Image: h.Image, Runtime: h.Runtime}
 	}
-	if g := eff.Config.ImageGen; g != (media.ImageGen{}) {
-		s.ImageGen = g
+	if g := eff.Config.ImageGen; g != (spawnv1.ImageGen{}) {
+		s.ImageGen = media.ImageGen{Provider: g.Provider, Model: g.Model, Delivery: g.Delivery}
 	}
 	if i := eff.Config.IAM; i != nil {
 		if err := s.applyIAM(i, eff); err != nil {
@@ -192,7 +195,7 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 // up front; bundled renders the identity-hub sidecars and tolerates an
 // empty client_id until the operator finishes bootstrap — the gateway env
 // stays empty (SSO off) rather than starting half-configured.
-func (s *Settings) applyIAM(i *passportview.IAM, eff passportview.Effective) error {
+func (s *Settings) applyIAM(i *spawnv1.IAM, eff spawnv1.Effective) error {
 	if !s.RendersInfra() {
 		return fmt.Errorf("iam: the shared gateway lives on the infra-owning space; a sibling space's iam block would never render")
 	}
@@ -235,20 +238,20 @@ func (s *Settings) applyIAM(i *passportview.IAM, eff passportview.Effective) err
 // passportTools projects the tools doc back to the tools map each compose
 // consumer reads: a toolset name is its entry, via picks the backend, and
 // selectors/access/scope fold into the entry fields.
-func passportTools(t passportview.Tools) map[string]ToolEntry {
+func passportTools(t spawnv1.Tools) map[string]ToolEntry {
 	if len(t.Core)+len(t.Extended) == 0 {
 		return nil
 	}
 	out := map[string]ToolEntry{}
 	denied := map[string]bool{}
-	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
+	for _, area := range []map[string]spawnv1.Toolset{t.Core, t.Extended} {
 		for name, entry := range area {
 			if entry.Via == "off" {
 				denied[name] = true
 			}
 		}
 	}
-	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
+	for _, area := range []map[string]spawnv1.Toolset{t.Core, t.Extended} {
 		names := make([]string, 0, len(area))
 		for name := range area {
 			names = append(names, name)
@@ -314,8 +317,8 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 	return out
 }
 
-// passportRegistryLayer turns the published models doc into the registry
-// layer LoadModelRegistry merges (SPEC-0092 R7.3): every service becomes a
+// registryLayerFor turns the effective models doc into the registry
+// layer LoadModelRegistryFor merges (SPEC-0092 R7.3): every service becomes a
 // provider hop with its own endpoint and credential contract — per-instance
 // cliproxy included — each route's ladder names services and carries their
 // cataloged model list, limits and reasoning support through. The hop's
@@ -324,18 +327,8 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 // inside the cliproxy instance and never reaches the relay. Switching is
 // governed by the models.switch right at the relay PEP — the file carries
 // no switch map.
-func passportRegistryLayer(dir, revisionID string) (modelRegistryYAML, error) {
+func registryLayerFor(dir string, eff spawnv1.Effective) (modelRegistryYAML, error) {
 	var layer modelRegistryYAML
-	var eff passportview.Effective
-	var err error
-	if revisionID == "" {
-		eff, err = passportview.LoadEffective(dir)
-	} else {
-		eff, err = passportview.LoadRevision(dir, revisionID)
-	}
-	if err != nil {
-		return layer, fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
-	}
 	owner := eff.Stack.Identity.User
 	var grantMap map[string]map[string]map[string]string
 	if raw, err := os.ReadFile(filepath.Join(dir, "generated", "model-grants.json")); err == nil {
@@ -348,7 +341,7 @@ func passportRegistryLayer(dir, revisionID string) (modelRegistryYAML, error) {
 		if svc.Auth.Upstream != nil {
 			p.UpstreamKind = svc.Auth.Upstream.Kind
 		}
-		var keyRef *passportview.AuthRef
+		var keyRef *spawnv1.AuthRef
 		if svc.Via == "cliproxy" {
 			p.AllowPrivate = true
 			keyRef = svc.Auth.ProxyAccess

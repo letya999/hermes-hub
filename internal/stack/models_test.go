@@ -1,7 +1,9 @@
 package stack
 
 import (
+	"context"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -24,7 +26,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		publishManagedRevision(t, dir, owner, "r-0123456789abcdef")
-		settings, err := ReadEnvironment(dir, "prod")
+		settings, err := ReadEnvironment(context.Background(), testReader(dir), dir, "prod")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +44,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		if err := writeEnvFile(filepath.Join(dir, "secrets.prod.env"), map[string]string{"OPENAI_API_KEY": owner + "-fixture"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := RenderEnvironment(dir, root, "prod"); err != nil {
+		if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,7 +71,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 	if err := writeEnvFile(filepath.Join(alice, "secrets.prod.env"), map[string]string{"OPENAI_API_KEY": "alice-rotated-fixture"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(alice, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(alice), alice, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for name, before := range snapshot {
@@ -96,12 +98,11 @@ func TestModelRegistryRejectsUnpublishedLegacySources(t *testing.T) {
 	for _, path := range []string{filepath.Join(filepath.Dir(dir), "models.yaml"), filepath.Join(dir, "models.yaml")} {
 		saveYAML(t, path, map[string]any{"models": map[string]any{"legacy": map[string]any{"ladder": []any{map[string]any{"provider": "cliproxy", "model": "legacy"}}}}})
 	}
-	settings := Settings{User: "alice", Environment: "prod"}
-	if _, err := LoadModelRegistry(dir, settings); err == nil {
-		t.Fatal("unpublished legacy model configuration accepted")
+	if _, err := testReader(dir).Effective(context.Background(), spawnv1.Tenant{}, "alice"); err == nil {
+		t.Fatal("retired model files fabricated an effective spec")
 	}
 	publishManagedRevision(t, dir, "alice", "r-model-current")
-	registry, err := LoadModelRegistry(dir, settings)
+	registry, err := LoadModelRegistryFor(dir, testLoadEffective(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +113,8 @@ func TestModelRegistryRejectsUnpublishedLegacySources(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(pointer), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadModelRegistry(dir, settings); err == nil {
-			t.Fatal("unloadable revision fell back to a retired model file")
+		if _, err := testReader(dir).Effective(context.Background(), spawnv1.Tenant{}, "alice"); err == nil {
+			t.Fatal("unloadable revision fabricated an effective spec")
 		}
 	}
 }
@@ -221,7 +222,7 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, user, "alice", "r-0000000000000001")
-	s, err := ReadEnvironment(user, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(user), user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte(`soul`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(user, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(user), user, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(user, "generated", "model-registry", "prod", "models.yaml"))
@@ -306,7 +307,7 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if len(admin) != 1 || admin["HUB_MODEL_RELAY_ADMIN"] != relayAuth["HUB_MODEL_RELAY_ADMIN"] {
 		t.Error("ToolHub auth must contain only the relay admin credential")
 	}
-	if err := RenderEnvironment(user, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(user), user, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	again, err := os.ReadFile(filepath.Join(user, "model-relay.auth"))
@@ -327,7 +328,7 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, user, "alice", "r-0000000000000001")
-	s, err := ReadEnvironment(user, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(user), user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +349,7 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte(`soul`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(user, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(user), user, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(user, "generated", "model-registry", "prod", "models.yaml"))

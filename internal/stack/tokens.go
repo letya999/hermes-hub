@@ -2,6 +2,7 @@ package stack
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -28,18 +30,18 @@ var Warnf = func(format string, args ...any) {
 //
 // The file is updated in place. A Docker bind mount follows the inode, so a
 // rename would hide the new contents from a running ToolHub.
-func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
+func EnrollSiblingRuntimeTokens(ctx context.Context, client spawnv1.EffectiveReader, spaceDir, environment string) error {
 	if filepath.Base(filepath.Dir(filepath.Clean(spaceDir))) != "spaces" {
 		return nil
 	}
-	owner, err := ReadEffective(spaceDir, environment)
+	owner, err := ReadEffective(ctx, client, spaceDir, environment)
 	if err != nil {
 		return err
 	}
-	return enrollSiblingRuntimeTokens(spaceDir, environment, owner)
+	return enrollSiblingRuntimeTokens(ctx, client, spaceDir, environment, owner)
 }
 
-func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) error {
+func enrollSiblingRuntimeTokens(ctx context.Context, client spawnv1.EffectiveReader, spaceDir, environment string, owner Settings) error {
 	spaceDir, err := filepath.Abs(spaceDir)
 	if err != nil {
 		return err
@@ -68,7 +70,7 @@ func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) er
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEffective(sibDir, environment)
+		settings, readErr := ReadEffective(ctx, client, sibDir, environment)
 		if readErr != nil {
 			Warnf("sibling %s skipped: %v", sibling.Name(), readErr)
 			continue
@@ -120,7 +122,7 @@ func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) er
 //
 // Same contract as EnrollSiblingRuntimeTokens: spaces-parent only, owner
 // excluded, in-place update so a bind mount keeps serving the new contents.
-func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
+func EnrollSiblingModelRelayAdmins(ctx context.Context, client spawnv1.EffectiveReader, spaceDir, environment string) error {
 	spaceDir, err := filepath.Abs(spaceDir)
 	if err != nil {
 		return err
@@ -143,7 +145,7 @@ func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEffective(sibDir, environment)
+		settings, readErr := ReadEffective(ctx, client, sibDir, environment)
 		if readErr != nil {
 			Warnf("sibling %s skipped: %v", sibling.Name(), readErr)
 			continue

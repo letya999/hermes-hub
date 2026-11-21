@@ -6,13 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -94,11 +93,11 @@ func (m *Manager) readRunRecord(ctx context.Context, id string) (task.RunRecord,
 			active, err := registry.ActivePassports(ctx, record.Request.ContextID, m.environment())
 			revoked = err != nil || active != record.PassportDigest
 		}
-		if !revoked && m.cfg.SpacesRoot != "" && identity.ValidID(record.Request.ContextID) {
-			space := filepath.Join(m.cfg.SpacesRoot, record.Request.ContextID)
-			// A mid-publish mirror pins `current` to pending —
-			// MatchesPolicyPointer already reports the divergence.
-			revoked = !passportview.MatchesPolicyPointer(space, record.PassportDigest)
+		if !revoked && m.cfg.Spawn != nil && identity.ValidID(record.Request.ContextID) {
+			spec, err := m.cfg.Spawn.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: record.Request.ContextID}, record.Request.ContextID)
+			// The durable digest is the activation anchor — a superseded
+			// policy no longer matches it.
+			revoked = err != nil || spec.Digest != record.PassportDigest
 		}
 	}
 	capture := record.CaptureContext

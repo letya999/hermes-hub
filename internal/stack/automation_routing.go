@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"gopkg.in/yaml.v3"
@@ -29,8 +31,8 @@ type routingSlackLink struct {
 
 // RefreshAutomationRouting updates the shared ToolHub view after a sibling
 // policy apply; the mounted directory lets ToolHub read the new file in place.
-func RefreshAutomationRouting(dir, environment string) error {
-	s, err := ReadEffective(dir, environment)
+func RefreshAutomationRouting(ctx context.Context, client spawnv1.EffectiveReader, dir, environment string) error {
+	s, err := ReadEffective(ctx, client, dir, environment)
 	if err != nil {
 		return err
 	}

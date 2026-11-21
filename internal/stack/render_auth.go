@@ -188,7 +188,7 @@ func writeModelRelayAdminAuth(dir string) error {
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
-func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
+func runtimeMediaAuth(dir string, s Settings, fetch func(string) (Settings, error)) (map[string]string, error) {
 	source := filepath.Join(dir, "media.auth")
 	parent := filepath.Dir(filepath.Clean(dir))
 	if !s.RendersInfra() && s.PassportServices["hub-media"] != "per-space" && filepath.Base(parent) == "spaces" {
@@ -202,7 +202,7 @@ func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 				continue
 			}
 			candidate := filepath.Join(parent, entry.Name())
-			settings, err := ReadEffective(candidate, s.Environment)
+			settings, err := fetch(candidate)
 			if err != nil || !settings.RendersInfra() || !settings.Has("image_gen") {
 				continue
 			}

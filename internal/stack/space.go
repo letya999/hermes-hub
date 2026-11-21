@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"gopkg.in/yaml.v3"
@@ -10,12 +11,12 @@ import (
 	"strings"
 	_ "time/tzdata"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // finishManagedRead applies the already-loaded effective revision without
 // consulting retired editable files.
-func finishManagedRead(s Settings, dir string, eff passportview.Effective) (Settings, error) {
+func finishManagedRead(s Settings, dir string, eff spawnv1.Effective) (Settings, error) {
 	s.Environment = "prod"
 	s.SpaceDir = dir
 	if err := s.applyEffective(eff); err != nil {
@@ -40,64 +41,74 @@ func finishSpaceRead(s Settings, dir string, validate bool) (Settings, error) {
 	return s, applyGovernance(&s)
 }
 
+// effectiveForDir fetches and decodes the space's effective spec through the
+// spawn contract (S7d: the durable authority — the published file mirror is
+// gone). A space without an activated spec, or a caller without a client,
+// answers not-exist exactly like a missing published revision did.
+func effectiveForDir(ctx context.Context, client spawnv1.EffectiveReader, dir string) (spawnv1.Effective, error) {
+	if client == nil {
+		return spawnv1.Effective{}, fmt.Errorf("space has no published revision; run space apply first: %w", os.ErrNotExist)
+	}
+	space := filepath.Base(dir)
+	spec, err := client.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: space}, space)
+	if errors.Is(err, spawnv1.ErrNotFound) {
+		return spawnv1.Effective{}, fmt.Errorf("space has no published revision; run space apply first: %w", os.ErrNotExist)
+	}
+	if err != nil {
+		return spawnv1.Effective{}, fmt.Errorf("managed space has no loadable published revision: %w", err)
+	}
+	eff, err := spawnv1.Assemble(spec.Documents)
+	if err != nil {
+		return spawnv1.Effective{}, fmt.Errorf("managed space has no loadable published revision: %w", err)
+	}
+	return eff, nil
+}
+
 // ReadEffective is the runtime read path. Every space resolves settings
 // from its published revision alone; a missing or unloadable revision
 // refuses rather than silently downgrading to retired files.
-func ReadEffective(dir, environment string) (Settings, error) {
-	s, err := ReadEffectiveSpace(dir)
+func ReadEffective(ctx context.Context, client spawnv1.EffectiveReader, dir, environment string) (Settings, error) {
+	s, err := ReadEffectiveSpace(ctx, client, dir)
 	if err != nil {
 		return s, err
 	}
 	return environmentTail(s, dir, environment)
 }
 
-// ReadEffectiveRevision is for the publisher preparing an immutable candidate
-// while current is gated. Runtime readers must use ReadEffective.
-func ReadEffectiveRevision(dir, environment, revisionID string) (Settings, error) {
-	eff, err := passportview.LoadRevision(dir, revisionID)
-	if err != nil {
-		return Settings{}, err
-	}
-	s, err := finishManagedRead(Settings{}, dir, eff)
-	if err != nil {
-		return s, err
-	}
-	return environmentTail(s, dir, environment)
+// ReadEnvironment selects runtime settings without making dev/prod a user
+// namespace. Managed spaces resolve the contract-effective spec just like
+// runtime readers; authored files cannot override an applied passport.
+func ReadEnvironment(ctx context.Context, client spawnv1.EffectiveReader, dir, environment string) (Settings, error) {
+	return ReadEffective(ctx, client, dir, environment)
 }
 
 // ReadEffectiveSpace is the prod-semantics managed read without the
 // environment tail — for callers (the supervisor's policy resolution) that
 // apply the environment adjustments themselves.
-func ReadEffectiveSpace(dir string) (Settings, error) {
-	if !passportRevision(dir) {
-		return Settings{}, fmt.Errorf("space has no published revision; run space apply first")
-	}
-	eff, err := passportview.LoadEffective(dir)
-	if err != nil {
-		return Settings{}, fmt.Errorf("managed space has no loadable published revision: %w", err)
-	}
-	viewDir := filepath.Join(dir, "generated", "config-view", eff.Header.Metadata.Environment)
-	body, err := os.ReadFile(filepath.Join(viewDir, "revision"))
-	if err != nil || strings.TrimSpace(string(body)) != eff.Header.Metadata.Revision {
-		return Settings{}, fmt.Errorf("managed config view activation does not match published revision")
-	}
-	if filepath.Base(filepath.Dir(dir)) == "spaces" && (eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir)) {
-		return Settings{}, fmt.Errorf("managed space passport identity does not match its directory")
-	}
-	return finishManagedRead(Settings{}, dir, eff)
+func ReadEffectiveSpace(ctx context.Context, client spawnv1.EffectiveReader, dir string) (Settings, error) {
+	s, _, err := ReadEffectiveSpaceBundle(ctx, client, dir)
+	return s, err
 }
 
-// ReadEnvironment selects runtime settings without making dev/prod a user
-// namespace. Managed spaces use the published revision just like runtime
-// readers; legacy files cannot override an applied passport.
-func ReadEnvironment(dir, environment string) (Settings, error) {
-	return ReadEffective(dir, environment)
+// ReadEffectiveSpaceBundle is ReadEffectiveSpace plus the assembled bundle —
+// callers that materialize per-runtime projections (model registry, config
+// view) need the typed documents, not only the flattened settings.
+func ReadEffectiveSpaceBundle(ctx context.Context, client spawnv1.EffectiveReader, dir string) (Settings, spawnv1.Effective, error) {
+	eff, err := effectiveForDir(ctx, client, dir)
+	if err != nil {
+		return Settings{}, spawnv1.Effective{}, err
+	}
+	if filepath.Base(filepath.Dir(dir)) == "spaces" && (eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir)) {
+		return Settings{}, spawnv1.Effective{}, fmt.Errorf("managed space passport identity does not match its directory")
+	}
+	s, err := finishManagedRead(Settings{}, dir, eff)
+	return s, eff, err
 }
 
 // SettingsForEffective resolves a managed space's settings from an
 // already-decoded effective bundle — the spawn service's stored-document
 // path, equivalent to ReadEffective on the published file tree.
-func SettingsForEffective(dir string, eff passportview.Effective, environment string) (Settings, error) {
+func SettingsForEffective(dir string, eff spawnv1.Effective, environment string) (Settings, error) {
 	s, err := finishManagedRead(Settings{}, dir, eff)
 	if err != nil {
 		return s, err
@@ -239,7 +250,7 @@ func initScopeEnvironmentProfile(dir, profile, environment, organization string,
 	if err := os.Mkdir(filepath.Join(dir, "passports"), 0700); err != nil {
 		return err
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		if err := os.WriteFile(filepath.Join(dir, "passports", name+".yaml"), passports[name], 0600); err != nil {
 			return err
 		}
@@ -293,4 +304,37 @@ func ReadSecrets(path string) (map[string]string, error) {
 		out[key] = v
 	}
 	return out, nil
+}
+
+// SiblingMemoryEnabled maps each sibling space to its effective memory flag
+// through the spawn contract — the shared ToolHub's /vaults-by mounts follow
+// this map. A sibling whose effective spec cannot be fetched or decoded is
+// treated as disabled: its vault stays unmounted rather than exposed on a
+// stale file answer.
+func SiblingMemoryEnabled(ctx context.Context, client spawnv1.EffectiveReader, dir, environment string) map[string]bool {
+	out := map[string]bool{}
+	parent := filepath.Dir(filepath.Clean(dir))
+	if filepath.Base(parent) != "spaces" || client == nil {
+		return out
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		name := entry.Name()
+		spec, err := client.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: name}, name)
+		if err != nil {
+			continue
+		}
+		eff, err := spawnv1.Assemble(spec.Documents)
+		if err != nil {
+			continue
+		}
+		out[name] = eff.Config.Memory.Enabled != nil && *eff.Config.Memory.Enabled && eff.Header.Metadata.Environment == environment
+	}
+	return out
 }

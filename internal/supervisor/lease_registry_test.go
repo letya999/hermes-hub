@@ -28,7 +28,7 @@ func TestLeaseGenerationFence(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: "lease-job", IdempotencyKey: "lease-job", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
-	b, err := m.bindingFor(request)
+	b, err := m.bindingFor(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}

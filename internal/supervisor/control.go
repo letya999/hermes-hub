@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -46,13 +46,13 @@ func (m *Manager) control(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 409, map[string]string{"error": "job ownership mismatch"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": "current binding rejected"})
 		return
 	}
 	if request.Action == "approve" && !request.Reconcile {
-		if err := m.authorizeApproval(request); err != nil {
+		if err := m.authorizeApproval(r.Context(), request); err != nil {
 			writeJSON(w, 409, map[string]string{"error": "current policy rejected approval"})
 			return
 		}
@@ -168,7 +168,7 @@ func (m *Manager) control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Action == "approve" && !request.Reconcile {
-		if err := m.authorizeApproval(request); err != nil {
+		if err := m.authorizeApproval(r.Context(), request); err != nil {
 			writeJSON(w, 409, map[string]string{"error": "current policy changed before dispatch"})
 			return
 		}
@@ -438,17 +438,17 @@ func (m *Manager) readControlOutcome(r *http.Request, request hubruntime.RunCont
 }
 
 // Approval cannot expand the current effective user/organization policy.
-func (m *Manager) authorizeApproval(request hubruntime.RunControl) error {
-	return m.authorizeCurrentPolicy(request.ExecuteRequest)
+func (m *Manager) authorizeApproval(ctx context.Context, request hubruntime.RunControl) error {
+	return m.authorizeCurrentPolicy(ctx, request.ExecuteRequest)
 }
 
 // loadSelected reads the space's published revision for userID without the
 // organization merge: callers compare identity fields before merging policy.
 // The six published passports are the sole authority — a missing or
 // unreadable revision fails closed rather than consulting retired files.
-func (m *Manager) loadSelected(userID string) (stack.Settings, error) {
+func (m *Manager) loadSelected(ctx context.Context, userID string) (stack.Settings, error) {
 	root := filepath.Join(m.cfg.SpacesRoot, userID)
-	return stack.ReadEffectiveSpace(root)
+	return stack.ReadEffectiveSpace(ctx, m.cfg.Spawn, root)
 }
 
 // resolveSettings applies the organization merge and this environment's
@@ -496,8 +496,8 @@ func (m *Manager) resolveSettings(selected stack.Settings) (stack.Settings, erro
 
 // currentPolicyVersion computes the policy hash the space would render today;
 // "" means the settings cannot be resolved and the caller must not guess.
-func (m *Manager) currentPolicyVersion(userID string) string {
-	selected, err := m.loadSelected(userID)
+func (m *Manager) currentPolicyVersion(ctx context.Context, userID string) string {
+	selected, err := m.loadSelected(ctx, userID)
 	if err != nil {
 		return ""
 	}
@@ -508,16 +508,29 @@ func (m *Manager) currentPolicyVersion(userID string) string {
 	return stack.PolicyVersion(settings)
 }
 
-func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) error {
+// effectiveFor resolves a space's typed effective bundle through the spawn
+// contract — the durable authority the generated file mirror used to answer.
+func (m *Manager) effectiveFor(ctx context.Context, space string) (spawnv1.Effective, error) {
+	if m.cfg.Spawn == nil {
+		return spawnv1.Effective{}, errors.New("spawn contract unavailable")
+	}
+	spec, err := m.cfg.Spawn.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: space}, space)
+	if err != nil {
+		return spawnv1.Effective{}, err
+	}
+	return spawnv1.Assemble(spec.Documents)
+}
+
+func (m *Manager) authorizeCurrentPolicy(ctx context.Context, request hubruntime.ExecuteRequest) error {
 	allowedScope := request.ScopeID == "user:"+request.UserID
 	if request.ScopeID == "group:"+request.UserID {
-		eff, err := passportview.LoadEffective(filepath.Join(m.cfg.SpacesRoot, request.UserID))
+		eff, err := m.effectiveFor(ctx, request.UserID)
 		allowedScope = err == nil && eff.Stack.Identity.Kind == string(stack.GroupScope) && eff.Stack.Identity.User == request.UserID
 	}
 	if request.ActorID != request.PrincipalID || !allowedScope {
 		return errors.New("approval actor/scope mismatch")
 	}
-	selected, err := m.loadSelected(request.UserID)
+	selected, err := m.loadSelected(ctx, request.UserID)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	brokeridentity "github.com/letya999/credential-broker/identity"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"net/url"
 	"regexp"
 	"slices"
@@ -105,9 +106,11 @@ func validateProviderURL(raw string) error {
 	return nil
 }
 
-// LoadModelRegistry reads only the validated published models passport.
-func LoadModelRegistry(dir string, _ Settings) (*ModelRegistry, error) {
-	layer, err := passportRegistryLayer(dir, "")
+// LoadModelRegistryFor reads only the validated effective models doc — the
+// same projection the old published-file read produced, now from the
+// contract's stored bundle (S7d).
+func LoadModelRegistryFor(dir string, eff spawnv1.Effective) (*ModelRegistry, error) {
+	layer, err := registryLayerFor(dir, eff)
 	if err != nil {
 		return nil, err
 	}

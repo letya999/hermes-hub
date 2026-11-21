@@ -132,7 +132,7 @@ func (b *cardTripwire) Call(context.Context, api.EffectiveBinding, api.ToolSpec,
 // private run, the durable audit fence and the backend tripwire.
 func memoryCardEnv(t *testing.T, store *Store, passports, vaults string, auths map[string]identity.Envelope, extra map[string]api.RunContext) (*Gateway, *cardTripwire) {
 	t.Helper()
-	resolver, err := NewVaultResolver(vaults, passports)
+	resolver, err := NewVaultResolver(vaults, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func memoryCardEnv(t *testing.T, store *Store, passports, vaults string, auths m
 		records[id] = record
 	}
 	tripwire := &cardTripwire{t: t}
-	g := &Gateway{Store: store, PassportRoot: passports, Vaults: resolver,
+	g := &Gateway{Store: store, Spawn: dirTreeReader{root: passports}, Vaults: resolver,
 		authorizeAssignmentRun: func(auth identity.Envelope, id string, revision uint64) error {
 			if auth.PrincipalID != "alice" || id != "asg-owner" || revision != 1 {
 				return api.ErrUnauthorized

@@ -9,26 +9,24 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // Only enrolled identity and published scope select the runtime; tool arguments never do.
 func (g *Gateway) acquireAgentRuntime(ctx context.Context, effective api.EffectiveBinding) (func(), error) {
 	endpoint, err := url.Parse(strings.TrimRight(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), "/"))
-	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" || g.ControlToken == "" || g.PassportRoot == "" {
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" || g.ControlToken == "" || g.Spawn == nil {
 		return nil, api.ErrIsolation
 	}
 	auth, err := (&projectionEndpoint{gateway: g}).EnrolledAuth(effective.Binding.PrincipalID)
 	if err != nil || auth.ContextID != effective.Binding.ContextID || auth.RuntimeID != effective.Binding.RuntimeID || auth.PolicyVersion != effective.Binding.PolicyVersion {
 		return nil, api.ErrUnauthorized
 	}
-	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, auth.PrincipalID))
+	eff, err := effectiveFor(ctx, g.Spawn, auth.PrincipalID)
 	if err != nil || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment || eff.Stack.Identity.User != auth.PrincipalID || auth.ContextID != auth.PrincipalID {
 		return nil, api.ErrUnauthorized
 	}

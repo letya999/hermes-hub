@@ -14,13 +14,11 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // chargeRunCall counts a call against its run (job) correlation;
@@ -48,7 +46,7 @@ func (g *Gateway) chargeRunCall(corr api.CallCorrelation) error {
 }
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {
-	activation, err := g.requireActivated(auth)
+	activation, err := g.requireActivated(ctx, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +94,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		if activation.revision != "" && effective.CapabilityProfileRevision != activation.profileRevision {
 			return fmt.Errorf("%w: passport activation mismatch", api.ErrUnauthorized)
 		}
-		if err := g.checkActivePassport(auth, activation.revision); err != nil {
+		if err := g.checkActivePassport(ctx, auth, activation.revision); err != nil {
 			return err
 		}
 		authorized = true
@@ -208,7 +206,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				return err
 			}
 		}
-		if err := g.checkActivePassport(auth, activation.revision); err != nil {
+		if err := g.checkActivePassport(ctx, auth, activation.revision); err != nil {
 			outcome = "preflight-error"
 			return err
 		}
@@ -557,8 +555,8 @@ type activationPin struct {
 	profileRevision uint64
 }
 
-func (g *Gateway) requireActivated(auth identity.Envelope) (activationPin, error) {
-	if g.PassportRoot == "" {
+func (g *Gateway) requireActivated(ctx context.Context, auth identity.Envelope) (activationPin, error) {
+	if g.Spawn == nil {
 		return activationPin{}, nil
 	}
 	if auth.CapabilityProfile == "" {
@@ -573,14 +571,14 @@ func (g *Gateway) requireActivated(auth identity.Envelope) (activationPin, error
 	if err != nil || profile.PassportRevision == "" {
 		return activationPin{}, fmt.Errorf("%w: passport activation unavailable", api.ErrUnauthorized)
 	}
-	return activationPin{revision: profile.PassportRevision, profileRevision: profile.Revision}, g.checkActivePassport(auth, profile.PassportRevision)
+	return activationPin{revision: profile.PassportRevision, profileRevision: profile.Revision}, g.checkActivePassport(ctx, auth, profile.PassportRevision)
 }
 
-func (g *Gateway) checkActivePassport(auth identity.Envelope, revision string) error {
+func (g *Gateway) checkActivePassport(ctx context.Context, auth identity.Envelope, revision string) error {
 	if revision == "" {
 		return nil
 	}
-	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, auth.PrincipalID))
+	eff, err := effectiveFor(ctx, g.Spawn, auth.PrincipalID)
 	if err != nil || eff.Header.Metadata.Revision != revision || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment {
 		return fmt.Errorf("%w: passport activation mismatch", api.ErrUnauthorized)
 	}

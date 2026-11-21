@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -44,7 +45,7 @@ func TestPublishedMemorySwitchOverridesSelectedTool(t *testing.T) {
 	enabled := true
 	s := validSettings()
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
-	s.PassportConfig = &passportview.Config{Memory: passportview.Memory{Enabled: &disabled}}
+	s.PassportConfig = &spawnv1.Config{Memory: spawnv1.Memory{Enabled: &disabled}}
 	if s.Has("memory_vault") || slices.Contains(s.FeatureList(), "memory_vault") {
 		t.Fatal("selected memory tool enabled a passport-disabled vault")
 	}
@@ -103,7 +104,7 @@ func TestRuntimeNeverMountsVault(t *testing.T) {
 	if env := RuntimeService(s, t.TempDir(), dir)["environment"].(M); env["HUB_VAULT"] != nil {
 		t.Fatalf("runtime received HUB_VAULT: %v", env["HUB_VAULT"])
 	}
-	s.PassportWorkspace = &passportview.Workspace{Writable: []string{"/workspace"}}
+	s.PassportWorkspace = &spawnv1.Workspace{Writable: []string{"/workspace"}}
 	for _, v := range RuntimeService(s, t.TempDir(), dir)["volumes"].([]any) {
 		m := v.(M)
 		if target, _ := m["target"].(string); target == "/vault" || strings.HasPrefix(target, "/vault/") {
@@ -189,7 +190,7 @@ func TestNativeFilesUntouched(t *testing.T) {
 	seedGovernance(t, dir, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestNativeFilesUntouched(t *testing.T) {
 	if err := os.WriteFile(user, []byte("owner likes tea"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]string{memory: "remember the ferns", user: "owner likes tea"} {
@@ -244,7 +245,7 @@ func TestRenderCreatesVaultTree(t *testing.T) {
 	seedGovernance(t, dir, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestRenderCreatesVaultTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(filepath.Join(dir, "vault", ".git")); err != nil || !info.IsDir() {

@@ -17,12 +17,12 @@ import (
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/identityhub"
 	"github.com/letya999/hermes-hub/internal/memory"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -74,7 +74,6 @@ func newCaptureFixture(t *testing.T) *captureFixture {
 	gov := toolhub.NewGovernanceStore(govPath)
 	store.RightsLedger = gov.Load
 	f.toolhubEnv = map[string]string{
-		"HUB_PASSPORTS_BY_PRINCIPAL": f.passports,
 		"HUB_VAULTS_BY_PRINCIPAL":    f.vaults,
 		"HUB_COMMUNICATION_AUTH":     "comm-token",
 		"HUB_TOOL_GOVERNANCE":        govPath,
@@ -257,7 +256,7 @@ func writeCapturePassport(t *testing.T, root, user, environment string, enabled 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range passportview.Names {
+	for _, name := range spawnv1.Names {
 		body := "apiVersion: six-passport/v2\nkind: " + name + "\nmetadata: {space: " + user + ", environment: " + environment + ", revision: " + revision + "}\n"
 		if name == "config" {
 			body += "memory: {enabled: " + map[bool]string{true: "true", false: "false"}[enabled] + "}\n"

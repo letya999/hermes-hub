@@ -15,7 +15,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -86,7 +85,7 @@ func runUserDisable(ctx context.Context, out io.Writer, opts userDisableOptions)
 	if err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(dir, opts.Environment)
+	settings, err := readEffectiveSettings(ctx, dir, opts.Environment)
 	if err != nil {
 		return err
 	}

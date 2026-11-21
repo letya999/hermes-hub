@@ -3,6 +3,7 @@
 package stack_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -74,7 +75,7 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				renderErr := stack.RenderEnvironment(dir, root, environment)
+				renderErr := stack.RenderEnvironment(context.Background(), testReader(dir), dir, root, environment)
 				if mode == "static" {
 					if renderErr == nil || !strings.Contains(renderErr.Error(), "managed runtime requires supervisor") {
 						t.Fatalf("unproven static managed runtime accepted: %v", renderErr)
@@ -84,7 +85,7 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 				if err := renderErr; err != nil {
 					t.Fatal(err)
 				}
-				s, err := stack.ReadEffective(dir, environment)
+				s, err := stack.ReadEffective(context.Background(), testReader(dir), dir, environment)
 				if err != nil {
 					t.Fatal(err)
 				}

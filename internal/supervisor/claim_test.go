@@ -17,6 +17,8 @@ type claimStub struct {
 	mu         sync.Mutex
 	address    string
 	err        error
+	spec       spawnv1.EffectiveSpec
+	specErr    error
 	renewErr   error
 	drainErr   error
 	generation int64
@@ -63,6 +65,17 @@ func (s *claimStub) ReleaseLease(_ context.Context, id string, _ spawnv1.LeaseRe
 	defer s.mu.Unlock()
 	s.released = append(s.released, id)
 	return nil
+}
+
+func (s *claimStub) Effective(context.Context, spawnv1.Tenant, string) (spawnv1.EffectiveSpec, error) {
+	if s.specErr != nil {
+		return spawnv1.EffectiveSpec{}, s.specErr
+	}
+	return s.spec, nil
+}
+
+func (s *claimStub) PolicySlice(_ context.Context, _ spawnv1.Tenant, space, service, digest string) (spawnv1.PolicySlice, error) {
+	return spawnv1.PolicySlice{Space: space, Service: service, Digest: digest, Documents: s.spec.Documents}, s.specErr
 }
 
 func (s *claimStub) DrainRuntimes(_ context.Context, _ string, in spawnv1.DrainRuntimesRequest) (int, error) {

@@ -279,7 +279,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	lock.Lock()
 	defer lock.Unlock()
 	envName := m.environment()
-	m.prepareSpawnFiles(binding, envName)
+	m.prepareSpawnFiles(context.Background(), binding, envName)
 	settings := request.Settings
 	var identityErr error
 	settings, identityErr = m.applyIdentityTemplate(binding, settings)
@@ -292,7 +292,7 @@ func (f *firecrackerBackend) Spawn(ctx context.Context, request SpawnRequest) (C
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
 		return ComputeObservation{}, err
 	}
-	effectiveConfig, err := m.materializeHermesConfig(binding, envName)
+	effectiveConfig, err := m.materializeHermesConfig(context.Background(), binding, envName)
 	if err != nil {
 		return ComputeObservation{}, err
 	}

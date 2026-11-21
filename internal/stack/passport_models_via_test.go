@@ -51,7 +51,7 @@ services:
 	if err := os.WriteFile(filepath.Join(user, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reg, err := LoadModelRegistry(user, Settings{User: "artem_two", Environment: "dev"})
+	reg, err := LoadModelRegistryFor(user, testLoadEffective(t, user))
 	if err != nil {
 		t.Fatalf("registry from published models doc: %v", err)
 	}

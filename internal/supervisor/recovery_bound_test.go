@@ -36,7 +36,7 @@ func recoveryJob(t *testing.T, m *Manager, spacesRoot, principal string) (hubrun
 		Channel:        "telegram_bot",
 		Trigger:        "message",
 	}
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}

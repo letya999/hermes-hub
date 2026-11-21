@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 func ch(path, consumer string, e passport.Effect) passport.Change {
@@ -15,7 +15,7 @@ func ch(path, consumer string, e passport.Effect) passport.Change {
 
 // allServices stands in for a new revision declaring the owners these
 // tests recreate.
-var allServices = map[string]passportview.ServiceSpec{
+var allServices = map[string]spawnv1.ServiceSpec{
 	"hermes-runtime":    {Mode: "supervised"},
 	"browser":           {Mode: "per-space"},
 	"cliproxy":          {Mode: "per-space"},
@@ -121,7 +121,7 @@ func TestPlanWebProviderRoutingRecreatesEgressRelay(t *testing.T) {
 		ch("config.web.search_backend", "hermes-config", passport.EffectRespawn),
 		ch("config.web.search_providers", "hermes-config", passport.EffectRespawn),
 	}
-	services := map[string]passportview.ServiceSpec{"hermes-runtime": {}, "egress-relay": {}}
+	services := map[string]spawnv1.ServiceSpec{"hermes-runtime": {}, "egress-relay": {}}
 	actions := Plan(changes, services)
 	if len(actions) != 2 || actions[0].Kind != Recreate || actions[0].Target != "egress-relay" || actions[1].Kind != Respawn || actions[1].Target != "hermes-runtime" {
 		t.Fatalf("web routing must recreate egress before runtime respawn: %+v", actions)
@@ -135,7 +135,7 @@ func TestPlanWebProviderRoutingRecreatesEgressRelay(t *testing.T) {
 
 func TestPlanPrivateMediaRecreatesEgressBeforeRuntimeRespawn(t *testing.T) {
 	changes := []passport.Change{ch("stack.services.hub-media.mode", "hub-media", passport.EffectRebuild)}
-	services := map[string]passportview.ServiceSpec{"hub-media": {Mode: "per-space"}, "egress-relay": {}, "hermes-runtime": {}}
+	services := map[string]spawnv1.ServiceSpec{"hub-media": {Mode: "per-space"}, "egress-relay": {}, "hermes-runtime": {}}
 	actions := Plan(changes, services)
 	if len(actions) != 4 || actions[0].Kind != Rebuild || actions[0].Target != "hub-media" || actions[1].Kind != Recreate || actions[1].Target != "egress-relay" || actions[2].Kind != Recreate || actions[2].Target != "hub-media" || actions[3].Kind != Respawn || actions[3].Target != "hermes-runtime" {
 		t.Fatalf("private media must refresh egress before runtime: %+v", actions)
@@ -143,7 +143,7 @@ func TestPlanPrivateMediaRecreatesEgressBeforeRuntimeRespawn(t *testing.T) {
 }
 
 func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
-	services := map[string]passportview.ServiceSpec{
+	services := map[string]spawnv1.ServiceSpec{
 		"hermes-runtime": {Mode: "supervised"}, "communication-hub": {Mode: "shared"}, "toolhub": {Mode: "shared"},
 	}
 	actions := Plan([]passport.Change{ch("config.memory.enabled", "toolhub", passport.EffectRecreate)}, services)
@@ -159,7 +159,7 @@ func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
 }
 
 func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
-	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
+	services := map[string]spawnv1.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
 	actions := Plan([]passport.Change{
 		ch("config.hosting", "compose", passport.EffectRebuild),
 		ch("config.hosting.slots", "compose", passport.EffectRecreate),
@@ -191,7 +191,7 @@ func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
 // leaves carry effects, and they recreate the gateway that owns the
 // HUB_OIDC_* env — never the runtime, never a global rebuild.
 func TestPlanIAMBlockLeavesTargetGateway(t *testing.T) {
-	services := map[string]passportview.ServiceSpec{
+	services := map[string]spawnv1.ServiceSpec{
 		"hermes-runtime":    {Mode: "supervised"},
 		"communication-hub": {Mode: "shared"},
 		"identity-hub":      {Mode: "shared"},
@@ -224,7 +224,7 @@ func TestPlanIAMBlockLeavesTargetGateway(t *testing.T) {
 }
 
 func TestPlanStaticHostingAdditionSkipsEmptyImage(t *testing.T) {
-	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
+	services := map[string]spawnv1.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
 	actions := Plan([]passport.Change{
 		{Path: "config.hosting", Before: "<none>", After: "", Effect: passport.EffectRebuild},
 		{Path: "config.hosting.image", Before: "", After: "", Effect: passport.EffectRecreate},
@@ -245,7 +245,7 @@ func TestPlanSkipsRecreateForUndeclaredOwners(t *testing.T) {
 		ch("config.ports.browser-vnc", "compose", passport.EffectRecreate),
 		ch("config.ports.oauth-callback", "compose", passport.EffectRecreate),
 		ch("config.channels.telegram.voice.in", "communication", passport.EffectRecreate),
-	}, map[string]passportview.ServiceSpec{
+	}, map[string]spawnv1.ServiceSpec{
 		"hermes-runtime":    {Mode: "supervised"},
 		"communication-hub": {Mode: "shared"},
 	})

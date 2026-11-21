@@ -1,12 +1,43 @@
 package passport_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/passport"
+	"gopkg.in/yaml.v3"
 )
+
+// loadEffectiveFixture decodes the fixture's published tree through the
+// contract assembler — the same consistency rules the on-disk loader
+// enforced now live in spawnv1.Assemble (S7d).
+func loadEffectiveFixture(dir string) (spawnv1.Effective, error) {
+	cur, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+	if err != nil {
+		return spawnv1.Effective{}, err
+	}
+	docs := map[string]json.RawMessage{}
+	for _, name := range spawnv1.Names {
+		body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", strings.TrimSpace(string(cur)), name+".yaml"))
+		if err != nil {
+			return spawnv1.Effective{}, err
+		}
+		var v any
+		if err := yaml.Unmarshal(body, &v); err != nil {
+			return spawnv1.Effective{}, err
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return spawnv1.Effective{}, err
+		}
+		docs[name] = raw
+	}
+	return spawnv1.Assemble(docs)
+}
 
 // publishNormative stages the six normative fixtures as one revision.
 func publishNormative(t *testing.T, dir, rev string) string {
@@ -34,7 +65,7 @@ func TestLoadEffectiveRejectsMixedRevision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := passport.LoadEffective(dir); err == nil {
+	if _, err := loadEffectiveFixture(dir); err == nil {
 		t.Fatal("mixed-revision set loaded")
 	}
 }
@@ -48,13 +79,13 @@ func TestLoadEffectiveRejectsMissingPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := passport.LoadEffective(dir); err == nil {
+	if _, err := loadEffectiveFixture(dir); err == nil {
 		t.Fatal("incomplete revision loaded")
 	}
 
 	// A space with no published revision at all fails too — no legacy fallback.
 	empty := t.TempDir()
-	if _, err := passport.LoadEffective(empty); err == nil {
+	if _, err := loadEffectiveFixture(empty); err == nil {
 		t.Fatal("space without a revision loaded")
 	}
 }
@@ -65,7 +96,7 @@ func TestLoadEffectiveReturnsTypedBodies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	eff, err := passport.LoadEffective(dir)
+	eff, err := loadEffectiveFixture(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

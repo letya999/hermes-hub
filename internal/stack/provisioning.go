@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -82,7 +82,7 @@ func resolveProvisioningProfile(spaceDir, orgDir, name string) (*provisioningPro
 					}
 				}
 			}
-			for _, passportName := range passportview.Names {
+			for _, passportName := range spawnv1.Names {
 				if len(p.Passports[passportName]) != 0 {
 					continue
 				}
@@ -97,7 +97,7 @@ func resolveProvisioningProfile(spaceDir, orgDir, name string) (*provisioningPro
 		leaf = false
 		level = next
 	}
-	for _, passportName := range passportview.Names {
+	for _, passportName := range spawnv1.Names {
 		if len(p.Passports[passportName]) == 0 {
 			body, err := defaultPassportTemplates.ReadFile("defaults/passports/" + passportName + ".yaml")
 			if err != nil {
@@ -113,8 +113,8 @@ func renderProfilePassports(p *provisioningProfile, user, organization string) (
 	values := strings.NewReplacer(
 		"__USER__", user, "__ORGANIZATION__", organization, "__PROFILE__", p.Name,
 	)
-	out := make(map[string][]byte, len(passportview.Names))
-	for _, name := range passportview.Names {
+	out := make(map[string][]byte, len(spawnv1.Names))
+	for _, name := range spawnv1.Names {
 		body := []byte(values.Replace(string(p.Passports[name])))
 		var doc map[string]any
 		if err := yaml.Unmarshal(body, &doc); err != nil || len(doc) == 0 {

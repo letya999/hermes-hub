@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"context"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -34,7 +35,7 @@ func TestRenderDoesNotOpenToolHubStore(t *testing.T) {
 	if err := os.WriteFile(store, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatalf("renderer consulted another module's store: %v", err)
 	}
 	got, err := os.ReadFile(store)
@@ -59,7 +60,7 @@ func TestManifestRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestManifestRendered(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(d, "generated", "tool-manifest.prod.json"))
@@ -96,7 +97,7 @@ func TestManifestRendered(t *testing.T) {
 	if manifest.Schema != 1 || manifest.Context != "alice" {
 		t.Fatalf("manifest identity wrong: %+v", manifest)
 	}
-	rendered, err := ReadEnvironment(d, "prod")
+	rendered, err := ReadEnvironment(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func TestStablePromptRendered(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "SOUL.md"), []byte("# Persona\nSpeak plainly."), 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,7 @@ func TestStablePromptRendered(t *testing.T) {
 	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(d, "generated", "soul-effective.prod.md"))
@@ -187,7 +188,7 @@ func TestRuntimeServiceMountsToolManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(d, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

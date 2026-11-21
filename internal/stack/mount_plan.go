@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // PlanMount is one host bind in the runtime container's filesystem contract
@@ -24,7 +24,7 @@ type PlanMount struct {
 // through the same scope and credential checks legacy mounts used. wsBase
 // is the workspace parent — the space dir for unmanaged runtimes,
 // managed/<env> for managed ones.
-func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) []PlanMount {
+func MountPlan(dir, env, wsBase string, s Settings, ws spawnv1.Workspace) []PlanMount {
 	plan := []PlanMount{
 		{Source: filepath.Join(dir, "generated", "config-view", env), Target: "/config", ReadOnly: true},
 		{Source: filepath.Join(wsBase, "workspace"), Target: "/workspace"},
@@ -60,7 +60,7 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 // passport's boundary and the MountPlan's fixed workspace need under wsBase.
 // It creates directories only — never memory content — and never descends
 // into existing trees such as workspace/projects (SPEC-0092 R5.2).
-func MaterializeWorkspaceLayout(wsBase string, ws passportview.Workspace) error {
+func MaterializeWorkspaceLayout(wsBase string, ws spawnv1.Workspace) error {
 	names := []string{"workspace"}
 	for _, p := range slices.Concat(ws.Writable, ws.ReadOnly) {
 		if strings.HasPrefix(p, "/workspace/") {

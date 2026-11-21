@@ -42,12 +42,12 @@ func (m *Manager) restartKubernetesLocked(ctx context.Context, snapshot Runtime)
 		return false, err
 	}
 	m.mu.Unlock()
-	settings, err := stack.ReadEffectiveSpace(binding.ContextRoot)
+	settings, eff, err := stack.ReadEffectiveSpaceBundle(ctx, m.cfg.Spawn, binding.ContextRoot)
 	if err != nil {
 		m.markDegraded(key)
 		return false, errors.New("runtime settings unavailable")
 	}
-	observed, err := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: runtime, Settings: settings, Port: m.cfg.RuntimePort})
+	observed, err := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: runtime, Settings: settings, Effective: eff, Port: m.cfg.RuntimePort})
 	if err == nil {
 		err = m.ready(ctx, observed.Address, binding.runtimeAuth)
 	}

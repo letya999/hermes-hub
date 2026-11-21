@@ -25,7 +25,7 @@ func TestSkillRefLeaseRoutesOnlyMatchingRuntime(t *testing.T) {
 	}))
 	defer upstream.Close()
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestSkillRefLeaseRoutesByAdmittedJobLane(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
 	b := binding(root)
 	b.RuntimeMode = "gateway-2"
-	b, err := m.normalize(b)
+	b, err := m.normalize(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
 	}

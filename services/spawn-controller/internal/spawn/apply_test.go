@@ -15,19 +15,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// mirrorPendingCount counts the durable mirror-retry rows the activation
-// transaction leaves — the sweeper's recovery list.
-func mirrorPendingCount(t *testing.T, revs *spawn.Revisions) int {
-	t.Helper()
-	var n int
-	if err := revs.Store.ReadTx(context.Background(), func(tx *store.Tx) error {
-		return tx.Scoped(tenant).QueryRow("SELECT COUNT(*) FROM mirror_pending WHERE {tenant}").Scan(&n)
-	}); err != nil {
-		t.Fatalf("mirror_pending count: %v", err)
-	}
-	return n
-}
-
 // The apply CAS refuses a base that is not the space's effective digest
 // before anything writes: no revision activates, the digest stays.
 func TestApplyStaleBaseRefused(t *testing.T) {
@@ -153,49 +140,6 @@ func TestApplyFailedActionRollsBack(t *testing.T) {
 	})
 }
 
-// A mirror failure after the activation commit never un-activates: the
-// digest moves, the durable pending row remains, and the sweeper's pass
-// publishes the same digest once the fault clears.
-func TestMirrorFailureNeverUnactivates(t *testing.T) {
-	storetest.ForEach(t, func(t *testing.T, url string) {
-		root := t.TempDir()
-		revs := testRevisions(t, url)
-		revs.SpacesRoot = root
-		setupSpace(t, revs)
-		ctx := context.Background()
-		base := effectiveDigest(t, revs)
-
-		revs.BeforeMirror = func() error { return errors.New("injected mirror failure") }
-		second := submitValidated(t, revs, "user", userDocs("UTC"))
-		if _, err := revs.Activate(ctx, tenant, "alice", []string{second.ID}, nil); err != nil {
-			t.Fatalf("mirror failure must not fail activation: %v", err)
-		}
-		revs.BeforeMirror = nil
-		next := effectiveDigest(t, revs)
-		if next == base {
-			t.Fatal("mirror failure kept the old digest — activation must commit")
-		}
-		if n := mirrorPendingCount(t, revs); n != 1 {
-			t.Fatalf("mirror_pending rows = %d, want 1", n)
-		}
-		pointer := filepath.Join(root, "alice", "generated", "passports", "current")
-		if body, err := os.ReadFile(pointer); err == nil && strings.TrimSpace(string(body)) == next {
-			t.Fatal("failed mirror published the digest pointer")
-		}
-
-		if err := revs.MirrorPending(ctx); err != nil {
-			t.Fatalf("sweeper mirror pass: %v", err)
-		}
-		if n := mirrorPendingCount(t, revs); n != 0 {
-			t.Fatalf("mirror_pending rows after sweep = %d", n)
-		}
-		body, err := os.ReadFile(pointer)
-		if err != nil || strings.TrimSpace(string(body)) != next {
-			t.Fatalf("swept mirror current = %q err=%v, want %s", body, err, next)
-		}
-	})
-}
-
 // The settings edit writes the authored config back, publishes a new
 // user revision and activates it on the digest CAS; the mirror's
 // `current` pointer follows the new digest. Stale bases and missing
@@ -306,15 +250,10 @@ func TestSettingsEditEndToEnd(t *testing.T) {
 		if leaf != true {
 			t.Fatalf("authored config compression.enabled = %v", leaf)
 		}
-		// The mirror points current at the new digest and .policy resolves it.
-		pointer := filepath.Join(root, "alice", "generated", "passports", "current")
-		body, err := os.ReadFile(pointer)
-		if err != nil || strings.TrimSpace(string(body)) != out.PublishedRevision {
-			t.Fatalf("mirror current = %q err=%v, want %s", body, err, out.PublishedRevision)
-		}
-		policy := filepath.Join(root, "alice", "generated", "passports", ".policy", strings.TrimPrefix(out.PublishedRevision, "sha256:"))
-		if _, err := os.Stat(policy); err != nil {
-			t.Fatalf("mirror .policy indirection missing: %v", err)
+		// S7d: the edit activated a new digest — the deleted file mirror
+		// writes nothing under the spaces root.
+		if _, err := os.Stat(filepath.Join(root, "alice", "generated", "passports")); !os.IsNotExist(err) {
+			t.Fatalf("activation wrote a generated passport tree: %v", err)
 		}
 
 		// A space whose grants lack config.edit_own refuses the same edit

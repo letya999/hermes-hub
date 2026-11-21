@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -116,7 +117,7 @@ func TestMembersLegacyScalarAndMapForms(t *testing.T) {
 		},
 		"features": o.Features,
 	})
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestMembersLegacyScalarAndMapForms(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedDocs(t, bobSpace, "bob", "r-0000000000000001", orgDocs("bob"))
-	s2, err := ReadEnvironment(bobSpace, "prod")
+	s2, err := ReadEnvironment(context.Background(), testReader(bobSpace), bobSpace, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,7 @@ func TestInitMaterializesWorkspaceTree(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := RenderEnvironment(space, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(space), space, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
@@ -339,7 +340,7 @@ func TestInitMaterializesWorkspaceTree(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := RenderEnvironment(space, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(space), space, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{"workspace/inbox/people", "workspace/inbox/services", "workspace/projects"} {
@@ -372,7 +373,7 @@ func TestEffectiveSoulLayerOrder(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(space, "SOUL.md"), []byte("# alice notes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +407,7 @@ func TestProfileSoulLayersForPlainSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, space, "alice", "r-0000000000000001")
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestProfileSkillsPinAndEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, space, "alice", "r-0000000000000001")
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +605,7 @@ func TestOrgMemberCannotPullUnassignedProfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(space, "profile.lock"), []byte("profile: admin\nversion: 1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEnvironment(space, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

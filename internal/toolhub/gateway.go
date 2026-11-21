@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -60,9 +61,10 @@ type Gateway struct {
 	// /v1/rights/decide calls may only assert it — cross-space assertions
 	// refuse (SPEC-0092 R2.2). Empty disables asserted decisions.
 	SpacePrincipal string
-	// PassportRoot contains one read-only published revision per principal.
-	// Memory admission resolves it from the authenticated envelope only.
-	PassportRoot string
+	// Spawn is the spawn-controller effective reader — the effective-spec and
+	// policy-digest authority for every admission check (S7d). Nil disables
+	// passport-gated paths exactly like the missing file root did.
+	Spawn spawnv1.EffectiveReader
 	// InboxRoots is the control-only writable inbox mount per principal.
 	InboxRoots       string
 	CommunicationURL string
@@ -379,7 +381,7 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if _, err := g.requireActivated(auth); err != nil {
+	if _, err := g.requireActivated(r.Context(), auth); err != nil {
 		http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
 		return
 	}

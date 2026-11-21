@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"os"
@@ -87,7 +88,7 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeSSHConfig(t, d)
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err = RenderEnvironment(d, root, "prod"); err != nil {
+	if err = RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	// Managed runtimes are supervisor-spawned: the ssh state dir is a
@@ -129,7 +130,7 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "me", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err = RenderEnvironment(d, root, "prod"); err == nil {
+	if err = RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err == nil {
 		t.Fatal("render accepted ssh without a config")
 	}
 }

@@ -16,6 +16,7 @@ import (
 func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	writeManagedSpaceDocs(t, dir, "alice", nil)
+	stubSpawnClient(t, dir)
 	expected := []string{"ingress", "identity", "jobs", "runs", "toolhub", "connectors", "cron", "oauth", "delivery"}
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +123,7 @@ func TestUserDisablePropagatesInOrderAndAuditsStages(t *testing.T) {
 func TestUserDisableStopsOnFirstFailedStage(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
 	writeManagedSpaceDocs(t, dir, "alice", nil)
+	stubSpawnClient(t, dir)
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

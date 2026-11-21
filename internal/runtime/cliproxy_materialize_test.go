@@ -2,12 +2,33 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"gopkg.in/yaml.v3"
 )
+
+// writeServicesProjection lays down the render's model-services JSON — the
+// effective models doc's service map the init companion mounts (S7d).
+func writeServicesProjection(t *testing.T, gen, modelsYAML string) {
+	t.Helper()
+	var doc spawnv1.ModelsDoc
+	if err := yaml.Unmarshal([]byte(modelsYAML), &doc); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(doc.Services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "model-services.prod.json"), append(body, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // cliproxyMaterialize delivers the oauth session files and proxy_access
 // keys into the instance's tmpfs views: /cliproxy/auths holds one <ref>.json
@@ -16,26 +37,10 @@ import (
 func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n")
 	grants := `{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(grants), 0600); err != nil {
 		t.Fatal(err)
@@ -81,31 +86,14 @@ func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
 func TestCliproxyMaterializeDeliversAllInstanceSessions(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	models := head + "kind: models\nservices:\n" +
-		"  chat:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n" +
-		"    auth: {upstream: {kind: oauth-session, ref: cliproxy-alice}, proxy_access: {kind: broker-key, ref: cliproxy}}\n" +
-		"  images:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n" +
-		"    auth: {upstream: {kind: oauth-session, ref: google-ag}, proxy_access: {kind: broker-key, ref: cliproxy-google}}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    models,
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n"+
+		"  chat:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n"+
+		"    auth: {upstream: {kind: oauth-session, ref: cliproxy-alice}, proxy_access: {kind: broker-key, ref: cliproxy}}\n"+
+		"  images:\n    via: cliproxy\n    endpoint: http://cliproxy-alice:8317/v1\n"+
+		"    auth: {upstream: {kind: oauth-session, ref: google-ag}, proxy_access: {kind: broker-key, ref: cliproxy-google}}\n")
 	grants := `{"chat": {"cliproxy-alice": {"init": "g-sess-a"}, "cliproxy": {"init": "g-key-a", "relay": "g-key-a-r"}},` +
 		`"images": {"google-ag": {"init": "g-sess-b"}, "cliproxy-google": {"init": "g-key-b", "relay": "g-key-b-r"}}}`
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(grants), 0600); err != nil {
@@ -155,26 +143,10 @@ func TestCliproxyMaterializeDeliversAllInstanceSessions(t *testing.T) {
 func TestCliproxyMaterializeRejectsUndeclaredInstance(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n")
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -191,20 +163,13 @@ func TestCliproxyMaterializeRejectsUndeclaredInstance(t *testing.T) {
 	}
 }
 
-// A mounted view missing sibling passports is a broken publish: the init
-// companion refuses rather than materialize off a partial contract.
+// A mounted view without the render's services projection is a broken
+// publish: the init companion refuses rather than materialize off a
+// partial contract.
 func TestCliproxyMaterializeRejectsIncompleteRevision(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	models := head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n"
-	if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", "models.yaml"), []byte(models), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
@@ -215,7 +180,7 @@ func TestCliproxyMaterializeRejectsIncompleteRevision(t *testing.T) {
 		Instance: "cliproxy-google-1", Owner: "alice",
 		GeneratedDir: gen, BaseDir: t.TempDir(), AuthsDir: t.TempDir(), CfgDir: t.TempDir(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "load effective") {
+	if err == nil || !strings.Contains(err.Error(), "cliproxy materialize") {
 		t.Fatalf("incomplete revision must fail the load: %v", err)
 	}
 	if len(resolver.calls) != 0 {
@@ -228,26 +193,10 @@ func TestCliproxyMaterializeRejectsIncompleteRevision(t *testing.T) {
 func TestCliproxyMaterializeRejectsMissingAuthRefs(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n",
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n")
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -277,26 +226,10 @@ func TestCliproxyMaterializeRejectsMissingAuthRefs(t *testing.T) {
 func TestCliproxyMaterializeRejectsNonMapBaseConfig(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n")
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}

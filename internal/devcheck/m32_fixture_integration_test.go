@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -21,7 +21,7 @@ func TestM32GroupFixtureUsesDedicatedGroupHome(t *testing.T) {
 	}
 	for i, user := range f.Users {
 		dir := filepath.Join(f.Root, "spaces", user)
-		eff, err := passportview.LoadEffective(dir)
+		eff, err := spawnv1.LoadEffective(dir)
 		if err != nil {
 			t.Fatal(err)
 		}

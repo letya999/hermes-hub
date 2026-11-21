@@ -2,6 +2,7 @@ package stack
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -194,7 +195,7 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 		"  toolhub: {mode: shared}\n" +
 		"  credential-broker: {mode: shared}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
-	if err := RenderEnvironment(dir, root, "dev"); err == nil || !strings.Contains(err.Error(), "managed runtime requires supervisor-executed runtimes") {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "dev"); err == nil || !strings.Contains(err.Error(), "managed runtime requires supervisor-executed runtimes") {
 		t.Fatalf("managed runtime did not fail at isolation boundary: %v", err)
 	}
 }
@@ -227,7 +228,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +255,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "SOUL.md"), []byte("# test soul\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "dev"); err != nil {
 		t.Fatalf("managed supervised render: %v", err)
 	}
 	composeBody, err := os.ReadFile(filepath.Join(dir, "generated", "compose.dev.yaml"))
@@ -680,7 +681,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,7 +739,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# soul\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "dev"); err != nil {
 		t.Fatalf("managed render with egress: %v", err)
 	}
 	composeBody, err := os.ReadFile(filepath.Join(dir, "generated", "compose.dev.yaml"))
@@ -836,7 +837,7 @@ func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "alice", "r-0000000000000001")
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,14 +848,14 @@ func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
 	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err == nil || !strings.Contains(err.Error(), "cannot be enabled natively under managed mode") {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err == nil || !strings.Contains(err.Error(), "cannot be enabled natively under managed mode") {
 		t.Fatalf("skills wish rendered: %v", err)
 	}
 	s.Tools = map[string]ToolEntry{}
 	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(d), d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
@@ -1032,7 +1033,7 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1065,7 +1066,7 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# soul\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "dev"); err != nil {
 		t.Fatalf("managed knowledge render: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))
@@ -1090,7 +1091,7 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(dir, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1127,7 +1128,7 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "SOUL.md"), []byte("# test soul\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "dev"); err != nil {
 		t.Fatalf("managed browser render: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))

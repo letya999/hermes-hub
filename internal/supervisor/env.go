@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "credential-form", JobID: "credential-form", IdempotencyKey: "credential-form", Text: "protected credential form"}
-	binding, err := m.bindingFor(job)
+	binding, err := m.bindingFor(r.Context(), job)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
@@ -98,7 +99,7 @@ func (m *Manager) skillApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "skill-apply", JobID: "skill-apply", IdempotencyKey: "skill-apply-" + request.DraftID, Text: "skill draft apply"}
-	binding, err := m.bindingFor(job)
+	binding, err := m.bindingFor(r.Context(), job)
 	if err != nil {
 		log.Printf("supervisor skill-apply binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
@@ -155,7 +156,7 @@ func (m *Manager) skillCreds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "skill-creds", JobID: "skill-creds", IdempotencyKey: "skill-creds-" + request.Skill, Text: "skill credential delivery"}
-	binding, err := m.bindingFor(job)
+	binding, err := m.bindingFor(r.Context(), job)
 	if err != nil {
 		log.Printf("supervisor skill-creds binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
@@ -260,18 +261,18 @@ func envFileAuth(path string) (string, error) {
 // prepareSpawnFiles heals an Init SOUL stub from the repo template and, for
 // the infra owner, enrolls sibling runtime tokens before the container mount
 // is built. A missing template or a skipped enrollment does not block spawn.
-func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
+func (m *Manager) prepareSpawnFiles(ctx context.Context, binding Binding, env string) {
 	template := filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "SOUL.md")
 	if info, err := os.Stat(template); err == nil && info.Mode().IsRegular() {
 		if err := stack.HealUserSoul(binding.ContextRoot, template); err != nil {
 			log.Printf("supervisor soul heal skipped")
 		}
 	}
-	settings, err := stack.ReadEffective(binding.ContextRoot, env)
+	settings, err := stack.ReadEffective(ctx, m.cfg.Spawn, binding.ContextRoot, env)
 	if err != nil || !settings.RendersInfra() {
 		return
 	}
-	if err := stack.EnrollSiblingRuntimeTokens(binding.ContextRoot, env); err != nil {
+	if err := stack.EnrollSiblingRuntimeTokens(ctx, m.cfg.Spawn, binding.ContextRoot, env); err != nil {
 		log.Printf("supervisor token enrollment skipped")
 	}
 }
@@ -279,11 +280,11 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 // materializeHermesConfig renders the effective Hermes config on the host so
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
 // runtime contract: secrets.<env>.env endpoint override.
-func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
+func (m *Manager) materializeHermesConfig(ctx context.Context, binding Binding, env string) (string, error) {
 	// A spawned runtime is configured by the published revision alone —
 	// missing, corrupt or foreign revisions deny the materialization
 	// instead of producing a config from empty settings (SPEC-0095).
-	settings, err := stack.ReadEffective(binding.ContextRoot, env)
+	settings, err := stack.ReadEffective(ctx, m.cfg.Spawn, binding.ContextRoot, env)
 	if err != nil {
 		return "", err
 	}

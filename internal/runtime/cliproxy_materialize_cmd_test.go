@@ -79,26 +79,10 @@ func TestRunCliproxyMaterializeEndToEnd(t *testing.T) {
 	}))
 	defer server.Close()
 	gen := filepath.Join(t.TempDir(), "generated")
-	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+	if err := os.MkdirAll(gen, 0700); err != nil {
 		t.Fatal(err)
 	}
-	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
-	docs := map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
-		"config.yaml":    head + "kind: config\n",
-		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
-		"workspace.yaml": head + "kind: workspace\n",
-		"tools.yaml":     head + "kind: tools\n",
-		"grants.yaml":    head + "kind: grants\n",
-	}
-	for name, body := range docs {
-		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeServicesProjection(t, gen, "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n")
 	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}

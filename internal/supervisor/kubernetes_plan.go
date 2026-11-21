@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -198,7 +199,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil { // #nosec G301 -- shared public platform skill inputs, never credential material
 		return nil, nil, errors.New("platform skills projection unavailable")
 	}
-	if _, err := k.m.materializeHermesConfig(binding, settings.Environment); err != nil {
+	if _, err := k.m.materializeHermesConfig(context.Background(), binding, settings.Environment); err != nil {
 		return nil, nil, errors.New("runtime Hermes configuration unavailable")
 	}
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
@@ -207,7 +208,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	if _, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings); err != nil {
 		return nil, nil, errors.New("runtime policy projection unavailable")
 	}
-	if err := stack.MaterializeModelRegistry(binding.ContextRoot, settings); err != nil {
+	if err := stack.MaterializeModelRegistry(binding.ContextRoot, settings, request.Effective); err != nil {
 		return nil, nil, errors.New("runtime model registry projection unavailable")
 	}
 	if err := stack.EnsureModelRelayAuth(binding.ContextRoot); err != nil {

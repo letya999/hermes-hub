@@ -28,7 +28,18 @@ func publishAuthored(t *testing.T, dir, env string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rev.Publish(dir); err != nil {
+	// S7d: fixtures lay down the same tree the deleted publish wrote — the
+	// test shims answer the contract read from it.
+	revDir := filepath.Join(dir, "generated", "passports", rev.ID)
+	if err := os.MkdirAll(revDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range rev.Docs {
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev.ID+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -107,6 +118,20 @@ func writeManagedSpaceDocs(t *testing.T, dir, user string, overrides map[string]
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The authored stack passport carries the infra flag governance peeks
+	// at (InfraSpaceDir) — mirror its identity line from the generated doc.
+	var identity string
+	for _, line := range strings.Split(docs["stack"], "\n") {
+		if strings.HasPrefix(line, "identity:") {
+			identity = line
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "stack.yaml"), []byte(identity+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	view := filepath.Join(dir, "generated", "config-view", "dev")

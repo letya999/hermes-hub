@@ -12,10 +12,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/systemguide"
 
@@ -34,7 +34,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := s.channelContract(passportRevision(dir)) + promptPointer(dir, s.PassportRevision)
+	body := s.channelContract(s.PassportRevision != "") + s.promptPointerText()
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}
@@ -55,33 +55,14 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	return os.Chmod(path, 0644)
 }
 
-// revisionID admits only the published id shape: an r- prefixed token with
-// no dots or separators, so a tampered `current` pointer cannot traverse
-// out of the revision root.
-var revisionID = regexp.MustCompile(`^r-[0-9a-zA-Z_-]{1,32}$`)
-
-// promptPointer appends the short revision/core inventory the published
-// passport revision stamps for the prompt (R9.1). The pointer file is
-// generated authority written by passport.Publish — stack cannot import
-// passport (catalog -> stack is already an edge), so it reads the rendered
-// file directly. No published revision, no pointer: unmanaged spaces keep
-// their existing prompt.
-func promptPointer(dir, id string) string {
-	if id == "" {
-		current, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
-		if err != nil {
-			return ""
-		}
-		id = strings.TrimSpace(string(current))
-	}
-	if !revisionID.MatchString(id) {
+// promptPointer renders the short revision/core inventory the effective
+// bundle stamps for the prompt (R9.1) — moved off the published file in S7d:
+// the bundle itself carries the same data.
+func (s Settings) promptPointerText() string {
+	if s.promptPointer == "" {
 		return ""
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", id, "prompt-pointer.txt")) // #nosec G304 G703 -- id validated to a separator-free token above; generated authority path
-	if err != nil {
-		return ""
-	}
-	return "\n\n<hub_contract>\n" + strings.TrimSpace(string(body)) + "\n</hub_contract>"
+	return "\n\n<hub_contract>\n" + strings.TrimSpace(s.promptPointer) + "\n</hub_contract>"
 }
 
 // orgSoulLayer reads the organization's SOUL.md for the org→profile→user
@@ -107,16 +88,11 @@ func profileSoulLayer(dir string, s Settings) string {
 	return strings.TrimSpace(string(p.Soul))
 }
 
-// writeModelRegistry materializes the merged spaces/org/user models.yaml into
-// generated/ so the managed model-relay mounts it read-only. A space with no
-// declared models still gets its cliproxy ladder so managed chat keeps working.
-func writeModelRegistry(dir string, s Settings) error {
-	return writeModelRegistryRevision(dir, s, "")
-}
-
-// MaterializeModelRegistry projects the published registry for compute backends
+// MaterializeModelRegistry projects the effective registry for compute backends
 // that do not run the Compose renderer before spawning a runtime.
-func MaterializeModelRegistry(dir string, s Settings) error { return writeModelRegistry(dir, s) }
+func MaterializeModelRegistry(dir string, s Settings, eff spawnv1.Effective) error {
+	return writeModelRegistry(dir, s, eff)
+}
 
 // EnsureModelRelayAuth provisions the existing per-space relay bearers for a
 // compute backend without requiring a Compose render.
@@ -124,19 +100,11 @@ func EnsureModelRelayAuth(dir string) error {
 	return ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth"))
 }
 
-func writeModelRegistryRevision(dir string, s Settings, revisionID string) error {
-	var reg *ModelRegistry
-	var err error
-	if revisionID == "" {
-		reg, err = LoadModelRegistry(dir, s)
-	} else {
-		layer, loadErr := passportRegistryLayer(dir, revisionID)
-		if loadErr != nil {
-			return loadErr
-		}
-		reg = &ModelRegistry{Providers: layer.Providers, Models: layer.Models, Switch: layer.Switch}
-		err = reg.Validate()
-	}
+// writeModelRegistry materializes the effective models doc into
+// generated/ so the managed model-relay mounts it read-only. A space with no
+// declared models still gets its cliproxy ladder so managed chat keeps working.
+func writeModelRegistry(dir string, s Settings, eff spawnv1.Effective) error {
+	reg, err := LoadModelRegistryFor(dir, eff)
 	if err != nil {
 		return err
 	}
@@ -158,6 +126,18 @@ func writeModelRegistryRevision(dir string, s Settings, revisionID string) error
 	path := filepath.Join(directory, "models.yaml")
 	// The relay runs as uid10001; registry values never carry credentials.
 	return atomicMode(path, body, 0644)
+}
+
+// writeModelServices materializes the effective models doc's service map as
+// JSON — the cliproxy init companion's projection of the effective spec
+// (S7d: the mounted generated tree is a render output, not a publish
+// mirror). Auth refs ride it; secret material never does.
+func writeModelServices(dir string, s Settings, eff spawnv1.Effective) error {
+	body, err := json.Marshal(eff.Models.Services)
+	if err != nil {
+		return err
+	}
+	return atomicMode(filepath.Join(dir, "generated", "model-services."+s.Environment+".json"), append(body, '\n'), 0644)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the

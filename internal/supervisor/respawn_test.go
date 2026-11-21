@@ -32,7 +32,7 @@ func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
 	publishAliceRevision(t, root, func(docs map[string]string) {
 		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub, access: read}", 1)
 	})
-	settings, err := stack.ReadEffective(root, m.environment())
+	settings, err := stack.ReadEffective(context.Background(), supTestReader{root}, root, m.environment())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
 	if want == oldPolicy {
 		t.Fatal("fixture did not rotate policy")
 	}
-	if applied, err := m.respawnRuntime("alice", "alice", ""); err != nil || !applied {
+	if applied, err := m.respawnRuntime(context.Background(), "alice", "alice", ""); err != nil || !applied {
 		t.Fatalf("respawn: applied=%t err=%v", applied, err)
 	}
 	m.mu.Lock()
@@ -57,7 +57,7 @@ func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
 func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	// The apply's respawn effect replaces the idle runtime through the same
 	// drain + claim route.
 	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
-	if applied, err := m.respawnRuntime("alice", "alice", ""); err != nil || !applied {
+	if applied, err := m.respawnRuntime(context.Background(), "alice", "alice", ""); err != nil || !applied {
 		t.Fatalf("local publication runtime effect: applied=%t err=%v", applied, err)
 	}
 	if stub.drainCount() != 2 || stub.claimCount() != 3 {
@@ -104,7 +104,7 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 func TestRespawnBusyRuntimeDefers(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestRespawnBusyRuntimeDefers(t *testing.T) {
 func TestRespawnRefusedWithLiveLease(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestRespawnRejectsMalformedRequests(t *testing.T) {
 func TestRespawnScopedToRuntimeID(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestRespawnScopedToRuntimeID(t *testing.T) {
 func TestRespawnSerializesOnRuntimeKey(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	stub := m.cfg.Spawn.(*claimStub)
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestRespawnRespectsRightsGate(t *testing.T) {
 		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
-	normalized, err := m.normalize(binding(root))
+	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}

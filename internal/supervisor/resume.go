@@ -29,7 +29,7 @@ func (m *Manager) resume(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "job ownership mismatch"})
 		return
 	}
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(r.Context(), request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "current binding rejected"})
 		return

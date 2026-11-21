@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
-	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -279,7 +278,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// principal's connectors without holding that principal's token.
 		ControlToken:     strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
 		SpacePrincipal:   strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
-		PassportRoot:     strings.TrimSpace(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL")),
+		Spawn:            spawnClientFromEnv(),
 		InboxRoots:       strings.TrimSpace(os.Getenv("HUB_INBOX_BY_PRINCIPAL")),
 		CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")),
 		// Tool governance sits beside the registry; the env pin exists for
@@ -300,7 +299,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// Server-owned enrollment: the rendered mount view plus the published
 		// passport root are the only authority that may open a vault. A
 		// malformed bindings root fails the endpoint before it serves.
-		resolver, err := NewVaultResolver(root, gateway.PassportRoot)
+		resolver, err := NewVaultResolver(root, gateway.Spawn)
 		if err != nil {
 			return nil, err
 		}
@@ -564,13 +563,10 @@ func nonLoopbackListen(address string) bool {
 // fails closed.
 func agentBackendFromEnv() api.ToolBackend {
 	docker := api.EnvOr("HUB_DOCKER_BIN", "docker")
-	// Settings go through the spawn/v1 contract (S7b): HUB_SPAWN_URL +
-	// HUB_SPAWN_TOKEN, the same wiring the cell controller uses. The
-	// supervisor URL stays for the transitional post-edit respawn (S7c).
-	var spawn spawnv1.Client
-	if url := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); url != "" {
-		spawn = spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), &http.Client{})
-	}
+	// Settings and passport reads go through the spawn/v1 contract (S7b/S7d):
+	// HUB_SPAWN_URL + HUB_SPAWN_TOKEN, the same wiring the cell controller
+	// uses. The supervisor URL stays for the post-edit respawn (S7c).
+	spawn := spawnClientFromEnv()
 	settings := settingsBackend(os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), os.Getenv("HUB_COMMUNICATION_AUTH"), spawn)
 	// The docker socket sees every host container; scope checks keep exec,
 	// inspect and lifecycle ops inside this stack's own project.

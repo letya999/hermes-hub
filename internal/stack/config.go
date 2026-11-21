@@ -3,8 +3,8 @@ package stack
 import (
 	"fmt"
 	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -140,6 +140,13 @@ type Settings struct {
 	// decisions and cap:read overrides the render consumers enforce. Nil when
 	// the Settings were built without Read — the load path is the boundary.
 	gov *toolGovernance
+	// promptPointer is the R9.1 inventory line the effective revision stamps
+	// for the prompt — computed from the bundle, never read from files.
+	promptPointer string
+	// siblingMemory marks sibling spaces whose effective config enables the
+	// memory vault — the render feeds it from the spawn contract so compose
+	// never opens another space's generated tree (S7d).
+	siblingMemory map[string]bool
 	// ImageGen configures the opt-in image_gen capability. Empty fields use
 	// cliproxy, that provider's default model, and workspace delivery.
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
@@ -167,11 +174,11 @@ type Settings struct {
 	// PassportConfig carries the published config.yaml section so consumers
 	// without a Settings leaf (locale, parallel lanes, supervision, channel
 	// refs, memory) still read the imperative value. Render state only.
-	PassportConfig *passportview.Config `yaml:"-"`
+	PassportConfig *spawnv1.Config `yaml:"-"`
 	// PassportWorkspace carries the published workspace.yaml boundary —
 	// writable/read_only/mounts — for the mount plan and file admission.
 	// Render state only, never serialized.
-	PassportWorkspace *passportview.Workspace `yaml:"-"`
+	PassportWorkspace *spawnv1.Workspace `yaml:"-"`
 	// PassportConnectors marks s.MCP entries the published tools passport
 	// declared (its connectors map): the managed-mode raw-MCP restriction
 	// applies only to legacy-file sources, not the governed authored

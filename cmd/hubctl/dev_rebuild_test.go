@@ -23,7 +23,7 @@ func TestDevRebuildRefreshesSiblingControlToken(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(member, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+token+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := refreshDevSiblingTokens(member); err != nil {
+		if err := refreshDevSiblingTokens(context.Background(), spacesRootReader{root: filepath.Dir(member)}, member); err != nil {
 			t.Fatal(err)
 		}
 		entries, err := serviceauth.ReadTokenEnvelopes(filepath.Join(owner, "toolhub-tokens.json"))

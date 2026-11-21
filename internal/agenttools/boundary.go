@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/shared/locale"
 )
 
@@ -41,11 +41,11 @@ func (t *Tools) boundary() (*workspaceBoundary, error) {
 	if err != nil {
 		return nil, invalid
 	}
-	decoded, err := passportview.Decode("workspace", body)
+	decoded, err := spawnv1.Decode("workspace", body)
 	if err != nil {
 		return nil, invalid
 	}
-	doc := decoded.(*passportview.WorkspaceDoc)
+	doc := decoded.(*spawnv1.WorkspaceDoc)
 	after, err := os.ReadFile(marker)
 	if err != nil || !bytes.Equal(revision, after) || strings.TrimSpace(string(revision)) != doc.Metadata.Revision {
 		return nil, invalid

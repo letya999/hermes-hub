@@ -230,7 +230,7 @@ func (m *Manager) wake(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(r.Context(), request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -276,7 +276,7 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(r.Context(), request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -348,7 +348,7 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 		if runtime.Managed {
 			// The agent's config is read-only: refresh its host source before
 			// Docker remounts it, otherwise a saved overlay fails preflight.
-			if _, err := m.materializeHermesConfig(entry.binding, m.environment()); err != nil {
+			if _, err := m.materializeHermesConfig(context.Background(), entry.binding, m.environment()); err != nil {
 				return false, err
 			}
 		}
@@ -582,7 +582,7 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 		!m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
 		return
 	}
-	applied, err := m.respawnRuntime(request.PrincipalID, request.ContextID, request.RuntimeID)
+	applied, err := m.respawnRuntime(r.Context(), request.PrincipalID, request.ContextID, request.RuntimeID)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
@@ -590,7 +590,7 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": applied, "applied": applied})
 }
 
-func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, error) {
+func (m *Manager) respawnRuntime(ctx context.Context, principal, contextID, runtimeID string) (bool, error) {
 	m.mu.Lock()
 	var entry *runtimeEntry
 	for _, candidate := range m.items {
@@ -625,7 +625,7 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 		lock.Unlock()
 		return false, nil
 	}
-	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
+	settings, err := stack.ReadEffective(ctx, m.cfg.Spawn, binding.ContextRoot, m.environment())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		lock.Unlock()
 		return false, err
@@ -678,7 +678,7 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -728,7 +728,7 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -789,7 +789,7 @@ func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -835,7 +835,7 @@ func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request.ExecuteRequest)
+	binding, err := m.bindingFor(r.Context(), request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return

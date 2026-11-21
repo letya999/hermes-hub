@@ -208,7 +208,7 @@ func (g *Gateway) memoryCapture(r *http.Request, auth identity.Envelope, ev *api
 		// Enrollment is re-read after the right check, adjacent to the
 		// write — a passport disabling memory between admission and commit
 		// must still land on a closed door.
-		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+		if err := memoryEnrollment(r.Context(), g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 			return err
 		}
 		daily, err := vault.OpenDaily(root, time.Local)

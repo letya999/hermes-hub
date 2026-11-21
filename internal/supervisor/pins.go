@@ -16,7 +16,7 @@ func pinKey(request hubruntime.ExecuteRequest) string {
 // SetPin records an explicit operator hold independent of a runtime generation.
 // Removing a pin does not cancel jobs, release their leases or delete user data.
 func (m *Manager) SetPin(request hubruntime.ExecuteRequest, enabled bool) error {
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(context.Background(), request)
 	if err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func (m *Manager) ReconcilePins(ctx context.Context) {
 	for _, request := range requests {
 		// A pin written under a superseded policy must not respawn the runtime
 		// with the stale hash: restamp it to the space's current policy first.
-		if current := m.currentPolicyVersion(request.UserID); current != "" && request.PolicyVersion != current {
+		if current := m.currentPolicyVersion(context.Background(), request.UserID); current != "" && request.PolicyVersion != current {
 			request.PolicyVersion = current
 			m.mu.Lock()
 			if _, exists := m.pins[pinKey(request)]; exists {
@@ -97,7 +97,7 @@ func (m *Manager) ReconcilePins(ctx context.Context) {
 			}
 			m.mu.Unlock()
 		}
-		binding, err := m.bindingFor(request)
+		binding, err := m.bindingFor(context.Background(), request)
 		if err != nil {
 			continue
 		}

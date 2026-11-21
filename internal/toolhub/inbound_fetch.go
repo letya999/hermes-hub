@@ -49,7 +49,7 @@ func (g *Gateway) serveInboundFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth := projection.auth
-	activation, err := g.requireActivated(auth)
+	activation, err := g.requireActivated(r.Context(), auth)
 	if err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -59,7 +59,7 @@ func (g *Gateway) serveInboundFetch(w http.ResponseWriter, r *http.Request) {
 		if activation.revision != "" && effective.CapabilityProfileRevision != activation.profileRevision {
 			return api.ErrUnauthorized
 		}
-		if err := g.checkActivePassport(auth, activation.revision); err != nil {
+		if err := g.checkActivePassport(r.Context(), auth, activation.revision); err != nil {
 			return err
 		}
 		projected := api.ProjectedTool{BindingID: effective.Binding.ToolBindingID, Tool: tool}

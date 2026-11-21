@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -199,7 +200,7 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishAuthoredRevision(t, dir, "alice", "r-0000000000000001")
-	s, err := ReadEnvironment(dir, "prod")
+	s, err := ReadEnvironment(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

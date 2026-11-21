@@ -14,7 +14,7 @@ import (
 func TestSupervisorFailsClosedOnUnreadableRuntimeEnv(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
-	if _, err := m.materializeHermesConfig(binding(root), "prod"); err != nil {
+	if _, err := m.materializeHermesConfig(context.Background(), binding(root), "prod"); err != nil {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(root, "managed-runtime.prod.env")
@@ -31,7 +31,7 @@ func TestSupervisorFailsClosedOnUnreadableRuntimeEnv(t *testing.T) {
 		if err := corrupt(); err != nil {
 			t.Fatal(err)
 		}
-		_, err := m.materializeHermesConfig(binding(root), "prod")
+		_, err := m.materializeHermesConfig(context.Background(), binding(root), "prod")
 		if err == nil {
 			t.Fatalf("%s runtime env materialized a config", name)
 		}

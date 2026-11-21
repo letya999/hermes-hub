@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -11,21 +13,36 @@ import (
 	"path/filepath"
 )
 
-func renderEnvironment(dir, root, environment string) error {
-	if err := stack.RenderEnvironment(dir, root, environment); err != nil {
+// renderClient is the contract-read seam for the operator render path:
+// production resolves through applySpawnClient; tests inject a fixture
+// reader so the ToolHub-migration tail stays exercisable.
+var renderClient = func(dir string) (spawnv1.EffectiveReader, error) {
+	client, _, err := spawnClientFor(dir)
+	return client, err
+}
+
+func renderEnvironment(ctx context.Context, dir, root, environment string) error {
+	client, err := renderClient(dir)
+	if err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(dir, environment)
+	if err := stack.RenderEnvironment(ctx, client, dir, root, environment); err != nil {
+		return err
+	}
+	settings, err := stack.ReadEffective(ctx, client, dir, environment)
 	if err != nil {
 		return err
 	}
 	return migrateToolhubBindings(dir, settings)
 }
-func renderRevisionEnvironment(dir, root, environment, revision string) error {
-	if err := stack.RenderRevisionEnvironment(dir, root, environment, revision); err != nil {
+
+// renderEnvironmentFor renders the effective bundle the caller already
+// resolved — converge renders exactly the activated spec (S7d).
+func renderEnvironmentFor(ctx context.Context, client spawnv1.EffectiveReader, dir, root, environment string, eff spawnv1.Effective) error {
+	if err := stack.RenderEnvironmentFor(ctx, client, dir, root, environment, eff); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffectiveRevision(dir, environment, revision)
+	settings, err := stack.SettingsForEffective(dir, eff, environment)
 	if err != nil {
 		return err
 	}
@@ -74,4 +91,29 @@ func migrateToolhubBindings(dir string, s stack.Settings) error {
 		fmt.Fprintln(os.Stderr, locale.T(locale.Operator(), "hubctl.toolhub-profile-stale", id))
 	}
 	return nil
+}
+
+// effectiveSpec resolves the space's active effective bundle through the
+// spawn contract — the only read path after S7d. applySpawnClient derives
+// the tenant from the space dir the same way the read does.
+func effectiveSpec(ctx context.Context, dir string) (spawnv1.Effective, error) {
+	client, tenant, err := spawnClientFor(dir)
+	if err != nil {
+		return spawnv1.Effective{}, err
+	}
+	spec, err := client.Effective(ctx, tenant, filepath.Base(dir))
+	if err != nil {
+		return spawnv1.Effective{}, err
+	}
+	return spawnv1.Assemble(spec.Documents)
+}
+
+// readEffectiveSettings is ReadEffective with client resolution folded in —
+// the shape every hubctl read site shares after S7d.
+func readEffectiveSettings(ctx context.Context, dir, environment string) (stack.Settings, error) {
+	client, _, err := spawnClientFor(dir)
+	if err != nil {
+		return stack.Settings{}, err
+	}
+	return stack.ReadEffective(ctx, client, dir, environment)
 }

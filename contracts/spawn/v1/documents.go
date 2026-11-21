@@ -1,8 +1,9 @@
-// Package passportview is the leaf read path for published six-passport
-// revisions: typed bodies, strict Decode and LoadEffective. It sits below
-// internal/passport (compile/publish) so every consumer — stack, toolhub,
-// migration — reads the same contract without an import cycle.
-package passportview
+// This file carries the typed six-passport v2 schema — the decode surface
+// every consumer of EffectiveSpec.Documents and PolicySlice.Documents
+// shares. It moved here from internal/passportview (the deleted v0 file
+// reader): the bundle documents ride the contract, so their typed view
+// belongs to the contract, not to a filesystem package.
+package spawn
 
 import (
 	"bytes"
@@ -10,60 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
-	"github.com/letya999/hermes-hub/internal/media"
 )
 
 // Names is the fixed six-passport order.
 var Names = []string{"stack", "config", "models", "workspace", "tools", "grants"}
 
-// Current returns the active revision id.
-func Current(spaceDir string) (string, error) {
-	return currentGenerated(filepath.Join(spaceDir, "generated"))
-}
-
-// currentGenerated reads the current pointer inside a generated/ dir and
-// rejects ids that could escape the passports tree.
-func currentGenerated(genDir string) (string, error) {
-	_, revision, err := CurrentReferenceGenerated(genDir)
-	return revision, err
-}
-
-// CurrentReferenceGenerated returns the pointer and its resolved cache revision.
-func CurrentReferenceGenerated(genDir string) (reference, revision string, err error) {
-	root := filepath.Join(genDir, "passports")
-	b, err := os.ReadFile(filepath.Join(root, "current"))
-	if err != nil {
-		return "", "", err
-	}
-	reference = strings.TrimSpace(string(b))
-	revision = reference
-	if contract.ValidPolicyDigest(reference) {
-		b, err := os.ReadFile(filepath.Join(root, ".policy", strings.TrimPrefix(reference, "sha256:")))
-		if err != nil {
-			return "", "", fmt.Errorf("current policy cache: %w", err)
-		}
-		revision = strings.TrimSpace(string(b))
-	}
-	if revision == "pending" {
-		return "", "", fmt.Errorf("current revision is pending activation")
-	}
-	if !filepath.IsLocal(revision) {
-		return "", "", fmt.Errorf("current names a non-local revision %q", revision)
-	}
-	return reference, revision, nil
-}
-
-// Effective is the current revision as typed data — the single read path
-// consumers use (R1.3). A revision that cannot be fully decoded, mixes
+// Effective is the active revision as typed data — the single read path
+// consumers use (R1.3). A bundle that cannot be fully decoded, mixes
 // revision ids or pins different catalog releases never partially loads.
 type Effective struct {
 	Header    Header
@@ -75,133 +34,12 @@ type Effective struct {
 	Grants    Grants
 }
 
-// LoadEffective reads the revision the `current` pointer names and decodes
-// all six passports strictly. There is no fallback to legacy files: a space
-// without a published revision, or a corrupted one, is an error.
-func LoadEffective(spaceDir string) (Effective, error) {
-	return LoadEffectiveGenerated(filepath.Join(spaceDir, "generated"))
-}
-
-// LoadEffectiveGenerated is LoadEffective rooted at the generated/ dir
-// itself — mount views like the cliproxy init companion's /run/model-gen
-// carry no enclosing space dir.
-func LoadEffectiveGenerated(genDir string) (Effective, error) {
-	rev, err := currentGenerated(genDir)
-	if err != nil {
-		return Effective{}, fmt.Errorf("load effective: %w", err)
-	}
-	slot, _ := effectiveSlots.LoadOrStore(genDir, &effectiveSlot{})
-	entry := slot.(*effectiveSlot)
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	stamps, stampErr := revisionStamps(genDir, rev)
-	if entry.ok && stampErr == nil && entry.rev == rev && entry.stamps == stamps {
-		return entry.eff, nil
-	}
-	eff, err := loadRevisionGenerated(genDir, rev)
-	if err != nil {
-		return eff, err
-	}
-	entry.rev, entry.eff, entry.stamps, entry.ok = rev, eff, stamps, true
-	return eff, nil
-}
-
-// effectiveSlot memoizes the decoded bundle under the current pointer plus
-// per-document size/mtime stamps. Published revisions are immutable by
-// design, so a same-revision hit is byte-identical to a fresh load; any
-// in-place corruption that changes a document's size or mtime misses the
-// cache and re-validates. The accepted edge: a corruption that preserves
-// size and mtime on a coarse-grained filesystem clock stays cached, which
-// published-bundle integrity checks already exclude.
-type effectiveSlot struct {
-	mu     sync.Mutex
-	ok     bool
-	rev    string
-	eff    Effective
-	stamps [6]fileStamp
-}
-
-type fileStamp struct {
-	size  int64
-	mtime int64
-}
-
-var effectiveSlots sync.Map // genDir -> *effectiveSlot
-
-func revisionStamps(genDir, rev string) ([6]fileStamp, error) {
-	var stamps [6]fileStamp
-	revDir := filepath.Join(genDir, "passports", rev)
-	for i, name := range Names {
-		info, err := os.Stat(filepath.Join(revDir, name+".yaml"))
-		if err != nil {
-			return stamps, err
-		}
-		stamps[i] = fileStamp{size: info.Size(), mtime: info.ModTime().UnixNano()}
-	}
-	return stamps, nil
-}
-
-// LoadRevision reads a staged immutable bundle before its activation. Only
-// the publisher may use it; ordinary consumers use LoadEffective.
-func LoadRevision(spaceDir, revisionID string) (Effective, error) {
-	if !filepath.IsLocal(revisionID) || revisionID == "pending" {
-		return Effective{}, fmt.Errorf("load revision: invalid id")
-	}
-	return loadRevisionGenerated(filepath.Join(spaceDir, "generated"), revisionID)
-}
-
-func loadRevisionGenerated(genDir, rev string) (Effective, error) {
-	var eff Effective
-	revDir := filepath.Join(genDir, "passports", rev)
-	catalogs, space, environment := "", "", ""
-	for _, name := range Names {
-		b, err := os.ReadFile(filepath.Join(revDir, name+".yaml")) // #nosec G304 -- revision dir is published authority
-		if err != nil {
-			return eff, fmt.Errorf("load effective %s: %w", name, err)
-		}
-		doc, err := Decode(name, b)
-		if err != nil {
-			return eff, err
-		}
-		h := docHeader(doc)
-		if h.Metadata.Revision != rev {
-			return eff, fmt.Errorf("load effective: %s carries %s, current is %s", name, h.Metadata.Revision, rev)
-		}
-		if name == Names[0] {
-			space, environment = h.Metadata.Space, h.Metadata.Environment
-		} else if h.Metadata.Space != space || h.Metadata.Environment != environment {
-			return eff, fmt.Errorf("load effective: %s belongs to a different space or environment", name)
-		}
-		if catalogs == "" {
-			catalogs = h.Metadata.Catalogs
-		} else if h.Metadata.Catalogs != catalogs {
-			return eff, fmt.Errorf("load effective: %s pins catalogs %q, siblings pin %q", name, h.Metadata.Catalogs, catalogs)
-		}
-		eff.Header = h
-		switch d := doc.(type) {
-		case *StackDoc:
-			eff.Stack = d.Stack
-		case *ConfigDoc:
-			eff.Config = d.Config
-		case *ModelsDoc:
-			eff.Models = d.Models
-		case *WorkspaceDoc:
-			eff.Workspace = d.Workspace
-		case *ToolsDoc:
-			eff.Tools = d.Tools
-		case *GrantsDoc:
-			eff.Grants = d.Grants
-		}
-	}
-	return eff, nil
-}
-
 // Assemble decodes one stored six-document policy bundle — the spawn
-// service's effective_specs row — into the same typed effective view the
-// published file tree loads. The bundle's JSON documents carry the full
-// envelope, so Decode's strict checks apply unchanged; the same
-// cross-document revision/space/environment/catalogs fence the file path
-// enforces applies here too.
+// service's effective_specs row — into the typed effective view. The
+// bundle's JSON documents carry the full envelope, so Decode's strict
+// checks apply unchanged; the same cross-document
+// revision/space/environment/catalogs fence the old file path enforced
+// applies here too.
 func Assemble(docs map[string]json.RawMessage) (Effective, error) {
 	var eff Effective
 	rev, space, environment, catalogs := "", "", "", ""
@@ -247,8 +85,22 @@ func Assemble(docs map[string]json.RawMessage) (Effective, error) {
 	return eff, nil
 }
 
-// apiVersionV2 is the envelope every v2 passport carries. Compile switches
-// to it when the envelope emission lands (S0.4); Decode already demands it.
+// PromptPointer renders the short per-turn inventory line R9.1 injects: the
+// revision id, the bounded core tool names and the extended count, plus the
+// pinned platform pointer. It never embeds catalog bodies — tool_search keeps
+// discovery lazy inside the turn.
+func (e Effective) PromptPointer() string {
+	names := make([]string, 0, len(e.Tools.Core))
+	for k := range e.Tools.Core {
+		if k != "platform" && k != "discovery" {
+			names = append(names, k)
+		}
+	}
+	slices.Sort(names)
+	return fmt.Sprintf("revision=%s core=%s extended=+%d platform=tool_search+tool_call\n",
+		e.Header.Metadata.Revision, strings.Join(names, ","), len(e.Tools.Extended))
+}
+
 // APIVersionV2 is the envelope every v2 passport carries.
 const APIVersionV2 = "six-passport/v2"
 
@@ -294,7 +146,7 @@ type ServiceSpec struct {
 
 // config.yaml — runtime, supervision, ports, channels, memory.
 type Config struct {
-	Runtime     Runtime            `yaml:"runtime"`
+	Runtime     RuntimeConfig      `yaml:"runtime"`
 	Supervision Supervision        `yaml:"supervision"`
 	Ports       map[string]int     `yaml:"ports,omitempty"`
 	Channels    map[string]Channel `yaml:"channels,omitempty"`
@@ -303,12 +155,21 @@ type Config struct {
 	Hosting     *Hosting           `yaml:"hosting,omitempty"`
 	// ImageGen is the image-generation provider grant the retired
 	// settings.yaml image_gen section carried (provider/model/delivery).
-	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
+	ImageGen ImageGen `yaml:"image_gen,omitempty"`
 	// IAM is the optional SSO identity contract (ADR-0100): an external
 	// OIDC provider, or the bundled identity-hub sidecar pair
 	// (stack.yaml services identity-hub + hub-postgres, mode shared).
 	// Absent keeps the deployment in channel-mapped local mode.
 	IAM *IAM `yaml:"iam,omitempty"`
+}
+
+// ImageGen is the image-generation provider/model/delivery triple the config
+// passport carries. It duplicates media.ImageGen's wire shape so the contract
+// package stays free of the media stack's codec dependencies.
+type ImageGen struct {
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
+	Delivery string `yaml:"delivery,omitempty"`
 }
 
 // IAM carries the SSO provider selection. external points the shared
@@ -355,7 +216,9 @@ type Hosting struct {
 	Runtime string   `yaml:"runtime,omitempty"`
 }
 
-type Runtime struct {
+// RuntimeConfig is the config.yaml runtime: section; named RuntimeConfig so
+// the type shares this package with the spawn Runtime DTO.
+type RuntimeConfig struct {
 	Timezone    string           `yaml:"timezone,omitempty"`
 	Locale      string           `yaml:"locale,omitempty"`
 	Context     RuntimeContext   `yaml:"context,omitempty"`
@@ -641,4 +504,31 @@ func Decode(name string, b []byte) (any, error) {
 			name, h.APIVersion, h.Kind, h.Metadata.Revision)
 	}
 	return doc, nil
+}
+
+// EncodeDocuments re-encodes a typed effective bundle into its six YAML
+// envelopes — the byte form Revision.Docs and the /config view carry. Each
+// document's kind is its own; the shared metadata block is identical across
+// the bundle, exactly the invariant Assemble enforces on decode.
+func EncodeDocuments(eff Effective) (map[string][]byte, error) {
+	header := func(kind string) Header {
+		return Header{APIVersion: APIVersionV2, Kind: kind, Metadata: eff.Header.Metadata}
+	}
+	docs := map[string]any{
+		"stack":     StackDoc{Header: header("stack"), Stack: eff.Stack},
+		"config":    ConfigDoc{Header: header("config"), Config: eff.Config},
+		"models":    ModelsDoc{Header: header("models"), Models: eff.Models},
+		"workspace": WorkspaceDoc{Header: header("workspace"), Workspace: eff.Workspace},
+		"tools":     ToolsDoc{Header: header("tools"), Tools: eff.Tools},
+		"grants":    GrantsDoc{Header: header("grants"), Grants: eff.Grants},
+	}
+	out := map[string][]byte{}
+	for name, doc := range docs {
+		body, err := yaml.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", name, err)
+		}
+		out[name] = body
+	}
+	return out, nil
 }

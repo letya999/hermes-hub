@@ -10,11 +10,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -52,7 +53,7 @@ func (m *Manager) runPolicy(ctx context.Context, binding Binding) (string, strin
 	if err != nil || revision != binding.IdentityRevision || policy.PassportDigest != base {
 		return "", "", contract.ErrConflict
 	}
-	if err := passportview.VerifyPolicyProjection(binding.ContextRoot, policy); err != nil {
+	if err := m.verifyPolicyDigest(ctx, binding.ContextRoot, policy); err != nil {
 		return "", "", err
 	}
 	return signed.Digest, base, nil
@@ -125,6 +126,29 @@ func (m *Manager) deliverRunAuthorization(ctx context.Context, event hubruntime.
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		return contract.ErrUnavailable
+	}
+	return nil
+}
+
+// verifyPolicyDigest is the contract-side attestation VerifyPolicyProjection
+// performed against files (S7d): the space's durable effective digest must
+// equal the signed policy digest, and the revision inside its documents must
+// be the signed passport revision — the store is the projection authority.
+func (m *Manager) verifyPolicyDigest(ctx context.Context, contextRoot string, policy contract.PolicyBundle) error {
+	if m.cfg.Spawn == nil {
+		return contract.ErrForbidden
+	}
+	space := filepath.Base(filepath.Clean(contextRoot))
+	if !validID(space) {
+		return contract.ErrForbidden
+	}
+	spec, err := m.cfg.Spawn.Effective(ctx, spawnv1.Tenant{Org: "local", Owner: space}, space)
+	if err != nil || spec.Digest != policy.PassportDigest {
+		return contract.ErrForbidden
+	}
+	eff, err := spawnv1.Assemble(spec.Documents)
+	if err != nil || eff.Header.Metadata.Revision != policy.PassportRevision {
+		return contract.ErrForbidden
 	}
 	return nil
 }

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -83,8 +83,8 @@ func (m *Manager) publishIdentityPassports(w http.ResponseWriter, r *http.Reques
 		if _, _, err := bundle.Canonical(); err != nil {
 			return err
 		}
-		for _, name := range passportview.Names {
-			if _, err := passportview.Decode(name, bundle.Passports[name]); err != nil {
+		for _, name := range spawnv1.Names {
+			if _, err := spawnv1.Decode(name, bundle.Passports[name]); err != nil {
 				return contract.ErrInvalid
 			}
 		}

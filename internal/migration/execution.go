@@ -1,9 +1,11 @@
 package migration
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
@@ -147,13 +149,13 @@ func AuditExecutionSpool(spool, user string) (ExecutionReport, error) {
 }
 
 // SelectExecution writes only host routing state; no queued job, delivery or home moves.
-func SelectExecution(dir string, selection stack.ExecutionSelection, audit ExecutionReport, apply bool) (ExecutionReport, error) {
+func SelectExecution(ctx context.Context, client spawnv1.EffectiveReader, dir string, selection stack.ExecutionSelection, audit ExecutionReport, apply bool) (ExecutionReport, error) {
 	audit.Mode, audit.Selection = "dry-run", selection
 	audit.Rollback = "Select the previous execution mode, render and start only this context; retain the same home and spool."
 	if err := selection.Validate(); err != nil {
 		return audit, err
 	}
-	settings, err := stack.ReadEffective(dir, selection.Environment)
+	settings, err := stack.ReadEffective(ctx, client, dir, selection.Environment)
 	if err != nil {
 		return audit, err
 	}

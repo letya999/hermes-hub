@@ -18,7 +18,7 @@ func TestGroupCannotBindAnotherPrincipalToItsHome(t *testing.T) {
 	env := identity.TelegramEnvelope("bob", 11, "alice", "policy-1")
 	env.ContextID = "alice"
 	r := hubruntime.ExecuteRequest{Envelope: env, UserID: "alice", ActorID: "bob", ScopeID: "group:alice", OrganizationID: "personal"}
-	if _, err := m.bindingFor(r); err == nil {
+	if _, err := m.bindingFor(context.Background(), r); err == nil {
 		t.Fatal("bob acquired alice's group runtime and data roots")
 	}
 }

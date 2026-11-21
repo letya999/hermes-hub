@@ -125,7 +125,7 @@ func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
 // claimManagedLane admits up to five conversations to one managed Hermes runtime.
 // Each job keeps its own run identity; prior lane modes remain routable on replay.
 func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.ExecuteRequest, binding Binding) (string, error) {
-	if _, err := stack.ReadEffective(binding.ContextRoot, m.environment()); err != nil {
+	if _, err := stack.ReadEffective(ctx, m.cfg.Spawn, binding.ContextRoot, m.environment()); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
@@ -360,13 +360,13 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	binding, err := m.bindingFor(request)
+	binding, err := m.bindingFor(r.Context(), request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
 	if request.Trigger == "cron" {
-		if err := m.authorizeCurrentPolicy(request); err != nil {
+		if err := m.authorizeCurrentPolicy(r.Context(), request); err != nil {
 			writeJSON(w, 409, map[string]string{"error": "scheduled job current policy rejected"})
 			return
 		}

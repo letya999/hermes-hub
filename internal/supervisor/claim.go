@@ -26,6 +26,11 @@ type spawnClaimer interface {
 	RenewLease(context.Context, string, spawnv1.LeaseRequest) (spawnv1.Runtime, error)
 	ReleaseLease(context.Context, string, spawnv1.LeaseRequest) error
 	DrainRuntimes(context.Context, string, spawnv1.DrainRuntimesRequest) (int, error)
+	PolicySlice(context.Context, spawnv1.Tenant, string, string, string) (spawnv1.PolicySlice, error)
+	// Effective is the passport read slice (S7d): admission checks resolve
+	// the space's active bundle and digest through the contract, never the
+	// deleted file mirror.
+	Effective(context.Context, spawnv1.Tenant, string) (spawnv1.EffectiveSpec, error)
 }
 
 // claimAgent is the claim's agent key: one runtime row per

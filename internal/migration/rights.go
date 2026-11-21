@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -45,7 +45,11 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
-	settings, err := stack.ReadEffectiveRevision(dir, environment, rev.ID)
+	eff, err := rev.Effective()
+	if err != nil {
+		return fmt.Errorf("rights derivation: %w", err)
+	}
+	settings, err := stack.SettingsForEffective(dir, eff, environment)
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
@@ -152,12 +156,12 @@ func SetSpaceProfileActive(dir, user, environment, profileID string, active bool
 // publisher moves the active pointer. A missing binding or tool is an error,
 // never a reason to retain an old profile selection.
 func ValidateSelectedConnectors(dir string, toolsBody []byte, docs catalog.Docs) ([]string, error) {
-	var authored passportview.Tools
+	var authored spawnv1.Tools
 	if err := yaml.Unmarshal(toolsBody, &authored); err != nil {
 		return nil, err
 	}
 	selected := false
-	for _, entries := range []map[string]passportview.Toolset{authored.Core, authored.Extended} {
+	for _, entries := range []map[string]spawnv1.Toolset{authored.Core, authored.Extended} {
 		for _, entry := range entries {
 			selected = selected || entry.Via == "mcp" || strings.HasPrefix(entry.Via, "mcp:")
 		}
@@ -185,7 +189,7 @@ func ValidateSelectedConnectors(dir string, toolsBody []byte, docs catalog.Docs)
 // ambiguous bindings, unsupported transport, unknown selected tools) remain
 // hard errors. The deferred names are returned for operator warnings.
 func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string) ([]api.CapabilitySelection, []string, []api.ProfileToolset, []string, error) {
-	var authored passportview.Tools
+	var authored spawnv1.Tools
 	if err := yaml.Unmarshal(body, &authored); err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -194,7 +198,7 @@ func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs
 	var toolsets []api.ProfileToolset
 	var deferred []string
 	var bindings []api.ToolBinding
-	for layer, entries := range []map[string]passportview.Toolset{authored.Core, authored.Extended} {
+	for layer, entries := range []map[string]spawnv1.Toolset{authored.Core, authored.Extended} {
 		names := make([]string, 0, len(entries))
 		for name := range entries {
 			names = append(names, name)
@@ -326,7 +330,7 @@ func selectedHubDefinition(store *toolhub.Store, profileID string) (*api.ToolDef
 // transition that also derives the capability rules the projection needs.
 // A rebuilt binary therefore never smuggles an upgrade into durable state.
 func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string) ([]api.CapabilitySelection, []string, []api.ProfileToolset, error) {
-	var authored passportview.Tools
+	var authored spawnv1.Tools
 	if err := yaml.Unmarshal(body, &authored); err != nil {
 		return nil, nil, nil, err
 	}
@@ -358,7 +362,7 @@ func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs, prof
 	coreSet := map[string]bool{}
 	var toolsets []api.ProfileToolset
 	for _, layer := range []struct {
-		entries map[string]passportview.Toolset
+		entries map[string]spawnv1.Toolset
 		core    bool
 	}{{authored.Core, true}, {authored.Extended, false}} {
 		for name, entry := range layer.entries {
@@ -447,8 +451,8 @@ func selectedHubTools(store *toolhub.Store, body []byte, docs catalog.Docs, prof
 	return out, core, toolsets, nil
 }
 
-func selectedPathScopes(parent, child *passportview.Scope) ([]string, error) {
-	paths := func(scope *passportview.Scope) ([]string, error) {
+func selectedPathScopes(parent, child *spawnv1.Scope) ([]string, error) {
+	paths := func(scope *spawnv1.Scope) ([]string, error) {
 		if scope == nil {
 			return nil, nil
 		}

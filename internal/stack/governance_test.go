@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -92,7 +93,7 @@ func TestGovernanceUserMCPDeniedByDefault(t *testing.T) {
 	docs := managedDocs("me")
 	docs["tools"] += "extended:\n  user_mcp: {via: mcp-raw}\nconnectors:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n"
 	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
-	_, err := ReadEffective(d, "prod")
+	_, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err == nil || !strings.Contains(err.Error(), "user_mcp") {
 		t.Fatalf("user-declared MCP admitted without a grant: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestGovernanceUserMCPGrantUnlocks(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "me", api.SectionUserMCP, time.Hour)
 	})
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatalf("granted user_mcp still denied: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-files", Scope: api.ScopeGlobal, Section: "hub:files", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	_, err := ReadEffective(d, "prod")
+	_, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err == nil || !strings.Contains(err.Error(), "hub:files") {
 		t.Fatalf("denied explicit tools entry admitted: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-web", Scope: api.ScopeGlobal, Section: "native:web", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := ReadEffective(d, "prod"); err == nil || !strings.Contains(err.Error(), "native:web") {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err == nil || !strings.Contains(err.Error(), "native:web") {
 		t.Fatalf("denied native toolset admitted: %v", err)
 	}
 }
@@ -157,7 +158,7 @@ func TestGovernanceAssignmentsSection(t *testing.T) {
 	docs := managedDocs("me")
 	docs["tools"] += "extended:\n  assignments: {via: toolhub}\n"
 	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
-	if _, err := ReadEffective(d, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err != nil {
 		t.Fatalf("assignments: toolhub must be a known section: %v", err)
 	}
 }
@@ -173,7 +174,7 @@ func TestGovernanceSkillsSections(t *testing.T) {
 	docs := managedDocs("me")
 	docs["tools"] += "extended:\n  skills: {via: toolhub}\n"
 	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatalf("skills wishes must resolve to known sections: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestGovernanceMigrationPreservesSelection(t *testing.T) {
 	docs := managedDocs("me")
 	docs["tools"] += "extended:\n  terminal: {via: native}\n"
 	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
-	if _, err := ReadEffective(d, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err != nil {
 		t.Fatalf("migration seed read: %v", err)
 	}
 	doc, err := api.LoadGovernance(filepath.Join(d, "runtime", "toolhub", "governance.json"))
@@ -231,7 +232,7 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-cronjob", Scope: api.ScopeGlobal, Section: "native:cronjob", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	s, err := ReadEffective(d, "prod")
+	s, err := ReadEffective(context.Background(), testReader(d), d, "prod")
 	if err != nil {
 		t.Fatalf("unwished native section deny must not fail the read: %v", err)
 	}
@@ -263,10 +264,10 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 			api.PolicyRule{RuleID: "cap-media", Scope: api.ScopeGlobal, Section: "hub:media", Effect: api.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
 			api.PolicyRule{RuleID: "deny-terminal-family", Scope: api.ScopeGlobal, Section: "hub:terminal", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := ReadEffective(d, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err != nil {
 		t.Fatalf("media cap: %v", err)
 	}
-	if err := Render(d, root); err != nil {
+	if err := Render(context.Background(), testReader(d), d, root); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(d, "generated", "tool-policy.prod.json"))
@@ -325,14 +326,14 @@ func TestGovernanceOrgScopedCatalog(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp", Scope: api.ScopeOrg, Subject: "acme", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := ReadEffective(d, "prod"); err == nil || !strings.Contains(err.Error(), "org_mcp") {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err == nil || !strings.Contains(err.Error(), "org_mcp") {
 		t.Fatalf("org catalog deny ignored: %v", err)
 	}
 	// The same deny for a different organization does not touch this space.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp-other", Scope: api.ScopeOrg, Subject: "otherorg", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := ReadEffective(d, "prod"); err != nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err != nil {
 		t.Fatalf("foreign-org deny applied: %v", err)
 	}
 }
@@ -350,7 +351,7 @@ func TestGovernanceCorruptDocFailsClosed(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadEffective(d, "prod"); err == nil {
+	if _, err := ReadEffective(context.Background(), testReader(d), d, "prod"); err == nil {
 		t.Fatal("corrupt governance document read permissively")
 	}
 }

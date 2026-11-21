@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestGroupSpaceCarriesScopeKindToRuntime(t *testing.T) {
 	docs := managedDocs("team")
 	docs["stack"] = strings.Replace(docs["stack"], "identity: {user: team", "identity: {user: team, kind: group", 1)
 	publishManagedDocs(t, dir, "team", "r-0123456789abcdef", docs)
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

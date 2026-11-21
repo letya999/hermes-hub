@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -75,7 +76,7 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 		if request.PrincipalID != "" && request.PrincipalID != auth.PrincipalID {
 			decision = map[string]any{"allow": false, "reason": "foreign principal"}
 		} else {
-			if _, err := g.requireActivated(auth); err != nil {
+			if _, err := g.requireActivated(r.Context(), auth); err != nil {
 				http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
 				return
 			}
@@ -84,7 +85,7 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "decision unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			if _, err := g.requireActivated(auth); err != nil {
+			if _, err := g.requireActivated(r.Context(), auth); err != nil {
 				http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
 				return
 			}
@@ -98,7 +99,7 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) requireAssertedActivation(principal, environment string) error {
-	if g.PassportRoot == "" {
+	if g.Spawn == nil {
 		return nil
 	}
 	if err := g.Store.Reload(); err != nil {
@@ -117,5 +118,5 @@ func (g *Gateway) requireAssertedActivation(principal, environment string) error
 	if revision == "" {
 		return fmt.Errorf("%w: passport activation unavailable", api.ErrUnauthorized)
 	}
-	return g.checkActivePassport(identity.Envelope{PrincipalID: principal, Environment: environment}, revision)
+	return g.checkActivePassport(context.Background(), identity.Envelope{PrincipalID: principal, Environment: environment}, revision)
 }

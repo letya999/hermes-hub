@@ -131,7 +131,7 @@ func (g *Gateway) serveKnowledge(w http.ResponseWriter, r *http.Request) {
 		fail("page.knowledge-bad", http.StatusBadRequest)
 		return
 	}
-	if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
+	if err := memoryEnrollment(r.Context(), g.Spawn, auth.PrincipalID, auth.Environment); err != nil {
 		fail("page.knowledge-forbidden", http.StatusForbidden)
 		return
 	}
@@ -139,7 +139,7 @@ func (g *Gateway) serveKnowledge(w http.ResponseWriter, r *http.Request) {
 		fail("page.knowledge-unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	activation, err := g.requireActivated(auth)
+	activation, err := g.requireActivated(r.Context(), auth)
 	if err != nil {
 		fail("page.knowledge-forbidden", http.StatusForbidden)
 		return
@@ -152,7 +152,7 @@ func (g *Gateway) serveKnowledge(w http.ResponseWriter, r *http.Request) {
 	var result map[string]any
 	err = u.Locked(func(root string) error {
 		return g.Store.AuthorizeProjectedCall(auth, "memory_open", nil, func(projected api.ProjectedTool, effective api.EffectiveBinding) error {
-			if effective.CapabilityProfileRevision != activation.profileRevision || g.checkActivePassport(auth, activation.revision) != nil || memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment) != nil {
+			if effective.CapabilityProfileRevision != activation.profileRevision || g.checkActivePassport(r.Context(), auth, activation.revision) != nil || memoryEnrollment(r.Context(), g.Spawn, auth.PrincipalID, auth.Environment) != nil {
 				return api.ErrUnauthorized
 			}
 			fields := mergeAudit(auditFields(auth, projected, effective, "admit"), api.CallCorrelation{ToolCallID: api.NewToolCallID()})

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func TestPreparedComposeKeepsCurrentPrincipalVaultMount(t *testing.T) {
@@ -21,7 +21,8 @@ func TestPreparedComposeKeepsCurrentPrincipalVaultMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabled := true
-	s := Settings{Schema: 3, User: "infra", Environment: "dev", PassportRevision: "r-candidate", PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
+	s := Settings{Schema: 3, User: "infra", Environment: "dev", PassportRevision: "r-candidate", PassportConfig: &spawnv1.Config{Memory: spawnv1.Memory{Enabled: &enabled}}}
+	s.siblingMemory = map[string]bool{"infra": true}
 	if got := RuntimeService(s, dir, dir)["environment"].(M)["HUB_PASSPORT_REVISION"]; got != s.PassportRevision {
 		t.Fatalf("runtime revision pin = %v", got)
 	}

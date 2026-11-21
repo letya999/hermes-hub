@@ -123,11 +123,19 @@ func runProvision(ctx context.Context, args []string) error {
 
 	// Stage 7: enroll the sibling runtime/model-relay tokens with the infra
 	// owner so the shared control plane accepts the new principal.
-	if err := refreshSharedRuntimeTokens(abs, *env); err != nil {
+	spawnClient, _, clientErr := spawnClientFor(abs)
+	if clientErr != nil {
+		return clientErr
+	}
+	if err := refreshSharedRuntimeTokens(ctx, spawnClient, abs, *env); err != nil {
 		return err
 	}
 	if infra := stack.InfraSpaceDir(abs); infra != abs {
-		if err := stack.EnrollSiblingModelRelayAdmins(infra, *env); err != nil {
+		client, _, err := spawnClientFor(infra)
+		if err != nil {
+			return err
+		}
+		if err := stack.EnrollSiblingModelRelayAdmins(ctx, client, infra, *env); err != nil {
 			return err
 		}
 	}
@@ -248,7 +256,7 @@ func provisionPreflight(dir, user, env string) []string {
 	if infra == dir {
 		findings = append(findings, "no infra-owner sibling found; provision requires an existing shared control plane")
 	} else {
-		settings, err := stack.ReadEffective(infra, env)
+		settings, err := readEffectiveSettings(context.Background(), infra, env)
 		if err != nil {
 			findings = append(findings, fmt.Sprintf("infra space %s: %v", filepath.Base(infra), err))
 		} else if !settings.RendersInfra() {
@@ -547,7 +555,7 @@ func provisionBrokerVolumes(ctx context.Context, dir, env string) error {
 	if infra == dir {
 		return nil
 	}
-	settings, err := stack.ReadEffective(infra, env)
+	settings, err := readEffectiveSettings(ctx, infra, env)
 	if err != nil {
 		return fmt.Errorf("infra space: %w", err)
 	}
@@ -573,7 +581,7 @@ func provisionBrokerVolumes(ctx context.Context, dir, env string) error {
 // provisionComposeUp starts the space's compose on existing images — the
 // fast path `up --no-build` takes, without the build stage.
 func provisionComposeUp(ctx context.Context, dir, root, env string) error {
-	if err := renderEnvironment(dir, root, env); err != nil {
+	if err := renderEnvironment(ctx, dir, root, env); err != nil {
 		return err
 	}
 	abs, err := filepath.Abs(dir)

@@ -16,7 +16,7 @@ func TestNormalizeRejectsMissingRuntimeEnvFile(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "managed-runtime.prod.env")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.normalize(binding(root)); err == nil {
+	if _, err := m.normalize(context.Background(), binding(root)); err == nil {
 		t.Fatal("missing runtime env file accepted")
 	}
 }
@@ -167,7 +167,7 @@ func TestRuntimeInputSymlinkAndDirectoryAreRejected(t *testing.T) {
 			if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.normalize(binding(root)); err == nil {
+			if _, err := m.normalize(context.Background(), binding(root)); err == nil {
 				t.Fatal("nonregular runtime input accepted")
 			}
 		})

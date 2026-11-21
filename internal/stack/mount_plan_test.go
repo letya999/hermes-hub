@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ func TestComposeRuntimeMountsFollowWorkspacePassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: alice\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestComposeManagedRuntimeSkipsNestedConfigMounts(t *testing.T) {
 		"schema: 3\nuser: alice\ncapability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestMountPlanMemoryVaultStaysOutsideRuntime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: alice\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEffective(dir, "prod")
+	s, err := ReadEffective(context.Background(), testReader(dir), dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestRenderMaterializesLayoutWithoutTouchingProjects(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+	if err := RenderEnvironment(context.Background(), testReader(dir), dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
 	for _, base := range []string{dir, filepath.Join(dir, "managed", "prod")} {

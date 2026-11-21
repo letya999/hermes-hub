@@ -108,12 +108,10 @@ type Revisions struct {
 	// revision moves and before the effective row lands — the crash
 	// seam for TestApplyCrashLeavesPreviousActive.
 	BeforeCommit func() error
-	// SpacesRoot is the operator's spaces root the transitional v0
-	// mirror republishes under after every committed activation; empty
-	// disables the mirror (unit tests, no mount). BeforeMirror is the
-	// mirror-failure seam for TestMirrorFailureNeverUnactivates.
-	SpacesRoot   string
-	BeforeMirror func() error
+	// SpacesRoot is the operator's spaces root the settings edit path
+	// and the claim-time spec builder write under; empty disables those
+	// filesystem touches (unit tests, no mount).
+	SpacesRoot string
 }
 
 func (r *Revisions) now() time.Time {
@@ -346,13 +344,11 @@ func (r *Revisions) Validate(ctx context.Context, t store.Tenant, spaceID, id st
 // only a pre-check against the newest known documents.
 // When base is non-nil it is the digest CAS anchor: the space's current
 // effective digest must equal *base or nothing moves (apply and rollback
-// pass it; importers pass nil). After commit, the transitional v0 mirror
-// republishes the space's generated tree — the pending row the
-// transaction left makes the sweeper retry a failed or lost publish.
+// pass it; importers pass nil). The effective_digest pointer lands in
+// the same transaction as the revision moves — Decision 11 makes the
+// store the only read path; the v0 file mirror is gone (S7d).
 func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string, ids []string, base *string) ([]Revision, error) {
 	var out []Revision
-	var mirrorRev passport.Revision
-	var mirrorDigest string
 	err := r.Store.Tx(ctx, func(tx *store.Tx) error {
 		q := tx.Scoped(t)
 		if len(ids) == 0 {
@@ -423,11 +419,10 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 		if err != nil {
 			return fmt.Errorf("%w: catalog: %v", httpapi.ErrUnavailable, err)
 		}
-		compiled, attr, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
+		_, attr, canonical, digest, compileErr := compilePolicy(spaceID, env, byLayer, cat, time.Unix(latest, 0), reserved)
 		if compileErr != nil {
 			return fmt.Errorf("%w: %s: %v", store.ErrConflict, locale.T(locale.Default, "spawn.revision-rejected"), compileErr)
 		}
-		mirrorRev, mirrorDigest = compiled, digest
 		now := r.now()
 		moved := map[string]string{}
 		for layer, rev := range targets {
@@ -510,17 +505,6 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 				return err
 			}
 		}
-		if r.SpacesRoot != "" {
-			// The v0 mirror publish is a durable post-commit effect: the
-			// pending row commits with the activation so a crash between
-			// here and the file write can never lose it (S7b).
-			if _, err := q.Exec("DELETE FROM mirror_pending WHERE {tenant} AND id = ?", spaceID); err != nil {
-				return err
-			}
-			if err := q.Insert("mirror_pending", []string{"id", "state", "deadline"}, spaceID, "pending", now.Unix()); err != nil {
-				return err
-			}
-		}
 		out = make([]Revision, 0, len(targets))
 		for _, id := range ids {
 			got, err := loadRevision(q, spaceID, id)
@@ -533,11 +517,6 @@ func (r *Revisions) Activate(ctx context.Context, t store.Tenant, spaceID string
 	})
 	if err != nil {
 		return nil, err
-	}
-	if mErr := r.mirror(context.WithoutCancel(ctx), t, spaceID, mirrorRev, mirrorDigest); mErr != nil {
-		// Mirror failure never un-activates: the pending row makes the
-		// sweeper retry; the DB is the truth, files are a view.
-		r.mirrorFailed(spaceID, mErr)
 	}
 	return out, nil
 }
@@ -846,7 +825,11 @@ func reservedPorts(q store.Scoped, spaceID string) (map[int]string, error) {
 	return out, rows.Err()
 }
 
-// pruneSuperseded keeps the newest RevisionKeepSlack superseded rows of
+// revisionKeepSlack bounds retained superseded history per (space, layer)
+// — the retention rule the deleted file-tree pruner shared.
+const revisionKeepSlack = 3
+
+// pruneSuperseded keeps the newest revisionKeepSlack superseded rows of
 // the (space, layer); older ones move to the final pruned state through
 // the explicit prune edge.
 func pruneSuperseded(q store.Scoped, spaceID, layer string, now time.Time) error {
@@ -869,7 +852,7 @@ func pruneSuperseded(q store.Scoped, spaceID, layer string, now time.Time) error
 	}
 	rows.Close()
 	for i, id := range ids {
-		if i < passport.RevisionKeepSlack {
+		if i < revisionKeepSlack {
 			continue
 		}
 		if err := fsm.Transition(q, PassportRevisionMachine, id, "prune", now); err != nil {

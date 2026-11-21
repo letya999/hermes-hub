@@ -269,7 +269,7 @@ func runMemory(ctx context.Context, args []string) error {
 		// Leaf lifecycle (SPEC-0085 R7.5): knobs ride the space settings —
 		// dry-run prints the predicted report, --apply folds/expires.
 		vaultDir := filepath.Join(abs, "vault")
-		s, err := stack.ReadEffective(abs, *env)
+		s, err := readEffectiveSettings(ctx, abs, *env)
 		if err != nil {
 			return err
 		}
@@ -295,7 +295,7 @@ func runMemory(ctx context.Context, args []string) error {
 		// streams into the rendered provider with stable ids — resumable
 		// via the hub-owned cursor, idempotent on retry.
 		vaultDir := filepath.Join(abs, "vault")
-		s, err := stack.ReadEffective(abs, *env)
+		s, err := readEffectiveSettings(ctx, abs, *env)
 		if err != nil {
 			return err
 		}
@@ -388,7 +388,7 @@ func runSkill(ctx context.Context, args []string) error {
 	// way /v1/skill-apply does; a failed rebuild warns, it does not undo
 	// the applied store change.
 	refresh := func() {
-		s, err := stack.ReadEffective(abs, *env)
+		s, err := readEffectiveSettings(ctx, abs, *env)
 		if err != nil {
 			return
 		}
@@ -714,7 +714,7 @@ func runSkill(ctx context.Context, args []string) error {
 		if *id == "" {
 			return fmt.Errorf("skill promote requires --id")
 		}
-		s, err := stack.ReadEffective(abs, "prod")
+		s, err := readEffectiveSettings(ctx, abs, "prod")
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,7 +37,7 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secondary, "media.auth"), []byte("HUB_MEDIA_AUTH=unused-local\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := runtimeMediaAuth(secondary, s)
+	auth, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) })
 	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
 		t.Fatal("secondary did not use shared media auth", err)
 	}
@@ -48,7 +49,7 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=rotated-synthetic\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	auth, err = runtimeMediaAuth(secondary, s)
+	auth, err = runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) })
 	if err != nil || auth["HUB_MEDIA_AUTH"] != "rotated-synthetic" {
 		t.Fatal("rotation ignored", err)
 	}
@@ -61,7 +62,7 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	if err := saveSpace(t, otherDir, other); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+	if _, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) }); err == nil {
 		t.Fatal("ambiguous shared owner accepted")
 	}
 	if err := os.RemoveAll(filepath.Join(root, "other")); err != nil {
@@ -70,13 +71,13 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	if err := os.Remove(filepath.Join(owner, "media.auth")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+	if _, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) }); err == nil {
 		t.Fatal("missing shared auth fell back to local")
 	}
 	if err := os.Mkdir(filepath.Join(owner, "media.auth"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtimeMediaAuth(secondary, s); err == nil {
+	if _, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) }); err == nil {
 		t.Fatal("non-file shared auth accepted")
 	}
 }
@@ -100,7 +101,7 @@ func TestPerSpaceMediaUsesOwnAuthAndModelRelay(t *testing.T) {
 	s.User, s.Infra = "alice", &no
 	s.PassportServices = map[string]string{"hub-media": "per-space", "model-relay": "per-space", "hermes-runtime": "supervised"}
 	s.ImageGen = media.ImageGen{Provider: media.ProviderCLIProxy, Model: "gemini-3.1-flash-image"}
-	auth, err := runtimeMediaAuth(secondary, s)
+	auth, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) })
 	if err != nil || auth["HUB_MEDIA_AUTH"] != "private-media" {
 		t.Fatalf("per-space media used another owner: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestSharedMediaAuthReadsManagedOwnerRevision(t *testing.T) {
 	if err := saveSpace(t, secondary, s); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := runtimeMediaAuth(secondary, s)
+	auth, err := runtimeMediaAuth(secondary, s, func(d string) (Settings, error) { return ReadEffectiveSpace(context.Background(), testReader(d), d) })
 	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
 		t.Fatalf("secondary did not resolve the managed owner's shared auth: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, space, "alice", "r-0000000000000001")
-	settings, err := ReadEffective(space, "prod")
+	settings, err := ReadEffective(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +269,7 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(space, "secrets.prod.env"), []byte("OPENAI_API_KEY=openai-sample\nFAL_KEY=fal-sample-value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Render(space, repo); err != nil {
+	if err := Render(context.Background(), testReader(space), space, repo); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{"workspace/artifacts/documents", "workspace/artifacts/images"} {
@@ -292,7 +293,7 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err := saveSpace(t, space, settings); err != nil {
 		t.Fatal(err)
 	}
-	if err := Render(space, repo); err != nil {
+	if err := Render(context.Background(), testReader(space), space, repo); err != nil {
 		t.Fatal(err)
 	}
 	rendered, err = os.ReadFile(filepath.Join(space, "generated", "hermes.prod.yaml"))
@@ -309,11 +310,11 @@ func TestDocumentImageProfile(t *testing.T) {
 	}
 	// The compose probes below must read the just-published revision: the
 	// stack passport now declares hub-media and config carries the fal grant.
-	settings, err = ReadEffective(space, "prod")
+	settings, err = ReadEffective(context.Background(), testReader(space), space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Render(space, repo); err != nil {
+	if err := Render(context.Background(), testReader(space), space, repo); err != nil {
 		t.Fatal(err)
 	}
 	rendered, err = os.ReadFile(filepath.Join(space, "generated", "hermes.prod.yaml"))

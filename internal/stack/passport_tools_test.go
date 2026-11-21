@@ -3,15 +3,15 @@ package stack
 import (
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 // M31.9: the pinned platform family is not an operator toolset — it must
 // never become a workspace.yaml ToolEntry, same as the legacy discovery pin
 // it replaced.
 func TestPassportToolsSkipsPinnedPlatform(t *testing.T) {
-	tools := passportTools(passportview.Tools{
-		Core: map[string]passportview.Toolset{
+	tools := passportTools(spawnv1.Tools{
+		Core: map[string]spawnv1.Toolset{
 			"platform":  {Via: "toolhub"},
 			"discovery": {Via: "toolhub"}, // pre-r5 passports
 			"files":     {Via: "toolhub"},
@@ -26,7 +26,7 @@ func TestPassportToolsSkipsPinnedPlatform(t *testing.T) {
 }
 
 func TestPassportToolsNativeWebAndToolHubWebStable(t *testing.T) {
-	declared := passportview.Tools{Extended: map[string]passportview.Toolset{
+	declared := spawnv1.Tools{Extended: map[string]spawnv1.Toolset{
 		"native:web": {Via: "native"},
 		"web":        {Via: "toolhub"},
 	}}

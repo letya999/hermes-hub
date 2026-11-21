@@ -336,11 +336,11 @@ func TestFCSpawnEndToEnd(t *testing.T) {
 	writeManagedFixtures(t, root)
 	b := fcBackend(t, m, srv.URL)
 
-	bound, err := m.normalize(binding(root))
+	bound, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.ReadEffective(root, "prod")
+	settings, err := stack.ReadEffective(context.Background(), supTestReader{root}, root, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

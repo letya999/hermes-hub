@@ -1,9 +1,12 @@
 package stack
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 )
 
 func Config(s Settings) M {
@@ -21,4 +24,6 @@ func policyVersion(s Settings) string {
 	hash := sha256.Sum256(body)
 	return "policy-" + hex.EncodeToString(hash[:8])
 }
-func Render(dir, root string) error { return RenderEnvironment(dir, root, "prod") }
+func Render(ctx context.Context, client spawnv1.EffectiveReader, dir, root string) error {
+	return RenderEnvironment(ctx, client, dir, root, "prod")
+}

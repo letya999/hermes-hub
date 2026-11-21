@@ -1,13 +1,12 @@
 package stack
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // managedPassportSibling is the settings shape a managed, non-infra space
@@ -163,10 +162,7 @@ func TestApplyPassportCarriesServiceTopology(t *testing.T) {
 	}
 	infra := false
 	s := Settings{Infra: &infra}
-	effective, err := passportview.LoadEffective(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	effective := testLoadEffective(t, dir)
 	if err := s.applyEffective(effective); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +244,7 @@ func TestRenderEnvironmentFailsClosedOnTopologyDrift(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(view, "revision"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	err := RenderEnvironment(dir, dir, "dev")
+	err := RenderEnvironment(context.Background(), testReader(dir), dir, dir, "dev")
 	if err == nil || !strings.Contains(err.Error(), "no rendered container") {
 		t.Fatalf("expected topology drift error, got %v", err)
 	}
@@ -384,7 +380,7 @@ func TestSupervisedRuntimeSelectionFromStack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: dana\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadEnvironment(dir, "dev")
+	s, err := ReadEnvironment(context.Background(), testReader(dir), dir, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}

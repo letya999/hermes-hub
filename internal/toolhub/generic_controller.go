@@ -234,6 +234,16 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	return controller, nil
 }
 
+// spawnClientFromEnv is the package-wide contract wiring: HUB_SPAWN_URL +
+// HUB_SPAWN_TOKEN, nil when unset. The HTTP client carries no fixed
+// timeout — each call site supplies its own context deadline.
+func spawnClientFromEnv() spawnv1.Client {
+	if url := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); url != "" {
+		return spawnv1.NewHTTPClient(url, os.Getenv("HUB_SPAWN_TOKEN"), &http.Client{})
+	}
+	return nil
+}
+
 func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	definition := c.config.Definition
 	if c.config.DynamicDefinitions {

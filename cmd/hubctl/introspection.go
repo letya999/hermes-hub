@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -16,8 +17,8 @@ import (
 // runtimeIntrospectionGate is the hubctl PEP for operator introspection. It
 // records the authorization decision before Docker is touched: the audit
 // event carries scope and actor metadata, never argv, environment or output.
-func runtimeIntrospectionGate(dir, environment, action string) (stack.Settings, error) {
-	settings, readErr := stack.ReadEffective(dir, environment)
+func runtimeIntrospectionGate(ctx context.Context, dir, environment, action string) (stack.Settings, error) {
+	settings, readErr := readEffectiveSettings(ctx, dir, environment)
 	principal := filepath.Base(filepath.Clean(dir))
 	if settings.User != "" {
 		principal = settings.User

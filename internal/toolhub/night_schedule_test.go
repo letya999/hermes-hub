@@ -34,7 +34,7 @@ func TestNightScheduleRequiresActivatedPassport(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			e := &projectionEndpoint{gateway: &Gateway{Store: store, Tokens: map[string]identity.Envelope{"synthetic": auth}, PassportRoot: root}}
+			e := &projectionEndpoint{gateway: &Gateway{Store: store, Tokens: map[string]identity.Envelope{"synthetic": auth}, Spawn: dirTreeReader{root: root}}}
 			plan, err := e.NightSchedule(auth)
 			if tc.allow {
 				if err != nil || !plan.Enabled || plan.Revision != tc.revision {

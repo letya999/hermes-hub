@@ -15,14 +15,13 @@ import (
 	"strings"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/shared/locale"
-	"gopkg.in/yaml.v3"
 )
 
 type replayExportOpts struct {
@@ -113,7 +112,7 @@ func runReplayExport(out io.Writer, opts replayExportOpts) error {
 		bundle.Outcome = replayOutcome{Status: mapping.Status, Result: mapping.Result, RunID: mapping.RunID, SessionID: mapping.SessionID}
 	}
 	if opts.SpaceDir != "" {
-		digest, err := replaySpaceDigest(opts.SpaceDir)
+		digest, err := replaySpaceDigest(context.Background(), opts.SpaceDir)
 		if err != nil {
 			return err
 		}
@@ -327,95 +326,39 @@ func replayExecute(ctx context.Context, job commodel.Job, runtimeURL, auth strin
 	}, nil
 }
 
-// replaySpaceDigest hashes one complete published bundle, never drafts or retired files.
-func replaySpaceDigest(spaceDir string) (string, error) {
+// replaySpaceDigest hashes the space's activated effective bundle through
+// the spawn contract — the same canonical documents every consumer reads
+// (S7d), never drafts or retired files. The controller serves a complete,
+// envelope-checked bundle or nothing; a space with no activation reads as
+// invalid replay evidence.
+func replaySpaceDigest(ctx context.Context, spaceDir string) (string, error) {
 	denied := errors.New(locale.T(locale.LangOf(filepath.Join(spaceDir, "workspace")), "hubctl.replay-config-invalid"))
-	root, err := os.OpenRoot(spaceDir)
+	client, tenant, err := spawnClientFor(spaceDir)
 	if err != nil {
 		return "", denied
 	}
-	defer root.Close()
-	for _, dir := range []string{"generated", "generated/passports"} {
-		info, err := root.Lstat(dir)
-		if err != nil || !info.IsDir() {
-			return "", denied
-		}
-	}
-	current := "generated/passports/current"
-	info, err := root.Lstat(current)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", denied
-	}
-	pointer, err := root.ReadFile(current)
+	spec, err := client.Effective(ctx, tenant, filepath.Base(spaceDir))
 	if err != nil {
 		return "", denied
 	}
-	reference := strings.TrimSpace(string(pointer))
-	revision := reference
-	if strings.HasPrefix(reference, "sha256:") {
-		// The v1 mirror points `current` at the effective digest; the
-		// emitted revision dir resolves through the .policy indirection.
-		cached, err := root.ReadFile(filepath.Join("generated", "passports", ".policy", strings.TrimPrefix(reference, "sha256:")))
-		if err != nil {
-			return "", denied
-		}
-		revision = strings.TrimSpace(string(cached))
-	}
-	if !filepath.IsLocal(revision) || strings.ContainsAny(revision, "/\\") || revision == "." || revision == "pending" {
+	eff, err := spawnv1.Assemble(spec.Documents)
+	if err != nil {
 		return "", denied
 	}
-	directory := filepath.Join("generated", "passports", revision)
-	info, err = root.Lstat(directory)
-	if err != nil || !info.IsDir() {
+	docs, err := spawnv1.EncodeDocuments(eff)
+	if err != nil {
 		return "", denied
 	}
 	h := sha256.New()
-	var first passportview.Metadata
-	for i, name := range passportview.Names {
-		path := filepath.Join(directory, name+".yaml")
-		info, err := root.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			return "", denied
-		}
-		body, err := root.ReadFile(path)
-		if err != nil {
-			return "", denied
-		}
-		if _, err := passportview.Decode(name, body); err != nil {
-			return "", denied
-		}
-		var envelope struct {
-			Metadata passportview.Metadata `yaml:"metadata"`
-		}
-		if yaml.Unmarshal(body, &envelope) != nil || envelope.Metadata.Revision != revision {
-			return "", denied
-		}
-		meta := envelope.Metadata
-		if i == 0 {
-			first = meta
-		} else if meta.Space != first.Space || meta.Environment != first.Environment || meta.Catalogs != first.Catalogs {
+	for _, name := range spawnv1.Names {
+		body, ok := docs[name]
+		if !ok {
 			return "", denied
 		}
 		h.Write([]byte(name))
 		h.Write([]byte{0})
 		h.Write(body)
 		h.Write([]byte{0})
-	}
-	latest, err := root.ReadFile(current)
-	if err != nil || strings.TrimSpace(string(latest)) != reference {
-		return "", denied
-	}
-	if first.Environment != "dev" && first.Environment != "prod" {
-		return "", denied
-	}
-	view := filepath.Join("generated", "config-view", first.Environment, "revision")
-	info, err = root.Lstat(view)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", denied
-	}
-	active, err := root.ReadFile(view)
-	if err != nil || strings.TrimSpace(string(active)) != revision {
-		return "", denied
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

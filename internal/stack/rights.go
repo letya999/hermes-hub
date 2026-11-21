@@ -13,6 +13,8 @@ import (
 // TestEverySettingsFieldClassified pins the table to the struct.
 var settingsFieldRights = map[string]string{
 	"defaultGlobalSkills": "",
+	"promptPointer":       "",
+	"siblingMemory":       "",
 	"ExecutionMode":       "",
 	"SupervisorURL":       "",
 	"NativeCron":          "",

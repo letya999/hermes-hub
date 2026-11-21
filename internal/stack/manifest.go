@@ -46,6 +46,17 @@ func ExpectedToolManifest(s Settings) ToolManifest {
 	return manifest
 }
 
+// MaterializeToolManifest is the claim-time entry the spawn spec builder
+// uses: the manifest lands inside the runtime's own /config view, never in
+// the shared generated root (S7d).
+func MaterializeToolManifest(viewDir string, s Settings) error {
+	body, err := json.MarshalIndent(ExpectedToolManifest(s), "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicMode(filepath.Join(viewDir, "tool-manifest.json"), append(body, '\n'), 0640)
+}
+
 // writeToolManifest materializes the manifest beside the other generated
 // contracts so runtime readiness can load the expectation read-only.
 func writeToolManifest(dir string, s Settings) error {

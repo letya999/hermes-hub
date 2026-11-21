@@ -45,11 +45,11 @@ func TestNightRunChecksRightAgainAfterModel(t *testing.T) {
 	if err := daily.Append(memory.Entry{ID: "turn-1", Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate, Body: "I prefer cedar tea", ObservedAt: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}, "telegram_bot"); err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewVaultResolver(vaults, passports)
+	resolver, err := NewVaultResolver(vaults, dirTreeReader{root: passports})
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &projectionEndpoint{gateway: &Gateway{Store: store, Tokens: map[string]identity.Envelope{"synthetic": auth}, PassportRoot: passports, Vaults: resolver}}
+	e := &projectionEndpoint{gateway: &Gateway{Store: store, Tokens: map[string]identity.Envelope{"synthetic": auth}, Spawn: dirTreeReader{root: passports}, Vaults: resolver}}
 	plan, err := e.NightSchedule(auth)
 	if err != nil || !plan.Enabled || plan.LocalTime != "04:00" {
 		t.Fatalf("plan=%+v err=%v", plan, err)
