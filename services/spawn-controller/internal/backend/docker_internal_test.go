@@ -6,6 +6,7 @@ package backend
 // die here.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +111,30 @@ func TestDockerListOwnsOnlyItsPrefix(t *testing.T) {
 	list := d.parseList(dump)
 	if len(list) != 1 || list[0].ID != "aaa" {
 		t.Fatalf("parseList=%+v, want only this backend's aaa container", list)
+	}
+}
+
+// Live S7a regression (Windows dev stack): Spec.Mount sources are
+// daemon-side paths — cells translate them through HUB_DOCKER_HOST_ROOT
+// before Start. A containerized backend cannot stat them locally; every
+// CLI-cell claim died here with "mount source C:/...: no such file or
+// directory" while the bind itself was valid. The daemon's own mount
+// validation is the authority there.
+func TestStartDoesNotStatTranslatedMountSource(t *testing.T) {
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "/cellstate=Z:/no/such/host")
+	d := &dockerBackend{cfg: DockerConfig{
+		ContainerPrefix: "hermes-hub-wk-",
+		Trusted:         true,
+		Docker:          "definitely-not-a-docker-binary",
+	}}
+	_, err := d.Start(context.Background(), Spec{
+		Key:   "wk-regression",
+		Image: "cli-tools:test",
+		Mounts: []Mount{
+			{Source: "Z:/no/such/host/cli-cellinit", Target: "/cellinit", ReadOnly: true},
+		},
+	})
+	if err != nil && strings.Contains(err.Error(), "mount source") {
+		t.Fatalf("translated mount source statted locally: %v", err)
 	}
 }

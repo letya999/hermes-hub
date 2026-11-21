@@ -240,9 +240,17 @@ func (d *dockerBackend) Start(ctx context.Context, spec Spec) (Runtime, error) {
 			return Runtime{}, err
 		}
 	}
-	for _, m := range spec.Mounts {
-		if _, err := os.Stat(m.Source); err != nil {
-			return Runtime{}, fmt.Errorf("backend: mount source %s: %w", m.Source, err)
+	// Mount sources are daemon-side paths. When the backend runs
+	// containerized behind HUB_DOCKER_HOST_ROOT they were translated for
+	// the daemon and are not visible to this process (S7a live: a
+	// containerized backend rejected every valid Windows-side bind as
+	// missing) — the daemon's own mount validation is the authority there.
+	// Stat only when the backend shares the daemon's filesystem.
+	if os.Getenv("HUB_DOCKER_HOST_ROOT") == "" {
+		for _, m := range spec.Mounts {
+			if _, err := os.Stat(m.Source); err != nil {
+				return Runtime{}, fmt.Errorf("backend: mount source %s: %w", m.Source, err)
+			}
 		}
 	}
 	name := d.container(spec.Key)
