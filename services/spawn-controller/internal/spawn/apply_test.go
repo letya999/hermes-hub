@@ -380,3 +380,104 @@ func effectiveDigestFor(t *testing.T, revs *spawn.Revisions, space string) strin
 	}
 	return spec.Digest
 }
+
+// Activate itself carries the digest CAS inside its write transaction —
+// the direct route (rollback, /v1/spaces/{space}/activations) never passes
+// through Apply's pre-check, so the guard must hold here: a base that is
+// not the space's effective digest refuses and nothing moves.
+func TestActivateRefusesStaleBaseDirect(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+		stale := "sha256:" + strings.Repeat("0", 64)
+
+		rev := submitValidated(t, revs, "user", userDocs("UTC"))
+		if _, err := revs.Activate(ctx, tenant, "alice", []string{rev.ID}, &stale); err == nil || !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("stale base activate: %v", err)
+		}
+		if got := effectiveDigest(t, revs); got != base {
+			t.Fatalf("stale activate moved the digest to %s", got)
+		}
+		assertRevisionState(t, revs, rev.ID, "validated")
+	})
+}
+
+// assertRevisionState reads the revision's FSM state through the public
+// list — there is no per-id getter.
+func assertRevisionState(t *testing.T, revs *spawn.Revisions, id, want string) {
+	t.Helper()
+	list, err := revs.ListRevisions(context.Background(), tenant, "alice", "user")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, rev := range list {
+		if rev.ID == id {
+			if rev.State != want {
+				t.Fatalf("revision %s state = %s, want %s", id, rev.State, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("revision %s missing", id)
+}
+
+// Two writers activating against the same base digest on one space have
+// exactly one winner: the CAS is inside the write transaction (immediate
+// txlock serializes writers), so the loser reads the moved pointer and
+// conflicts — the active set can never be a torn merge of both.
+func TestActivateConcurrentBaseRace(t *testing.T) {
+	storetest.ForEach(t, func(t *testing.T, url string) {
+		revs := testRevisions(t, url)
+		setupSpace(t, revs)
+		ctx := context.Background()
+		base := effectiveDigest(t, revs)
+
+		first := submitValidated(t, revs, "user", userDocs("UTC"))
+		second := submitValidated(t, revs, "user", userDocs("Asia/Almaty"))
+		type outcome struct {
+			id  string
+			err error
+		}
+		results := make(chan outcome, 2)
+		for _, id := range []string{first.ID, second.ID} {
+			go func(id string) {
+				_, err := revs.Activate(ctx, tenant, "alice", []string{id}, &base)
+				results <- outcome{id, err}
+			}(id)
+		}
+		var winner, loser string
+		for range 2 {
+			out := <-results
+			switch {
+			case out.err == nil:
+				winner = out.id
+			case errors.Is(out.err, store.ErrConflict):
+				loser = out.id
+			default:
+				t.Fatalf("unexpected activate error: %v", out.err)
+			}
+		}
+		if winner == "" || loser == "" {
+			t.Fatalf("race needs exactly one winner and one conflicted loser: winner=%q loser=%q", winner, loser)
+		}
+		if got := effectiveDigest(t, revs); got == base {
+			t.Fatal("a winner committed but the digest did not move")
+		}
+		list, err := revs.ListRevisions(ctx, tenant, "alice", "user")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		var active []string
+		for _, rev := range list {
+			if rev.State == "active" {
+				active = append(active, rev.ID)
+			}
+		}
+		if len(active) != 1 || active[0] != winner {
+			t.Fatalf("race left active user revisions %v — want exactly the winner %s", active, winner)
+		}
+		assertRevisionState(t, revs, loser, "validated")
+	})
+}

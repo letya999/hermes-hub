@@ -1059,18 +1059,22 @@ in the infra space's project; a port leaf whose owner the revision doesn't
 declare is dead config and plans no recreate. From the operator host the
 supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
 reachable endpoint or the respawn cannot be signaled.
-During `space apply`, the operator sends the exact apply revision with the
-respawn request. The supervisor accepts it only while the matching journal is
-in its effects phase and the published pointer names the previous or new
-revision. This lets the apply finish while the journal correctly blocks
-ordinary ToolHub decisions; other runtime restart requests still use the
-`agents.restart_self` decision. Keep the endpoint on the control network or
-expose it only temporarily on local loopback for host-side apply.
-If an interrupted effects phase included an image rebuild, verify the rebuilt
-image tag and running containers first. An operator may then rerun
-`space apply --confirm --recover-rebuilt-image` to restore the prior revision,
-replay service effects, and retry publication. Without that flag, recovery
-remains blocked for an uncertain image build.
+During `space apply`, the operator sends the effective digest the apply just
+activated as `X-Hub-Apply-Revision` with the respawn request. The supervisor
+accepts it only while `generated/passports/current` still carries that digest
+— the respawn is bound to the exact committed pointer it serves. Other runtime
+restart requests still use the `agents.restart_self` decision. Keep the
+endpoint on the control network or expose it only temporarily on local
+loopback for host-side apply.
+There is no apply journal and no recovery mode: spawn-controller commits
+exactly one active revision set per activation, so a crash anywhere in the
+converge or action phase never leaves a half-applied publication — the next
+`space apply --confirm` first converges side effects to whatever revision is
+currently active, then proceeds. If a failed action already rolled the
+pointer back, that converge replays the restore; if the crash lost the whole
+run, it replays the unfinished effects. To recover a broken apply, fix the
+cause and rerun `space apply --confirm`; inspect the running containers
+first when the failure involved an image build.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
