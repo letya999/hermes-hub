@@ -18,9 +18,10 @@ profile. MCP projection, tool admission before backend dispatch and the
 out-of-process rights decision route require that stamp to match the active
 six-passport bundle for the same principal and environment. A pending pointer
 or mismatch denies; an unstamped managed profile must be rebound by apply.
-The mounted `passports/apply-journal.json` blocks MCP list/call and rights
-decisions throughout an unfinished apply, including after pointer activation
-and before service effects complete.
+Apply keeps no journal or pending pointer: the activation transaction on
+spawn-controller flips the effective digest at once, so a call landing
+mid-apply denies on the stamp mismatch until converge re-binds the profile —
+the same admission-closed window the deleted journal fenced.
 
 ## Responsibilities
 

@@ -1,6 +1,6 @@
 ---
-description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-20
+description: supervisor — per-space runtime manager on the spawn contract; job ledger and lanes, docker exec agent-tools path, control channel, identity registry host.
+last_verified: 2026-11-21
 ---
 
 # supervisor
@@ -11,24 +11,24 @@ This maintains host-owned file modes without changing the UID that writes shared
 private registry/state files. Bootstrap UID/GID/capability permissions are dropped
 before `hubctl` starts. Privilege escalation stays disabled and the root filesystem
 stays read-only. Other services retain UID 10001 with no capabilities.
-Spawned runtimes and isolated watch scripts also use the controller's group,
+Claimed runtimes and isolated watch scripts also use the controller's group,
 matching Compose, so group-readable published config/watch binds remain readable.
 No recursive chown or mode relaxation runs.
 
-Published revision directories/documents use 0750/0440 and the current pointer
-0640 for the controller group. The mutable generated model-registry directory
+Published render directories/documents use 0750/0440 for the controller
+group. The mutable generated model-registry directory
 uses 0770 so a different controller UID can atomically replace its 0640 projection.
 These paths contain configuration; credentials retain their separate private modes.
 An already bundled/published legacy skill does not require opening unrelated
 private draft contents during rendering.
 
 For the built-in `settings_edit`, ToolHub completes registry admission before
-calling this authenticated publisher without holding the registry lock. The
-publisher checks the current edit grant and base revision and derives the new
-rights itself; holding the call lock while deriving those rights deadlocks.
-Runtime reconciliation from this publisher calls the local manager directly,
-because its journal intentionally blocks external PDP admission until completion.
-The external respawn endpoint still requires the caller's restart right.
+calling spawn-controller's `/v1/spaces/{space}/settings` through the spawn
+client — the controller checks the current edit grant and the base digest and
+patches the authored leaf itself; the supervisor's settings publisher was
+deleted with the v0 passport writer (M40.3).
+The external respawn endpoint still requires the caller's restart right, or
+the `X-Hub-Apply-Revision` proof when the apply signals it.
 
 `cmd/supervisor` → `internal/supervisor`. The per-space runtime manager when
 `ExecutionMode == "supervisor"`; deployed as the `supervisor` compose service
@@ -68,10 +68,13 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 
 ## Responsibilities
 
-- Spawn/stop managed `hermes-context-<hash>` runtime containers from the
-  runtime image; warm pool keyed by principal/context/mode + policy version.
-  Managed spawn verifies the published revision again after materializing
-  its files and passes that revision to the runtime preflight.
+- Claim and release managed runtimes through `contracts/spawn/v1`
+  (M40.3): `Ensure` claims — the claim binds tenant, policy and image
+  digests and returns the runtime's address plus a lease the entry holds
+  for its life — `Reap` releases it, and restart/respawn/remediation drain
+  and re-claim. A supervisor restart rediscovers its runtime by renewing
+  the persisted lease, not by cold-claiming. spawn-controller owns the
+  containers, the warm rows and the launch backend.
   New managed jobs share one `gateway` runtime per owner, up to five active
   conversations. The sixth waits; existing job records with legacy lane modes
   still route to their recorded runtime for recovery.
@@ -93,20 +96,21 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 - Route every control-plane call (`/v1/jobs`, `/v1/resume`, `/v1/control`,
   `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`,
   `/v1/respawn`) to the correct
-  user's spawned runtime by the job's durable identity; the
-  restart-after-delivery hook carries the same identity so the spawned
+  user's claimed runtime by the job's durable identity; the
+  restart-after-delivery hook carries the same identity so the claimed
   Hermes bounces per turn. A restart for an absent/stopped runtime is a
-  successful no-op — next lease spawns fresh. `/v1/respawn` is the
+  successful no-op — next claim starts fresh. `/v1/respawn` is the
   operator's recreate path: a deferred restart remounts files but keeps the
-  container's baked env, so an idle/ready container is destroyed and
-  re-spawned from the published revision — that is how env-carried passport
-  config (`config.ports`, feature flags) actually takes effect. A busy or
-  absent runtime answers `scheduled:false` and converges on its next natural
-  spawn. Secondary spaces
+  container's baked env, so the respawn drains the live generation and
+  re-claims on the space's effective digest — that is how env-carried passport
+  config (`config.ports`, feature flags) actually takes effect. A busy
+  runtime answers `scheduled:false` while a live lease holds (the apply
+  digest proof gates it) and converges on its next natural
+  claim. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
   Skill ref leases require the exact principal, context, runtime and policy
-  of a running generation. Spawn failures return an allowlisted `class`:
+  of a running generation. Claim failures return an allowlisted `class`:
   `hold`, `backoff`, `policy_rotation`, `spawn` or `unavailable`.
 - `GET /v1/jobs/<id>` serves the durable job record as a run-context
   projection for lifecycle consumers (SPEC-0098 M2): beside `job_id`,
@@ -182,7 +186,8 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 
 ## Boundaries
 
-- Owns Docker lifecycle for agent runtimes only; connector cells belong to
-  toolhub + workload-controller.
+- Claims agent runtimes from spawn-controller; connector cells and workers
+  belong to spawn-controller's `/v1/spaces/.../workers` surface, reached by
+  toolhub's spawn client.
 - `restart: unless-stopped`, `stop_grace_period: 30s` — a supervisor restart
-  does not kill spawned runtimes; they re-register.
+  does not kill claimed runtimes; the persisted claim lease re-adopts them.

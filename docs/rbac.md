@@ -1,6 +1,6 @@
 ---
 description: Authorization model — principals, sections, evaluation order, grants, capability policies, profiles, teams, connector lifecycle.
-last_verified: 2026-11-06
+last_verified: 2026-11-21
 ---
 
 # RBAC, grants and capability policy
@@ -136,7 +136,8 @@ when a published passport still names the operation.
 
 ## Grants passport (effective view)
 
-Each managed space's `generated/passports/<rev>/grants.yaml` is the
+Each managed space's published `grants.yaml` — the grants document inside
+the active effective bundle spawn-controller stores and serves — is the
 published imperative for agent rights: `allow: {capability: [operations]}`
 is the ceiling every per-call decision enforces. An empty allow denies all
 operations. Editing the authored file alone changes nothing: only a valid

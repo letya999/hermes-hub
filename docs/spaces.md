@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-20"
+last_verified: "2026-11-21"
 ---
 
 # Spaces
@@ -26,14 +26,17 @@ Managed spaces author `passports/{stack,config,models,workspace,tools,grants}.ya
 Tool selection and intended grants are separate documents.
 
 **Managed (published) spaces**: once `hubctl space apply`
-publishes a revision, the six passports under `generated/passports/
-<revision>/` are the sole runtime authority — render, supervisor spawn,
-sibling enrollment, `hubctl up/chat/doctor/trace` and execution selection
-resolve through `stack.ReadEffective`, which opens the revision without
-`agent.yaml`, `settings.yaml`, or the old `workspace.yaml` and `models.yaml`
-files (SPEC-0095 R1.2). A missing or unloadable published revision fails
+activates a revision, the effective bundle stored in spawn-controller is
+the sole runtime authority — render, runtime claims, sibling enrollment,
+`hubctl up/chat/doctor/trace` and execution selection resolve through the
+spawn contract's immutable effective spec served by digest;
+`stack.ReadEffective` rides that contract read and never opens `agent.yaml`,
+`settings.yaml`, or the old `workspace.yaml` and `models.yaml`
+files (SPEC-0095 R1.2). A missing or unloadable active revision fails
 closed. New spaces must publish the six authored passports before startup;
-there is no unpublished legacy configuration fallback.
+there is no unpublished legacy configuration fallback. `generated/passports/`
+trees left by the v0 publisher are inert leftovers — nothing writes or reads
+them.
 
 | File | Owner | Contents |
 |---|---|---|
@@ -324,13 +327,15 @@ another user, even if no `scope.yaml` exists.
 The default dry-run prints a JSON receipt: every changed leaf with its
 before/after (credential refs render as `<ref:name>`, never material), the
 effect class (live/respawn/recreate/rebuild) and owning consumer, plus the
-ordered minimum action plan — nothing is written. `--confirm` writes the
-immutable six-passport bundle, gates `current` as pending while refreshing
-the mounted config view, renders generated files and derives the bound
-ToolHub profile and rights from that candidate. Only then does it atomically
-move `current` to the new revision. Managed config readers reject pending or
-mismatched revisions; ToolHub list/call/rights endpoints also reject an
-unfinished apply journal until reconciliation completes.
+ordered minimum action plan — nothing is written. `--confirm` submits the
+candidate set to spawn-controller's apply route: the would-be set compiles
+and activates in one transaction on the `base_digest` compare-and-swap, so
+the space row's effective digest flips atomically — no `current` file, no
+pending pointer, no journal. Apply then renders generated files and derives
+the bound ToolHub profile and rights from the activated set; a crash
+anywhere replays the same converge on the next `space apply`. A ToolHub
+profile still stamped with the replaced revision mismatches the live digest
+and denies until converge rebinds it.
 The first apply publishes and activates the revision without starting services;
 `hubctl up` starts them after images and service secrets are provisioned.
 After activation, reconcile rebuilds only the service images that
@@ -338,43 +343,38 @@ changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed
 `stack.services` entry removes exactly that container), mark the runtime
 for a deferred supervisor restart-request when its boundary moved, and run
-registered live hooks. On failure, reconcile repoints `current` at the previous
-revision and replays affected service actions and live hooks against the
-restored render. `rolled_back` is false if any replay fails. A render or view-refresh failure also
-restores the previous `current` pointer and mounted passport view. When a
+registered live hooks. On failure, apply re-activates the previous revision
+set — the same digest CAS, anchored on the failed set's digest — and replays
+the affected service actions and live hooks against the
+restored render. `rolled_back` is false if any replay fails. A render failure
+before activation leaves the previous set active: the activation transaction
+is the only commit boundary. When a
 previous revision exists, rollback also re-renders its generated service
 files. The restored profile ceiling includes only previous passport rights
 that still have an active issued grant; a concurrent grant revocation stays
-revoked. A failed rights restore reports rollback divergence. The durable
-`generated/passports/apply-journal.json` records the environment, previous and
-candidate revision, profile IDs, phase and affected service names. A later
-`space apply` first restores the previous view and rights, then replays possibly
-affected service actions. Repeated recovery is idempotent. If a first apply
-recorded service actions that may have touched services, an image build was
-interrupted, or replay fails, the journal stays in place and `current` is
-pending until operator repair; ToolHub admission remains closed. A first apply
-with no recorded actions is rolled back and its journal cleared. A dev apply does not alter the prod sibling.
-Completed publications prune superseded revisions to the live pointer chain —
-`current`, the mounted view's pinned revision and the just-replaced previous —
-plus the newest three bundles for audit slack; an open journal or pending
-pointer skips the sweep, and crashed-publish staging/temp artifacts are
-collected by the same pass.
+revoked. A failed rights restore reports rollback divergence. There is no
+apply journal: a crash between activation and converge is
+converged-by-construction — the next `space apply` restores side effects to
+whatever set is active, idempotently. A dev apply does not alter the prod sibling.
+Superseded revisions prune to the newest three inside the same activation
+transaction.
 
-`settings_read` reads the active config passport revision and reviewed values
-through ToolHub. `settings_edit` sends one setting with that revision as
-`base_revision` through ToolHub to the authenticated supervisor publisher.
+`settings_read` reads the reviewed values off the active effective spec
+through ToolHub's spawn client. `settings_edit` sends one setting on the
+space's `base_digest` to spawn-controller's `/v1/spaces/{space}/settings`
+route through ToolHub.
 It requires current `config.edit_own` in both issued and published grants,
-refuses an unpublished authored draft or stale base, and writes a new
-six-passport revision plus the authored `passports/config.yaml` leaf. An
-omitted/empty value removes the leaf. Successful publication finishes its
+refuses an unpublished authored draft or stale base, patches the authored
+`passports/config.yaml` leaf and activates the patched user layer. An
+omitted/empty value removes the leaf. Successful activation finishes its
 service effects before returning; the changed setting survives a runtime
 respawn and re-render. `self-settings.json` and retired `agent.yaml` fields
 cannot override the published config.
 
 Config authority inventory: `passports/*.yaml` are the six editable sources;
-`generated/passports/<revision>`, `generated/config-view/<env>` and rendered
-Hermes/Compose files are derived consumers; `generated/passports/current` and
-the apply journal are protected publication state; ToolHub profiles and the
+the revision set and effective bundle in spawn-controller's store are the
+protected publication state; `generated/config-view/<env>` and rendered
+Hermes/Compose files are derived consumers; ToolHub profiles and the
 issued-right ledger are protected admission state. The runtime settings
 executor and self-settings overlay reader/writer are removed. Legacy
 `agent.yaml`, `settings.yaml`, `workspace.yaml` and `models.yaml` remain inert
@@ -383,9 +383,9 @@ before rendering or starting a runtime.
 
 | Config authority | Writers | Readers and effect |
 |---|---|---|
-| Six authored `passports/*.yaml` | init/profile apply; `cmd/hubctl/space_settings.go` writes one `config.yaml` leaf after governed publication | `passport.ReadAuthored` and `CompileAuthoredDocs` validate the complete candidate |
-| Immutable revision, `current`, config view, apply journal | `passport.Revision.Prepare/Activate`, `cmd/hubctl/space_apply.go` and recovery | `passportview.LoadEffective`/`LoadRevision`, `stack.ReadEffective`/`ReadEffectiveRevision`; journal fences ToolHub |
-| Rendered Hermes, Compose and runtime policy | `stack.RenderRevisionEnvironment` and `MaterializeHermesConfig` | `supervisor.materializeHermesConfig` and runtime attestation read the published render |
+| Six authored `passports/*.yaml` | init/profile apply; `settings_edit` patches one `config.yaml` leaf after governed publication | `passport.ReadAuthored` and `CompileAuthoredDocs` validate the complete candidate |
+| Revision set and effective bundle (spawn-controller store) | `POST /v1/spaces/{space}/apply` and `/settings` — activation transactions on the `base_digest` CAS | contract effective/explain/policy-slice reads; `stack.ReadEffective` renders and the claim's spec builder reads the same bundle |
+| Rendered Hermes, Compose and runtime policy | `stack.RenderEnvironment` and `MaterializeHermesConfig` at apply and claim | supervisor claims and runtime attestation read the rendered env |
 | Bound ToolHub profile and issued grants | `migration.DeriveSpaceRights`, protected governance operations | ToolHub MCP/rights admission evaluates the bound profile plus live issued ledger |
 | Retired overlay and legacy managed config | no effective writer or reader; direct runtime settings tools deny | old `self-settings.json`, `agent.yaml`, `settings.yaml`, `workspace.yaml`, `models.yaml` cannot change managed effective config |
 
@@ -399,14 +399,14 @@ The shared infra owner must be unique among sibling spaces. Ambiguous owner
 claims do not select a sibling by name, so a member cannot read another
 space's governance or credentials by accident.
 
-Publishing also refreshes the runtime's `/config`: a stable read-only
-directory bind at `generated/config-view/<env>/` whose individual files are
-replaced atomically per revision — the six passports, `prompt-pointer.txt`
-and the space's `SOUL.md` — instead of Docker single-file binds that never
-see updates. The view's `revision` marker must match `current` for managed
-host reads. Already running external services can observe their existing
-binds until reconciliation; service effects finish before ToolHub admission
-reopens.
+Each managed-runtime claim also refreshes the runtime's `/config`:
+spawn-controller materializes `generated/config-view/<env>/` from the
+claiming generation's effective bundle — the six passports,
+`prompt-pointer.txt` and the space's `SOUL.md` — as one read-only
+directory bind instead of Docker single-file binds that never
+see updates. A running container keeps reading the live directory; the next
+claim lands the new revision's view. Service effects finish before ToolHub
+admission reopens.
 
 Managed file executors require a strictly decoded workspace passport and a
 matching view revision at startup and on each write. Missing, malformed or

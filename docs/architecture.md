@@ -1,6 +1,6 @@
 ---
 description: System overview - the v1 service model (service table, core and optional services, profiles, layers and passports, zones, spawn flow, message path, launch backends, tool executors, extension points), the v0 to v1 extraction map, and where the v0 system that runs today is documented.
-last_verified: 2026-11-20
+last_verified: 2026-11-21
 ---
 
 # Architecture
@@ -234,7 +234,7 @@ internals are documented per service; this page does not repeat them.
 |---|---|---|
 | `hermes-runtime` | per-space agent container: pinned Hermes, private `/v1/*` job contract, scope mounts, relays | [runtime.md](services/runtime.md) |
 | `communication-hub` | channel gateway: adapters, job admission, spool, `?t=` links | [communication.md](services/communication.md) |
-| `supervisor` | scale-to-zero spawner, job ledger and lanes, control routing, identity registry host | [supervisor.md](services/supervisor.md), [identity-hub.md](services/identity-hub.md) |
+| `supervisor` | job ledger and lanes, control routing, identity registry host; runtime containers are claimed from spawn-controller (M40.3) | [supervisor.md](services/supervisor.md), [identity-hub.md](services/identity-hub.md) |
 | `toolhub` | capability gateway: governance, connector lifecycle, automation, memory, audit | [toolhub.md](services/toolhub.md) |
 | `credential-broker` | standalone credential authority (copied MIT module) | [credential-broker](services/credential-broker/index.md) |
 | `hub-stt`, `hub-tts`, `hub-media` | speech and media sidecars | [media.md](services/media.md) |
@@ -243,6 +243,10 @@ internals are documented per service; this page does not repeat them.
 | `model-relay` | per-space model selection and provider ladder | [model-relay.md](services/model-relay.md) |
 | `hubctl` | operator CLI | [hubctl.md](services/hubctl.md) |
 | hosting tier (opt-in) | per-user static sites and stateless apps | [hosting.md](services/hosting.md) |
+
+The compose stack also renders the v1 `spawn-controller` (M40.3): the
+space compute authority — passports, runtime/worker rows, backends — the
+supervisor, ToolHub and `hubctl` reach over `contracts/spawn/v1`.
 
 Space layout and passports: [spaces.md](spaces.md). Rights:
 [rbac.md](rbac.md). Routines: [routines.md](routines.md). Operations:

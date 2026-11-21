@@ -28,7 +28,7 @@ the service's own — no runtime state lives in memory.
 
 - Message delivery and channels - owned by channel-hub.
 - The agent harness itself - owned by harness-runtime.
-- Admission, passports and persistent user data - owned by their services.
+- Admission and persistent user data - owned by their services.
 
 ## API
 
@@ -44,10 +44,19 @@ the service's own — no runtime state lives in memory.
 | `POST /v1/spaces/{space}/layers/{layer}/revisions` | submit one layer's documents as a draft revision | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/revisions/{id}/validate` | compile the draft against the other layers | write | `idempotency_key` |
 | `POST /v1/spaces/{space}/activations` | cut a revision set (one or more ids, at most one per layer) in one transaction; the would-be active set must compile or nothing moves | write | `idempotency_key` |
+| `POST /v1/spaces/{space}/apply` | submit + validate + compile every changed layer and activate the set in one call; `dry_run` stops before activation; the cut commits on the `base_digest` CAS | write | `idempotency_key` |
+| `GET /v1/spaces/{space}/settings` | reviewed self-settings: the published allowlist values | read | - |
+| `POST /v1/spaces/{space}/settings` | apply one config leaf on the base digest CAS and activate the patched user layer | write | `idempotency_key` |
 | `GET /v1/spaces/{space}/revisions?layer=` | list revisions, optionally by layer | read | - |
 | `GET /v1/spaces/{space}/effective` | the active layers' compiled spec | read | - |
 | `GET /v1/spaces/{space}/explain?org=&owner=` | per-leaf provenance of the effective spec: value plus the layer that set it | read | - |
 | `GET /v1/spaces/{space}/policy/{service}?digest=` | immutable policy slice for one consumer | read | - |
+| `POST /v1/spaces/{space}/runtimes/drain` | drain the space's live runtime rows (optional `agent` scopes one lane); respawn/replace forces a fresh generation | write | - |
+| `POST /v1/spaces/{space}/workers` | claim a worker cell (tenant, cell key, image digest): starting -> busy row plus a lease | write | - |
+| `POST /v1/spaces/{space}/workers/drain` | drain workers filtered by binding/job (backs ToolHub's `/cli-release`) | write | - |
+| `POST /v1/workers/{id}/renew` | worker lease heartbeat | write | `id` |
+| `POST /v1/workers/{id}/release` | drop the worker lease | write | `id` |
+| `POST /v1/workers/{id}/exec` | lease-guarded bounded exec inside the worker (env by name, never argv) | write | `id` |
 
 `/v1/spaces*`, `/v1/runtimes` and `/v1/leases*` are the spawn/v1 contract
 (`contracts/spawn/v1`): tenant (`org`, `owner`) travels in the body on
@@ -111,8 +120,25 @@ serves the `/v1/spaces/.../workers` cell surface.
 | `HUB_DATA_DIR` | - | own data dir; runtimes spawn under `runtimes/` |
 | `HUB_SERVICE_TOKEN` | - | bearer token required on `/v1/*` and forwarded to children; startup refuses without it |
 | `HUB_MAX_RUNTIMES` | `32` | upper bound on live runtime rows per tenant; must be a positive integer |
+| `HUB_MAX_WORKERS` | `64` | upper bound on live worker rows per tenant (2× default); must be a positive integer |
 | `HUB_SWEEP_INTERVAL` | `5s` | deadline-sweep and reconcile pass interval; must be a positive duration |
 | `HUB_DATABASE_URL` | `sqlite://<data>/<svc>.db` | service store connection string (`sqlite://` or `postgres://`); startup refuses without it |
+| `HUB_SPACES_ROOT` | - | spaces root the claim-time spec builder binds runtime/workspace mounts from and the settings edit patches authored files under |
+| `HUB_PLATFORM_ROOT` | spaces root's parent | platform config tree (`config/skills`, `config/SOUL.md`, `config/plugins`) for spec materialization; containerized deploys set the container path |
+| `HUB_RUNTIME_PORT` | `8080` | workload's service port the control relay forwards to; the relay's loopback publish is inert on the internal agent network, so containerized callers use the relay name on the control network (see `HUB_DOCKER_HOST_ROOT`) |
+| `HUB_RUNTIME_MEMORY` | `2g` | managed runtime memory limit |
+| `HUB_RUNTIME_CPUS` | `2` | managed runtime CPU limit |
+| `HUB_RUNTIME_PIDS` | `1024` | managed runtime pids limit |
+| `HUB_RUN_STALL_TIMEOUT` | - | run watchdog passed into spawned runtimes when set |
+| `HUB_DOCKER_HOST_ROOT` | - | set when the backend itself runs containerized: mount sources are daemon-side paths, local stat is skipped and claims address runtimes by relay name on the control network |
+| `HUB_CELL_STATE_ROOT` | `<data>/cells` | worker scratch root: sidecar payloads and docker-mode cell scratch files |
+| `HUB_CELL_TOOLS_IMAGE` | - | CLI-tools image a worker mounts as `/tools/<i>`; required for cells to enable |
+| `HUB_CELL_PROXY_IMAGE` | - | egress/cred proxy image for worker sidecars |
+| `HUB_CELLINIT` | - | cellinit helper binary mounted into workers |
+| `HUB_CELL_ENV` | - | environment tag carried into worker spec names |
+| `HUB_CELL_RUNTIME` | - | OCI runtime worker containers launch under |
+| `HUB_CELL_SECCOMP` | - | seccomp profile applied to workers |
+| `HUB_CELL_PER_PRINCIPAL_UID` | `false` | `true` maps one uid per principal inside workers |
 | `HUB_CATALOG_ROOT` | - | platform checkout or image path the pinned catalog resolves from; `hubctl` injects the launcher's resolved root when it carries the release manifest — otherwise the image's baked tree is used |
 | `HUB_MANAGED_MODEL_URL` | - | passed through to spawned runtimes |
 | `HUB_MANAGED_MODEL_ID` | - | passed through to spawned runtimes |
@@ -120,6 +146,8 @@ serves the `/v1/spaces/.../workers` cell surface.
 | `HUB_IMPORT_V0_DIR` | - | v0 control directory (`supervisor.json`, `backups.json`, the journals); empty disables the one-time import |
 | `HUB_IMPORT_SPACES_DIR` | - | v0 spaces root holding `generated/passports/current` and `generated/image-pins.json` per space |
 | `HUB_IMPORT_DRY_RUN` | `false` | `true` prints the import report (counts and ids only) and writes nothing |
+| `HUB_UNO_URL`, `HUB_UNO_TOKEN`, `HUB_UNO_IMAGE`, `HUB_UNO_PROXY_HOST` | - (proxy host `127.0.0.1`) | firecracker backend config — compile-only, not selectable until M40.15 |
+| `HUB_KUBECONFIG`, `HUB_KUBERNETES_PULL_SECRETS`, `HUB_KUBERNETES_*`, `HUB_RUNTIME_CLASS_NAME` | namespace `hermes-hub-<env>`, storage `10Gi`, release `hermes-hub` | kubernetes backend config — compile-only, not selectable until M40.15 |
 
 Only the three pass-through names plus `TZ` reach spawned children from the
 operator environment; the controller itself sets `HUB_TRUSTED`,
@@ -161,7 +189,8 @@ and `docker` (docker CLI on the same Spec, moved from the v0 supervisor;
 the shared conformance suite lives in `internal/backend/backendtest`).
 `HUB_BACKEND` selects the provider at startup; in the compose stack the
 service runs `docker` with `HUB_RUNTIME_IMAGE` set to the agent image tag.
-Kubernetes and firecracker arrive with M40.15.
+Kubernetes and firecracker implementations exist in `internal/backend` but
+are compile-only — nothing selects them until M40.15.
 
 ## When a dependency is disabled
 

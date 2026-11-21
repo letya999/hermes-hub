@@ -1068,8 +1068,8 @@ supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
 reachable endpoint or the respawn cannot be signaled.
 During `space apply`, the operator sends the effective digest the apply just
 activated as `X-Hub-Apply-Revision` with the respawn request. The supervisor
-accepts it only while `generated/passports/current` still carries that digest
-— the respawn is bound to the exact committed pointer it serves. Other runtime
+accepts it only while spawn-controller's effective spec still carries that
+digest — the respawn is bound to the exact committed pointer it serves. Other runtime
 restart requests still use the `agents.restart_self` decision. Keep the
 endpoint on the control network or expose it only temporarily on local
 loopback for host-side apply.
@@ -1601,9 +1601,9 @@ Files and records per owner:
   model must exist in **that owner's** catalog. Publish authored edits with
   `space apply`; the relay reloads the resulting generated registry. A
   dedicated `vision` route is used by managed media when published. If a
-  models edit recreates `hermes-runtime`, supervisor authorizes that exact
-  target from the apply journal and respawns it; unrelated targets remain
-  denied.
+  models edit recreates `hermes-runtime`, the apply proves that exact target
+  with the activated effective digest it sends as `X-Hub-Apply-Revision`;
+  unrelated targets remain denied.
 - `spaces/local/communication.users.yaml` — hand-edited: `id`, `runtime_id`,
   `telegram_ids`, `policy_version`. The policy version must equal the
   rendered stack policy (`policy-<hash>` from the space's generated files);

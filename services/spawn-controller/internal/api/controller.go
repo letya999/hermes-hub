@@ -372,10 +372,9 @@ func Serve(ctx context.Context) error {
 	revisions := &spawn.Revisions{
 		Store:       serviceStore,
 		LoadCatalog: catalogLoader(catalog.LoadPinned),
-		// SpacesRoot feeds the transitional v0 mirror (S7b, deleted in
-		// S7d): every activation republishes the space's generated tree
-		// and the authored files the settings path edits. The compose
-		// service mounts the spaces root read-write for this.
+		// SpacesRoot backs the settings-edit path's authored-file
+		// patching and the claim-time spec builder's bind sources. The
+		// compose service mounts the spaces root read-write for this.
 		SpacesRoot: os.Getenv("HUB_SPACES_ROOT"),
 	}
 	runtimes.Revisions = revisions

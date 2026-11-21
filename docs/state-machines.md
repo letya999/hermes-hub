@@ -1,6 +1,6 @@
 ---
 description: State-machine catalog - every lifecycle v1 services own (Job, Runtime, PassportRevision, ChannelLink, Routine/Occurrence, Assignment, Goal, ConnectorBinding, OwnerDecision); the v0 states and transitions in code today, the known defects M40.0 fixes, and the v1 target table.
-last_verified: 2026-11-20
+last_verified: 2026-11-21
 ---
 
 # State machines
@@ -173,6 +173,76 @@ a controller death cannot orphan them; a restarted controller recovers
 its runtimes from the rows and reconciles the backend at boot before
 serving.
 
+S7 (M40.3) moved the consumer side: the supervisor's `Ensure` claims
+through `contracts/spawn/v1` (`ClaimRuntime` returns the row's `address`
+plus a lease), `Reap` releases the lease, restart/respawn/remediation
+all drain and re-claim, and a supervisor restart rediscovers its runtime
+by renewing the persisted lease rather than cold-claiming. `POST
+/v1/spaces/{space}/runtimes/drain` is the respawn/replace surface. The
+`docker` backend starts managed runtimes on the internal agent network
+with the dual-homed control relay as sole inbound route; `process`
+serves trusted dev.
+
+## Worker
+
+### v0 today
+
+The ToolHub CLI cell (`internal/toolhub` `cell*.go`): an in-memory warm
+registry keyed on image and warm key — `claimPoolCell`, `returnPoolCell`,
+`execInCell`, `cellRegistry`, `execWarm`. No durable row, no lease: a
+ToolHub restart forgot live cells and orphaned their containers, the
+cross-user pool let one tenant's worker serve another, and drift was
+checked only when a cell was reused, never reconciled. Config keys
+`pool_size` and `pool_claim_wait_seconds` tuned the in-memory pool.
+
+### Defects fixed by M40.3 (S6)
+
+| Defect | Location | Resolution |
+|---|---|---|
+| Worker state lived in memory: restart orphaned running cells and lost who claimed what | `internal/toolhub/cell_lifecycle.go` | workers are durable `workers` rows under `WorkerMachine`; the sweeper reconciles |
+| Cross-user warm pool could serve a foreign tenant's exec | `execPooled`/`claimPoolCell` | claim binds tenant + space + cell key + image digest; pool config deleted |
+| Reused cells trusted the spec they were started with | `execWarm` | reuse re-runs `Cells.spec` + `Backend.VerifyWorker` + canary/procs probes; drift drains and re-plans |
+
+### v1 target (spawn-controller)
+
+| From | Event | To | Deadline / next actor |
+|---|---|---|---|
+| - | claim for a cell key | starting | start budget 30s, deadline `fail`; backend probe, sweeper backstop |
+| starting | `ready` (verify probes pass) | busy | hold bound 2h, deadline `drain`; lease `renew` re-arms it |
+| starting | `fail` | failed | retention 24h, deadline `removed`; sweeper |
+| busy | `renew` (lease heartbeat) | busy | re-arms the lease bound |
+| busy | `unlease` (release) or `drain` | draining | stop budget 30s, deadline `quarantine`; backend confirms stop |
+| draining | `stopped` (inspect confirms stop) | absent | final for this generation |
+| any non-final | `quarantine` / `missing` | quarantined / missing | retention 24h, deadline `removed` |
+| failed, quarantined, missing | `removed` | absent | final |
+
+Differences from Runtime: **no `warm`** — release drains, a worker is
+never returned to a reusable pool, and a re-claim mints the next
+generation. The claim binds tenant, space, cell key and image digest, so
+an executor's worker can never serve a foreign space or a superseded
+image.
+
+### v1 live (spawn-controller)
+
+S6/S7 (M40.3) wired `WorkerMachine` to the contract: `POST
+/v1/spaces/{space}/workers` claims (org+owner tenant, space, cell key,
+image digest -> `starting` -> `busy` row plus a lease), `POST
+/v1/workers/{id}/exec` is lease-guarded bounded exec (env delivered by
+name through `docker exec -e`, never in argv; timeout and output caps
+enforced), `/v1/workers/{id}/renew` and `/release` drive the lease
+edges, and `POST /v1/spaces/{space}/workers/drain` filtered by
+binding/job backs ToolHub's `/cli-release`. The worker row carries the
+sanitized claim (brokered credential values stripped) and the reuse
+guard re-verifies profile before serving. Worker lease rows carry a 30m
+TTL — `renew` extends only the caller's hold, and the sweeper unleases a
+worker whose holds all expired into `draining`. ToolHub's `execCLI` claims,
+renews and releases through `contracts/spawn/v1`; the old cell files and
+the in-memory pool were deleted in the same slice (S2/S4 move-then-
+delete rule). `TestWorkerTransitionsWired`,
+`TestWorkerMountsOnlyOwnSpace`, `TestWorkerNeverCrossesTenants` and
+`TestExecNoSecretInArgv` cover the machine; `TestWorkerCellRealDocker`
+runs the real docker leg.
+
 ## PassportRevision
 
 ### v0 today
@@ -227,6 +297,34 @@ revisions (at most one per layer) and first compiles the would-be active
 set — a set that cannot compile writes nothing, so a space never loses
 its serving policy to a partial cut; bootstrap is one activation of all
 layers together.
+
+### v1 live (spawn-controller)
+
+S2/S7 (M40.3) run the machine end to end on the contract: `POST
+/v1/spaces/{space}/layers/{layer}/revisions` submits a `draft`,
+`/revisions/{id}/validate` compiles it into `validated` or `rejected`,
+`/activations` cuts a validated set in one transaction, and `POST
+/v1/spaces/{space}/apply` folds submit+validate+activate into one call
+on the `base_digest` compare-and-swap — a stale base gets `conflict`,
+never a silent overwrite (`TestActivateRefusesStaleBaseDirect`,
+`TestActivateConcurrentBaseRace`). `POST /v1/spaces/{space}/settings`
+applies one allowlisted config leaf through the same CAS; rollback is
+activation of a `superseded` revision (`TestRevisionRollbackActivatesOlder`),
+and a failed activation leaves the previous active set serving
+(`TestApplyCrashLeavesPreviousActive`). Every activation stores the new
+effective digest on the space row and drains runtimes bound to the old
+digest in the same transaction (`TestRevokeDrainsOldDigest`).
+
+The v0 file triplet is gone (S7b/S7d): `generated/passports/current`,
+`.policy/<hex>` links, `apply-journal.json` and `internal/passportview`
+are deleted — consumers read `GET /v1/spaces/{space}/effective` or the
+immutable `GET /v1/spaces/{space}/policy/{service}?digest=` slice
+(`ETag` = digest, `Cache-Control: immutable`), and `apply` no longer
+keeps a journal; the activation transaction is the crash boundary.
+`GET /v1/spaces/{space}/explain` serves the stored per-leaf layer
+attribution. The v0 importer (`HUB_IMPORT_V0_DIR`) projects existing
+spaces into `spaces` + `active` user-layer revisions through the same
+Submit/Validate/Activate path.
 
 ## ChannelLink
 
