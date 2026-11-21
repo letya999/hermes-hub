@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -21,6 +22,12 @@ func Configure(cmd *exec.Cmd) {
 // the child: a graceful stop Windows supports instead of a bare kill.
 func Interrupt(p *os.Process) error {
 	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(p.Pid)) // #nosec G115 -- pid fits uint32 on Windows
+}
+
+// Group carries the Job Object handle Windows binds children to.
+type Group struct {
+	mu     sync.Mutex
+	handle uintptr
 }
 
 func (g *Group) open() error {

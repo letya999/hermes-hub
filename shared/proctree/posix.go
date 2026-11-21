@@ -5,6 +5,7 @@ package proctree
 import (
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 )
 
@@ -18,6 +19,12 @@ func Configure(cmd *exec.Cmd) {
 // Interrupt delivers SIGTERM so the child can shut down children of its
 // own before the WaitDelay deadline forces a kill.
 func Interrupt(p *os.Process) error { return p.Signal(syscall.SIGTERM) }
+
+// Group is empty on POSIX targets beyond the mutex: Setpgid in Configure
+// provides the bound without a kernel handle to release.
+type Group struct {
+	mu sync.Mutex
+}
 
 func (g *Group) open() error            { return nil }
 func (g *Group) assign(*exec.Cmd) error { return nil }

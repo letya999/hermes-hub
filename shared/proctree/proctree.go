@@ -10,17 +10,13 @@ package proctree
 
 import (
 	"os/exec"
-	"sync"
 )
 
 // Group is the orphan bound for one launcher: every child assigned to it is
 // killed when the launcher's handle closes — on a clean exit or a crash.
 // Platforms without Job Objects (Unix) keep the group empty; per-child
-// Pdeathsig/Setpgid in Configure provides the bound there.
-type Group struct {
-	mu     sync.Mutex
-	handle uintptr
-}
+// Pdeathsig/Setpgid in Configure provides the bound there. The struct is
+// defined per-platform: only Windows carries a kernel handle.
 
 // NewGroup opens the launcher's orphan bound. Failure fails closed: a
 // launcher that cannot bind its children must not spawn orphans.
