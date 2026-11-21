@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -60,6 +61,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		auth := entry.auth
 		binding := entry.binding
 		healthChecked := entry.HealthCheckedAt
+		spawnLease := entry.spawnLease
 		m.mu.Unlock()
 		lock.Unlock()
 		// config.supervision is the imperative per-space policy: the
@@ -78,44 +80,79 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		if snapshot.State != Stopped {
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			ownership = "unverified"
-			if m.VerifyOwnership(probeCtx, snapshot) == nil {
+			if spawnLease != "" {
+				// The spawn row is the compute authority — docker never
+				// sees this workload. The held lease is the ownership
+				// credential and re-arming it doubles as the liveness
+				// check: a forgotten lease means the row is gone, the
+				// claimed "missing" that recoverableRuntime keys on.
 				ownership = "verified"
-			}
-			observation, err := m.observeCompute(probeCtx, snapshot)
-			compute = observation
-			if err != nil {
 				health = "unknown"
-				if present, presenceErr := m.containerPresent(probeCtx, snapshot.Container); presenceErr == nil && !present {
-					health = "missing"
-					ownership = "absent"
-				}
-			} else {
-				health = observation.State
-				if health == "running" {
-					readiness = "unavailable"
+				switch err := m.renewClaim(probeCtx, spawnLease, snapshot.ContextID); {
+				case errors.Is(err, spawnv1.ErrNotFound):
+					health, ownership = "missing", "absent"
+				case err != nil:
+					// Renew failure that isn't absence stays unknown —
+					// an unreachable controller never authorizes a reap.
+				default:
+					// The row holding the lease is the workload's
+					// existence proof; the endpoint probe grades its
+					// readiness, feeding the same wedged path docker's
+					// "running"+unready used to.
+					health, readiness = "running", "unavailable"
 					if auth != "" && m.ready(probeCtx, snapshot.Address, auth) == nil {
 						readiness = "ready"
-					}
-					connectorHealth = "unknown"
-					if auth != "" && m.cfg.Probe == nil {
-						readiness = "unavailable"
-						if result, e := m.runtimeHealth(probeCtx, snapshot.Address, auth); e == nil {
-							observed = &result
-							readiness = observed.HermesReadiness
-							connectorHealth = observed.ConnectorHealth
-						}
-					}
-
-					for _, condition := range compute.Conditions {
-						if condition.Name == "relays_ready" && !condition.OK {
+						connectorHealth = "unknown"
+						if m.cfg.Probe == nil {
 							readiness = "unavailable"
+							if result, e := m.runtimeHealth(probeCtx, snapshot.Address, auth); e == nil {
+								observed = &result
+								readiness = observed.HermesReadiness
+								connectorHealth = observed.ConnectorHealth
+							}
 						}
 					}
 				}
-			}
-			if m.usingKubernetes() && health == "missing" && !desired {
-				if err := m.removeOwnedRuntime(probeCtx, snapshot); err != nil {
+			} else {
+				if m.VerifyOwnership(probeCtx, snapshot) == nil {
+					ownership = "verified"
+				}
+				observation, err := m.observeCompute(probeCtx, snapshot)
+				compute = observation
+				if err != nil {
 					health = "unknown"
+					if present, presenceErr := m.containerPresent(probeCtx, snapshot.Container); presenceErr == nil && !present {
+						health = "missing"
+						ownership = "absent"
+					}
+				} else {
+					health = observation.State
+					if health == "running" {
+						readiness = "unavailable"
+						if auth != "" && m.ready(probeCtx, snapshot.Address, auth) == nil {
+							readiness = "ready"
+						}
+						connectorHealth = "unknown"
+						if auth != "" && m.cfg.Probe == nil {
+							readiness = "unavailable"
+							if result, e := m.runtimeHealth(probeCtx, snapshot.Address, auth); e == nil {
+								observed = &result
+								readiness = observed.HermesReadiness
+								connectorHealth = observed.ConnectorHealth
+							}
+						}
+
+						for _, condition := range compute.Conditions {
+							if condition.Name == "relays_ready" && !condition.OK {
+								readiness = "unavailable"
+							}
+						}
+					}
+				}
+				if m.usingKubernetes() && health == "missing" && !desired {
+					if err := m.removeOwnedRuntime(probeCtx, snapshot); err != nil {
+						health = "unknown"
+					}
 				}
 			}
 			cancel()
@@ -194,7 +231,21 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			continue
 		}
 		if remediate && snapshot.Container != "" && !m.usingKubernetes() {
-			if _, err := m.command(ctx, "restart", "--time", "30", snapshot.Container); err == nil {
+			if spawnLease != "" {
+				// A claimed workload restarts through its row: drain stops
+				// the container under spawn's budget; a stopped local entry
+				// lets the next Ensure claim a fresh generation — the same
+				// respawn primitive the HTTP path uses.
+				if err := m.drainClaim(ctx, binding); err == nil {
+					m.mu.Lock()
+					if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
+						current.State, current.IdleDeadline, current.spawnLease = Stopped, time.Time{}, ""
+						current.consecutiveUncertain, current.lastRemediatedAt = 0, now
+						_ = m.persistLocked()
+					}
+					m.mu.Unlock()
+				}
+			} else if _, err := m.command(ctx, "restart", "--time", "30", snapshot.Container); err == nil {
 				m.mu.Lock()
 				if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 					current.restored, current.consecutiveUncertain, current.lastRemediatedAt = true, 0, now

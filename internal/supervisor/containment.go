@@ -148,21 +148,35 @@ func (m *Manager) containHeldScope(ctx context.Context, hold AdministrativeHold)
 			continue
 		}
 		snapshot := entry.Runtime
+		claimed := entry.spawnLease != ""
+		binding := entry.binding
 		m.mu.Unlock()
-		id, err := m.ownedContainerID(ctx, snapshot)
-		if err != nil && !errors.Is(err, ErrRuntimeMissing) {
-			lock.Unlock()
-			return err
-		}
-		if err == nil {
-			grace, cancel := context.WithTimeout(ctx, 30*time.Second)
-			_, _ = m.command(grace, "stop", "--time", "25", id)
-			cancel()
-		}
-		// Re-verify ownership before the bounded forced-removal fallback.
-		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
-			lock.Unlock()
-			return err
+		if claimed {
+			// The workload belongs to spawn-controller: containment is a
+			// lane drain (the row stops under spawn's budget) plus the local
+			// hold release — a released-only row would stay warm and keep
+			// running, which is not containment.
+			if err := m.drainClaim(ctx, binding); err != nil {
+				lock.Unlock()
+				return err
+			}
+			m.releaseClaim(ctx, entry)
+		} else {
+			id, err := m.ownedContainerID(ctx, snapshot)
+			if err != nil && !errors.Is(err, ErrRuntimeMissing) {
+				lock.Unlock()
+				return err
+			}
+			if err == nil {
+				grace, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_, _ = m.command(grace, "stop", "--time", "25", id)
+				cancel()
+			}
+			// Re-verify ownership before the bounded forced-removal fallback.
+			if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+				lock.Unlock()
+				return err
+			}
 		}
 		m.mu.Lock()
 		previousLeases := entry.leases

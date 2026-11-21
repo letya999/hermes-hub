@@ -646,11 +646,13 @@ func refreshSharedRuntimeTokens(dir, environment string) error {
 	return nil
 }
 
-// respawnRuntime asks the supervisor to replace the space's runtime container
-// — the recreate/respawn effect for a supervised runtime: an idle container
-// is re-created from the published revision so env-carried config applies; a
-// busy one converges on its next spawn. A space without a supervisor endpoint
-// has no runtime to respawn, which is a no-op rather than a failure.
+// respawnRuntime asks the supervisor to replace the space's runtime workload
+// — the recreate/respawn effect for a supervised runtime. Since CHG-0336 S7c
+// the supervisor performs that replacement through spawn-controller's
+// drain+claim lane, which binds the effective digest this apply just
+// activated: the previous generation drains and a fresh one warms. A space
+// without a supervisor endpoint has no runtime to respawn, which is a no-op
+// rather than a failure.
 func respawnRuntime(ctx context.Context, dir, env string) error {
 	settings, err := stack.ReadEffective(dir, env)
 	if err != nil {
@@ -700,8 +702,9 @@ func respawnRuntime(ctx context.Context, dir, env string) error {
 		return resp.StatusCode, nil
 	}
 	// Recreate needs a real container replacement for env-carried leaves —
-	// the /v1/respawn route replaces the container; an older supervisor image
-	// answers 404 and falls back to the deferred restart-request marker.
+	// the /v1/respawn route drains and re-claims through spawn-controller; an
+	// older supervisor image answers 404 and falls back to the deferred
+	// restart-request marker.
 	if status, err := post("/v1/respawn"); err != nil {
 		return err
 	} else if status == http.StatusNotFound {

@@ -3,14 +3,12 @@ package supervisor
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +17,7 @@ import (
 
 func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 	var restarting atomic.Bool
+	var probeOnce sync.Once
 	probeEntered := make(chan struct{})
 	ready := make(chan struct{})
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,17 +31,10 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if args[0] == "restart" {
-			id, err := hex.DecodeString(args[len(args)-1])
-			if err != nil || len(id) != 32 {
-				t.Error("restart did not use immutable owned ID")
-			}
-			restarting.Store(true)
-		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error {
 		if restarting.Load() {
-			close(probeEntered)
+			probeOnce.Do(func() { close(probeEntered) })
 			<-ready
 		}
 		return nil
@@ -59,6 +51,10 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 	dropEnsureHolds(entry)
 	rt = entry.Runtime
 	m.mu.Unlock()
+	// The accepted restart's drain+reclaim is the slow part now: arm the
+	// replacement claim so readiness probing on it is what serializes
+	// acquisitions, the way the docker restart + probe did before S7c.
+	m.cfg.Spawn.(*claimStub).claimHook = func() { restarting.Store(true) }
 	finished := make(chan error, 1)
 	go func() { _, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 0); finished <- err }()
 	select {
@@ -82,11 +78,17 @@ func TestProjectionRestartBlocksNewLeaseUntilActualReadiness(t *testing.T) {
 	}
 }
 
-// docker restart defaults to a 10 s grace; long runs need SIGTERM room, so the
-// supervisor must pass an explicit --time >= 30.
-func TestRuntimeRestartUsesSigtermGrace(t *testing.T) {
-	var restartArgs []string
+// docker restart's 10 s default grace became spawn-controller's drain budget
+// with the claim cutover (S7c): a claimed workload is drained through the
+// spawn lane, which owns the SIGTERM/SIGKILL window, then re-claimed fresh.
+// What remains to assert here is that an accepted restart takes that lane —
+// drain plus fresh claim — rather than leaving the workload running.
+func TestAcceptedRestartDrainsClaimedWorkload(t *testing.T) {
+	var scheduled atomic.Bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/restart" {
+			scheduled.Store(true)
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 	}))
 	defer api.Close()
@@ -94,11 +96,9 @@ func TestRuntimeRestartUsesSigtermGrace(t *testing.T) {
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if args[0] == "restart" {
-			restartArgs = append([]string{}, args...)
-		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +112,8 @@ func TestRuntimeRestartUsesSigtermGrace(t *testing.T) {
 	if err != nil || !applied {
 		t.Fatal(applied, err)
 	}
-	if len(restartArgs) != 4 || restartArgs[0] != "restart" || restartArgs[1] != "--time" || restartArgs[2] != "30" {
-		t.Fatalf("restart without SIGTERM grace window: %v", restartArgs)
-	}
-	if id, err := hex.DecodeString(restartArgs[3]); err != nil || len(id) != 32 {
-		t.Fatalf("restart target is not the immutable container ID: %v", restartArgs)
+	if !scheduled.Load() || stub.drainCount() != 1 || stub.claimCount() != 2 {
+		t.Fatalf("claimed restart lane: scheduled=%v drains=%d claims=%d", scheduled.Load(), stub.drainCount(), stub.claimCount())
 	}
 }
 
@@ -161,12 +158,6 @@ func TestProjectionRestartFailureKeepsFreshReadinessRequirement(t *testing.T) {
 				if args[0] == "inspect" {
 					return nil, os.ErrNotExist
 				}
-				if args[0] == "restart" {
-					restarting.Store(true)
-					if failure == "daemon" {
-						return nil, errors.New("daemon refused")
-					}
-				}
 				return []byte("running"), nil
 			}, func(context.Context, string, string) error {
 				if restarting.Load() && failure == "readiness" {
@@ -177,6 +168,16 @@ func TestProjectionRestartFailureKeepsFreshReadinessRequirement(t *testing.T) {
 			rt, err := m.Ensure(context.Background(), binding(root))
 			if err != nil {
 				t.Fatal(err)
+			}
+			// The accepted restart's compute step moved into spawn's lane:
+			// "daemon" is a refused drain, "readiness" a fresh claim whose
+			// endpoint never turns ready.
+			stub := m.cfg.Spawn.(*claimStub)
+			switch failure {
+			case "daemon":
+				stub.drainErr = errors.New("daemon refused")
+			case "readiness":
+				stub.claimHook = func() { restarting.Store(true) }
 			}
 			m.mu.Lock()
 			entry := m.items[runtimeKey(binding(root))]
@@ -202,7 +203,6 @@ func TestProjectionRestartFailureKeepsFreshReadinessRequirement(t *testing.T) {
 }
 
 func TestProjectionRestartAcknowledgesBeforeNotifierDeadline(t *testing.T) {
-	var restarting atomic.Bool
 	ready := make(chan struct{})
 	var release sync.Once
 	defer release.Do(func() { close(ready) })
@@ -214,16 +214,8 @@ func TestProjectionRestartAcknowledgesBeforeNotifierDeadline(t *testing.T) {
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if args[0] == "restart" {
-			restarting.Store(true)
-		}
 		return []byte("running"), nil
-	}, func(context.Context, string, string) error {
-		if restarting.Load() {
-			<-ready
-		}
-		return nil
-	})
+	}, func(context.Context, string, string) error { return nil })
 	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +224,9 @@ func TestProjectionRestartAcknowledgesBeforeNotifierDeadline(t *testing.T) {
 	entry.Address, entry.State, entry.auth = native.URL, Idle, "secret"
 	dropEnsureHolds(entry)
 	m.mu.Unlock()
+	// The replacement claim models the long restart: the ack must flush while
+	// the drain+reclaim still has not completed.
+	m.cfg.Spawn.(*claimStub).claimHook = func() { <-ready }
 	supervisor := httptest.NewServer(m.Handler())
 	defer func() { release.Do(func() { close(ready) }); supervisor.Close() }()
 	request, _ := http.NewRequest(http.MethodPost, supervisor.URL+"/v1/restart-request", bytes.NewBufferString(`{"principal_id":"alice","context_id":"alice","runtime_id":"alice"}`))
@@ -325,58 +320,6 @@ func TestRestartRequestSkipsRestartForDeadNotifier(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func TestManagedRestartIgnoresRetiredDisplayOverlay(t *testing.T) {
-	t.Setenv("HUB_ENV", "prod")
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"scheduled":true}`) }))
-	defer api.Close()
-	var configPath string
-	var baseline []byte
-	checked := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "restart" {
-			body, err := os.ReadFile(configPath)
-			if err != nil || !bytes.Equal(body, baseline) {
-				t.Error("retired display overlay changed managed config", err)
-			}
-			checked = true
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
-	_, err := m.Ensure(context.Background(), binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeManagedFixtures(t, root)
-	configPath, err = m.materializeHermesConfig(binding(root), "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseline, err = os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	overlay := filepath.Join(root, "managed", "prod", "runtime")
-	if err := os.MkdirAll(overlay, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(overlay, "self-settings.json"), []byte(`{"display.long_running_notifications":false}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	m.mu.Lock()
-	entry := m.items[runtimeKey(binding(root))]
-	entry.Address = api.URL
-	entry.Managed = true
-	rt := entry.Runtime
-	m.mu.Unlock()
-	applied, err := m.applyRuntimeRestart(context.Background(), rt, "secret", 1)
-	if err != nil || !applied || !checked {
-		t.Fatal(applied, checked, err)
-	}
-}
 
 // Every accepted restart is counted on the persisted runtime record — /status
 // renders the count so an operator sees restart churn (SPEC-0053 R3.6).

@@ -17,51 +17,6 @@ import (
 	ktest "k8s.io/client-go/testing"
 )
 
-func TestSandboxDockerSelectionFailsClosed(t *testing.T) {
-	for _, runtime := range []string{"runc", "runsc", "kata"} {
-		t.Run(runtime, func(t *testing.T) {
-			runs := 0
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "run" {
-					runs++
-				}
-				return []byte(`{"runc":{}}`), nil
-			}, nil)
-			writeManagedRevisionFixtures(t, root)
-			m.cfg.ContainerRuntime = runtime
-			args, err := m.runArgsWithGeneration(binding(root), "sandbox-test", 8080, "gen-1")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(strings.Join(args, " "), "--runtime "+runtime+" ") {
-				t.Fatal("selected runtime missing from launch")
-			}
-			s := stack.Settings{}
-			err = m.checkContainerRuntime(t.Context(), s)
-			if (err == nil) != (runtime == "runc") {
-				t.Fatalf("unavailable %s: %v", runtime, err)
-			}
-			if runtime != "runc" {
-				if _, err := (dockerBackend{m}).Spawn(t.Context(), SpawnRequest{Settings: s}); err == nil || !strings.Contains(err.Error(), "not installed") {
-					t.Fatalf("missing sandbox error=%v", err)
-				}
-				if runs != 0 {
-					t.Fatal("missing sandbox attempted compute/fallback")
-				}
-				if err := m.checkContainerRuntime(t.Context(), stack.Settings{Tools: map[string]stack.ToolEntry{"browser": {Via: stack.ToolViaNative}}}); err == nil || !strings.Contains(err.Error(), "without browser") {
-					t.Fatal("unqualified layout accepted")
-				}
-			}
-		})
-	}
-	m, _ := testManager(t, nil, nil)
-	cfg := m.cfg
-	cfg.ContainerRuntime = "runsc "
-	if _, err := newTestManager(t, cfg); err == nil {
-		t.Fatal("invalid runtime accepted")
-	}
-}
-
 func TestSandboxRelayDiscovery(t *testing.T) {
 	for _, scenario := range []string{"valid", "missing", "ambiguous", "loopback", "unreadable"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -183,47 +138,5 @@ func TestSandboxKubernetesClassCannotDisappear(t *testing.T) {
 	}
 	if _, err := k.Observe(t.Context(), rt); err == nil || !strings.Contains(err.Error(), "isolation mismatch") {
 		t.Fatalf("weaker Pod observation=%v", err)
-	}
-}
-
-func TestSandboxDockerSpawnUsesPinnedRelays(t *testing.T) {
-	var launch []string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		switch args[0] {
-		case "info":
-			return []byte(`{"runsc":{}}`), nil
-		case "ps":
-			return []byte("relay"), nil
-		case "inspect":
-			if strings.Contains(args[2], "NetworkSettings") {
-				return []byte(`{"IPAddress":"172.19.0.2","Aliases":["toolhub","model-relay"]}`), nil
-			}
-			if args[2] == "{{.HostConfig.Runtime}}" {
-				return []byte("runsc"), nil
-			}
-			if launch == nil {
-				return nil, errors.New("no container")
-			}
-			return []byte("running"), nil
-		case "run":
-			if isRuntimeSpawn(args) {
-				launch = append([]string(nil), args...)
-			}
-		}
-		return []byte("ok"), nil
-	}, func(context.Context, string, string) error { return nil })
-	writeManagedRevisionFixtures(t, root)
-	m.cfg.ContainerRuntime = "runsc"
-	if _, err := m.Ensure(t.Context(), binding(root)); err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(launch, " ")
-	for _, required := range []string{"--runtime runsc", "--add-host toolhub:172.19.0.2", "--add-host model-relay:172.19.0.2", "--network hermes-hub-agent-alice-prod", "--read-only", "--cap-drop ALL"} {
-		if !strings.Contains(joined, required) {
-			t.Fatalf("launch missing %s", required)
-		}
-	}
-	if strings.Contains(joined, "--network host") || strings.Contains(joined, "host-gateway") {
-		t.Fatal("sandbox network widened")
 	}
 }

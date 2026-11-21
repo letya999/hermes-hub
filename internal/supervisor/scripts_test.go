@@ -324,16 +324,13 @@ func TestM10UsageLookupDoesNotWakeStoppedRuntime(t *testing.T) {
 }
 
 func TestM10IdleDeadlineStartsAfterActivityFinishes(t *testing.T) {
-	removes := 0
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if args[0] == "rm" {
-			removes++
-		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	now := time.Unix(100, 0)
 	m.cfg.Now = func() time.Time { return now }
 	lease, _, err := m.Acquire(context.Background(), binding(root), LeaseJob)
@@ -344,7 +341,7 @@ func TestM10IdleDeadlineStartsAfterActivityFinishes(t *testing.T) {
 	if err = m.Reap(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("active runtime reaped")
 	}
 	if err = m.ReleaseLease(lease.ID); err != nil {
@@ -353,14 +350,14 @@ func TestM10IdleDeadlineStartsAfterActivityFinishes(t *testing.T) {
 	if err = m.Reap(context.Background(), now.Add(m.cfg.WarmTTL/2)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("runtime did not get fresh idle interval")
 	}
 	if err = m.Reap(context.Background(), now.Add(m.cfg.WarmTTL)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 2 {
-		t.Fatalf("idle runtime not reaped: %d", removes)
+	if stub.releaseCount() != 1 {
+		t.Fatalf("idle runtime lease not released: %d", stub.releaseCount())
 	}
 }
 

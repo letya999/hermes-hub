@@ -258,7 +258,29 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 			continue
 		}
 		snapshot := runtime.Runtime
+		claimed := runtime.spawnLease != ""
 		m.mu.Unlock()
+		if claimed {
+			// A claimed workload's container belongs to spawn-controller
+			// under the same name — docker is not ours to stop. Dropping
+			// the entry plus the lease sends the row back to warm, where
+			// its own idle TTL drains the workload.
+			m.mu.Lock()
+			if !m.runtimeDesiredLocked(runtime) && runtime.Generation == snapshot.Generation {
+				runtime.State, runtime.IdleDeadline, runtime.Ownership = Stopped, time.Time{}, "absent"
+				if err := m.persistLocked(); err != nil {
+					runtime.Runtime = snapshot
+					m.mu.Unlock()
+					lock.Unlock()
+					return err
+				}
+				m.releaseSlotLocked(key)
+			}
+			m.mu.Unlock()
+			lock.Unlock()
+			m.releaseClaim(ctx, runtime)
+			continue
+		}
 		containerID, ownershipErr := m.ownedContainerID(ctx, snapshot)
 		if errors.Is(ownershipErr, ErrRuntimeMissing) {
 			if m.usingKubernetes() {
@@ -280,6 +302,7 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 			}
 			m.mu.Unlock()
 			lock.Unlock()
+			m.releaseClaim(ctx, runtime)
 			continue
 		}
 		if ownershipErr != nil {
@@ -344,6 +367,9 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 		if err != nil {
 			return fmt.Errorf("stop runtime %s: %w", container, err)
 		}
+		// The spawn row's hold releases with the entry's stop; the row goes
+		// warm and its own idle TTL drains the workload.
+		m.releaseClaim(ctx, runtime)
 	}
 	return nil
 }

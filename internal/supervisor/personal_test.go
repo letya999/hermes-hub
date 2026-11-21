@@ -272,27 +272,15 @@ func TestSupervisorNarrowOps(t *testing.T) {
 // A restart decision reaches the verified remediation path on the next sweep;
 // without the flag the same wedged runtime inside cooldown is untouched.
 func TestSupervisorRestartHonoredBySweep(t *testing.T) {
-	var restarts atomic.Int64
-	var started atomic.Bool
 	var ready atomic.Bool
 	ready.Store(true)
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			started.Store(true)
-		}
-		if args[0] == "inspect" && !started.Load() {
-			return nil, errors.New("not found")
-		}
-		if args[0] == "restart" {
-			restarts.Add(1)
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error {
 		if !ready.Load() {
 			return errors.New("readiness unavailable")
 		}
 		return nil
 	})
+	stub := m.cfg.Spawn.(*claimStub)
 	m.cfg.Decide = func(_ context.Context, req PersonalRequest) (PersonalDecision, error) {
 		return PersonalDecision{Action: "restart"}, nil
 	}
@@ -306,8 +294,8 @@ func TestSupervisorRestartHonoredBySweep(t *testing.T) {
 	ready.Store(false)
 	m.ReconcileHealth(context.Background(), m.cfg.Now())
 	m.ReconcileHealth(context.Background(), m.cfg.Now())
-	if restarts.Load() != 0 {
-		t.Fatalf("wedged runtime restarted without a decision: %d", restarts.Load())
+	if stub.drainCount() != 0 {
+		t.Fatalf("wedged runtime drained without a decision: %d", stub.drainCount())
 	}
 	m.mu.Lock()
 	key := "alice\x00alice\x00gateway"
@@ -316,8 +304,8 @@ func TestSupervisorRestartHonoredBySweep(t *testing.T) {
 	m.mu.Unlock()
 	m.drainPersonal(context.Background())
 	m.ReconcileHealth(context.Background(), m.cfg.Now())
-	if restarts.Load() != 1 {
-		t.Fatalf("restart decision not honored by sweep: %d", restarts.Load())
+	if stub.drainCount() != 1 {
+		t.Fatalf("restart decision not honored by sweep: %d", stub.drainCount())
 	}
 }
 

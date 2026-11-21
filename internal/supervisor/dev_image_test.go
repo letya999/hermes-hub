@@ -62,40 +62,6 @@ func TestDevScriptImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	}
 }
 
-func TestManagedRunArgsSelectsDevRuntimeImage(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
-	settings := writeManagedFixtures(t, root)
-	m.cfg.Environment, settings.Environment = "dev", "dev"
-	for _, name := range []string{"managed-runtime", "hermes"} {
-		body, err := os.ReadFile(filepath.Join(root, name+".prod.env"))
-		if name == "hermes" {
-			body, err = os.ReadFile(filepath.Join(root, "generated", "hermes.prod.yaml"))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		ext := ".env"
-		target := filepath.Join(root, name+".dev"+ext)
-		if name == "hermes" {
-			ext = ".yaml"
-			target = filepath.Join(root, "generated", name+".dev"+ext)
-		}
-		if err := os.WriteFile(target, body, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "generated", "dev-runtime-image"), []byte("hermes-hub-dev-alice-hermes-runtime:local\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.managedRunArgs(binding(root), settings, "fixture", "gen")
-	if err != nil || args[len(args)-2] != "hermes-hub-dev-alice-hermes-runtime:local" {
-		t.Fatalf("managed dev image: %v %v", args, err)
-	}
-}
-
 func TestControlRelaySelectsDevRuntimeImage(t *testing.T) {
 	var run []string
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {

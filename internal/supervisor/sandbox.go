@@ -10,24 +10,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
-func (m *Manager) checkContainerRuntime(ctx context.Context, settings stack.Settings) error {
-	if m.cfg.ContainerRuntime == "runc" {
-		return nil
-	}
-	if settings.Has("browser") || settings.Has("meet") {
-		return errors.New("sandbox Docker runtime requires managed execution without browser or meet")
-	}
-	body, err := m.command(ctx, "info", "--format", "{{json .Runtimes}}")
-	var runtimes map[string]json.RawMessage
-	if err != nil || len(body) > 64*1024 || json.Unmarshal(body, &runtimes) != nil {
-		return errors.New("container runtime availability unavailable")
-	}
-	if _, ok := runtimes[m.cfg.ContainerRuntime]; !ok {
-		return errors.New("selected container runtime is not installed on the Docker daemon")
-	}
-	return nil
-}
-
 // Docker embedded DNS is outside runsc's network stack. Only pin aliases on
 // the already-verified internal space network; never add a public resolver.
 func (m *Manager) sandboxRelayHosts(ctx context.Context, settings stack.Settings, dir string) ([]string, error) {

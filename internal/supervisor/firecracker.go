@@ -116,9 +116,10 @@ type fcMount struct {
 	ro       bool
 }
 
-// fcGuestMounts reproduces managedRunArgs' filesystem contract as guest
-// bind-mounts. Host sources must stay under the space dir — a mount that
-// escapes the share has no guest representation and fails the spawn.
+// fcGuestMounts reproduces the managed-runtime filesystem contract (now
+// built spawn-side, S7c) as guest bind-mounts. Host sources must stay under
+// the space dir — a mount that escapes the share has no guest representation
+// and fails the spawn.
 func (m *Manager) fcGuestMounts(binding Binding, settings stack.Settings, envName, policyPath, effectiveConfig string) ([]fcMount, error) {
 	dir, managedDir := binding.ContextRoot, filepath.Join(binding.ContextRoot, "managed", envName)
 	mounts := []fcMount{

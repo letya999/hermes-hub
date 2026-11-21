@@ -13,6 +13,11 @@ import (
 // New leaves registry ownership to Serve and never trusts fixture defaults.
 func newTestManager(t testing.TB, cfg Config) (*Manager, error) {
 	t.Helper()
+	// Managed claims move through contracts/spawn/v1; tests get the stub so
+	// they exercise supervisor bookkeeping, not a live spawn-controller.
+	if cfg.Spawn == nil {
+		cfg.Spawn = &claimStub{}
+	}
 	m, err := New(cfg)
 	if err != nil || cfg.Identity != nil {
 		return m, err

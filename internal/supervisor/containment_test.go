@@ -3,7 +3,6 @@ package supervisor
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -310,82 +309,46 @@ func TestMasterFencesLateEffects(t *testing.T) {
 }
 
 func TestMasterContainsOnlyVerifiedScope(t *testing.T) {
-	for _, force := range []bool{false, true} {
-		t.Run(map[bool]string{false: "graceful", true: "forced"}[force], func(t *testing.T) {
-			t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin")
-			var stopped, removed []string
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				switch args[0] {
-				case "inspect":
-					return nil, os.ErrNotExist
-				case "stop":
-					stopped = append(stopped, args[len(args)-1])
-					if force {
-						return nil, os.ErrDeadlineExceeded
-					}
-				case "rm":
-					removed = append(removed, args[len(args)-1])
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			a, err := m.Ensure(t.Context(), binding(root))
-			if err != nil {
-				t.Fatal(err)
-			}
-			owned, err := m.ownedContainerID(t.Context(), a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			foreignKey := runtimeKey(Binding{PrincipalID: "bob", ContextID: "bob", RuntimeMode: "gateway"})
-			m.items[foreignKey] = &runtimeEntry{Runtime: Runtime{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", Generation: "gen-bob", Container: "foreign-shared", State: Ready}}
-			r := httptest.NewRequest("POST", "/v1/admin/holds", strings.NewReader(`{"principal_id":"alice","context_id":"alice","reason":"manual"}`))
-			r.Header.Set("Authorization", "Bearer synthetic-admin")
-			w := httptest.NewRecorder()
-			m.Handler().ServeHTTP(w, r)
-			if w.Code != 200 {
-				t.Fatalf("containment: %d %s", w.Code, w.Body.String())
-			}
-			// Managed cleanup removes the verified control relay with its
-			// runtime: exactly two removals, runtime first.
-			relay := hex.EncodeToString(hashBytes(a.Container + "-ctl" + a.Generation))
-			if len(stopped) != 1 || stopped[0] != owned || len(removed) != 2 || removed[0] != owned || removed[1] != relay {
-				t.Errorf("verified tree not stopped with bounded fallback: stop=%v remove=%v expected=[%s %s]", stopped, removed, owned, relay)
-			}
-			if m.items[runtimeKey(binding(root))].State != Stopped {
-				t.Error("contained runtime remains active")
-			}
-			if m.items[foreignKey].State != Ready {
-				t.Error("containment damaged a foreign consumer")
-			}
-		})
+	t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin")
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	if _, err := m.Ensure(t.Context(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	foreignKey := runtimeKey(Binding{PrincipalID: "bob", ContextID: "bob", RuntimeMode: "gateway"})
+	m.items[foreignKey] = &runtimeEntry{Runtime: Runtime{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", Generation: "gen-bob", Container: "foreign-shared", State: Ready}}
+	r := httptest.NewRequest("POST", "/v1/admin/holds", strings.NewReader(`{"principal_id":"alice","context_id":"alice","reason":"manual"}`))
+	r.Header.Set("Authorization", "Bearer synthetic-admin")
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("containment: %d %s", w.Code, w.Body.String())
+	}
+	// Containment of a claimed runtime drains its spawn lane — the graceful
+	// vs forced teardown budget is spawn's backend concern — and releases
+	// the local hold. Exactly the held scope's lane drains.
+	if stub.drainCount() != 1 || stub.releaseCount() != 1 {
+		t.Errorf("verified scope not contained: drains=%d released=%d", stub.drainCount(), stub.releaseCount())
+	}
+	if m.items[runtimeKey(binding(root))].State != Stopped {
+		t.Error("contained runtime remains active")
+	}
+	if m.items[foreignKey].State != Ready {
+		t.Error("containment damaged a foreign consumer")
 	}
 }
 
 func TestMasterHoldReportsIncompleteContainment(t *testing.T) {
-	for _, kind := range []string{"busy", "unverified", "remove-failure"} {
+	for _, kind := range []string{"busy", "remove-failure"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin")
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+			stub := m.cfg.Spawn.(*claimStub)
 			if _, err := m.Ensure(t.Context(), binding(root)); err != nil {
 				t.Fatal(err)
 			}
-			original := m.cfg.Command
-			m.cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-				if kind == "unverified" {
-					if args[0] != "inspect" && args[0] != "ps" {
-						t.Errorf("unverified resource mutation: %s", args[0])
-					}
-					return nil, os.ErrPermission
-				}
-				if kind == "remove-failure" && args[0] == "rm" {
-					return nil, os.ErrPermission
-				}
-				return original(ctx, args...)
+			if kind == "remove-failure" {
+				stub.drainErr = os.ErrPermission
 			}
 			lock := m.lockFor(runtimeKey(binding(root)))
 			if kind == "busy" {
@@ -432,20 +395,9 @@ func TestMasterHoldReportsIncompleteContainment(t *testing.T) {
 
 func TestMasterContainmentRetriesAfterRestart(t *testing.T) {
 	t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin")
-	fail := true
-	restarts := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		if fail && (args[0] == "stop" || args[0] == "rm") {
-			return nil, os.ErrPermission
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	stub.drainErr = os.ErrPermission
 	if _, err := m.Ensure(t.Context(), binding(root)); err != nil {
 		t.Fatal(err)
 	}
@@ -467,13 +419,13 @@ func TestMasterContainmentRetriesAfterRestart(t *testing.T) {
 	if desired {
 		t.Error("retained demand overrides administrative hold")
 	}
-	fail = false
+	stub.drainErr = nil
 	restarted.ReconcileHealth(t.Context(), time.Unix(200, 0))
 	if restarted.items[key].State != Stopped {
 		t.Errorf("restart did not retry durable containment: %s", restarted.items[key].State)
 	}
-	if restarts != 0 {
-		t.Fatalf("watchdog restarted a contained runtime %d times", restarts)
+	if stub.claimCount() != 1 {
+		t.Fatalf("watchdog claimed a contained runtime %d times", stub.claimCount())
 	}
 }
 

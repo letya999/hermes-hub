@@ -203,42 +203,6 @@ func TestRuntimeImageMalformedPinsFallback(t *testing.T) {
 	}
 }
 
-func TestSpawnArgsUseRolloutPin(t *testing.T) {
-	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
-	m.cfg.Environment = "prod"
-	if err := WriteRolloutPins(ctxRoot, RolloutPins{Envs: map[string]RolloutEnv{
-		"prod": {Current: RolloutPin{Image: "img/stable:1", SmokedAt: time.Now().UTC()}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.runArgsWithGeneration(binding(ctxRoot), "fixture", 19000, "gen-1")
-	if err != nil {
-		t.Fatalf("runArgs: %v", err)
-	}
-	if args[len(args)-2] != "img/stable:1" {
-		t.Fatalf("spawn did not pick rollout pin: %v", args[len(args)-2:])
-	}
-}
-
-func TestManagedSpawnArgsUseRolloutPin(t *testing.T) {
-	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
-	settings := writeManagedFixtures(t, ctxRoot)
-	m.cfg.Environment = "prod"
-	settings.Environment = "prod"
-	if err := WriteRolloutPins(ctxRoot, RolloutPins{Envs: map[string]RolloutEnv{
-		"prod": {Current: RolloutPin{Image: "img/stable:1", SmokedAt: time.Now().UTC()}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.managedRunArgs(binding(ctxRoot), settings, "fixture", "gen")
-	if err != nil {
-		t.Fatalf("managedRunArgs: %v", err)
-	}
-	if args[len(args)-2] != "img/stable:1" {
-		t.Fatalf("managed spawn did not pick rollout pin: %v", args[len(args)-2:])
-	}
-}
-
 func TestControlRelayUsesRolloutPin(t *testing.T) {
 	var run []string
 	m, ctxRoot := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {

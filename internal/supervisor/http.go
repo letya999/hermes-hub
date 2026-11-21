@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -312,10 +313,10 @@ func (m *Manager) applyRuntimeRestart(ctx context.Context, runtime Runtime, auth
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
-	return m.applyRuntimeRestartLocked(ctx, runtime, auth, ownLeases)
+	return m.applyRuntimeRestartLocked(ctx, runtime, auth, ownLeases, lock)
 }
 
-func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime, auth string, ownLeases int) (bool, error) {
+func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime, auth string, ownLeases int, lock *sync.Mutex) (bool, error) {
 	key := runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode})
 	m.mu.Lock()
 	entry := m.items[key]
@@ -328,18 +329,28 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	if busy {
 		return false, nil
 	}
-	if m.usingKubernetes() {
+	m.mu.Lock()
+	claimed := entry.spawnLease != ""
+	m.mu.Unlock()
+	var container string
+	var err error
+	switch {
+	case claimed:
+		// The workload belongs to spawn-controller: replacement happens
+		// through drain + claim, never a local docker restart.
+	case m.usingKubernetes():
 		return m.restartKubernetesLocked(ctx, runtime)
-	}
-	container, err := m.ownedContainerID(ctx, runtime)
-	if err != nil {
-		return false, err
-	}
-	if runtime.Managed {
-		// The agent's config is read-only: refresh its host source before
-		// Docker remounts it, otherwise a saved overlay fails preflight.
-		if _, err := m.materializeHermesConfig(entry.binding, m.environment()); err != nil {
+	default:
+		container, err = m.ownedContainerID(ctx, runtime)
+		if err != nil {
 			return false, err
+		}
+		if runtime.Managed {
+			// The agent's config is read-only: refresh its host source before
+			// Docker remounts it, otherwise a saved overlay fails preflight.
+			if _, err := m.materializeHermesConfig(entry.binding, m.environment()); err != nil {
+				return false, err
+			}
 		}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, runtime.Address+"/v1/restart", nil)
@@ -370,13 +381,49 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	// deadline expires. New jobs remain behind this same acquisition lock.
 	restart, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	// SIGTERM first, then 30 s before SIGKILL — an abrupt kill loses Hermes's
-	// own cleanup and any in-flight work the lease check could not see.
-	if _, err := m.command(restart, "restart", "--time", "30", container); err != nil {
-		return false, err
-	}
-	if err := m.ready(restart, runtime.Address, auth); err != nil {
-		return false, err
+	if claimed {
+		// The daemon accepted its graceful exit; spawn-controller owns the
+		// workload, so a drain replaces the generation and a fresh claim
+		// yields the endpoint readiness is probed on. Ensure takes the key
+		// lock itself — the acquisition lock is released across it and the
+		// entry re-fetched afterwards, mirroring respawnRuntime.
+		binding := entry.binding
+		if err := m.drainClaim(restart, binding); err != nil {
+			return false, err
+		}
+		m.mu.Lock()
+		entry.State, entry.IdleDeadline, entry.spawnLease = Stopped, time.Time{}, ""
+		if err := m.persistLocked(); err != nil {
+			m.mu.Unlock()
+			return false, err
+		}
+		m.mu.Unlock()
+		lock.Unlock()
+		fresh, err := m.Ensure(restart, binding)
+		lock.Lock()
+		if err != nil {
+			return false, err
+		}
+		if err := m.ready(restart, fresh.Address, auth); err != nil {
+			return false, err
+		}
+		m.mu.Lock()
+		if current := m.items[key]; current != nil {
+			current.restored = false
+			current.Runtime.PendingRestart = nil
+			_ = m.persistLocked()
+		}
+		m.mu.Unlock()
+		return true, nil
+	} else {
+		// SIGTERM first, then 30 s before SIGKILL — an abrupt kill loses Hermes's
+		// own cleanup and any in-flight work the lease check could not see.
+		if _, err := m.command(restart, "restart", "--time", "30", container); err != nil {
+			return false, err
+		}
+		if err := m.ready(restart, runtime.Address, auth); err != nil {
+			return false, err
+		}
 	}
 	m.mu.Lock()
 	entry.restored = false
@@ -503,7 +550,7 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
-		_, err = m.applyRuntimeRestartLocked(ctx, snapshot, auth, 0)
+		_, err = m.applyRuntimeRestartLocked(ctx, snapshot, auth, 0, lock)
 		if err != nil {
 			log.Printf("supervisor accepted projection restart failed: %v", err)
 		}
@@ -589,13 +636,15 @@ func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, 
 	// The respawn outlives the client's deadline like an accepted restart.
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	_, _ = m.command(ctx, "stop", "--time", "30", snapshot.Container) // a dead container makes rm authoritative anyway
-	if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+	// Spawn-controller owns the workload: draining the row stops the old
+	// generation's container under its stop budget — the claim below then
+	// starts a fresh one (S7c).
+	if err := m.drainClaim(ctx, binding); err != nil {
 		lock.Unlock()
 		return false, err
 	}
 	m.mu.Lock()
-	current.State, current.IdleDeadline = Stopped, time.Time{}
+	current.State, current.IdleDeadline, current.spawnLease = Stopped, time.Time{}, ""
 	_ = m.persistLocked()
 	m.mu.Unlock()
 	lock.Unlock()

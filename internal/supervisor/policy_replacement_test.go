@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -18,45 +17,23 @@ import (
 // policy B: the runtime's own envelope gate rejects them with 409 forever.
 // Ensure must replace the generation instead of reusing it.
 func TestEnsureReplacesRuntimeOnPolicyRotation(t *testing.T) {
-	var mu sync.Mutex
-	runs, removes := 0, 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		switch args[0] {
-		case "inspect":
-			return nil, os.ErrNotExist
-		case "run":
-			if isRuntimeSpawn(args) {
-				runs++
-			}
-		case "rm":
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	old := binding(root)
 	if _, err := m.Ensure(context.Background(), old); err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	if runs != 1 {
-		t.Fatalf("initial runs=%d", runs)
+	if stub.claimCount() != 1 {
+		t.Fatalf("initial claims=%d", stub.claimCount())
 	}
-	mu.Unlock()
 	updated := binding(root)
 	updated.PolicyVersion = "policy-2"
 	replaced, err := m.Ensure(context.Background(), updated)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if runs != 2 || removes == 0 {
-		t.Fatalf("policy rotation reused stale runtime: runs=%d removes=%d", runs, removes)
+	if stub.claimCount() != 2 || stub.drainCount() == 0 {
+		t.Fatalf("policy rotation reused stale runtime: claims=%d drains=%d", stub.claimCount(), stub.drainCount())
 	}
 	if replaced.PolicyVersion != "policy-2" {
 		t.Fatalf("replaced runtime recorded policy %q", replaced.PolicyVersion)
@@ -66,8 +43,8 @@ func TestEnsureReplacesRuntimeOnPolicyRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Generation != replaced.Generation || runs != 2 {
-		t.Fatalf("same-policy ensure spawned anew: %+v runs=%d", again, runs)
+	if again.Generation != replaced.Generation || stub.claimCount() != 2 {
+		t.Fatalf("same-policy ensure spawned anew: %+v claims=%d", again, stub.claimCount())
 	}
 }
 
@@ -75,24 +52,8 @@ func TestEnsureReplacesRuntimeOnPolicyRotation(t *testing.T) {
 // stale hash: ReconcilePins restamps the request to the space's current
 // policy before acquiring.
 func TestReconcilePinsRestampStalePinPolicy(t *testing.T) {
-	var mu sync.Mutex
-	var spawned []string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		switch args[0] {
-		case "inspect":
-			return nil, os.ErrNotExist
-		case "run":
-			if isRuntimeSpawn(args) {
-				spawned = append(spawned, strings.Join(args, " "))
-			}
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	m.cfg.Environment = "prod"
 	current := controlTestPolicy(t, root)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-stale"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
@@ -107,10 +68,9 @@ func TestReconcilePinsRestampStalePinPolicy(t *testing.T) {
 	if !ok || pin.PolicyVersion != current {
 		t.Fatalf("pin not restamped: %q ok=%v want %s", pin.PolicyVersion, ok, current)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(spawned) != 1 || !strings.Contains(spawned[0], "HUB_POLICY_VERSION="+current) {
-		t.Fatalf("runtime spawned without current policy env: %v want %s", spawned, current)
+	claims := stub.claimed()
+	if len(claims) != 1 || claims[0].PolicyVersion != current {
+		t.Fatalf("runtime claimed without current policy: %+v want %s", claims, current)
 	}
 }
 

@@ -10,14 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/commodel"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -196,21 +195,6 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 		t.Fatal(err)
 	}
 	return m, ctxRoot
-}
-
-// isRuntimeSpawn reports whether a docker invocation spawns the agent runtime
-// itself; the managed control relay's `run` is infrastructure, not a second
-// runtime generation.
-func isRuntimeSpawn(args []string) bool {
-	if len(args) == 0 || args[0] != "run" {
-		return false
-	}
-	for i := 1; i+1 < len(args); i++ {
-		if args[i] == "--name" {
-			return !strings.HasSuffix(args[i+1], "-ctl")
-		}
-	}
-	return true
 }
 
 func binding(contextRoot string) Binding {
@@ -397,12 +381,10 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
 	}))
 	defer runtimeAPI.Close()
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	// Restart drains and re-claims through spawn; the claim's endpoint is
+	// what the forwarded request must reach.
+	m.cfg.Spawn = &claimStub{address: runtimeAPI.URL}
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -412,7 +394,7 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(normalized)]
-	entry.Address, entry.State, entry.auth = runtimeAPI.URL, Ready, "secret"
+	entry.State, entry.auth = Ready, "secret"
 	dropEnsureHolds(entry)
 	m.mu.Unlock()
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "communication", Trigger: "restart", JobID: "restart-job", IdempotencyKey: "restart-job"}
@@ -436,19 +418,8 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 // overlaps gateway work. Same binding authorization as /v1/jobs; it creates
 // no job record and carries no prompt text.
 func TestWakeIsIdempotentAndCarriesNoText(t *testing.T) {
-	runs := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if isRuntimeSpawn(args) {
-			runs++
-		}
-		if args[0] == "inspect" {
-			if runs == 0 {
-				return nil, os.ErrNotExist
-			}
-			return []byte("running"), nil
-		}
-		return []byte("ok"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	if _, err := m.normalize(binding(root)); err != nil {
 		t.Fatal(err)
 	}
@@ -466,8 +437,8 @@ func TestWakeIsIdempotentAndCarriesNoText(t *testing.T) {
 			t.Fatalf("wake %d status=%d body=%s", i, recorder.Code, recorder.Body.String())
 		}
 	}
-	if runs != 1 {
-		t.Fatalf("wake spawned %d runtimes, want 1 (idempotent)", runs)
+	if stub.claimCount() != 1 {
+		t.Fatalf("wake spawned %d runtimes, want 1 (idempotent)", stub.claimCount())
 	}
 	m.mu.Lock()
 	jobs := len(m.jobs)
@@ -757,16 +728,13 @@ func TestAppliedRestartClearsPendingCause(t *testing.T) {
 // marker was consumed by the applied restart, the next status delivery must
 // coalesce to a no-op instead of bouncing the container a second time.
 func TestStatusDeliveryDoesNotTriggerFinalRestart(t *testing.T) {
-	var restarts atomic.Int32
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "restart" {
-			restarts.Add(1)
-		}
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
@@ -784,15 +752,20 @@ func TestStatusDeliveryDoesNotTriggerFinalRestart(t *testing.T) {
 	runtime.Address = runtimeAPI.URL
 	m.mu.Unlock()
 	applied, err := m.applyRuntimeRestart(context.Background(), runtime, "secret", 2)
-	if err != nil || !applied || restarts.Load() != 1 {
-		t.Fatalf("first restart applied=%v err=%v restarts=%d", applied, err, restarts.Load())
+	if err != nil || !applied || stub.drainCount() != 1 {
+		t.Fatalf("first restart applied=%v err=%v drains=%d", applied, err, stub.drainCount())
 	}
 	// The runtime consumed its marker on respawn; the next status delivery
-	// arrives at an unarmed runtime.
+	// arrives at an unarmed runtime — re-read the post-claim snapshot, since
+	// the drain+reclaim minted a fresh generation.
+	m.mu.Lock()
+	runtime = m.items[runtimeKey(b)].Runtime
+	m.mu.Unlock()
+	runtime.Address = runtimeAPI.URL
 	scheduled.Store(false)
 	applied, err = m.applyRuntimeRestart(context.Background(), runtime, "secret", 2)
-	if err != nil || applied || restarts.Load() != 1 {
-		t.Fatalf("status delivery retriggered restart applied=%v err=%v restarts=%d", applied, err, restarts.Load())
+	if err != nil || applied || stub.drainCount() != 1 {
+		t.Fatalf("status delivery retriggered restart applied=%v err=%v drains=%d", applied, err, stub.drainCount())
 	}
 }
 
@@ -972,27 +945,17 @@ func TestUsageForwardReachesOwningRuntime(t *testing.T) {
 	m.mu.Lock()
 	delete(m.items, runtimeKey(normalized))
 	m.mu.Unlock()
-	// An absent runtime is ensured like a message would spawn it; in this
-	// environment the spawn fails, so the lookup surfaces as 503, not 404.
-	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusServiceUnavailable {
+	// An absent runtime is ensured like a message would spawn it; the claim
+	// succeeds against the stub but its dead endpoint fails the forward, so
+	// the lookup surfaces as 502, not 404.
+	if recorder := call("/v1/usage", "secret", body); recorder.Code != http.StatusBadGateway {
 		t.Fatalf("absent runtime=%d", recorder.Code)
 	}
 }
 
 func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {
-	var mu sync.Mutex
-	runs := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if isRuntimeSpawn(args) {
-			runs++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	var wg sync.WaitGroup
 	for range 2 {
@@ -1007,8 +970,8 @@ func TestEnsureDeduplicatesAndReusesWarmRuntime(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if runs != 1 {
-		t.Fatalf("docker runs=%d, want one generation", runs)
+	if stub.claimCount() != 1 {
+		t.Fatalf("claims=%d, want one generation", stub.claimCount())
 	}
 	changed := b
 	changed.RuntimeID = "other"
@@ -1658,16 +1621,8 @@ func TestSupervisorJobAdmissionFencesDuplicates(t *testing.T) {
 }
 
 func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
-	stops := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if len(args) > 0 && args[0] == "rm" {
-			stops++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	lease, _, err := m.Acquire(context.Background(), b, LeaseStream)
 	if err != nil {
@@ -1682,7 +1637,7 @@ func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if stops != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("active lease was reaped")
 	}
 	if err := m.ReleaseLease(lease.ID); err != nil {
@@ -1691,24 +1646,16 @@ func TestReaperNeverStopsLeasedRuntime(t *testing.T) {
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	// A managed reap deletes the runtime and its same-generation control
-	// relay — two owned containers.
-	if stops != 2 {
-		t.Fatalf("stops=%d", stops)
+	// The reaped entry releases its spawn hold — the row goes warm and its
+	// own idle TTL drains the workload.
+	if stub.releaseCount() != 1 {
+		t.Fatalf("released=%d", stub.releaseCount())
 	}
 }
 
 func TestReaperKeepsIdleRuntimeWithLiveJob(t *testing.T) {
-	stops := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if len(args) > 0 && args[0] == "rm" {
-			stops++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -1722,7 +1669,7 @@ func TestReaperKeepsIdleRuntimeWithLiveJob(t *testing.T) {
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if stops != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("runtime with a live job was reaped")
 	}
 	m.mu.Lock()
@@ -1733,8 +1680,8 @@ func TestReaperKeepsIdleRuntimeWithLiveJob(t *testing.T) {
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if stops != 2 {
-		t.Fatalf("stops=%d", stops)
+	if stub.releaseCount() != 1 {
+		t.Fatalf("released=%d", stub.releaseCount())
 	}
 }
 
@@ -1939,44 +1886,6 @@ func TestNewDefaultsAndServeStopsOnContext(t *testing.T) {
 	}
 }
 
-func TestEnsureExistingAndFailurePaths(t *testing.T) {
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		return nil, nil
-	}, func(_ context.Context, _, auth string) error {
-		if auth != "secret" {
-			return os.ErrPermission
-		}
-		return nil
-	})
-	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
-		t.Fatal("unverified existing container adopted")
-	}
-	bad, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return nil, os.ErrPermission
-	}, func(context.Context, string, string) error { return nil })
-	if _, err := bad.Ensure(context.Background(), binding(root)); err == nil {
-		t.Fatal("start failure accepted")
-	}
-	if err := bad.Release("alice", "gateway"); err == nil {
-		t.Fatal("degraded runtime lease released")
-	}
-	failing, froot := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return os.ErrDeadlineExceeded })
-	if _, err := failing.Ensure(context.Background(), binding(froot)); err == nil {
-		t.Fatal("readiness failure accepted")
-	}
-}
-
 func TestReleaseStatusListAndBindingBoundaries(t *testing.T) {
 	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "inspect" {
@@ -2098,6 +2007,9 @@ func TestSupervisorServeAndHTTPErrorBranches(t *testing.T) {
 		}
 		return nil, os.ErrPermission
 	}, nil)
+	// The v0 docker-run refusal became a refused spawn claim — the execute
+	// branch under test only cares that the runtime ensure fails.
+	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable}
 	if err := Serve(context.Background(), nil, "127.0.0.1:0"); err == nil {
 		t.Fatal("nil manager accepted")
 	}
@@ -2130,240 +2042,13 @@ func TestSupervisorServeAndHTTPErrorBranches(t *testing.T) {
 	_ = root
 }
 
-func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	if err := os.WriteFile(filepath.Join(root, "SOUL.md"), []byte("soul"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	org := filepath.Join(filepath.Dir(root), "acme")
-	if err := os.MkdirAll(org, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "generated", "config-view", "dev"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	b := binding(root)
-	b.OrganizationRoot = org
-	args, err := m.runArgs(b, "hermes-context-test", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-agent-alice-dev", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 2g", "--cpus 2", "dst=/workspace", "dst=/config,readonly", "dst=/state/hermes", "--env-file"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("run args missing %q: %s", want, joined)
-		}
-	}
-	if strings.Contains(joined, "-p 127.0.0.1:") {
-		t.Fatalf("managed run args publish a host port: %s", joined)
-	}
-	effective, err := os.ReadFile(filepath.Join(root, "generated", "hermes-effective.dev.yaml"))
-	if err != nil || !strings.Contains(string(effective), "http://127.0.0.1:8080/mcp") {
-		t.Fatalf("effective managed ToolHub proxy config not materialized: %v", err)
-	}
-	bobRoot := filepath.Join(filepath.Dir(root), "bob")
-	if err := os.MkdirAll(bobRoot, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bobRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishSpaceRevision(t, bobRoot, "bob", nil)
-	writeHermesSources(t, bobRoot)
-	other := b
-	other.UserID, other.PrincipalID, other.ContextID, other.RuntimeID, other.ContextRoot = "bob", "bob", "bob", "bob", bobRoot
-	rawOther, err := m.runArgs(other, "hermes-context-bob", 19001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherArgs := strings.Join(rawOther, " ")
-	if !strings.Contains(otherArgs, "--network hermes-hub-agent-bob-dev") || strings.Contains(otherArgs, string(filepath.Separator)+"alice"+string(filepath.Separator)) {
-		t.Fatalf("managed run args are not owner-scoped: %s", otherArgs)
-	}
-	if err := os.WriteFile(filepath.Join(root, "generated", "dev-runtime-image"), []byte("hermes-hub-dev-alice-hermes-runtime:local\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	devArgs, err := m.runArgs(b, "hermes-context-test", 19000)
-	if err != nil || devArgs[len(devArgs)-2] != "hermes-hub-dev-alice-hermes-runtime:local" {
-		t.Fatalf("dev runtime image not selected: %v %v", devArgs, err)
-	}
-}
-
 // SPEC-0053 R1.4: under a published workspace passport the rendered tool
 // manifest rides inside the read-only /config view — one directory bind,
 // no per-file mount the container could shadow.
-func TestRunArgsMountsToolManifest(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	view := filepath.Join(root, "generated", "config-view", "dev")
-	if err := os.MkdirAll(view, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(view, "tool-manifest.json"), []byte(`{"schema":1,"context":"alice","policy_version":"p","projected":[],"direct":[]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	if !strings.Contains(joined, "src="+view+",dst=/config,readonly") {
-		t.Fatalf("run args missing config view mount: %s", joined)
-	}
-	if strings.Contains(joined, "dst=/config/tool-manifest.json") {
-		t.Fatalf("manifest shadowed by a nested file mount: %s", joined)
-	}
-}
 
 // SPEC-0053 R1.8: supervisor-spawned runtimes mount the rendered effective
 // SOUL at /state/hermes/SOUL.md, matching the compose contract; the raw
 // persona stays at /config/SOUL.md for the heal path.
-func TestRunArgsMountsEffectiveSoul(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	effective := filepath.Join(root, "generated", "soul-effective.dev.md")
-	if err := os.WriteFile(effective, []byte("persona\ncontract"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	if !strings.Contains(joined, "src="+effective+",dst=/state/hermes/SOUL.md,readonly") {
-		t.Fatalf("run args missing effective SOUL mount: %s", joined)
-	}
-}
-
-func TestRunArgsMountsHubSkills(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	skills := filepath.Join(filepath.Dir(root), "config", "skills")
-	if err := os.MkdirAll(skills, 0700); err != nil {
-		t.Fatal(err)
-	}
-	gated := filepath.Join(skills, "deep-research-embedded")
-	if err := os.MkdirAll(gated, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("# gated"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rawArgs, err := m.runArgs(binding(root), "hermes-context-test", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	generated := filepath.Join(root, "generated", "skills-effective")
-	if !strings.Contains(joined, "src="+generated+",dst=/skills,readonly") {
-		t.Fatalf("run args missing effective skills mount: %s", joined)
-	}
-	if strings.Contains(joined, "/opt/hub/skills") {
-		t.Fatalf("legacy skills mount still rendered: %s", joined)
-	}
-	if !strings.Contains(joined, "--tmpfs /state/hermes/skills:ro,mode=0555") {
-		t.Fatalf("run args missing sealed hermes skills dir: %s", joined)
-	}
-	if _, err := os.Stat(filepath.Join(generated, "deep-research-embedded")); !os.IsNotExist(err) {
-		t.Fatal("spawn mounted gated skill without the deep_research feature")
-	}
-	ctx := filepath.Join(root, "spaces", "bob")
-	for _, name := range []string{"runtime", "hermes", "workspace"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishSpaceRevision(t, ctx, "bob", nil)
-	writeHermesSources(t, ctx)
-	repoSkills := filepath.Join(root, "config", "skills")
-	if err := os.MkdirAll(repoSkills, 0700); err != nil {
-		t.Fatal(err)
-	}
-	rawBob, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined = strings.Join(rawBob, " ")
-	bobGenerated := filepath.Join(ctx, "generated", "skills-effective")
-	if !strings.Contains(joined, "src="+bobGenerated+",dst=/skills,readonly") {
-		t.Fatalf("run args missing default effective skills mount: %s", joined)
-	}
-}
-
-func TestRunArgsFailsWhenEffectiveSkillsCannotBuild(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	// A broken published skill makes the view build fail; the spawn must
-	// refuse rather than start a runtime without its skill contract.
-	bad := filepath.Join(root, "skills", "broken")
-	if err := os.MkdirAll(bad, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bad, "SKILL.md"), []byte("no frontmatter"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.runArgs(binding(root), "hermes-context-test", 19000); err == nil {
-		t.Fatal("spawn proceeded without a buildable effective skills view")
-	}
-}
-
-func TestRunArgsMountsHubPlugins(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	// runArgs derives the repo root as the context's grandparent, so stage the
-	// space under <root>/spaces/<user> and the repo plugin under
-	// <root>/config/plugins.
-	ctx := filepath.Join(root, "spaces", "alice")
-	for _, name := range []string{"runtime", "hermes", "workspace"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishAliceRevision(t, ctx, nil)
-	writeHermesSources(t, ctx)
-	plugin := filepath.Join(root, "config", "plugins", "hub-web")
-	if err := os.MkdirAll(plugin, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(plugin, "plugin.yaml"), []byte("name: hub-web\nkind: backend\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-alice", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if joined := strings.Join(rawArgs, " "); strings.Contains(joined, "/opt/hermes/plugins/hub-web") {
-		t.Fatalf("hub plugin mounted without web feature: %s", joined)
-	}
-	if _, err := os.Stat(filepath.Join(ctx, "generated", "plugins", "hub-web")); !os.IsNotExist(err) {
-		t.Fatal("gated plugin materialized without web feature")
-	}
-	grantNativeToolset(t, ctx, "alice", "hub:web_search")
-	publishAliceRevision(t, ctx, func(docs map[string]string) { docs["tools"] += "extended:\n  web_search: {via: toolhub}\n" })
-	writeHermesSources(t, ctx)
-	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	src := filepath.Join(ctx, "generated", "plugins", "hub-web")
-	if !strings.Contains(joined, "src="+src+",dst=/opt/hermes/plugins/hub-web,readonly") {
-		t.Fatalf("run args missing hub plugin mount: %s", joined)
-	}
-	if _, err := os.Stat(filepath.Join(src, "plugin.yaml")); err != nil {
-		t.Fatalf("plugin not materialized at spawn: %v", err)
-	}
-}
 
 func TestReapSweepsOrphanLeases(t *testing.T) {
 	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
@@ -2420,21 +2105,36 @@ func TestReapSweepsOrphanLeases(t *testing.T) {
 
 func TestReapMarksDegradedOnDockerFailure(t *testing.T) {
 	failRemoval := true
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if len(args) > 0 && args[0] == "rm" && failRemoval {
-			return nil, os.ErrPermission
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Release("alice", "gateway"); err != nil {
 		t.Fatal(err)
+	}
+	// Claimed rows fail teardown spawn-side; the degraded-and-retry path
+	// here still guards supervisor-owned unmanaged teardown.
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	generation := entry.Runtime.Generation
+	entry.Runtime.Managed = false
+	entry.spawnLease = ""
+	m.mu.Unlock()
+	m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && args[2] == "{{.Id}}" {
+			return []byte(strings.Repeat("a", 64)), nil
+		}
+		if args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
+			return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": generation})
+		}
+		if args[0] == "inspect" && args[2] == "{{json .Mounts}}" {
+			return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
+		}
+		if args[0] == "rm" && failRemoval {
+			return nil, os.ErrPermission
+		}
+		return nil, nil
 	}
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(time.Minute)); err == nil {
 		t.Fatal("docker stop failure ignored")
@@ -2460,6 +2160,9 @@ func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
 		}
 		return nil, os.ErrPermission
 	}, nil)
+	// "Runtime never ran" is a refused spawn claim now (S7c): the pre-dispatch
+	// rejection marker and abandoned-job semantics are what this guards.
+	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable}
 	body := `{"identity_schema":1,"principal_id":"alice","external_identity_id":"telegram-1","conversation_id":"telegram-1","delivery_target_id":"telegram-1","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","job_id":"job-1","text":"hello"}`
 	post := func() int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(body))
@@ -2485,71 +2188,6 @@ func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
 	}
 }
 
-func TestRunArgsHealsStubSoulAndEnrollsSibling(t *testing.T) {
-	t.Setenv("HUB_ENV", "prod")
-	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "config"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "config", "SOUL.md"), []byte("template soul\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	spaces := filepath.Join(repo, "spaces")
-	alice := filepath.Join(spaces, "alice")
-	bob := filepath.Join(spaces, "bob")
-	for _, dir := range []string{alice, bob} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(path, body string) {
-		t.Helper()
-		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	publishAliceRevision(t, alice, func(docs map[string]string) {
-		docs["stack"] = strings.Replace(docs["stack"], "infra: false", "infra: true", 1)
-	})
-	writeHermesSources(t, alice)
-	publishSpaceRevision(t, bob, "bob", nil)
-	writeHermesSources(t, bob)
-	ownerToken := strings.Repeat("a", 64)
-	bobToken := strings.Repeat("b", 64)
-	write(filepath.Join(alice, "runtime.auth"), "HUB_RUNTIME_AUTH="+ownerToken+"\n")
-	write(filepath.Join(bob, "runtime.auth"), "HUB_RUNTIME_AUTH="+bobToken+"\n")
-	write(filepath.Join(alice, "SOUL.md"), "# User instructions\n\n")
-	m, err := newTestManager(t, Config{SpacesRoot: spaces, RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) {
-		return nil, nil
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := binding(alice)
-	if _, err := m.runArgs(b, "hermes-context-alice", 19000); err != nil {
-		t.Fatal(err)
-	}
-	soul, err := os.ReadFile(filepath.Join(alice, "SOUL.md"))
-	if err != nil || string(soul) != "template soul\n" {
-		t.Fatalf("stub soul=%q err=%v", soul, err)
-	}
-	raw, err := os.ReadFile(filepath.Join(alice, "toolhub-tokens.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), ownerToken) || !strings.Contains(string(raw), bobToken) {
-		t.Fatal("sibling enrollment missing or owner token copied")
-	}
-	write(filepath.Join(alice, "SOUL.md"), "mine\n")
-	if _, err := m.runArgs(b, "hermes-context-alice", 19000); err != nil {
-		t.Fatal(err)
-	}
-	soul, _ = os.ReadFile(filepath.Join(alice, "SOUL.md"))
-	if string(soul) != "mine\n" {
-		t.Fatalf("edited soul overwritten: %q", soul)
-	}
-}
-
 func TestDurationEnv(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
@@ -2562,37 +2200,6 @@ func TestDurationEnv(t *testing.T) {
 		if got := durationEnv("HUB_TEST_DURATION", 5*time.Second); got != tc.want {
 			t.Fatalf("durationEnv(%q)=%s want %s", tc.raw, got, tc.want)
 		}
-	}
-}
-
-func TestRunArgsPassesStallTimeout(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	ctx := filepath.Join(root, "spaces", "alice")
-	for _, name := range []string{"runtime", "hermes", "workspace"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishAliceRevision(t, ctx, nil)
-	writeHermesSources(t, ctx)
-	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-alice", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT") {
-		t.Fatal("stall timeout env propagated while unset")
-	}
-	t.Setenv("HUB_RUN_STALL_TIMEOUT", "90s")
-	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(rawArgs, " "), "HUB_RUN_STALL_TIMEOUT=90s") {
-		t.Fatalf("run args missing stall timeout: %s", strings.Join(rawArgs, " "))
 	}
 }
 
@@ -2705,122 +2312,12 @@ func TestGoalForwardReachesOwningRuntime(t *testing.T) {
 // TestRunArgsMountsWritableSkillsStore checks the R5.1 runtime contract:
 // the effective view stays read-only at /skills while the owner store is
 // writable at /skills-store, and the env contract tells the executor both.
-func TestRunArgsMountsWritableSkillsStore(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	ctx := filepath.Join(root, "spaces", "bob")
-	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishSpaceRevision(t, ctx, "bob", nil)
-	writeHermesSources(t, ctx)
-	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	want := "type=bind,src=" + filepath.Join(ctx, "skills") + ",dst=/skills-store"
-	if !strings.Contains(joined, want) {
-		t.Fatalf("run args missing writable skills store mount: %s", joined)
-	}
-	for _, env := range []string{"HUB_SKILLS_STORE=/skills-store", "HUB_SKILLS_EFFECTIVE=/skills"} {
-		if !strings.Contains(joined, env) {
-			t.Fatalf("run args missing %s: %s", env, joined)
-		}
-	}
-	// The effective mount must still be read-only.
-	if strings.Contains(joined, "dst=/skills,") && !strings.Contains(joined, "dst=/skills,readonly") {
-		t.Fatalf("effective view lost its read-only flag: %s", joined)
-	}
-}
 
 // The post-publish rebuild contract rides unmanaged spawns too: platform
 // staging read-only, the view a second writable bind, the render snapshot.
-func TestRunArgsMountsViewRebuildContract(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	ctx := filepath.Join(root, "spaces", "bob")
-	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishSpaceRevision(t, ctx, "bob", nil)
-	writeHermesSources(t, ctx)
-	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"type=bind,src=" + stack.GeneratedSkillsDir(ctx) + ",dst=/skills-platform,readonly",
-		"type=bind,src=" + stack.GeneratedEffectiveSkillsDir(ctx) + ",dst=/skills-effective-rw",
-		"type=bind,src=" + stack.GeneratedSkillsMetaDir(ctx) + ",dst=/skills-meta,readonly",
-	} {
-		if !slices.Contains(rawArgs, want) {
-			t.Fatalf("run args missing %s", want)
-		}
-	}
-}
 
 // R5.2: org-bound spawns mount the writable org store at /skills-store-org
 // and export HUB_SKILLS_ORG; personal spaces get neither.
-func TestRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
-	t.Setenv("HUB_ENV", "dev")
-	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
-	testSetIdentity(t, m, "acme", commodel.User{ID: "bob", Enabled: true})
-	ctx := filepath.Join(root, "spaces", "bob")
-	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
-		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	orgDir := filepath.Join(root, "spaces", "acme")
-	for _, name := range []string{"docs", "skills"} {
-		if err := os.MkdirAll(filepath.Join(orgDir, name), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	orgSettings := "schema: 1\norganization: acme\nmembers:\n  bob: owner\nfeatures: [workspace]\n"
-	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), []byte(orgSettings), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ctx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	publishSpaceRevision(t, ctx, "bob", func(docs map[string]string) {
-		docs["stack"] = "identity: {user: bob, organization: acme, infra: false}\nservices:\n" +
-			"  hermes-runtime: {mode: supervised}\n" +
-			"  model-relay: {mode: per-space}\n" +
-			"  toolhub-relay: {mode: per-space}\n" +
-			"  toolhub: {mode: shared}\n" +
-			"  credential-broker: {mode: shared}\n" +
-			"  communication-hub: {mode: shared}\n" +
-			"  supervisor: {mode: shared}\n" +
-			"  cliproxy: {mode: per-space}\n"
-	})
-	writeHermesSources(t, ctx)
-	bound := Binding{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", RuntimeMode: "gateway", UserID: "bob", OrganizationID: "acme", PolicyVersion: "policy-1", ContextRoot: ctx}
-	rawArgs, err := m.runArgs(bound, "hermes-context-bob", 19001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(rawArgs, " ")
-	want := "type=bind,src=" + filepath.Join(orgDir, "skills") + ",dst=/skills-store-org"
-	if !strings.Contains(joined, want) {
-		t.Fatalf("org-bound run args missing org store mount: %s", joined)
-	}
-	if !strings.Contains(joined, "HUB_SKILLS_ORG=/skills-store-org") {
-		t.Fatalf("org-bound run args missing HUB_SKILLS_ORG: %s", joined)
-	}
-}
 
 // SPEC-0084 R8.2: /v1/skill-creds relays a skill-scoped credential form's
 // values to the owning runtime — the same envelope routing as skill-apply.

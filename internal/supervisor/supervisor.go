@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	identitycontract "github.com/letya999/hermes-hub/contracts/identity/v1"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	taskcontract "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identityhub"
@@ -109,17 +110,20 @@ type Config struct {
 	UnoBoxVCPU       int
 	UnoProxyHost     string
 	Backend          ComputeBackend
-	Docker           string
-	Image            string
-	ScriptImage      string
-	Network          string
-	SpacesRoot       string
-	HostSpacesRoot   string
-	StateDir         string
-	RuntimeAuth      string
-	AdminAuth        string
-	Environment      string
-	WarmTTL          time.Duration
+	// Spawn claims managed runtimes through spawn-controller
+	// (contracts/spawn/v1); the supervisor no longer starts workloads.
+	Spawn          spawnClaimer
+	Docker         string
+	Image          string
+	ScriptImage    string
+	Network        string
+	SpacesRoot     string
+	HostSpacesRoot string
+	StateDir       string
+	RuntimeAuth    string
+	AdminAuth      string
+	Environment    string
+	WarmTTL        time.Duration
 	// BrowserIdleTTL is the grace a per-space browser sidecar stays up after
 	// its last runtime is gone; the sweep stops it once the deadline passes.
 	BrowserIdleTTL time.Duration
@@ -245,8 +249,11 @@ type RestartCause struct {
 
 type runtimeEntry struct {
 	Runtime
-	binding              Binding
-	auth                 string
+	binding Binding
+	auth    string
+	// spawnLease is the supervisor's hold on the claimed runtime row —
+	// renewed on reuse, released when the entry is reaped (S7c).
+	spawnLease           string
 	leases               map[string]Lease
 	incidents            map[string]Incident
 	restored             bool
@@ -322,6 +329,9 @@ type persistedRuntime struct {
 	Runtime   Runtime             `json:"runtime"`
 	Leases    map[string]Lease    `json:"leases,omitempty"`
 	Incidents map[string]Incident `json:"incidents,omitempty"`
+	// SpawnLease is the supervisor's hold on the claimed runtime row;
+	// a restore re-arms it instead of re-claiming (S7c).
+	SpawnLease string `json:"spawn_lease,omitempty"`
 }
 
 type jobRecord struct {
@@ -482,6 +492,11 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" && cfg.ExecutionBackend != "firecracker" {
 		return nil, errors.New("unsupported execution backend")
+	}
+	if cfg.Spawn == nil {
+		if base := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); base != "" {
+			cfg.Spawn = spawnv1.NewHTTPClient(base, firstEnv(os.Getenv("HUB_SPAWN_TOKEN"), "HUB_SERVICE_TOKEN"), nil)
+		}
 	}
 	if cfg.ExecutionBackend == "firecracker" {
 		cfg.UnoURL = firstEnv(cfg.UnoURL, "HUB_UNO_URL")
@@ -731,7 +746,7 @@ func (m *Manager) load() error {
 		if item.Binding.PrincipalID != "" && runtimeKey(item.Binding) != key {
 			return errors.New("persisted binding mismatch")
 		}
-		m.items[key] = &runtimeEntry{Runtime: item.Runtime, binding: item.Binding, leases: item.Leases, incidents: item.Incidents, restored: true}
+		m.items[key] = &runtimeEntry{Runtime: item.Runtime, binding: item.Binding, leases: item.Leases, incidents: item.Incidents, spawnLease: item.SpawnLease, restored: true}
 	}
 	if dirty {
 		return m.persistLocked()
@@ -742,7 +757,7 @@ func (m *Manager) load() error {
 func (m *Manager) persistLocked() error {
 	state := persistedManager{Backend: m.cfg.ExecutionBackend, ContainerRuntime: m.cfg.ContainerRuntime, RuntimeClassName: m.cfg.Kubernetes.RuntimeClassName, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
-		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents})
+		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents, SpawnLease: item.spawnLease})
 	}
 	b, err := json.Marshal(state)
 	if err != nil {

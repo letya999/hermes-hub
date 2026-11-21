@@ -22,6 +22,9 @@ func (m *Manager) browserSidecarName(userID string) string {
 // ensureBrowserSidecar implements SPEC-0083 R2: a browser/meet space's
 // sidecar must be running before a spawned runtime probes readiness.
 // `docker start` is idempotent — running is a no-op, stopped resumes.
+// The sidecar is compose-owned: the supervisor toggles its run state on
+// demand (and reaps it idle) whichever backend starts the workload — the
+// spawn cutover (S7c) changed the workload's owner, not the sidecar's.
 func (m *Manager) ensureBrowserSidecar(ctx context.Context, userID string) error {
 	name := m.browserSidecarName(userID)
 	if out, err := m.command(ctx, "start", name); err != nil {

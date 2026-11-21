@@ -3,7 +3,6 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"path/filepath"
@@ -11,65 +10,6 @@ import (
 	"testing"
 	"time"
 )
-
-func TestSupervisedRuntimeUsesDevEnvFile(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	m.cfg.Environment = "dev"
-	if err := os.WriteFile(filepath.Join(root, "managed-runtime.dev.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	b, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "src="+root+",dst=/scope") {
-		t.Fatal("whole context root mounted into runtime")
-	}
-	if !strings.Contains(joined, "--env-file "+filepath.Join(root, "managed-runtime.dev.env")) {
-		t.Fatal("dev runtime env file missing from docker run")
-	}
-	if strings.Contains(joined, "prod.env") {
-		t.Fatal("prod runtime env selected for dev supervisor")
-	}
-	if !strings.Contains(joined, "hermes-effective.dev.yaml") {
-		t.Fatal("dev hermes config not mounted")
-	}
-	if strings.Contains(joined, "test-key") {
-		t.Fatal("secret exposed in arguments")
-	}
-}
-
-func TestManagedSupervisorRefusesBeforeSpawnPreparation(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, nil)
-	configDir := filepath.Join(filepath.Dir(root), "config")
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "SOUL.md"), []byte("template"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "SOUL.md"), []byte("# User instructions\n\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	// A space without a published revision has no effective configuration —
-	// the spawn must fail before any legacy path mutates the space or
-	// constructs a shared-network Docker command.
-	if err := os.RemoveAll(filepath.Join(root, "generated")); err != nil {
-		t.Fatal(err)
-	}
-	if args, err := m.runArgsWithGeneration(binding(root), "fixture", 19000, "generation"); err == nil || args != nil {
-		t.Fatalf("revisionless runtime entered legacy spawn: args=%v err=%v", args, err)
-	}
-	body, err := os.ReadFile(filepath.Join(root, "SOUL.md"))
-	if err != nil || string(body) != "# User instructions\n\n" {
-		t.Fatalf("managed refusal mutated SOUL: %q %v", body, err)
-	}
-}
 
 func TestNormalizeRejectsMissingRuntimeEnvFile(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
@@ -81,254 +21,18 @@ func TestNormalizeRejectsMissingRuntimeEnvFile(t *testing.T) {
 	}
 }
 
-func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	publishAliceRevision(t, root, func(docs map[string]string) {
-		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-		docs["stack"] += "  browser: {mode: per-space}\n"
-		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-	})
-	writeHermesSources(t, root)
-	if err := os.WriteFile(filepath.Join(root, "runtime.prod.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	b, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	for _, want := range []string{"--env-file " + filepath.Join(root, "managed-runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/state", "dst=/state/hermes", "dst=/state/home", "dst=/state/cache", "dst=/workspace", "dst=/config,readonly", "HUB_BROWSER=false", "HUB_FEATURES=browser,workspace", "HUB_STATE=/state", "--tmpfs /tmp:"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing %s", want)
-		}
-	}
-	if strings.Index(joined, "managed-runtime.prod.env") > strings.Index(joined, "runtime.auth") {
-		t.Fatal("runtime auth must override provider env")
-	}
-	if strings.Contains(joined, "synthetic-only") || strings.Contains(joined, "dst=/src") || strings.Contains(joined, "docker.sock") || strings.Contains(joined, "dst=/scope") {
-		t.Fatal("secret/source/control exposed in arguments")
-	}
-	if strings.Contains(joined, "dst=/state/browser") || strings.Contains(joined, "--shm-size") || strings.Contains(joined, "BROWSER_CDP_URL=") {
-		t.Fatal("browser resources or direct CDP address leaked into the supervised runtime")
-	}
-	for _, target := range []string{"/state/hermes", "/state/home", "/workspace"} {
-		count := 0
-		for _, arg := range args {
-			if strings.HasSuffix(arg, ",dst="+target) {
-				count++
-			}
-		}
-		if count != 1 {
-			t.Fatalf("mount %s count=%d", target, count)
-		}
-	}
-}
-
 // The runtime joins its agent network and wakes the separate human browser
 // sidecar (SPEC-0083 R2).
-func TestBrowserSpaceRuntimeJoinsSpaceNetwork(t *testing.T) {
-	for _, tc := range []struct {
-		user string
-	}{
-		{"alice"},
-		{"bob"},
-	} {
-		t.Run(tc.user, func(t *testing.T) {
-			var commands [][]string
-			m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				cp := append([]string(nil), args...)
-				commands = append(commands, cp)
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			ctxRoot := filepath.Join(m.cfg.SpacesRoot, tc.user)
-			for _, name := range []string{"runtime", "hermes", "workspace"} {
-				if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			publishSpaceRevision(t, ctxRoot, tc.user, func(docs map[string]string) {
-				docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-				docs["stack"] += "  browser: {mode: per-space}\n"
-				docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-			})
-			writeHermesSources(t, ctxRoot)
-			b := Binding{PrincipalID: tc.user, ContextID: tc.user, RuntimeID: tc.user, RuntimeMode: "gateway", UserID: tc.user, OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: ctxRoot}
-			if _, err := m.Ensure(context.Background(), b); err != nil {
-				t.Fatal(err)
-			}
-			sidecar := -1
-			run := -1
-			for i, call := range commands {
-				if len(call) == 2 && call[0] == "start" && strings.Contains(call[1], "browser-") {
-					sidecar = i
-				}
-				if call[0] == "run" {
-					agentNet := false
-					for j, arg := range call {
-						if arg == "--network" && j+1 < len(call) && call[j+1] == "hermes-hub-agent-"+tc.user+"-prod" {
-							agentNet = true
-						}
-					}
-					if agentNet {
-						run = i
-					}
-				}
-			}
-			if run < 0 {
-				t.Fatal("runtime was not spawned on the space agent network")
-			}
-			if sidecar < 0 {
-				t.Fatal("browser-enabled spawn must start the space browser sidecar")
-			}
-			if sidecar < run {
-				t.Fatal("sidecar start must follow the runtime spawn")
-			}
-		})
-	}
-}
 
 // SPEC-0083 R2: a slept or just-rendered sidecar must be started before the
 // spawn proceeds — compose owns its shape, the supervisor owns its run state.
-func TestBrowserSpaceSpawnStartsSidecar(t *testing.T) {
-	for _, tc := range []struct {
-		user string
-	}{
-		{"alice"},
-		{"bob"},
-	} {
-		t.Run(tc.user, func(t *testing.T) {
-			var commands [][]string
-			m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				commands = append(commands, append([]string(nil), args...))
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			ctxRoot := filepath.Join(m.cfg.SpacesRoot, tc.user)
-			for _, name := range []string{"runtime", "hermes", "workspace"} {
-				if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			publishSpaceRevision(t, ctxRoot, tc.user, func(docs map[string]string) {
-				docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-				docs["stack"] += "  browser: {mode: per-space}\n"
-				docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-			})
-			writeHermesSources(t, ctxRoot)
-			b := Binding{PrincipalID: tc.user, ContextID: tc.user, RuntimeID: tc.user, RuntimeMode: "gateway", UserID: tc.user, OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: ctxRoot}
-			if _, err := m.Ensure(context.Background(), b); err != nil {
-				t.Fatal(err)
-			}
-			sidecar := "hermes-hub-" + tc.user + "-prod-browser-" + tc.user + "-1"
-			start, run := -1, -1
-			for i, call := range commands {
-				if len(call) == 2 && call[0] == "start" && call[1] == sidecar {
-					start = i
-				}
-				if call[0] == "run" {
-					run = i
-				}
-			}
-			if run < 0 {
-				t.Fatal("runtime was not spawned")
-			}
-			if start < 0 {
-				t.Fatalf("spawn for a browser space must start the sidecar %s", sidecar)
-			}
-		})
-	}
-}
 
 // SPEC-0083 R2.2: a sidecar that cannot be started fails the spawn and
 // reclaims the runtime container, same as a missing space network.
-func TestBrowserSpaceSpawnFailsWhenSidecarStartFails(t *testing.T) {
-	var commands [][]string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		commands = append(commands, append([]string(nil), args...))
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if len(args) == 2 && args[0] == "start" && strings.Contains(args[1], "browser-") {
-			return []byte("No such container"), errors.New("exit status 1")
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
-	publishAliceRevision(t, root, func(docs map[string]string) {
-		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-		docs["stack"] += "  browser: {mode: per-space}\n"
-		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-	})
-	writeHermesSources(t, root)
-	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
-		t.Fatal("spawn must fail when the sidecar cannot be started")
-	}
-	removed := false
-	for _, call := range commands {
-		if len(call) >= 2 && call[0] == "rm" {
-			removed = true
-		}
-	}
-	if !removed {
-		t.Fatal("orphaned runtime container was not reclaimed after sidecar start failure")
-	}
-}
 
 // If the supervisor control network cannot take the relay (the managed
 // topology's inbound route), the spawn must fail and reclaim the relay it
 // just created — an orphaned sidecar on the agent net is worse than none.
-func TestBrowserSpaceSpawnFailsWhenSpaceNetworkMissing(t *testing.T) {
-	var commands [][]string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		cp := append([]string(nil), args...)
-		commands = append(commands, cp)
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if len(args) >= 3 && args[0] == "network" && args[1] == "connect" && args[2] == "hermes-hub-control" {
-			return []byte("no such network"), errors.New("exit status 1")
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
-	publishAliceRevision(t, root, func(docs map[string]string) {
-		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-		docs["stack"] += "  browser: {mode: per-space}\n"
-		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-	})
-	writeHermesSources(t, root)
-	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
-		t.Fatal("spawn without the control network must fail")
-	}
-	removed := false
-	for _, call := range commands {
-		if len(call) >= 3 && call[0] == "rm" && strings.HasSuffix(call[len(call)-1], "-ctl") {
-			removed = true
-		}
-	}
-	if !removed {
-		t.Fatal("orphaned control relay was not reclaimed after connect failure")
-	}
-}
 
 // SPEC-0083 R3: a sidecar with no live runtime in its project sleeps after
 // the idle grace — it is a warm resource of the space's runtime, not
@@ -407,40 +111,6 @@ func TestReapIdleBrowserSidecars(t *testing.T) {
 
 // SPEC-0083 R3.1: a supervisor-spawned runtime keeps its sidecar alive even
 // though no compose hermes-runtime container exists for the space.
-func TestSpawnedRuntimeKeepsSidecarAwake(t *testing.T) {
-	now := time.Unix(300, 0)
-	var commands [][]string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		commands = append(commands, append([]string(nil), args...))
-		if args[0] == "ps" {
-			return []byte("hermes-hub-alice-prod-browser-alice-1 browser-alice hermes-hub-alice-prod\n"), nil
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
-	m.cfg.Environment = "prod"
-	m.cfg.BrowserIdleTTL = time.Minute
-	publishAliceRevision(t, root, func(docs map[string]string) {
-		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub}", 1)
-		docs["stack"] += "  browser: {mode: per-space}\n"
-		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
-	})
-	writeHermesSources(t, root)
-	// Idle first (marks a deadline), then a spawn — the returning runtime
-	// must clear the pending stop, not just skip new marks.
-	m.ReapIdleBrowserSidecars(context.Background(), now)
-	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
-		t.Fatal(err)
-	}
-	m.ReapIdleBrowserSidecars(context.Background(), now.Add(2*time.Minute))
-	for _, call := range commands {
-		if len(call) == 2 && call[0] == "stop" {
-			t.Fatalf("sidecar must stay up while its spawned runtime is alive: %v", call)
-		}
-	}
-}
 
 // SPEC-0083 R3.1: the sweep itself runs the sidecar reaper — an idle
 // sidecar dies on the supervisor's normal tick, not just under a direct
@@ -468,33 +138,6 @@ func TestSweepReapsIdleSidecar(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatalf("sweep must stop an idle sidecar past grace: %v", commands)
-	}
-}
-
-func TestSupervisedRuntimeMountsToolPolicySnapshot(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	m.cfg.Environment = "prod"
-	b, err := m.normalize(binding(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	args, err := m.runArgsWithGeneration(b, "fixture", 19000, "fixture-generation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	// The executor contract rides into the supervised runtime inside the
-	// published config view: a workspace passport turns /config into one
-	// read-only directory bind, so the snapshot lands at
-	// config-view/<env>/tool-policy.json (SPEC-0092 R5.2).
-	if !strings.Contains(joined, "config-view"+string(filepath.Separator)+"prod,dst=/config,readonly") {
-		t.Fatalf("config view missing from spawn args: %s", joined)
-	}
-	if strings.Contains(joined, "dst=/config/tool-policy.json") {
-		t.Fatalf("per-file policy mount shadows the config view: %s", joined)
-	}
-	if _, err := os.Stat(filepath.Join(root, "generated", "config-view", "prod", "tool-policy.json")); err != nil {
-		t.Fatalf("tool policy snapshot not materialized into the view at spawn: %v", err)
 	}
 }
 

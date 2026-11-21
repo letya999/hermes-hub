@@ -3,8 +3,6 @@ package supervisor
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -49,49 +47,12 @@ func (d dockerBackend) Observe(ctx context.Context, runtime Runtime) (ComputeObs
 	return ComputeObservation{State: strings.TrimSpace(string(out)), Address: runtime.Address}, err
 }
 
-func (d dockerBackend) Spawn(ctx context.Context, request SpawnRequest) (ComputeObservation, error) {
-	m, binding, rt := d.m, request.Binding, request.Runtime
-	if err := m.checkContainerRuntime(ctx, request.Settings); err != nil {
-		return ComputeObservation{}, err
-	}
-	if rt.Managed {
-		preparation := binding
-		preparation.RuntimeMode = "spawn-files"
-		lock := m.lockFor(runtimeKey(preparation))
-		lock.Lock()
-		defer lock.Unlock()
-	}
-	args, err := m.runArgsWithGeneration(binding, rt.Container, request.Port, rt.Generation)
-	if err != nil {
-		return ComputeObservation{}, fmt.Errorf("prepare runtime launch: %w", err)
-	}
-	if rt.Managed {
-		if err := m.ensureManagedInfra(ctx, binding, request.Settings, rt.Container, request.Port, rt.Generation); err != nil {
-			return ComputeObservation{}, fmt.Errorf("managed topology: %w", err)
-		}
-		if m.cfg.ContainerRuntime != "runc" {
-			hosts, err := m.sandboxRelayHosts(ctx, request.Settings, binding.ContextRoot)
-			if err != nil {
-				return ComputeObservation{}, err
-			}
-			args = slices.Insert(args, 1, hosts...)
-		}
-	}
-	if out, err := m.command(ctx, args...); err != nil {
-		return ComputeObservation{}, fmt.Errorf("start runtime: %w: %s", err, firstLine(string(out)))
-	}
-	if request.Settings.Has("browser") || request.Settings.Has("meet") {
-		if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
-			return ComputeObservation{}, err
-		}
-		if !rt.Managed {
-			network := "hermes-hub-" + binding.UserID + "-" + m.environment() + "_default"
-			if out, err := m.command(ctx, "network", "connect", network, rt.Container); err != nil {
-				return ComputeObservation{}, fmt.Errorf("attach browser network: %w: %s", err, firstLine(string(out)))
-			}
-		}
-	}
-	return ComputeObservation{Address: rt.Address}, nil
+// Managed workload launch moved to spawn-controller (CHG-0336 S7c): the
+// supervisor claims runtimes through contracts/spawn/v1 and never runs
+// containers itself. Spawn stays on the interface for the compile-only
+// firecracker/kubernetes backends; the docker backend refuses.
+func (d dockerBackend) Spawn(context.Context, SpawnRequest) (ComputeObservation, error) {
+	return ComputeObservation{}, errors.New("managed workload launch moved to spawn-controller")
 }
 
 func (m *Manager) usingKubernetes() bool { return m.cfg.ExecutionBackend == "kubernetes" }

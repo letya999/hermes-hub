@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -107,42 +106,6 @@ func TestManagedSameConversationWaitsInAdmissionOrder(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("second claim did not resume")
-	}
-}
-
-func TestManagedLanesMountSeparateRuntimeStateAndSharedHermesHistory(t *testing.T) {
-	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
-	mounts := func(mode string) map[string]string {
-		b := binding(root)
-		b.RuntimeMode = mode
-		var err error
-		b, err = m.normalize(b)
-		if err != nil {
-			t.Fatal(err)
-		}
-		args, err := m.runArgsWithGeneration(b, "lane-test", 31000, "gen-test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		result := map[string]string{}
-		for i := 0; i+1 < len(args); i++ {
-			if args[i] != "--mount" {
-				continue
-			}
-			source, found := strings.CutPrefix(args[i+1], "type=bind,src=")
-			if !found {
-				continue
-			}
-			source, destination, found := strings.Cut(source, ",dst=")
-			if found {
-				result[strings.Split(destination, ",")[0]] = source
-			}
-		}
-		return result
-	}
-	first, second := mounts("gateway"), mounts("gateway-2")
-	if first["/state"] == "" || second["/state"] == "" || first["/state"] == second["/state"] || first["/state/hermes"] == "" || first["/state/hermes"] != second["/state/hermes"] {
-		t.Fatalf("runtime state or Hermes history mounts crossed lanes")
 	}
 }
 

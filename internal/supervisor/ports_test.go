@@ -2,10 +2,8 @@ package supervisor
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,139 +51,6 @@ func TestPortRangeExhaustionRefusesSpawn(t *testing.T) {
 	m.items["other2"] = &runtimeEntry{Runtime: Runtime{Address: "http://127.0.0.1:30001"}}
 	if _, err := m.Ensure(context.Background(), binding(root)); err == nil || !strings.Contains(err.Error(), "port range exhausted") {
 		t.Fatalf("spawn proceeded despite exhausted port range: %v", err)
-	}
-}
-
-// A dead same-name container from an older generation is reclaimed so a new
-// generation can spawn; a foreign squatter is never touched.
-func TestEnsureReclaimsDeadStaleContainer(t *testing.T) {
-	var order []string
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		switch {
-		case args[0] == "inspect" && args[2] == "{{.State.Status}}":
-			return []byte("exited"), nil
-		case args[0] == "rm":
-			order = append(order, "rm "+args[len(args)-1])
-			return []byte(""), nil
-		case args[0] == "run":
-			order = append(order, "run "+args[3])
-		}
-		return []byte(""), nil
-	}
-	m, root := testManager(t, command, func(context.Context, string, string) error { return nil })
-	b := binding(root)
-	key := runtimeKey(b)
-	name := containerName(key)
-	// Seed the wrapper's label inventory as if gen-0 created this container.
-	if _, err := m.command(context.Background(), "run", "-d", "--name", name,
-		"--label", "hermes-hub.owner="+m.ownerID(),
-		"--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(key)),
-		"--label", "hermes-hub.generation=gen-0"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Ensure(context.Background(), b); err != nil {
-		t.Fatalf("stale container blocked respawn: %v", err)
-	}
-	// The managed spawn is relay-first: reclaim, then the control relay,
-	// then the runtime — the stale name must be free before either runs.
-	if len(order) != 4 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name+"-ctl" || order[3] != "run "+name {
-		t.Fatalf("stale container not reclaimed before spawn: %v", order)
-	}
-}
-
-func TestEnsureReclaimsRunningStaleGeneration(t *testing.T) {
-	var order []string
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		switch {
-		case args[0] == "inspect" && args[2] == "{{.State.Status}}":
-			return []byte("running"), nil
-		case args[0] == "rm":
-			order = append(order, "rm "+args[len(args)-1])
-			return []byte(""), nil
-		case args[0] == "run":
-			order = append(order, "run "+args[3])
-		}
-		return []byte(""), nil
-	}
-	m, root := testManager(t, command, func(context.Context, string, string) error { return nil })
-	b := binding(root)
-	key := runtimeKey(b)
-	name := containerName(key)
-	if _, err := m.command(context.Background(), "run", "-d", "--name", name,
-		"--label", "hermes-hub.owner="+m.ownerID(),
-		"--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(key)),
-		"--label", "hermes-hub.generation=gen-0"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Ensure(context.Background(), b); err != nil {
-		t.Fatalf("stale generation blocked respawn: %v", err)
-	}
-	if len(order) != 4 || order[0] != "run "+name || order[1] != "rm "+name || order[2] != "run "+name+"-ctl" || order[3] != "run "+name {
-		t.Fatalf("stale generation not reclaimed before spawn: %v", order)
-	}
-}
-
-// A running same-generation container is reused through the port it actually
-// publishes, not the freshly allocated one.
-func TestEnsureReusesPublishedPortOnRecovery(t *testing.T) {
-	var probed string
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		switch {
-		case args[0] == "inspect" && args[2] == "{{.State.Status}}":
-			return []byte("running"), nil
-		case args[0] == "port":
-			return []byte("8080/tcp -> 127.0.0.1:29999\n"), nil
-		}
-		return []byte(""), nil
-	}
-	probe := func(_ context.Context, address, _ string) error { probed = address; return nil }
-	m, root := testManager(t, command, probe)
-	b := binding(root)
-	key := runtimeKey(b)
-	name := containerName(key)
-	if _, err := m.command(context.Background(), "run", "-d", "--name", name,
-		"--label", "hermes-hub.owner="+m.ownerID(),
-		"--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(key)),
-		"--label", "hermes-hub.generation=gen-1",
-		"--mount", "type=bind,src="+filepath.Join(root, "workspace")+",dst=/scope"); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := m.Ensure(context.Background(), b)
-	if err != nil {
-		t.Fatalf("same-generation running container not reused: %v", err)
-	}
-	if probed != "http://127.0.0.1:29999" || runtime.Address != "http://127.0.0.1:29999" {
-		t.Fatalf("reuse did not discover published port: probed=%s address=%s", probed, runtime.Address)
-	}
-}
-
-// A foreign container occupying the deterministic name refuses the spawn;
-// label-verified reclaim never removes another owner's workload.
-func TestEnsureRefusesForeignSameNameContainer(t *testing.T) {
-	var removed []string
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		switch {
-		case args[0] == "inspect" && args[2] == "{{.State.Status}}":
-			return []byte("running"), nil
-		case args[0] == "rm":
-			removed = append(removed, args[len(args)-1])
-		}
-		return []byte(""), nil
-	}
-	m, root := testManager(t, command, func(context.Context, string, string) error { return nil })
-	b := binding(root)
-	name := containerName(runtimeKey(b))
-	if _, err := m.command(context.Background(), "run", "-d", "--name", name,
-		"--label", "hermes-hub.owner=foreign-owner",
-		"--label", "hermes-hub.context="+hex.EncodeToString(hashBytes("other")),
-		"--label", "hermes-hub.generation=gen-9"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Ensure(context.Background(), b); err == nil {
-		t.Fatal("foreign same-name container was reclaimed or ignored")
-	}
-	if len(removed) != 0 {
-		t.Fatalf("foreign container removed: %v", removed)
 	}
 }
 

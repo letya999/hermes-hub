@@ -103,24 +103,8 @@ func TestWatchdogExpectedWait(t *testing.T) {
 // appending noise, and the incident survives a supervisor restart alongside
 // the runtime it belongs to.
 func TestWatchdogIncidentCoalescing(t *testing.T) {
-	restarts := 0
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			started = true
-			return []byte("container"), nil
-		}
-		if args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/health" {
 			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: "unavailable", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
@@ -161,8 +145,8 @@ func TestWatchdogIncidentCoalescing(t *testing.T) {
 	outcome("coalesce-2")
 	m.ReconcileHealth(context.Background(), now)
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
-	if restarts != 1 {
-		t.Fatalf("wedged runtime not remediated: %d", restarts)
+	if stub.drainCount() != 1 {
+		t.Fatalf("wedged runtime not remediated: %d", stub.drainCount())
 	}
 	m.mu.Lock()
 	incident, ok := m.items[runtimeKey(b)].incidents["wedged"]

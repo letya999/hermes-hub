@@ -15,23 +15,8 @@ import (
 )
 
 func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
-	var mu sync.Mutex
-	starts, removes := 0, 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		switch args[0] {
-		case "inspect":
-			return nil, os.ErrNotExist
-		case "run":
-			if isRuntimeSpawn(args) {
-				starts++
-			}
-		case "rm":
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Text: "must not persist"}
 	if err := m.SetPin(request, true); err != nil {
 		t.Fatal(err)
@@ -51,13 +36,13 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	}
 	wg.Wait()
 	runtime, ok, err := m.Status(binding(root))
-	if err != nil || !ok || len(runtime.Consumers) != 0 || starts != 1 {
-		t.Fatalf("pin wake: %+v starts=%d err=%v", runtime, starts, err)
+	if err != nil || !ok || len(runtime.Consumers) != 0 || stub.claimCount() != 1 {
+		t.Fatalf("pin wake: %+v claims=%d err=%v", runtime, stub.claimCount(), err)
 	}
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("pinned runtime reaped")
 	}
 	other := request
@@ -74,11 +59,11 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 2 {
-		t.Fatalf("unpinned idle runtime not reaped: %d", removes)
+	if stub.releaseCount() != 1 {
+		t.Fatalf("unpinned idle runtime not reaped: %d", stub.releaseCount())
 	}
 	m.ReconcilePins(context.Background())
-	if starts != 1 {
+	if stub.claimCount() != 1 {
 		t.Fatal("removed pin woke runtime")
 	}
 	if _, err := os.Stat(filepath.Join(root, "hermes")); err != nil {
@@ -89,34 +74,22 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 // A blocked Ensure inside recovery/pin work must never gate the detection
 // sweep: health marking for the rest of the fleet runs on its own loop.
 func TestSweepDoesNotRunEnsureWork(t *testing.T) {
-	ran := make(chan string, 4)
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			ran <- "run"
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
 	if err := m.SetPin(request, true); err != nil {
 		t.Fatal(err)
 	}
 	m.sweep(context.Background(), m.cfg.Now())
-	select {
-	case <-ran:
-		t.Fatal("detection sweep issued docker run")
-	case <-time.After(2 * time.Second):
+	if stub.claimCount() != 0 {
+		t.Fatal("detection sweep claimed a runtime")
 	}
 	m.reconcileWork(context.Background())
-	select {
-	case <-ran:
-	case <-time.After(10 * time.Second):
+	if stub.claimCount() != 1 {
 		t.Fatal("reconcile loop skipped the pending pin")
 	}
 	if runtime, ok, err := m.Status(binding(root)); err != nil || !ok || runtime.Container == "" {
-		t.Fatalf("reconcile did not spawn the pinned runtime: %+v %v", runtime, err)
+		t.Fatalf("reconcile did not claim the pinned runtime: %+v %v", runtime, err)
 	}
 }
 
@@ -124,15 +97,8 @@ func TestSweepDoesNotRunEnsureWork(t *testing.T) {
 // server runs spawns the runtime without any test-side reconcile call.
 func TestSupervisorServeRunsReconcileLoop(t *testing.T) {
 	ran := make(chan string, 4)
-	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			ran <- "run"
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Spawn = &claimStub{claimHook: func() { ran <- "claim" }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, m, "127.0.0.1:0") }()
@@ -161,16 +127,8 @@ func TestServeWaitsForInflightReconcile(t *testing.T) {
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
 	var enterOnce sync.Once
-	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			enterOnce.Do(func() { close(entered) })
-			<-release
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Spawn = &claimStub{claimHook: func() { enterOnce.Do(func() { close(entered) }); <-release }}
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
 	if err := m.SetPin(request, true); err != nil {
 		t.Fatal(err)

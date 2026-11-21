@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -122,11 +122,20 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	}
 	if current != nil && ((current.PolicyVersion != "" && binding.PolicyVersion != "" && current.PolicyVersion != binding.PolicyVersion) || current.IdentityRevision != binding.IdentityRevision) && (current.State == Ready || current.State == Idle || current.State == Busy || current.restored) {
 		snapshot := current.Runtime
+		claimed := current.spawnLease != ""
 		m.mu.Unlock()
 		log.Printf("runtime %s policy rotated: replacing stale generation", snapshot.Container)
-		// A verified-absent container already satisfies the removal goal;
-		// only a real removal failure blocks the rotated spawn.
-		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+		if claimed {
+			// The stale-policy row is spawn's: drain stops it under the
+			// backend budget and clears the local hold; the claim below
+			// binds a fresh generation for the rotated digest.
+			if err := m.drainClaim(ctx, binding); err != nil {
+				return Runtime{}, errors.New("stale-policy runtime drain failed")
+			}
+			m.releaseClaim(ctx, current)
+		} else if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+			// A verified-absent container already satisfies the removal
+			// goal; only a real removal failure blocks the rotated spawn.
 			return Runtime{}, errors.New("stale-policy runtime removal failed")
 		}
 		m.mu.Lock()
@@ -151,81 +160,166 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 		address, auth := current.Address, binding.runtimeAuth
 		snapshot := current.Runtime
 		_, slotHeld := m.slots[key]
+		spawnLease := current.spawnLease
 		m.mu.Unlock()
-		ownershipErr := m.VerifyOwnership(ctx, snapshot)
-		if ownershipErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
-			return snapshot, ownershipErr
-		}
-		observation, inspectErr := m.observeCompute(ctx, snapshot)
-		if inspectErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
-			return snapshot, errors.New("restored runtime health unavailable")
-		}
-		if inspectErr == nil && observation.State == "running" {
-			if m.usingKubernetes() && observation.Address != "" {
-				address = observation.Address
+		// A spawn-claimed entry restores by re-arming its hold: the row is
+		// the source of truth, a live lease means the workload outlived the
+		// supervisor restart. Not-found drops the entry to a fresh claim.
+		if spawnLease != "" {
+			if err := m.renewClaim(ctx, spawnLease, snapshot.ContextID); err != nil {
+				if !errors.Is(err, spawnv1.ErrNotFound) {
+					return snapshot, err
+				}
+			} else {
+				if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
+					return snapshot, readinessErr
+				}
+				if !slotHeld {
+					select {
+					case m.sem <- struct{}{}:
+					case <-ctx.Done():
+						return Runtime{}, ctx.Err()
+					}
+				}
+				m.mu.Lock()
+				current = m.items[key]
+				if current == nil {
+					m.mu.Unlock()
+					if !slotHeld {
+						<-m.sem
+					}
+					return Runtime{}, errors.New("runtime disappeared during restore")
+				}
+				previous := current.Runtime
+				current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
+				m.addHoldLocked(current, binding, hold)
+				m.slots[key] = struct{}{}
+				result := current.Runtime
+				if err := m.persistLocked(); err != nil {
+					current.Runtime = previous
+					delete(current.leases, hold.ID)
+					m.mu.Unlock()
+					return snapshot, err
+				}
+				current.restored, current.auth = false, auth
+				m.mu.Unlock()
+				return result, nil
 			}
-			if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
-				return snapshot, readinessErr
+			m.mu.Lock()
+			current = m.items[key]
+			if current != nil {
+				previous, previousLeases := current.Runtime, current.leases
+				current.State, current.leases = Stopped, map[string]Lease{}
+				if err := m.persistLocked(); err != nil {
+					current.Runtime, current.leases = previous, previousLeases
+					m.mu.Unlock()
+					return snapshot, err
+				}
+				current.restored = false
 			}
-			if !slotHeld {
-				select {
-				case m.sem <- struct{}{}:
-				case <-ctx.Done():
-					return Runtime{}, ctx.Err()
+			m.mu.Unlock()
+		} else {
+			ownershipErr := m.VerifyOwnership(ctx, snapshot)
+			if ownershipErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
+				return snapshot, ownershipErr
+			}
+			observation, inspectErr := m.observeCompute(ctx, snapshot)
+			if inspectErr != nil && !errors.Is(ownershipErr, ErrRuntimeMissing) {
+				return snapshot, errors.New("restored runtime health unavailable")
+			}
+			if inspectErr == nil && observation.State == "running" {
+				if m.usingKubernetes() && observation.Address != "" {
+					address = observation.Address
+				}
+				if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
+					return snapshot, readinessErr
+				}
+				if !slotHeld {
+					select {
+					case m.sem <- struct{}{}:
+					case <-ctx.Done():
+						return Runtime{}, ctx.Err()
+					}
+				}
+				m.mu.Lock()
+				current = m.items[key]
+				if current == nil {
+					m.mu.Unlock()
+					if !slotHeld {
+						<-m.sem
+					}
+					return Runtime{}, errors.New("runtime disappeared during restore")
+				}
+				previous := current.Runtime
+				current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
+				current.Address = address
+				m.addHoldLocked(current, binding, hold)
+				m.slots[key] = struct{}{}
+				result := current.Runtime
+				if err := m.persistLocked(); err != nil {
+					current.Runtime = previous
+					delete(current.leases, hold.ID)
+					m.mu.Unlock()
+					return snapshot, err
+				}
+				current.restored, current.auth = false, auth
+				m.mu.Unlock()
+				return result, nil
+			}
+			if !errors.Is(ownershipErr, ErrRuntimeMissing) {
+				status := observation.State
+				if status != "exited" && status != "dead" {
+					return snapshot, errors.New("runtime state is not safely replaceable")
+				}
+				if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+					return snapshot, err
 				}
 			}
 			m.mu.Lock()
 			current = m.items[key]
-			if current == nil {
-				m.mu.Unlock()
-				if !slotHeld {
-					<-m.sem
+			if current != nil {
+				previous, previousLeases := current.Runtime, current.leases
+				current.State, current.leases = Stopped, map[string]Lease{}
+				if err := m.persistLocked(); err != nil {
+					current.Runtime, current.leases = previous, previousLeases
+					m.mu.Unlock()
+					return snapshot, err
 				}
-				return Runtime{}, errors.New("runtime disappeared during restore")
+				current.restored = false
 			}
-			previous := current.Runtime
-			current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
-			current.Address = address
-			m.addHoldLocked(current, binding, hold)
-			m.slots[key] = struct{}{}
-			result := current.Runtime
-			if err := m.persistLocked(); err != nil {
-				current.Runtime = previous
-				delete(current.leases, hold.ID)
-				m.mu.Unlock()
-				return snapshot, err
-			}
-			current.restored, current.auth = false, auth
 			m.mu.Unlock()
-			return result, nil
 		}
-		if !errors.Is(ownershipErr, ErrRuntimeMissing) {
-			status := observation.State
-			if status != "exited" && status != "dead" {
-				return snapshot, errors.New("runtime state is not safely replaceable")
-			}
-			if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
-				return snapshot, err
-			}
-		}
-		m.mu.Lock()
-		current = m.items[key]
-		if current != nil {
-			previous, previousLeases := current.Runtime, current.leases
-			current.State, current.leases = Stopped, map[string]Lease{}
-			if err := m.persistLocked(); err != nil {
-				current.Runtime, current.leases = previous, previousLeases
-				m.mu.Unlock()
-				return snapshot, err
-			}
-			current.restored = false
-		}
-		m.mu.Unlock()
 	} else {
 		m.mu.Unlock()
 	}
+	// Re-arm the spawn hold before serving a live entry — a drained or
+	// forgotten row means the workload is gone; re-claim below instead.
 	m.mu.Lock()
-	if current := m.items[key]; current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
+	serving := m.items[key]
+	live := serving != nil && (serving.State == Ready || serving.State == Idle || serving.State == Busy)
+	var servingLease, servingContext string
+	if serving != nil {
+		servingLease, servingContext = serving.spawnLease, serving.Runtime.ContextID
+	}
+	m.mu.Unlock()
+	serveLive := false
+	if live {
+		switch err := m.renewClaim(ctx, servingLease, servingContext); {
+		case err == nil:
+			serveLive = true
+		case errors.Is(err, spawnv1.ErrNotFound):
+			m.mu.Lock()
+			if cur := m.items[key]; cur == serving {
+				cur.State = Stopped
+				_ = m.persistLocked()
+			}
+			m.mu.Unlock()
+		default:
+			return Runtime{}, err
+		}
+	}
+	m.mu.Lock()
+	if current := m.items[key]; serveLive && current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
 		if m.usingKubernetes() {
 			snapshot := current.Runtime
 			m.mu.Unlock()
@@ -312,8 +406,13 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	}
 	m.addHoldLocked(logical, binding, hold)
 	previousEntry := m.items[key]
-	if previousEntry != nil && !previousEntry.CrashWindowStart.IsZero() && m.cfg.Now().Sub(previousEntry.CrashWindowStart) < 10*time.Minute {
-		logical.CrashCount, logical.CrashWindowStart, logical.NextRetryAt = previousEntry.CrashCount, previousEntry.CrashWindowStart, previousEntry.NextRetryAt
+	if previousEntry != nil {
+		// Accepted-restart churn is cumulative context state, not
+		// crash-window state — carry it across the rebuild like a respawn.
+		logical.Runtime.Restarts = previousEntry.Runtime.Restarts
+		if !previousEntry.CrashWindowStart.IsZero() && m.cfg.Now().Sub(previousEntry.CrashWindowStart) < 10*time.Minute {
+			logical.CrashCount, logical.CrashWindowStart, logical.NextRetryAt = previousEntry.CrashCount, previousEntry.CrashWindowStart, previousEntry.NextRetryAt
+		}
 	}
 	m.items[key] = logical
 	if err = m.persistLocked(); err != nil {
@@ -329,81 +428,66 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 		return Runtime{}, errors.New("runtime start state unavailable")
 	}
 	m.mu.Unlock()
-	status := ""
-	if observation, inspectErr := m.observeCompute(ctx, logical.Runtime); inspectErr == nil {
-		status = observation.State
-	} else if m.usingKubernetes() {
-		if present, presenceErr := m.containerPresent(ctx, container); presenceErr == nil && present {
-			status = "present"
-		}
-	}
-	if status == "running" {
-		if _, ownershipErr := m.ownedContainerID(ctx, logical.Runtime); ownershipErr != nil {
-			// A same-name container from an older generation blocks the respawn;
-			// reclaim it only when its labels still prove our ownership.
-			if !m.reclaimStaleRuntime(ctx, binding, container, logical.Generation) {
-				m.mu.Lock()
-				if previousEntry == nil {
-					delete(m.items, key)
-				} else {
-					m.items[key] = previousEntry
-				}
-				_ = m.persistLocked()
-				m.mu.Unlock()
+	// Workload start diverges by backend: the compile-only kubernetes path
+	// spawns through the supervisor's own backend (decision 13 / M40.15);
+	// the docker/process managed path claims through spawn-controller
+	// (S7c), which binds routing and identity to a generation row, starts
+	// or reuses its workload, and answers the endpoint to forward to.
+	var computeID, computeGeneration, claimLease string
+	var computeConditions []Condition
+	if m.usingKubernetes() {
+		observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Port: port})
+		if spawnErr != nil {
+			m.markDegraded(key)
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
 				m.releaseSlot(key)
-				return Runtime{}, ownershipErr
 			}
-		} else {
-			// Port allocation may have moved since this container started;
-			// reuse requires its actually published port.
-			if !m.usingKubernetes() && m.cfg.HostSpacesRoot == "" {
-				if hostPort, portErr := m.publishedPort(ctx, logical.Runtime); portErr == nil {
-					address = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
-				}
-			}
-			logical.Address = address
-			if err = m.ready(ctx, address, binding.runtimeAuth); err == nil {
-				m.mu.Lock()
-				logical.State = Busy
-				result := logical.Runtime
-				_ = m.persistLocked()
-				m.mu.Unlock()
-				return result, nil
-			}
-			if cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime); cleanupErr != nil {
-				m.markDegraded(key)
-				return Runtime{}, cleanupErr
-			}
+			return Runtime{}, spawnErr
 		}
-	} else if status != "" {
-		// A dead or paused same-name container would make docker run fail on
-		// the name; remove it only when it is verifiably ours and stale.
-		m.reclaimStaleRuntime(ctx, binding, container, logical.Generation)
-	}
-	observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Port: port})
-	if spawnErr != nil {
-		m.markDegraded(key)
-		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
-		if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+		if observed.Address != "" {
+			address = observed.Address
+		}
+		computeID, computeConditions = observed.ID, observed.Conditions
+	} else {
+		claimed, spawnErr := m.claimManaged(ctx, binding)
+		if spawnErr != nil {
+			m.markDegraded(key)
 			m.releaseSlot(key)
+			return Runtime{}, spawnErr
 		}
-		return Runtime{}, spawnErr
-	}
-	if observed.Address != "" {
-		address = observed.Address
+		address = claimed.Runtime.Address
+		computeID, computeGeneration, claimLease = claimed.Runtime.ID, fmt.Sprintf("gen-%d", claimed.Runtime.Generation), claimed.Lease
+		// The compose-owned browser sidecar still answers to demand from
+		// this space — spawn owns the workload container, not the sidecar.
+		if managedSettings.Has("browser") || managedSettings.Has("meet") {
+			if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
+				m.markDegraded(key)
+				_ = m.cfg.Spawn.ReleaseLease(ctx, claimLease, spawnv1.LeaseRequest{Org: "local", Owner: binding.ContextID})
+				m.releaseSlot(key)
+				return Runtime{}, err
+			}
+		}
 	}
 	m.mu.Lock()
-	logical.Address, logical.ComputeID, logical.ComputeConditions = address, observed.ID, observed.Conditions
+	logical.Address, logical.ComputeID, logical.ComputeConditions = address, computeID, computeConditions
+	if computeGeneration != "" {
+		logical.Generation = computeGeneration
+	}
+	logical.spawnLease = claimLease
 	if persistErr := m.persistLocked(); persistErr != nil {
 		m.mu.Unlock()
 		m.markDegraded(key)
+		// A claimed row has no local container to inspect later; drop
+		// the lease instead of orphaning it.
+		m.releaseClaim(ctx, logical)
 		return Runtime{}, persistErr
 	}
 	m.mu.Unlock()
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
-		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		m.markDegraded(key)
-		if cleanupErr == nil {
+		cleanupErr := m.releaseWorkload(ctx, logical)
+		if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
 			m.releaseSlot(key)
 		} else {
 			return Runtime{}, cleanupErr
@@ -518,26 +602,6 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	return binding, nil
 }
 
-func (m *Manager) runArgs(binding Binding, container string, port int) ([]string, error) {
-	return m.runArgsWithGeneration(binding, container, port, "")
-}
-
-func (m *Manager) runArgsWithGeneration(binding Binding, container string, port int, generation string) ([]string, error) {
-	env := m.environment()
-	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
-	// dev port offsets, execution selection) must match the rendered compose.
-	// Without a published revision there is nothing to spawn: no legacy
-	// unmanaged run arguments exist.
-	settings, err := stack.ReadEffective(binding.ContextRoot, env)
-	if err != nil {
-		return nil, err
-	}
-	if err := stack.ValidateRuntimeConnections(settings, binding.ContextRoot); err != nil {
-		return nil, err
-	}
-	return m.managedRunArgs(binding, settings, container, generation)
-}
-
 // managedAgentNetworkName mirrors the Compose topology: one internal network
 // per user/environment where only the reviewed relays and runtime resolve.
 func managedAgentNetworkName(user, env string) string {
@@ -550,169 +614,9 @@ func managedAgentNetworkName(user, env string) string {
 const controlNetworkName = "hermes-hub-control"
 
 // managedExtensionRootTmpfs are the empty read-only overlays covering every
-// executable import path under HERMES_HOME.
+// executable import path under HERMES_HOME; the compile-only firecracker and
+// kubernetes plans reuse the same contract.
 var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"}
-
-func appendHostingRuntimeMount(args []string, root, env string, settings stack.Settings) []string {
-	if !settings.Has("hosting") {
-		return args
-	}
-	return append(args, "--mount", "type=bind,src="+filepath.Join(root, "runtime", "hosting."+env+".key")+",dst=/run/hosting.key,readonly")
-}
-
-func appendConnectionRuntimeMounts(args []string, root string, settings stack.Settings) []string {
-	for _, connection := range stack.RuntimeConnections(settings, root) {
-		args = append(args, "--mount", "type=bind,src="+connection.Source+",dst="+connection.Target+",readonly")
-	}
-	return args
-}
-
-// managedRunArgs mirrors the managed Compose service: private managed state
-// layout, read-only effective config, scratch workspace, sealed extension
-// roots and the agent network only. No published port (internal network), no
-// broker secrets, no shared mounts, no host gateway.
-func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, container string, generation string) ([]string, error) {
-	var err error
-	settings, err = m.applyIdentityTemplate(binding, settings)
-	if err != nil {
-		return nil, err
-	}
-	env := m.environment()
-	m.prepareSpawnFiles(binding, env)
-	settings.Environment = env
-	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
-	runtimeDir := filepath.Join(managedDir, "runtime")
-	if binding.RuntimeMode != "gateway" {
-		runtimeDir = filepath.Join(runtimeDir, binding.RuntimeMode)
-	}
-	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
-	args = append(args, "--runtime", m.cfg.ContainerRuntime)
-	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
-	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
-		if envMap, ok := service["environment"].(stack.M); ok {
-			keys := make([]string, 0)
-			for key := range envMap {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				args = append(args, "-e", key+"="+fmt.Sprint(envMap[key]))
-			}
-		}
-	}
-	for _, mount := range []struct{ source, target string }{{runtimeDir, "/state"}, {filepath.Join(managedDir, "hermes"), "/state/hermes"}, {filepath.Join(managedDir, "home"), "/state/home"}, {filepath.Join(managedDir, "cache"), "/state/cache"}} {
-		args = append(args, "--mount", "type=bind,src="+mount.source+",dst="+mount.target)
-	}
-	// The workspace passport owns the container filesystem once a revision is
-	// published (SPEC-0092 R5.2): /config, /workspace with read-only
-	// sub-binds, /skills and /shared/* come from the MountPlan —
-	// identical to the rendered Compose service. Without a revision the
-	// space keeps the legacy workspace bind.
-	if settings.PassportWorkspace != nil {
-		for _, pm := range stack.MountPlan(binding.ContextRoot, env, managedDir, settings, *settings.PassportWorkspace) {
-			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
-			if pm.ReadOnly {
-				value += ",readonly"
-			}
-			args = append(args, "--mount", value)
-		}
-	} else {
-		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
-	}
-	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, settings)
-	args = appendConnectionRuntimeMounts(args, binding.ContextRoot, settings)
-	// Skill contract: the hub-built effective view mounts read-only at
-	// /skills and a failed build refuses the spawn.
-	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
-		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
-		if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
-			return nil, fmt.Errorf("platform skills dir: %w", err)
-		}
-	}
-	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
-		return nil, fmt.Errorf("effective skills view: %w", err)
-	}
-	// A published workspace passport carries /skills through the MountPlan.
-	if settings.PassportWorkspace == nil {
-		args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsDir(binding.ContextRoot, settings)+",dst=/skills,readonly")
-	}
-	// Post-publish rebuild contract: the platform tier and the render
-	// snapshot mount read-only; the view gets a second writable bind so
-	// /v1/skill-apply can recompose it in place without a respawn.
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
-	args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsDir(binding.ContextRoot, settings)+",dst=/skills-effective-rw")
-	args = append(args, "--mount", "type=bind,src="+stack.EffectiveSkillsMetaDir(binding.ContextRoot, settings)+",dst=/skills-meta,readonly")
-	// R5.1: the owner store (not a private managed copy) is writable at
-	// /skills-store so drafts, publishes and the effective view all see the
-	// same store.
-	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
-	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
-	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
-		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
-	}
-	// Hub plugins: a feature-filtered copy materialized at spawn mounts read-only into
-	// upstream's bundled plugins dir.
-	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), settings); err != nil {
-		log.Printf("supervisor plugins materialization skipped: %v", err)
-	}
-	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
-			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
-		}
-	}
-	effectiveConfig, err := m.materializeHermesConfig(binding, env)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, "--mount", "type=bind,src="+effectiveConfig+",dst=/state/hermes/config.yaml,readonly")
-	if soul := stack.EffectiveSoulPath(binding.ContextRoot, settings); fileExists(soul) {
-		args = append(args, "--mount", "type=bind,src="+soul+",dst=/state/hermes/SOUL.md,readonly")
-	}
-	if settings.Environment == "" {
-		settings.Environment = env
-	}
-	policyPath, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings)
-	if err != nil {
-		return nil, fmt.Errorf("materialize tool policy: %w", err)
-	}
-	// A published workspace passport owns /config as one read-only directory
-	// bind: nested per-file mounts cannot create mountpoints under it, so the
-	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
-	if settings.PassportWorkspace == nil {
-		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
-		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
-		}
-	}
-	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
-	for _, name := range managedExtensionRootTmpfs {
-		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
-	}
-	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
-	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
-	if generation != "" {
-		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
-	}
-	// Operator-tunable run watchdog rides into the spawned runtime when set.
-	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
-		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
-	}
-	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
-	if err != nil {
-		return nil, err
-	}
-	current, err := stack.ReadEffective(binding.ContextRoot, env)
-	if err != nil || current.PassportRevision != settings.PassportRevision {
-		return nil, fmt.Errorf("managed runtime passport activation changed during spawn")
-	}
-	args = append(args, image, "serve")
-	return args, nil
-}
 
 func fileExists(path string) bool {
 	info, err := os.Lstat(path) // #nosec G703 -- callers pass paths under the validated binding context root
@@ -723,22 +627,6 @@ func fileExists(path string) bool {
 // creates the supervisor's control network plus this runtime's control relay:
 // the dual-homed sidecar is the only inbound route to an internal-network
 // runtime, publishing only on the host loopback.
-func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, settings stack.Settings, container string, port int, generation string) error {
-	agentNet := managedAgentNetworkName(settings.User, m.environment())
-	out, err := m.command(ctx, "network", "inspect", "--format", "{{.Internal}}", agentNet)
-	if err != nil {
-		return fmt.Errorf("managed agent network %s unavailable; run hubctl up for this space first", agentNet)
-	}
-	if strings.TrimSpace(string(out)) != "true" {
-		return fmt.Errorf("managed agent network %s is not internal", agentNet)
-	}
-	if _, err := m.command(ctx, "network", "inspect", "--format", "{{.Id}}", controlNetworkName); err != nil {
-		if _, cerr := m.command(ctx, "network", "create", controlNetworkName); cerr != nil {
-			return fmt.Errorf("managed control network %s unavailable: %w", controlNetworkName, cerr)
-		}
-	}
-	return m.spawnControlRelay(ctx, binding, container, port, generation, agentNet, "http://"+container+":"+strconv.Itoa(m.cfg.RuntimePort), "", true)
-}
 
 func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet, target, mountDir string, publish bool) error {
 	relay := container + "-ctl"

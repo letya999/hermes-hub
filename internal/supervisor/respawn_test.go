@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -56,26 +55,8 @@ func TestRespawnUsesPublishedPolicyAfterRotation(t *testing.T) {
 // idle container is destroyed and re-spawned so env-carried passport config —
 // ports, feature flags — takes effect (SPEC-0092 R4.2/A4).
 func TestRespawnReplacesIdleRuntime(t *testing.T) {
-	var mu sync.Mutex
-	runs, removes := 0, 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		switch args[0] {
-		case "inspect":
-			return nil, os.ErrNotExist
-		case "run":
-			if isRuntimeSpawn(args) {
-				runs++
-			}
-		case "rm":
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -95,10 +76,8 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"applied":true`) {
 		t.Fatalf("respawn status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if runs != 2 || removes == 0 {
-		t.Fatalf("respawn must remove and re-spawn the container: runs=%d removes=%d", runs, removes)
+	if stub.drainCount() != 1 || stub.claimCount() != 2 {
+		t.Fatalf("respawn must drain and re-claim: drains=%d claims=%d", stub.drainCount(), stub.claimCount())
 	}
 	m.mu.Lock()
 	respawned := m.items[runtimeKey(normalized)]
@@ -109,37 +88,22 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	if leases != 0 || state == Busy {
 		t.Fatalf("respawn left a phantom lease: state=%s leases=%d", state, leases)
 	}
-	mu.Unlock()
-	// The apply's respawn effect replaces the idle container locally.
+	// The apply's respawn effect replaces the idle runtime through the same
+	// drain + claim route.
 	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
 	if applied, err := m.respawnRuntime("alice", "alice", ""); err != nil || !applied {
 		t.Fatalf("local publication runtime effect: applied=%t err=%v", applied, err)
 	}
-	mu.Lock()
-	if runs != 3 {
-		t.Fatalf("publication did not replace runtime: runs=%d", runs)
+	if stub.drainCount() != 2 || stub.claimCount() != 3 {
+		t.Fatalf("publication did not replace runtime: drains=%d claims=%d", stub.drainCount(), stub.claimCount())
 	}
 }
 
 // A busy runtime keeps serving its leases: the respawn must not destroy the
 // container mid-lease — it converges on the next natural spawn instead.
 func TestRespawnBusyRuntimeDefers(t *testing.T) {
-	var mu sync.Mutex
-	removes := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "rm" {
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -157,10 +121,8 @@ func TestRespawnBusyRuntimeDefers(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"scheduled":false`) {
 		t.Fatalf("busy respawn status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if removes != 0 {
-		t.Fatalf("busy runtime was destroyed mid-lease: removes=%d", removes)
+	if stub.drainCount() != 0 {
+		t.Fatalf("busy runtime was drained mid-lease: drains=%d", stub.drainCount())
 	}
 }
 
@@ -194,22 +156,8 @@ func TestRespawnRejectsMalformedRequests(t *testing.T) {
 // A request naming a different runtime_id must not touch the current
 // runtime's container — identity is a lookup key, not a wildcard.
 func TestRespawnScopedToRuntimeID(t *testing.T) {
-	var mu sync.Mutex
-	removes := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "rm" {
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -226,10 +174,8 @@ func TestRespawnScopedToRuntimeID(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer secret")
 	recorder := httptest.NewRecorder()
 	m.Handler().ServeHTTP(recorder, request)
-	mu.Lock()
-	defer mu.Unlock()
-	if removes != 0 {
-		t.Fatalf("respawn removed the container for a foreign runtime_id: removes=%d", removes)
+	if stub.drainCount() != 0 {
+		t.Fatalf("respawn drained a foreign runtime_id: drains=%d", stub.drainCount())
 	}
 }
 
@@ -237,22 +183,8 @@ func TestRespawnScopedToRuntimeID(t *testing.T) {
 // the runtime busy: the respawn must serialize on the runtime key like
 // applyRuntimeRestart does, not race a mid-lease destroy.
 func TestRespawnSerializesOnRuntimeKey(t *testing.T) {
-	var mu sync.Mutex
-	removes := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(args) == 0 {
-			return []byte("running"), nil
-		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "rm" {
-			removes++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	normalized, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -279,11 +211,8 @@ func TestRespawnSerializesOnRuntimeKey(t *testing.T) {
 		t.Fatal("respawn destroyed the container while the runtime key was held")
 	case <-time.After(300 * time.Millisecond):
 	}
-	mu.Lock()
-	removedWhileHeld := removes
-	mu.Unlock()
-	if removedWhileHeld != 0 {
-		t.Fatalf("respawn removed %d containers under a held runtime key", removedWhileHeld)
+	if drainedWhileHeld := stub.drainCount(); drainedWhileHeld != 0 {
+		t.Fatalf("respawn drained %d runtimes under a held runtime key", drainedWhileHeld)
 	}
 	lock.Unlock()
 	select {

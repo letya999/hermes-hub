@@ -89,6 +89,7 @@ func TestParallelAgentProfilesKeepSeparateSkillViews(t *testing.T) {
 		b.AgentID = profile.ID
 		bindings[i] = b
 	}
+	stub := m.cfg.Spawn.(*claimStub)
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for _, b := range bindings {
@@ -102,23 +103,30 @@ func TestParallelAgentProfilesKeepSeparateSkillViews(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var views []string
-	for i, b := range bindings {
-		profileSettings, err := m.applyIdentityTemplate(b, settings)
-		if err != nil {
-			t.Fatal(err)
-		}
-		view := stack.EffectiveSkillsDir(root, profileSettings)
-		views = append(views, view)
-		want, denied := []string{"reader", "writer"}[i], []string{"writer", "reader"}[i]
-		if _, err := os.Stat(filepath.Join(view, want, "SKILL.md")); err != nil {
-			t.Fatal("allowed skill missing")
-		}
-		if _, err := os.Stat(filepath.Join(view, denied)); !os.IsNotExist(err) {
-			t.Fatal("another profile's skill leaked")
-		}
+	// Skill-view materialization itself moved spawn-side with the claim;
+	// the supervisor-side guarantee left here is that each profile's claim
+	// carries exactly its own restriction set — never the other's.
+	claims := stub.claimed()
+	if len(claims) != 2 {
+		t.Fatalf("claims=%d", len(claims))
 	}
-	if views[0] == views[1] {
-		t.Fatal("parallel profiles share mutable skill view")
+	byMode := map[string][]string{}
+	for _, in := range claims {
+		if in.Restrictions == nil {
+			t.Fatal("claim carried no restrictions")
+		}
+		byMode[in.RuntimeMode] = in.Restrictions.Skills
+	}
+	for i, b := range bindings {
+		allowed, denied := []string{"reader", "writer"}[i], []string{"writer", "reader"}[i]
+		got := byMode[b.RuntimeMode]
+		var hasAllowed, hasDenied bool
+		for _, skill := range got {
+			hasAllowed = hasAllowed || skill == allowed
+			hasDenied = hasDenied || skill == denied
+		}
+		if !hasAllowed || hasDenied {
+			t.Fatalf("profile %s claimed skills %v, want %s allowed and %s absent", b.RuntimeMode, got, allowed, denied)
+		}
 	}
 }

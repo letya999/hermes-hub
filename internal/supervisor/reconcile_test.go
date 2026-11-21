@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -22,21 +23,15 @@ func TestReconcileDoesNotBlockAcquire(t *testing.T) {
 	release := make(chan struct{})
 	armedCh := make(chan struct{})
 	var once sync.Once
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && len(args) > 2 && args[2] == "{{.State.Status}}" {
-			select {
-			case <-armedCh:
-				once.Do(func() { close(probing) })
-				<-release
-				return []byte("running"), nil
-			default:
-			}
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(_ context.Context, _, _ string) error {
+		select {
+		case <-armedCh:
+			once.Do(func() { close(probing) })
+			<-release
+		default:
 		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+		return nil
+	})
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -73,24 +68,9 @@ func TestReconcileDoesNotBlockAcquire(t *testing.T) {
 }
 
 func TestHealthReconciliationSeparatesReadinessAndPreservesUnknown(t *testing.T) {
-	unknown := false
-	removed := 0
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			started = true
-		}
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "inspect" && unknown {
-			return nil, errors.New("inspection unavailable")
-		}
-		if args[0] == "rm" {
-			removed++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	unknown := func() { stub.setRenewErr(errors.New("inspection unavailable")) }
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -103,15 +83,15 @@ func TestHealthReconciliationSeparatesReadinessAndPreservesUnknown(t *testing.T)
 	if err != nil || r.RuntimeHealth != "running" || r.HermesReadiness != "ready" || r.Desired {
 		t.Fatalf("status=%+v err=%v", r, err)
 	}
-	unknown = true
+	unknown()
 	m.ReconcileHealth(context.Background(), time.Now())
 	if err := m.Reap(context.Background(), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if removed != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("unknown runtime reaped")
 	}
-	unknown = false
+	stub.setRenewErr(nil)
 	request := hubruntime.ExecuteRequest{Envelope: identity.Envelope{PrincipalID: b.PrincipalID, ContextID: b.ContextID}, JobID: "active", IdempotencyKey: "active", Text: "work"}
 	if _, _, err := m.beginJob(request); err != nil {
 		t.Fatal(err)
@@ -120,33 +100,23 @@ func TestHealthReconciliationSeparatesReadinessAndPreservesUnknown(t *testing.T)
 	if err := m.Reap(context.Background(), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if removed != 0 {
+	if stub.releaseCount() != 0 {
 		t.Fatal("active durable job reaped")
 	}
 }
 
 func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
-	runs := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			if !isRuntimeSpawn(args) {
-				return []byte("ok"), nil
-			}
-			runs++
-			return nil, errors.New("start failed")
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	stub := &claimStub{err: errors.New("start failed")}
+	runs := func() int { return stub.claimCount() }
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Spawn = stub
 	now := time.Unix(100, 0)
 	m.cfg.Now = func() time.Time { return now }
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err == nil {
 		t.Fatal("failed start accepted")
 	}
-	if _, err := m.Ensure(context.Background(), b); err == nil || runs != 1 {
+	if _, err := m.Ensure(context.Background(), b); err == nil || runs() != 1 {
 		t.Fatal("backoff bypassed")
 	}
 	var err error
@@ -154,7 +124,7 @@ func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = m.Ensure(context.Background(), b); err == nil || runs != 1 {
+	if _, err = m.Ensure(context.Background(), b); err == nil || runs() != 1 {
 		t.Fatal("restart reset backoff")
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -164,16 +134,16 @@ func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
 		}
 	}
 	now = now.Add(time.Minute)
-	if _, err = m.Ensure(context.Background(), b); err == nil || runs != 3 {
-		t.Fatalf("crash budget bypassed: %d", runs)
+	if _, err = m.Ensure(context.Background(), b); err == nil || runs() != 3 {
+		t.Fatalf("crash budget bypassed: %d", runs())
 	}
 	r, _, err := m.Status(b)
 	if err != nil || r.CrashCount != 3 || r.NextRetryAt.IsZero() {
 		t.Fatalf("unobservable crash policy: %+v %v", r, err)
 	}
 	now = now.Add(10 * time.Minute)
-	if _, err = m.Ensure(context.Background(), b); err == nil || runs != 4 {
-		t.Fatalf("new recovery window: %d", runs)
+	if _, err = m.Ensure(context.Background(), b); err == nil || runs() != 4 {
+		t.Fatalf("new recovery window: %d", runs())
 	}
 }
 
@@ -192,36 +162,12 @@ func TestRuntimeStartRequiresDurableIntent(t *testing.T) {
 func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) {
 	for _, active := range []bool{false, true} {
 		t.Run(map[bool]string{false: "idle", true: "active"}[active], func(t *testing.T) {
-			present := false
-			runs := 0
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				switch args[0] {
-				case "inspect":
-					if !present {
-						return nil, os.ErrNotExist
-					}
-					return []byte("running"), nil
-				case "ps":
-					return nil, nil
-				case "run":
-					if isRuntimeSpawn(args) {
-						runs++
-					}
-					present = true
-					return []byte("container"), nil
-				}
-				return nil, nil
-			}, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+			stub := m.cfg.Spawn.(*claimStub)
+			runs := stub.claimCount
 			b := binding(root)
 			clockNow := time.Unix(100, 0)
 			m.cfg.Now = func() time.Time { return clockNow }
-			command := m.cfg.Command
-			m.cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" && !present {
-					return nil, os.ErrNotExist
-				}
-				return command(ctx, args...)
-			}
 			runtime, err := m.Ensure(context.Background(), b)
 			if err != nil {
 				t.Fatal(err)
@@ -240,14 +186,14 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			present = false
+			stub.setRenewErr(spawnv1.ErrNotFound)
 			m.ReconcileHealth(context.Background(), time.Now())
 			status, _, err := m.Status(b)
 			if err != nil || status.RuntimeHealth != "missing" {
 				t.Fatalf("absence not authoritative: %+v %v", status, err)
 			}
 			m.RecoverMissingWork(context.Background())
-			if runs != 1 {
+			if runs() != 1 {
 				t.Fatal("replacement skipped backoff")
 			}
 			clockNow = clockNow.Add(10 * time.Second)
@@ -262,8 +208,8 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 			if active {
 				expected = 2
 			}
-			if runs != expected {
-				t.Fatalf("runs=%d expected=%d", runs, expected)
+			if runs() != expected {
+				t.Fatalf("runs=%d expected=%d", runs(), expected)
 			}
 			if active {
 				status, _, _ = m.Status(b)
@@ -277,7 +223,7 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 					t.Fatalf("resubmitted or changed original: %+v", record)
 				}
 				for loss := 2; loss <= 3; loss++ {
-					present = false
+					stub.setRenewErr(spawnv1.ErrNotFound)
 					m.ReconcileHealth(context.Background(), clockNow)
 					m.ReconcileHealth(context.Background(), clockNow)
 					status, _, _ = m.Status(b)
@@ -286,8 +232,8 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 					}
 					clockNow = clockNow.Add(10 * time.Second)
 					m.RecoverMissingWork(context.Background())
-					if runs != 3 {
-						t.Fatalf("replacement budget loss=%d runs=%d", loss, runs)
+					if runs() != 3 {
+						t.Fatalf("replacement budget loss=%d runs=%d", loss, runs())
 					}
 				}
 			} else {
@@ -295,43 +241,26 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 				if status.State != Stopped || len(status.Consumers) != 0 {
 					t.Fatalf("missing idle runtime stayed registered: %+v", status)
 				}
-				if _, err := m.Ensure(context.Background(), b); err != nil || runs != 2 {
-					t.Fatalf("idle wake after disappearance: runs=%d err=%v", runs, err)
+				if _, err := m.Ensure(context.Background(), b); err != nil || runs() != 2 {
+					t.Fatalf("idle wake after disappearance: runs=%d err=%v", runs(), err)
 				}
 			}
 		})
 	}
 }
 
+// A claimed runtime's "exited" state is its row forgetting the lease:
+// the sweep reads missing, and only desired work (a live job, never an
+// idle entry) earns a fresh claim. Foreign-container ownership is
+// spawn-controller's lane now — its label reclaim is covered there.
 func TestExitedRuntimeRecoveryRequiresWorkAndOwnership(t *testing.T) {
 	for _, scenario := range []struct {
-		name            string
-		active, foreign bool
-	}{{"active", true, false}, {"idle", false, false}, {"foreign", true, true}} {
+		name   string
+		active bool
+	}{{"active", true}, {"idle", false}} {
 		t.Run(scenario.name, func(t *testing.T) {
-			state := "missing"
-			runs, removed := 0, 0
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				switch args[0] {
-				case "inspect":
-					if state == "missing" {
-						return nil, os.ErrNotExist
-					}
-					return []byte(state), nil
-				case "run":
-					if isRuntimeSpawn(args) {
-						runs++
-					}
-					state = "running"
-				case "rm":
-					removed++
-					if len(args[2]) != 64 {
-						t.Error("removed by name")
-					}
-					state = "missing"
-				}
-				return nil, nil
-			}, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+			stub := m.cfg.Spawn.(*claimStub)
 			clockNow := time.Unix(100, 0)
 			m.cfg.Now = func() time.Time { return clockNow }
 			b := binding(root)
@@ -353,23 +282,14 @@ func TestExitedRuntimeRecoveryRequiresWorkAndOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if scenario.foreign {
-				command := m.cfg.Command
-				m.cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-					if args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
-						return []byte(`{"hermes-hub.owner":"foreign"}`), nil
-					}
-					return command(ctx, args...)
-				}
-			}
-			state = "exited"
+			stub.setRenewErr(spawnv1.ErrNotFound)
 			m.ReconcileHealth(context.Background(), clockNow)
 			clockNow = clockNow.Add(10 * time.Second)
 			m.RecoverMissingWork(context.Background())
 			m.RecoverMissingWork(context.Background())
-			if scenario.active && !scenario.foreign {
-				if runs != 2 || removed != 2 {
-					t.Fatalf("replacement runs=%d removed=%d", runs, removed)
+			if scenario.active {
+				if stub.claimCount() != 2 {
+					t.Fatalf("replacement claims=%d", stub.claimCount())
 				}
 				m.mu.Lock()
 				record := m.jobs[request.JobID]
@@ -377,8 +297,8 @@ func TestExitedRuntimeRecoveryRequiresWorkAndOwnership(t *testing.T) {
 				if record.Response.RunID != "original" {
 					t.Fatal("original run replaced")
 				}
-			} else if runs != 1 || removed != 0 {
-				t.Fatalf("unneeded/foreign replacement runs=%d removed=%d", runs, removed)
+			} else if stub.claimCount() != 1 {
+				t.Fatalf("unneeded replacement claims=%d", stub.claimCount())
 			}
 		})
 	}
@@ -458,16 +378,7 @@ func TestRuntimeHealthAcceptsToolSurfaceFields(t *testing.T) {
 // observations on the durable runtime record so /v1/runtimes (and /status via
 // the gateway) can show them without re-probing the runtime.
 func TestReconcilePersistsToolSurface(t *testing.T) {
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			started = true
-		}
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -507,20 +418,9 @@ func TestReconcilePersistsToolSurface(t *testing.T) {
 // reconciler must not issue docker restart for a degraded-only runtime even
 // when every other wedge condition is met.
 func TestToolSurfaceDegradedNeverRestarts(t *testing.T) {
-	started := false
-	restarts := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			started = true
-		}
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	restarts := stub.drainCount
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)
@@ -551,7 +451,7 @@ func TestToolSurfaceDegradedNeverRestarts(t *testing.T) {
 	m.items[key].readinessBadSince = time.Now().Add(-time.Hour)
 	m.mu.Unlock()
 	m.ReconcileHealth(context.Background(), time.Now())
-	if restarts != 0 {
+	if restarts() != 0 {
 		t.Fatal("degraded tool surface triggered a restart")
 	}
 }
@@ -603,30 +503,18 @@ func TestIdleMissingReapReleasesCapacityOnlyAfterDurableHandoff(t *testing.T) {
 	}
 }
 
+// A claimed runtime survives a supervisor restart through its row: the
+// restore renews the held lease instead of re-claiming, so the same
+// generation keeps serving and the opaque lifecycle lease stays intact.
 func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testing.T) {
-	starts := 0
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		if isRuntimeSpawn(args) {
-			starts++
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	lease, first, err := m.Acquire(context.Background(), b, LeaseLifecycle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := m.cfg
-	command := cfg.Command
-	cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return command(ctx, args...)
-	}
 	m, err = newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -636,8 +524,8 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 	m.RecoverMissingWork(context.Background())
 	m.RecoverMissingWork(context.Background())
 	current, _, err := m.Status(b)
-	if err != nil || starts != 2 || current.Generation == first.Generation || len(current.Consumers) != 1 {
-		t.Fatalf("lifecycle recovery=%+v starts=%d err=%v", current, starts, err)
+	if err != nil || stub.claimCount() != 1 || current.Generation != first.Generation || len(current.Consumers) != 1 {
+		t.Fatalf("lifecycle restore=%+v claims=%d err=%v", current, stub.claimCount(), err)
 	}
 	if err := m.ReleaseLease(lease.ID); err != nil {
 		t.Fatal(err)
@@ -650,24 +538,9 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 
 func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
 	readiness := "unavailable"
-	restarts := 0
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			started = true
-			return []byte("container"), nil
-		}
-		if args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	restarts := stub.drainCount
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/health" {
 			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: readiness, ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
@@ -708,43 +581,28 @@ func TestWedgedRuntimeRestartRemediatesConsecutiveUncertainJobs(t *testing.T) {
 	m.ReconcileHealth(context.Background(), now)
 	outcome("wedged-2")
 	m.ReconcileHealth(context.Background(), now)
-	if restarts != 0 {
+	if restarts() != 0 {
 		t.Fatal("remediated before the readiness evidence window")
 	}
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
-	if restarts != 1 {
-		t.Fatalf("wedged runtime not remediated: %d", restarts)
+	if restarts() != 1 {
+		t.Fatalf("wedged runtime not remediated: %d", restarts())
 	}
 	outcome("wedged-3")
 	outcome("wedged-4")
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
-	if restarts != 1 {
-		t.Fatalf("cooldown bypassed: %d", restarts)
+	if restarts() != 1 {
+		t.Fatalf("cooldown bypassed: %d", restarts())
 	}
 }
 
 // A wedged runtime that still holds a live lease has a job, stream, approval
 // or lifecycle in flight — restarting it would kill that work, so remediation
-// defers until the runtime is free, then stops it with a SIGTERM grace window.
+// defers until the runtime is free. A claimed runtime restarts by draining
+// its row; the stop grace is spawn-controller's backend budget now.
 func TestWedgedRemediationSkipsLeasedRuntimeAndUsesSigtermGrace(t *testing.T) {
-	var restartArgs []string
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			started = true
-			return []byte("container"), nil
-		}
-		if args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		if args[0] == "restart" {
-			restartArgs = append([]string{}, args...)
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/health" {
 			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: "unavailable", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
@@ -789,15 +647,15 @@ func TestWedgedRemediationSkipsLeasedRuntimeAndUsesSigtermGrace(t *testing.T) {
 	}
 	m.ReconcileHealth(context.Background(), now)
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
-	if len(restartArgs) != 0 {
-		t.Fatalf("leased runtime restarted mid-work: %v", restartArgs)
+	if stub.drainCount() != 0 {
+		t.Fatalf("leased runtime restarted mid-work: %d", stub.drainCount())
 	}
 	if err := m.ReleaseLease(lease.ID); err != nil {
 		t.Fatal(err)
 	}
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow+time.Second))
-	if len(restartArgs) != 4 || restartArgs[0] != "restart" || restartArgs[1] != "--time" || restartArgs[2] != "30" {
-		t.Fatalf("remediation restart without grace window: %v", restartArgs)
+	if stub.drainCount() != 1 {
+		t.Fatalf("remediation drain missing: %d", stub.drainCount())
 	}
 }
 
@@ -806,24 +664,9 @@ func TestWedgedRemediationSkipsLeasedRuntimeAndUsesSigtermGrace(t *testing.T) {
 // host-side cause. Only an unavailable runtime may be restarted.
 func TestDegradedRuntimeDoesNotRemediateUncertainJobs(t *testing.T) {
 	readiness := "degraded"
-	restarts := 0
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			started = true
-			return []byte("container"), nil
-		}
-		if args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	restarts := stub.drainCount
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/health" {
 			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: readiness, ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
@@ -863,30 +706,15 @@ func TestDegradedRuntimeDoesNotRemediateUncertainJobs(t *testing.T) {
 	m.ReconcileHealth(context.Background(), now)
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
 	m.ReconcileHealth(context.Background(), now.Add(2*wedgedReadinessWindow))
-	if restarts != 0 {
-		t.Fatalf("degraded runtime restarted %d times; degraded readiness is not restart-remediable", restarts)
+	if restarts() != 0 {
+		t.Fatalf("degraded runtime restarted %d times; degraded readiness is not restart-remediable", restarts())
 	}
 }
 
 func TestSingleUncertainJobDoesNotRemediate(t *testing.T) {
-	restarts := 0
-	started := false
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && !started {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "run" {
-			started = true
-			return []byte("container"), nil
-		}
-		if args[0] == "inspect" {
-			return []byte("running"), nil
-		}
-		if args[0] == "restart" {
-			restarts++
-		}
-		return nil, nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
+	restarts := stub.drainCount
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/health" {
 			_ = json.NewEncoder(w).Encode(hubruntime.RuntimeHealth{HermesReadiness: "degraded", ConnectorHealth: "not_configured", ExternalConnections: "not_probed"})
@@ -921,8 +749,8 @@ func TestSingleUncertainJobDoesNotRemediate(t *testing.T) {
 	m.ReconcileHealth(context.Background(), now)
 	m.ReconcileHealth(context.Background(), now.Add(wedgedReadinessWindow))
 	m.ReconcileHealth(context.Background(), now.Add(2*wedgedReadinessWindow))
-	if restarts != 0 {
-		t.Fatalf("single uncertain job remediated a runtime: %d", restarts)
+	if restarts() != 0 {
+		t.Fatalf("single uncertain job remediated a runtime: %d", restarts())
 	}
 }
 
@@ -974,21 +802,15 @@ func TestReconcileHealthSkipsHeldRuntimeLockOnUpdate(t *testing.T) {
 	release := make(chan struct{})
 	armed := make(chan struct{})
 	var once sync.Once
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && len(args) > 2 && args[2] == "{{.State.Status}}" {
-			select {
-			case <-armed:
-				once.Do(func() { close(probing) })
-				<-release
-				return []byte("running"), nil
-			default:
-			}
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(_ context.Context, _, _ string) error {
+		select {
+		case <-armed:
+			once.Do(func() { close(probing) })
+			<-release
+		default:
 		}
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+		return nil
+	})
 	b := binding(root)
 	if _, err := m.Ensure(context.Background(), b); err != nil {
 		t.Fatal(err)

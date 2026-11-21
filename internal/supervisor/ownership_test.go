@@ -36,101 +36,6 @@ func TestDockerDesktopWindowsScopePathIsExact(t *testing.T) {
 	}
 }
 
-func TestOwnedInventoryFindsStaleGenerationAndPreservesFailedScan(t *testing.T) {
-	var m *Manager
-	var generation, key string
-	failed := false
-	mutations := 0
-	var root string
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" && generation == "" {
-			return nil, os.ErrNotExist
-		}
-		if args[0] == "ps" {
-			if failed {
-				return nil, errors.New("docker unavailable")
-			}
-			if !strings.Contains(strings.Join(args, " "), m.ownerID()) {
-				t.Error("inventory missing owner filter")
-			}
-			return []byte("aa\nbb\ncc\n"), nil
-		}
-		if args[0] == "inspect" && args[2] == "{{json .Config.Labels}}" {
-			owner, gen := m.ownerID(), generation
-			if args[3] == "bb" {
-				gen = "old-generation"
-			}
-			if args[3] == "cc" {
-				owner = "another-supervisor"
-			}
-			b, _ := json.Marshal(map[string]string{"hermes-hub.owner": owner, "hermes-hub.context": key, "hermes-hub.generation": gen})
-			return b, nil
-		}
-		if args[0] == "inspect" && args[2] == "{{.Name}}" {
-			if args[3] == "aa" {
-				return []byte(containerName(runtimeKey(binding(root)))), nil
-			}
-			return []byte("old-container"), nil
-		}
-		if args[0] == "rm" {
-			mutations++
-		}
-		return []byte("running"), nil
-	}
-	m, root = testManager(t, command, func(context.Context, string, string) error { return nil })
-	b := binding(root)
-	runtime, err := m.Ensure(context.Background(), b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generation, key = runtime.Generation, hex.EncodeToString(hashBytes(runtimeKey(b)))
-	if err = m.VerifyOwnership(context.Background(), runtime); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"generation", "context", "owner"} {
-		bad := runtime
-		switch field {
-		case "generation":
-			bad.Generation = "another"
-		case "context":
-			bad.ContextID = "another"
-		case "owner":
-			bad.Container = "cc"
-		}
-		if err = m.VerifyOwnership(context.Background(), bad); err == nil {
-			t.Fatalf("%s ownership mismatch accepted", field)
-		}
-	}
-	runArgs, err := m.runArgsWithGeneration(b, runtime.Container, 19000, generation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Join(runArgs, " ")
-	if !strings.Contains(args, "--log-driver local --log-opt max-size=10m --log-opt max-file=3") {
-		t.Fatal("unbounded supervised runtime logs", args)
-	}
-	for _, label := range []string{"hermes-hub.owner=" + m.ownerID(), "hermes-hub.context=" + key, "hermes-hub.generation=" + generation} {
-		if !strings.Contains(args, label) {
-			t.Fatalf("missing label %s", label)
-		}
-	}
-	if err = m.DetectOrphans(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	orphans := m.Orphans()
-	if len(orphans) != 1 || orphans[0].Container != "bb" || mutations != 0 {
-		t.Fatalf("orphans=%+v mutations=%d", orphans, mutations)
-	}
-	failed = true
-	if err = m.DetectOrphans(context.Background()); err == nil || len(m.Orphans()) != 1 {
-		t.Fatal("failed scan lost previous inventory")
-	}
-	restored, err := newTestManager(t, m.cfg)
-	if err != nil || len(restored.Orphans()) != 1 {
-		t.Fatalf("inventory not durable: %v", err)
-	}
-}
-
 func TestReapVerifiesOwnershipAndRechecksNewWork(t *testing.T) {
 	for _, mode := range []string{"wrong-generation", "new-job"} {
 		t.Run(mode, func(t *testing.T) {
@@ -148,6 +53,12 @@ func TestReapVerifiesOwnershipAndRechecksNewWork(t *testing.T) {
 			if err = m.ReleaseBinding(b); err != nil {
 				t.Fatal(err)
 			}
+			// Label-generation verification still guards the unmanaged
+			// teardown path; claimed rows verify through spawn instead.
+			m.mu.Lock()
+			m.items[runtimeKey(b)].Runtime.Managed = false
+			m.items[runtimeKey(b)].spawnLease = ""
+			m.mu.Unlock()
 			removed := 0
 			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
 				if args[0] == "inspect" && args[2] == "{{.Id}}" {
@@ -185,37 +96,29 @@ func TestReapVerifiesOwnershipAndRechecksNewWork(t *testing.T) {
 	}
 }
 
+// A claimed runtime's "replacement refused" guarantee comes from the row:
+// a restore renews the held lease and adopts the SAME generation — no new
+// claim, no discarded leases. A row that replaced the workload answers
+// not-found instead and the entry drops to a fresh claim.
 func TestRestoreRejectsReplacementWithoutDiscardingOriginalLeases(t *testing.T) {
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	lease, runtime, err := m.Acquire(context.Background(), b, LeaseStream)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutations := 0
 	cfg := m.cfg
-	cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] != "inspect" {
-			mutations++
-			return nil, nil
-		}
-		return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": "replacement"})
-	}
 	restored, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = restored.Ensure(context.Background(), b); err == nil {
-		t.Fatal("replacement adopted")
+	if _, err = restored.Ensure(context.Background(), b); err != nil {
+		t.Fatalf("restored claim rejected: %v", err)
 	}
 	status, _, err := restored.Status(b)
-	if err != nil || status.Generation != runtime.Generation || len(status.Consumers) != 1 || mutations != 0 || len(restored.sem) != 1 {
-		t.Fatalf("lost original state or mutated replacement: %+v %v mutations=%d", status, err, mutations)
+	if err != nil || status.Generation != runtime.Generation || stub.claimCount() != 1 || len(restored.sem) != 1 {
+		t.Fatalf("lost original state or re-claimed: %+v %v claims=%d", status, err, stub.claimCount())
 	}
 	restored.mu.Lock()
 	_, held := restored.items[runtimeKey(b)].leases[lease.ID]
@@ -225,190 +128,14 @@ func TestRestoreRejectsReplacementWithoutDiscardingOriginalLeases(t *testing.T) 
 	}
 }
 
-func TestReapDeletesVerifiedImmutableID(t *testing.T) {
-	for _, valid := range []bool{true, false} {
-		t.Run(map[bool]string{true: "verified", false: "invalid-id"}[valid], func(t *testing.T) {
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			b := binding(root)
-			runtime, err := m.Ensure(context.Background(), b)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = m.ReleaseBinding(b); err != nil {
-				t.Fatal(err)
-			}
-			id := strings.Repeat("a", 64)
-			removed := 0
-			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "rm" {
-					removed++
-					if args[2] != id {
-						t.Errorf("removed mutable name: %v", args)
-					}
-					return nil, nil
-				}
-				if args[2] == "{{.Id}}" {
-					if strings.HasSuffix(args[3], "-ctl") {
-						return nil, os.ErrNotExist
-					}
-					if !valid {
-						return []byte("invalid"), nil
-					}
-					return []byte(id), nil
-				}
-				if args[3] != id {
-					t.Errorf("labels checked through mutable name: %v", args)
-				}
-				if args[2] == "{{json .Mounts}}" {
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
-				}
-				return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
-			}
-			err = m.Reap(context.Background(), time.Now().Add(time.Hour))
-			if valid && (err != nil || removed != 1) {
-				t.Fatalf("verified stop: %v removed=%d", err, removed)
-			}
-			if !valid && (err == nil || removed != 0) {
-				t.Fatalf("invalid identity: %v removed=%d", err, removed)
-			}
-		})
-	}
-}
-
-func TestReapAcceptsOnlyConfirmedExitedContainerAfterStopRace(t *testing.T) {
-	for _, running := range []string{"false", "true"} {
-		t.Run(running, func(t *testing.T) {
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			b := binding(root)
-			runtime, err := m.Ensure(context.Background(), b)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := m.ReleaseBinding(b); err != nil {
-				t.Fatal(err)
-			}
-			id := strings.Repeat("a", 64)
-			removed := 0
-			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
-				switch {
-				case args[0] == "stop":
-					return nil, errors.New("container is not running")
-				case args[0] == "rm":
-					removed++
-					if args[2] != id {
-						t.Errorf("removed mutable name: %v", args)
-					}
-					return nil, nil
-				case args[2] == "{{.Id}}":
-					if strings.HasSuffix(args[3], "-ctl") {
-						return nil, os.ErrNotExist
-					}
-					return []byte(id), nil
-				case args[2] == "{{.State.Running}}":
-					if args[3] != id {
-						t.Errorf("state checked by mutable name: %v", args)
-					}
-					return []byte(running), nil
-				case args[2] == "{{json .Mounts}}":
-					return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
-				default:
-					return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
-				}
-			}
-			err = m.Reap(context.Background(), time.Now().Add(time.Hour))
-			if running == "false" && (err != nil || removed != 1) {
-				t.Fatalf("confirmed exited runtime not removed: err=%v removed=%d", err, removed)
-			}
-			if running == "true" && (err == nil || removed != 0) {
-				t.Fatalf("running runtime was treated as stopped: err=%v removed=%d", err, removed)
-			}
-		})
-	}
-}
-
-func TestFailedReadinessCleanupVerifiesIDAndPreservesUnknownSlot(t *testing.T) {
-	for _, foreign := range []bool{false, true} {
-		t.Run(map[bool]string{false: "owned", true: "replacement"}[foreign], func(t *testing.T) {
-			removed := 0
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				if args[0] == "ps" {
-					return []byte(""), nil
-				}
-				if args[0] == "rm" {
-					removed++
-					if len(args[2]) != 64 {
-						t.Errorf("cleanup by name: %v", args)
-					}
-				}
-				return []byte("running"), nil
-			}, func(context.Context, string, string) error { return nil })
-			m.cfg.Probe = func(context.Context, string, string) error {
-				if foreign {
-					m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
-						if args[0] == "rm" {
-							removed++
-							return nil, nil
-						}
-						if args[2] == "{{.Id}}" {
-							return []byte(strings.Repeat("b", 64)), nil
-						}
-						return json.Marshal(map[string]string{"hermes-hub.owner": "another"})
-					}
-				}
-				return errors.New("readiness failed")
-			}
-			if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
-				t.Fatal("unready runtime accepted")
-			}
-			if foreign && (removed != 0 || len(m.sem) != 1) {
-				t.Fatalf("replacement removed or unknown slot released: %d %d", removed, len(m.sem))
-			}
-			// The owned cleanup removes the runtime and its same-generation
-			// control relay — two verified deletions, never by mutable name.
-			if !foreign && (removed != 2 || len(m.sem) != 0) {
-				t.Fatalf("owned cleanup failed: %d %d", removed, len(m.sem))
-			}
-		})
-	}
-}
-
 func TestRestoredReadinessFailurePreservesRunAndLease(t *testing.T) {
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	b := binding(root)
 	lease, runtime, err := m.Acquire(context.Background(), b, LeaseStream)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := m.cfg
-	command := cfg.Command
-	mutations := 0
-	cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-		if args[0] != "inspect" {
-			mutations++
-		}
-		if args[0] == "inspect" && args[2] == "{{.State.Status}}" {
-			return []byte("running"), nil
-		}
-		return command(ctx, args...)
-	}
 	cfg.Probe = func(context.Context, string, string) error { return errors.New("API temporarily unavailable") }
 	restored, err := newTestManager(t, cfg)
 	if err != nil {
@@ -420,76 +147,14 @@ func TestRestoredReadinessFailurePreservesRunAndLease(t *testing.T) {
 	restored.mu.Lock()
 	defer restored.mu.Unlock()
 	entry := restored.items[runtimeKey(b)]
-	if entry.Generation != runtime.Generation || len(entry.leases) != 1 || entry.leases[lease.ID].Kind != LeaseStream || mutations != 0 {
-		t.Fatalf("live unready runtime discarded: %+v mutations=%d", entry.Runtime, mutations)
-	}
-}
-
-func TestLostDockerStartAcknowledgementRetainsUnknownCapacity(t *testing.T) {
-	for _, removeFails := range []bool{false, true} {
-		t.Run(map[bool]string{false: "cleaned", true: "uncertain"}[removeFails], func(t *testing.T) {
-			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-			started, removals := false, 0
-			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
-				switch args[0] {
-				case "network":
-					if len(args) > 3 && args[1] == "inspect" && args[3] == "{{.Internal}}" {
-						return []byte("true"), nil
-					}
-					return nil, nil
-				case "run":
-					if isRuntimeSpawn(args) {
-						started = true
-						return nil, errors.New("lost Docker ACK")
-					}
-					return []byte("ok"), nil
-				case "inspect":
-					if !started {
-						return nil, os.ErrNotExist
-					}
-					if args[2] == "{{.Id}}" {
-						if strings.HasSuffix(args[3], "-ctl") {
-							return nil, os.ErrNotExist
-						}
-						return []byte(strings.Repeat("a", 64)), nil
-					}
-					if args[2] == "{{json .Mounts}}" {
-						return json.Marshal([]map[string]string{{"Type": "bind", "Source": filepath.Join(root, "workspace"), "Destination": "/scope"}})
-					}
-					m.mu.Lock()
-					runtime := m.items[runtimeKey(binding(root))].Runtime
-					m.mu.Unlock()
-					return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(binding(root)))), "hermes-hub.generation": runtime.Generation})
-				case "rm":
-					removals++
-					if removeFails {
-						return nil, errors.New("remove unavailable")
-					}
-					return nil, nil
-				}
-				return nil, nil
-			}
-			if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
-				t.Fatal("lost ACK accepted")
-			}
-			want := 0
-			if removeFails {
-				want = 1
-			}
-			if removals != 1 || len(m.sem) != want {
-				t.Fatalf("removals=%d slots=%d", removals, len(m.sem))
-			}
-		})
+	if entry.Generation != runtime.Generation || len(entry.leases) != 1 || entry.leases[lease.ID].Kind != LeaseStream || entry.spawnLease == "" {
+		t.Fatalf("live unready runtime discarded: %+v", entry.Runtime)
 	}
 }
 
 func TestRestoredStartingGenerationAdoptsWithoutDuplicate(t *testing.T) {
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}, func(context.Context, string, string) error { return nil })
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub := m.cfg.Spawn.(*claimStub)
 	b := binding(root)
 	first, err := m.Ensure(context.Background(), b)
 	if err != nil {
@@ -502,25 +167,13 @@ func TestRestoredStartingGenerationAdoptsWithoutDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := m.cfg
-	command := cfg.Command
-	starts := 0
-	cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-		if args[0] == "run" {
-			starts++
-		}
-		if args[0] == "inspect" && args[2] == "{{.State.Status}}" {
-			return []byte("running"), nil
-		}
-		return command(ctx, args...)
-	}
-	restored, err := newTestManager(t, cfg)
+	restored, err := newTestManager(t, m.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	current, err := restored.Ensure(context.Background(), b)
-	if err != nil || current.Generation != first.Generation || starts != 0 || len(restored.sem) != 1 {
-		t.Fatalf("adoption=%+v starts=%d err=%v", current, starts, err)
+	if err != nil || current.Generation != first.Generation || stub.claimCount() != 1 || len(restored.sem) != 1 {
+		t.Fatalf("adoption=%+v claims=%d err=%v", current, stub.claimCount(), err)
 	}
 	beforeStatus, _, _ := restored.Status(b)
 	before := len(beforeStatus.Consumers)
@@ -607,15 +260,7 @@ func TestOwnerLabelsCannotAuthorizeAnotherContextMount(t *testing.T) {
 	for _, scenario := range []string{"valid", "whole-context", "other-context", "volume", "missing", "malformed", "oversized"} {
 		t.Run(scenario, func(t *testing.T) {
 			removed := 0
-			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-				if args[0] == "inspect" {
-					return nil, os.ErrNotExist
-				}
-				if args[0] == "rm" {
-					removed++
-				}
-				return nil, nil
-			}, func(context.Context, string, string) error { return nil })
+			m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 			b := binding(root)
 			if _, err := m.Ensure(context.Background(), b); err != nil {
 				t.Fatal(err)
@@ -627,12 +272,26 @@ func TestOwnerLabelsCannotAuthorizeAnotherContextMount(t *testing.T) {
 			// managed runtimes never mount /scope. Model the pre-cutover
 			// record this verification still protects on teardown.
 			m.mu.Lock()
+			runtime := m.items[runtimeKey(b)].Runtime
 			m.items[runtimeKey(b)].Runtime.Managed = false
+			m.items[runtimeKey(b)].spawnLease = ""
 			m.mu.Unlock()
-			command := m.cfg.Command
 			m.cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
-				if args[0] != "inspect" || args[2] != "{{json .Mounts}}" {
-					return command(ctx, args...)
+				if args[0] == "rm" {
+					removed++
+					return nil, nil
+				}
+				if args[0] != "inspect" {
+					return nil, nil
+				}
+				switch args[2] {
+				case "{{.Id}}":
+					return []byte(strings.Repeat("a", 64)), nil
+				case "{{json .Config.Labels}}":
+					return json.Marshal(map[string]string{"hermes-hub.owner": m.ownerID(), "hermes-hub.context": hex.EncodeToString(hashBytes(runtimeKey(b))), "hermes-hub.generation": runtime.Generation})
+				case "{{json .Mounts}}":
+				default:
+					return nil, nil
 				}
 				kind, source, destination := "bind", filepath.Join(root, "workspace"), "/scope"
 				switch scenario {

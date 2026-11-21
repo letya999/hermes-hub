@@ -267,24 +267,8 @@ func TestJobPhaseWakingWhileRuntimeStarts(t *testing.T) {
 	gate := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
-	command := func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 3 && args[0] == "network" && args[1] == "inspect" {
-			if args[3] == "{{.Internal}}" {
-				return []byte("true"), nil
-			}
-			return nil, os.ErrNotExist
-		}
-		if len(args) > 0 && args[0] == "run" {
-			once.Do(func() { close(started) })
-			<-gate
-			return []byte("ok"), nil
-		}
-		if len(args) > 0 && args[0] == "inspect" {
-			return nil, os.ErrNotExist
-		}
-		return []byte("running"), nil
-	}
-	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: command, Probe: func(context.Context, string, string) error { return nil }}
+	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }}
+	cfg.Spawn = &claimStub{claimHook: func() { once.Do(func() { close(started) }); <-gate }}
 	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)
