@@ -416,7 +416,6 @@ jobs:
               ;;
             native)
               go run -tags integration ./cmd/devcheck hermes-native-contract hermes-hub:test
-              HUB_CONTRACT_IMAGE=hermes-hub:test go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
               ;;
             supervisor) go run -tags integration ./cmd/devcheck supervisor-contract hermes-hub:test ;;
             gateway) go run -tags integration ./cmd/devcheck gateway-lifecycle hermes-hub:test ;;

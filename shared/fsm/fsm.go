@@ -217,6 +217,15 @@ func SweepRow(ctx context.Context, s *store.Store, m *Machine, d store.DueRow, n
 		case state != d.State, due == nil, *due > now.Unix():
 			return ErrStale
 		}
-		return Transition(q, m, d.ID, deadline.Event, now)
+		err = Transition(q, m, d.ID, deadline.Event, now)
+		if errors.Is(err, ErrForbiddenTransition) {
+			// The machine guarantees the deadline event is an edge out of
+			// d.State; a refusal therefore means the row moved again after
+			// the re-verify — on postgres READ COMMITTED the transition's
+			// own State read can observe the winner's commit. That is
+			// stale, not forbidden: report it so the batch skips the row.
+			return ErrStale
+		}
+		return err
 	})
 }

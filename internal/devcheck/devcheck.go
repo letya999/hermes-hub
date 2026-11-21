@@ -513,7 +513,10 @@ func DockerSmoke(ctx context.Context, image string) error {
 		// projection uses — a bare bind cannot express uid/gid/mode, so the
 		// fixture itself is made readable (writeSmokePasswd).
 		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/secrets/novnc.pass,readonly", image + "-browser"},
-		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", "-e", "BROWSER_CDP_URL=http://" + sidecar + ":9222", image, "idle"},
+		// Managed workload modes (idle/serve under supervise) refuse to run
+		// without the spawn-projected passport — the bounded trusted surface
+		// is the image contract a bare container can attest.
+		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_TRUSTED=true", "-e", "HUB_LISTEN=0.0.0.0:8080", "-e", "HUB_SERVICE_TOKEN=smoke-auth", image, "serve"},
 	}
 	for _, args := range checks {
 		if err := run(args...); err != nil {
@@ -528,8 +531,8 @@ func DockerSmoke(ctx context.Context, image string) error {
 		return strings.TrimSpace(string(out))
 	}
 	err = smokeWaitHealthy(ctx, func() error {
-		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "harness-runtime", "health").CombinedOutput()
-		if runErr == nil {
+		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:8080/healthz").CombinedOutput()
+		if runErr == nil && strings.TrimSpace(string(out)) == "200" {
 			return nil
 		}
 		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
@@ -601,16 +604,19 @@ func smokeWaitHealthy(ctx context.Context, healthy func() error, status func(str
 
 func runtimeContractSmoke(ctx context.Context, image, name string) error {
 	defer exec.Command("docker", "rm", "-f", name).Run()
-	start := exec.CommandContext(ctx, "docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=false", "-e", "HUB_RUNTIME_AUTH=smoke-auth", "-e", "HUB_USER_ID=smoke", "-e", "HUB_ORGANIZATION_ID=personal", "-e", "HUB_RUNTIME_ID=smoke", "-e", "HUB_POLICY_VERSION=policy-smoke", image, "serve")
+	start := exec.CommandContext(ctx, "docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_TRUSTED=true", "-e", "HUB_LISTEN=0.0.0.0:8080", "-e", "HUB_SERVICE_TOKEN=smoke-auth", image, "serve")
 	if err := start.Run(); err != nil {
 		return err
 	}
 	for range 30 {
-		output, err := exec.CommandContext(ctx, "docker", "exec", name, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-H", "Authorization: Bearer smoke-auth", "--data", "{}", "http://127.0.0.1:8080/v1/execute").Output()
-		if err == nil && string(output) == "409" {
+		// The bounded surface refuses unauthenticated calls outright; the
+		// managed /v1/execute identity contract is covered by the claimed
+		// runtime gates (supervisor/managed canaries).
+		output, err := exec.CommandContext(ctx, "docker", "exec", name, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "--data", "{}", "http://127.0.0.1:8080/v1/messages").Output()
+		if err == nil && string(output) == "401" {
 			return nil
 		}
 		time.Sleep(time.Second)
 	}
-	return errors.New("runtime identity contract probe failed")
+	return errors.New("runtime auth boundary probe failed")
 }

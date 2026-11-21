@@ -9,11 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/catalog"
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/passport"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -128,18 +127,26 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 			return err
 		}
 	}
-	catalogDocs, err := catalog.Generate()
+	repoRoot, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	revision, err := passport.CompileAuthored(contextRoot, "prod", time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(contextRoot), map[string][]string{})
+	spawn, err := startSpawnController(ctx, repoRoot, root, image)
 	if err != nil {
 		return err
 	}
-	if err := publishGenerated(contextRoot, revision); err != nil {
+	defer spawn.stop()
+	tenant := spawnv1.Tenant{Org: "local", Owner: userID}
+	if _, err := spawn.Client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{
+		Org: tenant.Org, Owner: tenant.Owner, ID: userID, Environment: "prod",
+		IdempotencyKey: "devcheck-space-" + userID,
+	}); err != nil {
+		return fmt.Errorf("create space: %w", err)
+	}
+	if err := publishAuthoredPassports(ctx, spawn.Client, tenant, userID, contextRoot); err != nil {
 		return err
 	}
-	if err := stack.RenderEnvironment(context.Background(), generatedReader{contextRoot}, contextRoot, root, "prod"); err != nil {
+	if err := stack.RenderEnvironment(context.Background(), spawn.Client, contextRoot, root, "prod"); err != nil {
 		return err
 	}
 	checkTerminal := func(path string) error {
@@ -167,7 +174,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes.prod.yaml")); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(context.Background(), generatedReader{contextRoot}, contextRoot, "prod")
+	settings, err := stack.ReadEffective(context.Background(), spawn.Client, contextRoot, "prod")
 	if err != nil {
 		return err
 	}
@@ -220,7 +227,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	}); err != nil {
 		return err
 	}
-	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000}
+	cfg := supervisor.Config{SpacesRoot: filepath.Join(root, "spaces"), Image: image, Network: network, RuntimeAuth: control, WarmTTL: time.Second, PortBase: 28000, Spawn: spawn.Client}
 	registry, err := integrationIdentity(ctx, root, []commodel.User{{ID: userID, Enabled: true, TelegramIDs: []int64{11}}})
 	if err != nil {
 		return err
@@ -253,12 +260,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if runtime, _, err := m.Status(binding); err == nil {
-			if id, err := smokeOwnedContainerID(cleanupCtx, m, runtime); err == nil {
-				_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", runtime.Container+"-ctl").Run()
-				_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", id).Run()
-			}
-		}
+		removeSpawnOwned(cleanupCtx, userID)
 	}()
 	first, err := m.Ensure(ctx, binding)
 	if err != nil {
@@ -267,7 +269,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes-effective.prod.yaml")); err != nil {
 		return err
 	}
-	if id, err := smokeOwnedContainerID(ctx, m, first); err != nil {
+	if id, err := spawnOwnedContainerID(ctx, userID); err != nil {
 		return err
 	} else {
 		probe := "from gateway.run import _load_gateway_config; from hermes_cli.tools_config import _get_platform_tools; from model_tools import get_tool_definitions; c=_load_gateway_config(); p=c.get('platform_toolsets',{}).get('api_server',[]); d=c.get('agent',{}).get('disabled_toolsets',[]); g=sorted(_get_platform_tools(c, 'api_server')); n=[t['function']['name'] for t in get_tool_definitions(enabled_toolsets=g, disabled_toolsets=d, quiet_mode=True)]; print(int('terminal' in p),int('terminal' in d),int('terminal' in g),int('terminal' in n))"
@@ -338,8 +340,8 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil || outcome.Status != "completed" || outcome.Text != "contract final answer" {
 		mapping, _, _ := spool.Mapping(job.ID)
 		reason := "native outcome unavailable"
-		if runtime, _, statusErr := m.Status(binding); statusErr == nil && mapping.RunID != "" {
-			if id, ownErr := smokeOwnedContainerID(ctx, m, runtime); ownErr == nil {
+		if _, _, statusErr := m.Status(binding); statusErr == nil && mapping.RunID != "" {
+			if id, ownErr := spawnOwnedContainerID(ctx, userID); ownErr == nil {
 				out := func(args ...string) ([]byte, error) { return dockerContractOutput(ctx, args...) }
 				if native, nativeErr := hermesHTTP(ctx, out, id, auth, http.MethodGet, "/v1/runs/"+mapping.RunID, "", ""); nativeErr == nil {
 					reason, _ = jsonString(native.body, "error")
@@ -396,7 +398,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil {
 		return err
 	}
-	readmitContainerID, err := smokeOwnedContainerID(ctx, m, current)
+	readmitContainerID, err := spawnOwnedContainerID(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -498,7 +500,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil || len(before.Consumers) == 0 {
 		return fmt.Errorf("disconnect released unresolved runtime hold")
 	}
-	containerID, err := smokeOwnedContainerID(ctx, m, before)
+	containerID, err := spawnOwnedContainerID(ctx, userID)
 	if err != nil {
 		return err
 	}

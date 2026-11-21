@@ -93,7 +93,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
 	managedSettings, _, managedErr := stack.ReadEffectiveSpaceBundle(ctx, m.cfg.Spawn, binding.ContextRoot)
-	if managedErr != nil && !os.IsNotExist(managedErr) {
+	if managedErr != nil && !errors.Is(managedErr, os.ErrNotExist) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
 	managed := managedErr == nil
@@ -504,7 +504,7 @@ func (m *Manager) normalize(ctx context.Context, binding Binding) (Binding, erro
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	if _, err := stack.ReadEffective(ctx, m.cfg.Spawn, abs, m.environment()); err != nil && !os.IsNotExist(err) {
+	if _, err := stack.ReadEffective(ctx, m.cfg.Spawn, abs, m.environment()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", err)
 	}
 	runtimeEnv := "managed-runtime." + m.environment() + ".env"

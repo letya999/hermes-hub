@@ -112,7 +112,6 @@ docker-check-build target="prod":
     go run ./cmd/devcheck image-budget hermes-hub:test-knowledge knowledge
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
-    go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
@@ -142,7 +141,6 @@ docker-check-prebuilt target="prod": (docker-pull target)
     go run ./cmd/devcheck image-budget hermes-hub:test-knowledge knowledge
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
-    go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test

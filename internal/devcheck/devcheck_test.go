@@ -143,10 +143,10 @@ func TestDockerSmokeRunsRequiredChecksAndPropagatesFailure(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "docker.log")
 	name := "docker"
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\ncase \"$*\" in *\"$HUB_FAIL_MATCH\"*) [ -z \"$HUB_FAIL_MATCH\" ] || exit 7;; esac\ncase \"$*\" in *'%{http_code}'*) printf 409;; esac\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\ncase \"$*\" in *\"$HUB_FAIL_MATCH\"*) [ -z \"$HUB_FAIL_MATCH\" ] || exit 7;; esac\ncase \"$*\" in *'%{http_code}'*healthz*) printf 200;; *'%{http_code}'*) printf 401;; esac\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%HUB_FAIL_MATCH%\"==\"\" (echo %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul && exit /b 7)\r\necho %* | findstr /C:\"%%{http_code}\" >nul && <nul set /p =409\r\nexit /b 0\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%HUB_FAIL_MATCH%\"==\"\" (echo %* | findstr /C:\"%HUB_FAIL_MATCH%\" >nul && exit /b 7)\r\necho %* | findstr /C:\"%%{http_code}\" | findstr /C:\"healthz\" >nul && (<nul set /p =200 & exit /b 0)\r\necho %* | findstr /C:\"%%{http_code}\" >nul && <nul set /p =401\r\nexit /b 0\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestDockerSmokeRunsRequiredChecksAndPropagatesFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(log)
-	if err != nil || !strings.Contains(string(body), "--entrypoint hermes test-image --version") || !strings.Contains(string(body), "--entrypoint glab test-image --version") || !strings.Contains(string(body), "hub-runtime health") || !strings.Contains(string(body), "HUB_POLICY_VERSION=policy-smoke") {
+	if err != nil || !strings.Contains(string(body), "--entrypoint hermes test-image --version") || !strings.Contains(string(body), "--entrypoint glab test-image --version") || !strings.Contains(string(body), "healthz") || !strings.Contains(string(body), "HUB_SERVICE_TOKEN=smoke-auth") {
 		t.Fatal(string(body), err)
 	}
 	t.Setenv("HUB_FAIL_MATCH", "--entrypoint glab")

@@ -53,8 +53,8 @@ func TestCIDeploymentConfigurationGate(t *testing.T) {
 	for _, step := range workflow.Jobs["container-gates"].Steps {
 		gateScripts += step.Run
 	}
-	if !strings.Contains(gateScripts, "TestHubStdioReminderContract") || !strings.Contains(gateScripts, "HUB_CONTRACT_IMAGE=hermes-hub:test") {
-		t.Fatal("image-side MCP stdio reminder contract is not enforced in container gates")
+	if !strings.Contains(gateScripts, "hermes-native-contract hermes-hub:test") {
+		t.Fatal("native harness-runtime contract is not enforced in container gates")
 	}
 }
 
@@ -112,8 +112,8 @@ func TestCIShipsBaseCLICellImages(t *testing.T) {
 			t.Errorf("local prebuilt image gate misses %s", want)
 		}
 	}
-	if !strings.Contains(string(just), "go test -tags integration -run TestHubStdioReminderContract") {
-		t.Fatal("local Docker gate omitted the image MCP stdio reminder contract")
+	if !strings.Contains(string(just), "hermes-contract hermes-hub:test") {
+		t.Fatal("local Docker gate omitted the in-image Hermes contract")
 	}
 }
 

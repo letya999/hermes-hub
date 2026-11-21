@@ -129,7 +129,7 @@ func TestWriteSmokePasswdIsReadableBySidecarUID(t *testing.T) {
 }
 
 func TestSmokeWaitHealthyTimeoutReportsProbeError(t *testing.T) {
-	// The runtime's `hub-runtime health` exits nonzero with the reason on
+	// The runtime's `harness-runtime health` exits nonzero with the reason on
 	// stderr — discarding it left the CI timeout undiagnosable even after the
 	// sidecar recovered.
 	err := smokeWaitHealthy(context.Background(),
