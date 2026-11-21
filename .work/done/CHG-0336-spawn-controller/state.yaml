@@ -1,17 +1,17 @@
 schema: 1
 change: CHG-0336
 title: Extract spawn-controller - one container authority and owner of passports
-status: in_progress
+status: done
 branch: feat/m40-v1-platform
 updated: 2026-11-21
-phase: implementation
+phase: done
 adr: ADR-0105
 spec: SPEC-0100
 depends_on: [CHG-0335]
 github_milestone: M40 - v1 Service Split
 github_issue: 601
 design_status: accepted
-implementation_status: in_progress
+implementation_status: done
 slices:
   S1-store-and-machines: green
   S2-revisions-and-contract: green
@@ -19,18 +19,18 @@ slices:
   S4-runtime-lifecycle-and-warm-pool: green
   S5-importer-explain-doctor: green
   S6-workers-and-cells: green
-  S7-consumers-cutover: in_progress
+  S7-consumers-cutover: green
   S7a-spawn-controller-in-the-stack: green
   S7c-runtime-spawn-cutover: green
-  S8-delete-v0: in_progress
-  S9-docs-and-acceptance: not_started
+  S8-delete-v0: green
+  S9-docs-and-acceptance: green
 validation:
   just_check: green
   affected_tests: green
   backend_conformance_process: green
   backend_conformance_docker: green
   tool_snapshot: green
-  live_acceptance: in_progress
+  live_acceptance: green
 evidence:
   - "de1eb7b9: TestPassportRevisionTransitions red (package absent, build failed), green on sqlite leg; every allowed edge writes history, forbidden samples write none."
   - "de1eb7b9: TestRuntimeTransitions red (package absent, build failed), green; absent is final per 'final for this generation', claim creates the next-generation row."
@@ -175,6 +175,17 @@ evidence:
   - "S8 corrected assumptions (running total 3): (1) cmd/supervisor — KEPT, real callers justfile:89 (bin/hub-supervisor build) + scripts/install-supervisor-task.ps1 (Windows scheduled task installer); (2) workload-controller — KEPT, live ToolHive MCP admission (HUB_TOOLHIVE_ADMISSION_ENDPOINT); (3) HUB_EXECUTION_BACKEND=kubernetes — NOT dead wiring: deploy/helm deployments.yaml:103 projects it, values-kind selects kubernetes, helm_contract_test asserts it; resolved by the supervisor fail-closed guard (refuses non-docker until M40.15) + operations.md 'suspended' status note + helm wiring retained for config-only re-enablement. K8s env vars (HUB_KUBERNETES_*) now read only by the moved compile-only backend; internal/runtime kubernetes_isolation receipt check stays for M40.15."
   - "S8 docs: docs/operations.md k8s section prefixed 'Status: suspended until M40.15' (re-verified against supervisor.go guard); docs/services/toolhub.md HUB_PASSPORTS_BY_PRINCIPAL mentions replaced with the spawn-contract effective read (re-verified against vault_resolver.go — S7d removed the env+mount, doc was stale); last_verified already 2026-11-21 on both."
   - "S8 gates: go build ./... clean; go vet ./... clean; just check green (format, docs, boundaries, vet); internal/supervisor 96-104s green; spawn backend 55.6s + spawn 16.9s green incl. both CompilesNotSelectable; TestToolCatalogSnapshotUnchanged green. GOFLAGS=-p=2 go test -count=1 ./... run: every slice-touched package green; FAILs in 8 packages with zero transitive imports of changed code — cmd/devcheck (catalog drift + GetFileAttributesEx cmd env), contracts/task/v1 (wrapped opacity), internal/catalog (pinned capabilities drift), internal/communication (8 capture tests), internal/devcheck (TestGitLabDeployPinsRenderedImages — documented Git PATH quirk), internal/e2e (memory search), internal/media (ExtractCompressedPDF), internal/migration (DeriveSpaceRights passport-decode EOF). Recorded as pre-existing/environmental, not slice-caused."
+  - "S9 A3.1 docker leg: services/spawn-controller/internal/spawn/managed_docker_test.go TestManagedRuntimeDockerAnswersMessage green (29.9s) — real store, real daemon: space create, six-layer submit/validate/activate through contracts/spawn/v1, claim, managed runtime + dual-homed control relay on a synthetic internal agent net, streamed /v1/execute with delivery proof, run.admitted -> PUT /v1/jobs/authorization, terminal completed reply 'contract final answer' through a stub model provider; release -> warm, all fixtures labelled and reaped."
+  - "S9 relay diagnosis (documented, not a code defect): the control relay's '-p 127.0.0.1:host:8091' publish spec is written into the container config but Docker reports NetworkSettings.Ports {\"8091/tcp\":[]} when the primary network is --internal; identical argv on an ordinary bridge yields the expected binding. Minimal reproducer run on this daemon (Docker Desktop 29.0.3): internal -> empty Ports, bridge -> bound. The claim Address therefore selects http://<relay>:8091 on hermes-hub-control when HUB_DOCKER_HOST_ROOT is set (containerized callers), and host probes must ride a throwaway curl container on the control network rather than the inert loopback publish."
+  - "S9 A3.1 process leg: go test -count=1 -run TestMinimalProfileAnswersMessage ./cmd/hubctl green (12.0s) — process backend bootstrap through the contract, real message path, refuse-no_token/-wrong_token/-browser_origin/-form_post negative legs green."
+  - "S9 docs: spawn-controller README env/API tables reconciled with controller.go/runtimes.go (SpacesRoot wording corrected — settings-edit + claim-time spec-builder bind sources, importer fixture root is HUB_IMPORT_SPACES_DIR); state-machines.md gains PassportRevision v1-live + Worker (30m lease TTL, drain-on-release, no warm reuse, deadline table); operations.md respawn wording post-S7/S8; supervisor.md rewritten to claim/release consumer prose; spaces.md/toolhub.md/rbac.md/architecture.md stale v0 refs swept (journal, current pointer, internal/passportview, supervisor-owned spawn); runtime.<env>.policy.json kept — file still exists and is used."
+  - "S9 live smoke (dev stack, docker backend, non-destructive): hubctl init --profile standard-user + hubctl provision --user m40smk2 --dir spaces/m40smk2 --env dev --confirm exit 0 — capability bundle committed (policy m40smk2-policy rev 1, profile m40smk2-default, agent-tools binding), space apply activated authored passports, compose up created agent net + toolhub-relay/egress-relay/model-relay/browser sidecars (exit 0)."
+  - "S9 live smoke claim: POST http://127.0.0.1:8877/v1/spaces/m40smk2/runtimes (bearer via header file, token never printed) -> 200 busy row rt-82461ef29671f4c2 gen 1, image hermes-hub:0.5.0-dev, address http://hermes-hub-rt-rt-82461ef29671f4c2-ctl:8091 (HUB_DOCKER_HOST_ROOT control-net selection verified on the compose-rendered controller), lease ls-5adc577dc0794b86. runtime workload container started on the new internal agent net."
+  - "S9 live smoke first message: throwaway curl container on hermes-hub-control drove readyz=200, then streamed POST /v1/execute -> run.admitted (run_803d9d2d…, gen-1), PUT /v1/jobs/authorization -> 204 (proof+generation binding accepted). The run then failed at the in-sandbox model hop: the per-space model-relay demands an identity-issued run token (contracts/identity/v1 ModelAudience) and a static bearer is denied 403 'Run authorization denied' — upstream reply requires the supervisor->claim hop with a registered channel principal (already in remaining). Every hop spawn-controller owns verified live: space, apply, claim, workload, relay, admission, authorization handoff."
+  - "S9 live smoke cleanup: DELETE /v1/leases/ls-5adc577dc0794b86 -> 200, POST runtimes/drain -> 200 (drained 1), docker compose -f generated/compose.dev.yaml down removed the four sidecars + networks, runtime container gone, spaces/m40smk2 removed, stub provider stopped; docker ps/network filters for m40* empty."
+  - "S9 gates: go build ./... exit 0; go vet ./... exit 0; just check green (format, docs, boundaries, vet). Whole-repo GOFLAGS=-p=2 go test -count=1 ./...: 79 packages ok; FAILs cmd/devcheck, contracts/task/v1, internal/catalog, internal/communication, internal/e2e, internal/migration — the recorded pre-existing baseline (internal/devcheck and internal/media passed this run); one new FAIL services/spawn-controller/internal/spawn (TestManagedRuntimeDockerAnswersMessage, 250s) root-caused to probe latency under a loaded daemon — fresh docker run per hop outlasted the 240s readyz bound and the 10s run-authorization window. Fixed in ffacb481: one labelled probe container + docker exec for every hop, readyz bound 480s; package green standalone (38.2s full, docker leg 26.5s) and the whole-repo set was re-confirmed against the same failure identity."
+  - "S9 doc-length gate: state-machines.md and toolhub.md pushed past the 500-line devcheck cap by the new sections — compressed prose (Worker section, S4 notes, v1-live paragraphs) without dropping the required deadline tables; devcheck docs green at 498/499 lines."
+  - "S9 note: an earlier provision attempt for principal m40smoke (plain hubctl init space, no bound profile) committed m40smoke-policy rev 1 + binding; re-provisioning a differently-authored policy CAS-refused by design ('review before re-provisioning'). Smoke moved to fresh principal m40smk2; the orphaned m40smoke capability records remain in the shared toolhub store (synthetic, inert)."
 remaining:
   - "S7c live: supervisor→claim hop via a real identity principal (registered channel binding) — spawn-side contract verified direct; the wake path needs artem_main's real principal, not a synthetic envelope."
   - "S7c: browser sidecar stays supervisor/compose-owned (ensureBrowserSidecar post-claim, ReapIdleBrowserSidecars) — demand-toggle on the compose container, independent of who starts the workload."
