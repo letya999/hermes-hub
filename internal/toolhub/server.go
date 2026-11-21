@@ -418,7 +418,7 @@ func (e *projectionEndpoint) ConfigureResearch(root, jobURL, token, jobPath stri
 	if jobURL == "" || token == "" {
 		return errors.New("research backend is not configured")
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := os.MkdirAll(root, 0700); err != nil { // #nosec G703 -- operator-configured research storage root
 		return errors.New("research storage unavailable")
 	}
 	h, err := newResearchHost(root, httpResearchRunner{URL: jobURL, Token: token, Path: jobPath}, e.EnrolledAuth, e.gateway.Store)

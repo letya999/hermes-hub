@@ -97,7 +97,7 @@ func cardInvalid(op string, errs []cardFieldError) map[string]any {
 // request_id — a retry of one admitted call converges on it instead of
 // writing twice.
 func cardJournalResult(root, requestID string) (map[string]any, bool) {
-	rows, err := os.ReadFile(filepath.Join(root, "runtime", "memory", "writes.jsonl"))
+	rows, err := os.ReadFile(filepath.Join(root, "runtime", "memory", "writes.jsonl")) // #nosec G703 -- server-owned memory journal path
 	if err != nil {
 		return nil, false
 	}
@@ -153,10 +153,10 @@ func cardJournalAppend(root, op, target, sourceRef, requestID, status string, re
 		return err
 	}
 	path := filepath.Join(root, "runtime", "memory", "writes.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { // #nosec G703 -- server-owned memory journal path
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G703 -- server-owned memory journal path
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func cardFind(root, name string) string {
 	clean = strings.TrimSuffix(clean, ".md")
 	var found string
 	base := filepath.Join(root, "memory", "cards")
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error { // #nosec G703 -- walks the server-owned cards dir only
 		if err != nil || found != "" || d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			return nil
 		}

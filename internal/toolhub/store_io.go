@@ -29,14 +29,14 @@ type storeStamp struct {
 }
 
 func statStoreStamp(path string) (storeStamp, bool) {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- the trusted registry path
 	if err != nil {
 		return storeStamp{}, false
 	}
 	stamp := storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}
 	// WAL-mode SQLite commits land in the sidecar until a checkpoint, so a
 	// cross-instance write is invisible in the main file's stamp alone.
-	if wal, walErr := os.Stat(path + "-wal"); walErr == nil {
+	if wal, walErr := os.Stat(path + "-wal"); walErr == nil { // #nosec G703 -- the trusted registry path's WAL sidecar
 		stamp.mtime = max(stamp.mtime, wal.ModTime().UnixNano())
 		stamp.size += wal.Size()
 	}
@@ -194,7 +194,7 @@ func Load(path string) (*Store, error) {
 	// conservative stamp (older than the bytes), so the next Reload simply
 	// loads once more instead of skipping a change it never saw.
 	stamp, _ := statStoreStamp(path)
-	b, err := os.ReadFile(path) // #nosec G304 -- the trusted registry path is checked for symlink components above
+	b, err := os.ReadFile(path) // #nosec G304 G703 -- the trusted registry path is checked for symlink components above
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +573,7 @@ func (s *Store) changedOnDiskLocked() (bool, int64, error) {
 // cached "unchanged" from the entry probe that just detected the change.
 func (s *Store) changedOnDisk(forced bool) (bool, int64, error) {
 	if s.db != nil {
-		info, err := os.Stat(s.path)
+		info, err := os.Stat(s.path) // #nosec G703 -- the trusted registry path
 		if err != nil {
 			return false, 0, err
 		}
@@ -619,7 +619,7 @@ var storeLoad = loadStoreSnapshot
 // SQLITE_IOERR_SHORT_READ once the shared wal-index drifts.
 func copyStoreFiles(path, dir string) {
 	for _, suffix := range []string{"", "-wal"} {
-		if body, err := os.ReadFile(path + suffix); err == nil {
+		if body, err := os.ReadFile(path + suffix); err == nil { // #nosec G703 -- the trusted registry path's sidecar set
 			_ = os.WriteFile(filepath.Join(dir, "store.db"+suffix), body, 0600) // #nosec G306 G703 -- copy of an already store-scoped file.
 		}
 	}
@@ -675,7 +675,7 @@ func loadStoreSnapshot(path string) (*Store, error) {
 	// copy's — savedPath feeds the save fence, dbFile the SameFile guard.
 	fresh.path = path
 	fresh.savedPath = path
-	fresh.dbFile, _ = os.Stat(path)
+	fresh.dbFile, _ = os.Stat(path) // #nosec G703 -- the trusted registry path
 	fresh.diskStamp, _ = statStoreStamp(path)
 	fresh.fileHash = baseline
 	return fresh, nil
@@ -695,10 +695,10 @@ var storeDigestPollInterval = time.Second
 // shared wal-index drifts, so persisted-content checks must not go through
 // SQLite at all. shm-map drift and mtime churn cannot fake a different hash.
 func storeFileHash(path string) ([32]byte, bool) {
-	if body, err := os.ReadFile(path + "-wal"); err == nil {
+	if body, err := os.ReadFile(path + "-wal"); err == nil { // #nosec G703 -- the trusted registry path's WAL sidecar
 		return sha256.Sum256(body), true
 	}
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G703 -- the trusted registry path
 	if err != nil {
 		return [32]byte{}, false
 	}
@@ -765,7 +765,7 @@ func (s *Store) Reload() error {
 		if hash, ok := storeFileHash(s.path); ok {
 			overtaken = hash != fresh.fileHash
 		}
-	} else if body, err := os.ReadFile(s.path); err == nil { // #nosec G304 -- same store file already locked above.
+	} else if body, err := os.ReadFile(s.path); err == nil { // #nosec G304 G703 -- same store file already locked above.
 		overtaken = sha256.Sum256(body) != fresh.diskDigest
 	}
 	if overtaken {

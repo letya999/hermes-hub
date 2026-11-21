@@ -166,7 +166,7 @@ func (s *Store) loadLeasesLocked() error {
 	if path == "" {
 		return nil
 	}
-	body, err := os.ReadFile(path) // #nosec G304 -- registry-adjacent lease ledger under the same trusted path rules.
+	body, err := os.ReadFile(path) // #nosec G304 G703 -- registry-adjacent lease ledger under the same trusted path rules.
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -228,7 +228,7 @@ func (s *Store) persistLeasesLocked() error {
 		if err != nil {
 			return err
 		}
-		return os.Rename(name, path)
+		return os.Rename(name, path) // #nosec G703 -- registry-adjacent lease ledger under the same trusted path rules.
 	}
 	return counter.Write(path, int64(len(body)), true, write)
 }

@@ -458,7 +458,7 @@ func readDBSnapshot(db *sql.DB) (snapshot, map[dbKey][32]byte, map[string]int, e
 
 func loadDB(path string) (*Store, error) {
 	stamp, _ := statStoreStamp(path)
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); err != nil { // #nosec G703 -- the trusted registry path
 		return nil, err
 	}
 	db, err := openStoreDB(path)
@@ -487,7 +487,7 @@ func loadDB(path string) (*Store, error) {
 	}
 	store.db = db
 	store.dbVersion = version
-	store.dbFile, err = os.Stat(path)
+	store.dbFile, err = os.Stat(path) // #nosec G703 -- the trusted registry path
 	if err != nil {
 		_ = db.Close()
 		return nil, err

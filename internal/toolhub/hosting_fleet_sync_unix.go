@@ -5,7 +5,7 @@ package toolhub
 import "os"
 
 func syncHostingFleetDirectory(path string) error {
-	dir, err := os.Open(path)
+	dir, err := os.Open(path) // #nosec G703 -- store-adjacent sync of the operator-configured fleet dir
 	if err != nil {
 		return err
 	}

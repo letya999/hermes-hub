@@ -30,12 +30,12 @@ func (s *Store) VerifyInstallationWitness(witnessPath string) error {
 	}
 	id := s.installationID
 	s.mu.Unlock()
-	info, err := os.Lstat(witnessPath)
+	info, err := os.Lstat(witnessPath) // #nosec G703 -- operator-configured witness path
 	switch {
 	case err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0):
 		return api.ErrInvalid
 	case err == nil:
-		b, err := os.ReadFile(witnessPath) // #nosec G304 -- operator-configured witness path
+		b, err := os.ReadFile(witnessPath) // #nosec G304 G703 -- operator-configured witness path
 		if err != nil {
 			return err
 		}
@@ -46,7 +46,7 @@ func (s *Store) VerifyInstallationWitness(witnessPath string) error {
 	case !os.IsNotExist(err):
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(witnessPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(witnessPath), 0700); err != nil { // #nosec G703 -- operator-configured witness path
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(witnessPath), ".toolhub-installation-*")
@@ -67,7 +67,7 @@ func (s *Store) VerifyInstallationWitness(witnessPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, witnessPath); err != nil {
+	if err := os.Rename(tmp, witnessPath); err != nil { // #nosec G703 -- operator-configured witness path
 		return err
 	}
 	syncDirectory := s.syncDirectory
