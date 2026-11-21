@@ -834,7 +834,7 @@ func (s *Server) RenewLease(ctx context.Context, id string, in spawn.LeaseReques
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
-	rt := s.runtimeLeaseOwner(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	rt := s.runtimeLeaseOwner(spawn.Tenant(in), id)
 	if rt == nil {
 		return spawn.Runtime{}, spawn.ErrNotFound
 	}
@@ -853,7 +853,7 @@ func (s *Server) ReleaseLease(ctx context.Context, id string, in spawn.LeaseRequ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
-	rt := s.runtimeLeaseOwner(spawn.Tenant{Org: in.Org, Owner: in.Owner}, id)
+	rt := s.runtimeLeaseOwner(spawn.Tenant(in), id)
 	if rt == nil {
 		return nil
 	}

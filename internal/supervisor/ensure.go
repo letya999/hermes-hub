@@ -558,11 +558,6 @@ func (m *Manager) normalize(ctx context.Context, binding Binding) (Binding, erro
 	return binding, nil
 }
 
-func fileExists(path string) bool {
-	info, err := os.Lstat(path) // #nosec G703 -- callers pass paths under the validated binding context root
-	return err == nil && info.Mode().IsRegular()
-}
-
 func (m *Manager) ready(ctx context.Context, address, auth string) error {
 	if m.cfg.Probe != nil {
 		return m.cfg.Probe(ctx, address, auth)

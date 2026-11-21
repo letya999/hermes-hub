@@ -344,7 +344,7 @@ func TestDockerScratchExecHappyPath(t *testing.T) {
 	}
 	log := dockerLog(t, state)
 	// The apply channel is a stub func here; production wires it to
-	// `docker exec <runtime> hubctl tools-exec` (dockeragentexec), covered by
+	// `docker exec <runtime> harness-runtime tools-exec` (dockeragentexec), covered by
 	// the supervisor canary. The docker-side contract is
 	// inspect → pack → run → rm → inspect-confirm.
 	order := []string{"inspect", "exec", "run", "rm", "inspect"}
@@ -367,7 +367,7 @@ func TestDockerScratchExecHappyPath(t *testing.T) {
 			t.Fatalf("sandbox spec contains banned %q: %s", banned, runSpec)
 		}
 	}
-	if !strings.HasPrefix(log[1], "exec -i runtime-1 hubctl exec-pack") {
+	if !strings.HasPrefix(log[1], "exec -i runtime-1 harness-runtime exec-pack") {
 		t.Fatalf("inputs were not packed through the scoped channel: %s", log[1])
 	}
 }
@@ -530,7 +530,7 @@ func TestDockerAgentExecChannel(t *testing.T) {
 		t.Fatalf("result did not round-trip: %+v", out)
 	}
 	log := dockerLog(t, state)
-	if len(log) != 1 || !strings.HasPrefix(log[0], "exec -i -e HUB_DEFER_RUNTIME_RESTART=true runtime-1 hubctl tools-exec") {
+	if len(log) != 1 || !strings.HasPrefix(log[0], "exec -i -e HUB_DEFER_RUNTIME_RESTART=true runtime-1 harness-runtime tools-exec") {
 		t.Fatalf("executor channel wrong: %v", log)
 	}
 	t.Setenv("FAKE_DOCKER_FAIL", "exec")

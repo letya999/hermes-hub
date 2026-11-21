@@ -27,13 +27,8 @@ import (
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var telegramIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
-var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var spoolIDPattern = commodel.IDPattern
 var serviceNamePattern = commodel.ServiceNamePattern
-var gatewayOwnedEnv = map[string]bool{
-	"TELEGRAM_BOT_TOKEN": true, "TELEGRAM_ALLOWED_USERS": true,
-	"SLACK_SIGNING_SECRET": true, "SLACK_BOT_TOKEN": true, "SLACK_APP_TOKEN": true, "SLACK_ALLOWED_USERS": true,
-}
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {

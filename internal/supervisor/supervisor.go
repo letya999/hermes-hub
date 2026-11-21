@@ -973,31 +973,6 @@ func addressPort(address string) int {
 	return port
 }
 
-// publishedPort reports the loopback host port a running runtime — or a
-// managed runtime's control relay — actually binds, so a recovered container
-// keeps its real address even when allocation moved on.
-func (m *Manager) publishedPort(ctx context.Context, runtime Runtime) (int, error) {
-	name, port := runtime.Container, m.cfg.RuntimePort
-	if runtime.Managed {
-		name += "-ctl"
-		port = controlRelayContainerPort
-	}
-	out, err := m.command(ctx, "port", name, strconv.Itoa(port))
-	if err != nil {
-		return 0, errors.New("published port unavailable")
-	}
-	line := strings.TrimSpace(firstLine(string(out)))
-	i := strings.LastIndexByte(line, ':')
-	if i < 0 {
-		return 0, errors.New("published port unavailable")
-	}
-	parsed, err := strconv.Atoi(line[i+1:])
-	if err != nil || parsed <= 0 || parsed > 65535 {
-		return 0, errors.New("published port unavailable")
-	}
-	return parsed, nil
-}
-
 func containerName(key string) string {
 	return "hermes-context-" + hex.EncodeToString(hashBytes(key)[:8])
 }

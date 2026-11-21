@@ -89,7 +89,6 @@ type kubeWorkload struct {
 	owner      string // v0 PrincipalID, Spec.Owner in v1
 	space      string // v0 ContextID, Spec.Space in v1
 	mode       string // v0 RuntimeMode ("gateway" only)
-	address    string
 }
 
 // kubeObservation is the v0 ComputeObservation: state, compute id and the
@@ -109,9 +108,9 @@ type kubeCondition struct {
 }
 
 const (
-	kubeReasonReady                 = "ready"
-	kubeReasonReadinessUnavailable  = "readiness_unavailable"
-	kubeReasonNotChecked            = "not_checked"
+	kubeReasonReady                = "ready"
+	kubeReasonReadinessUnavailable = "readiness_unavailable"
+	kubeReasonNotChecked           = "not_checked"
 )
 
 func kubeHash(value string) []byte { sum := sha256.Sum256([]byte(value)); return sum[:] }
@@ -341,7 +340,7 @@ func podObservation(pod *core.Pod, port int) kubeObservation {
 }
 
 // relayRuntime names the companion relay pod for one workload (v0).
-func (k Kubernetes) relayName(rt kubeWorkload) string { return rt.name + "-relay" }
+func (k Kubernetes) relayName(rt kubeWorkload) string       { return rt.name + "-relay" }
 func (k Kubernetes) relaySecretName(rt kubeWorkload) string { return k.secretName(rt) + "-relay" }
 
 func (k Kubernetes) observe(ctx context.Context, rt kubeWorkload) (kubeObservation, error) {

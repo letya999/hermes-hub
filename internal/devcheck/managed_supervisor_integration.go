@@ -688,7 +688,7 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := revision.Publish(contextRoot); err != nil {
+	if err := publishGenerated(contextRoot, revision); err != nil {
 		return "", err
 	}
 	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
@@ -699,7 +699,7 @@ func managedCanaryContext(root, userID, env string) (string, error) {
 	if err := os.WriteFile(filepath.Join(contextRoot, stack.ExecutionPath(env)), selectionBody, 0600); err != nil {
 		return "", err
 	}
-	if err := stack.RenderEnvironment(contextRoot, root, env); err != nil {
+	if err := stack.RenderEnvironment(context.Background(), generatedReader{contextRoot}, contextRoot, root, env); err != nil {
 		return "", err
 	}
 	files := map[string][]byte{

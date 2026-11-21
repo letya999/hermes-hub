@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
@@ -298,20 +297,19 @@ func newM32LifecycleWithDreaming(t *testing.T, ctx context.Context, image, envir
 		h.tokens[user] = auth["HUB_RUNTIME_AUTH"]
 		m32Require(t, os.MkdirAll(filepath.Join(owners, user), 0700))
 		if dreamingAuth != "" {
-			current, err := passport.Current(dir)
+			cur, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
 			m32Require(t, err)
+			current := strings.TrimSpace(string(cur))
 			revision := passport.Revision{ID: current, Docs: make(map[string][]byte)}
 			for _, name := range passport.Names {
 				revision.Docs[name], err = os.ReadFile(filepath.Join(dir, "generated", "passports", current, name+".yaml"))
 				m32Require(t, err)
 			}
-			bundle, err := spawnv1.PolicyProjection(user, environment, current, revision.Docs)
+			bundle, err := revision.PolicyBundle()
 			m32Require(t, err)
 			signed, err := registry.StagePassports(ctx, bundle)
 			m32Require(t, err)
 			m32Require(t, registry.ActivatePassports(ctx, user, environment, "", signed.Digest))
-			m32Require(t, revision.LinkPolicyDigest(dir, signed.Digest))
-			m32Require(t, passport.PointCurrent(dir, current))
 		}
 		m32Require(t, os.CopyFS(filepath.Join(passportRoot, user), os.DirFS(filepath.Join(dir, "generated"))))
 		v := filepath.Join(vaultRoot, user)

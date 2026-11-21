@@ -202,42 +202,6 @@ func (m *Manager) removeOwnedSidecar(ctx context.Context, runtime Runtime) error
 	return nil
 }
 
-// reclaimSidecarName removes a stale <container>-ctl from an earlier runtime
-// generation of this same context so a replacement runtime can spawn its own
-// relay. Foreign or same-generation containers are never touched.
-func (m *Manager) reclaimSidecarName(ctx context.Context, binding Binding, container string) {
-	name := container + "-ctl"
-	metadata, err := m.runtimeLabels(ctx, name)
-	if err != nil {
-		return
-	}
-	key := runtimeKey(binding)
-	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.role"] != "control-relay" {
-		return
-	}
-	_, _ = m.command(ctx, "rm", "-f", name)
-}
-
-// reclaimStaleRuntime removes a same-name container only when its labels prove
-// it belongs to this supervisor and context but to an older generation, and
-// also releases that generation's control relay. It reports whether the name
-// is now free for the incoming generation.
-func (m *Manager) reclaimStaleRuntime(ctx context.Context, binding Binding, container, generation string) bool {
-	metadata, err := m.runtimeLabels(ctx, container)
-	if err != nil {
-		return false
-	}
-	key := runtimeKey(binding)
-	if metadata["hermes-hub.owner"] != m.ownerID() || metadata["hermes-hub.context"] != hex.EncodeToString(hashBytes(key)) || metadata["hermes-hub.generation"] == "" || metadata["hermes-hub.generation"] == generation || metadata["hermes-hub.role"] != "" {
-		return false
-	}
-	if _, err := m.command(ctx, "rm", "-f", container); err != nil {
-		return false
-	}
-	m.reclaimSidecarName(ctx, binding, container)
-	return true
-}
-
 // DetectOrphans inventories only this supervisor's labelled containers.
 // Detection never deletes a home, volume, job or an unrecognized container.
 func (m *Manager) DetectOrphans(ctx context.Context) error {

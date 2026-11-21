@@ -16,15 +16,6 @@ import (
 
 type M = map[string]any
 
-// platformDenylistComposite marks upstream toolsets that must NOT be emitted
-// into agent.disabled_toolsets: their resolve overlaps the shared core tools
-// (debugging includes web+file, safe includes web+vision+image_gen, yuanbao
-// re-lists the whole core, search is a subset of web, coding is a posture),
-// so subtracting them would strip surfaces the space legitimately enabled.
-var platformDenylistComposite = map[string]bool{
-	"coding": true, "debugging": true, "safe": true, "yuanbao": true, "search": true,
-}
-
 func Compose(s Settings, projectRoot, dir string) M {
 	return compose(s, projectRoot, dir, true)
 }

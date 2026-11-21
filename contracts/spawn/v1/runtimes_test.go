@@ -52,7 +52,7 @@ func TestRuntimeClaimNeverCrossesTenants(t *testing.T) {
 			}
 			// A foreign tenant cannot renew or release the owner's lease and
 			// never lists the owner's row.
-			if _, err := client.RenewLease(ctx, mine.Lease, spawn.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); !errors.Is(err, spawn.ErrNotFound) {
+			if _, err := client.RenewLease(ctx, mine.Lease, spawn.LeaseRequest(foreign)); !errors.Is(err, spawn.ErrNotFound) {
 				t.Fatalf("foreign renew: want not_found, got %v", err)
 			}
 			rows, err := client.ListRuntimes(ctx, foreign)
@@ -66,10 +66,10 @@ func TestRuntimeClaimNeverCrossesTenants(t *testing.T) {
 			}
 			// The foreign release is a no-op, not a reach across tenants:
 			// the owner's lease still renews afterwards.
-			if err := client.ReleaseLease(ctx, mine.Lease, spawn.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); err != nil {
+			if err := client.ReleaseLease(ctx, mine.Lease, spawn.LeaseRequest(foreign)); err != nil {
 				t.Fatalf("foreign release must be a no-op: %v", err)
 			}
-			if _, err := client.RenewLease(ctx, mine.Lease, spawn.LeaseRequest{Org: owner.Org, Owner: owner.Owner}); err != nil {
+			if _, err := client.RenewLease(ctx, mine.Lease, spawn.LeaseRequest(owner)); err != nil {
 				t.Fatalf("owner renew after foreign release: %v", err)
 			}
 		})

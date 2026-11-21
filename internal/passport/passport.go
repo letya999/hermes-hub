@@ -729,12 +729,6 @@ func (r Revision) Value(doc, path string) (any, error) {
 	return cur, nil
 }
 
-// value is the error-free Value shorthand for generated renderers.
-func (r Revision) value(doc, path string) any {
-	v, _ := r.Value(doc, path)
-	return v
-}
-
 // GrantAllow parses the grants passport's effective allow snapshot; a
 // revision without the doc yields nil.
 func (r Revision) GrantAllow() (map[string][]string, error) {

@@ -346,7 +346,7 @@ func (s *Spool) recoverJobs() error {
 			// retryable — and must not brick the spool either: rebuild the
 			// mapping from the running job record (the same source the
 			// admission wrote it from) and park the job uncertain.
-			mapping, loadErr = s.rebuildMappingFromJobLocked(filepath.Join(from, name))
+			_, loadErr = s.rebuildMappingFromJobLocked(filepath.Join(from, name))
 			if loadErr != nil {
 				if qerr := s.quarantineLocked(s.mappingPath(jobID), filepath.Join(from, name)); qerr != nil {
 					return qerr

@@ -20,35 +20,9 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
+
 	"gopkg.in/yaml.v3"
 )
-
-// grantNativeToolset writes a governance document granting section to the
-// space — native Hermes toolsets are default-deny (SPEC-0083 R3.1), so a
-// feature wish only takes effect when an active grant covers it.
-func grantNativeToolset(t *testing.T, space, principal, section string) {
-	t.Helper()
-	doc := api.NewGovernance()
-	now := time.Now().UTC()
-	grant := api.NewToolGrant("grant-"+principal+"-"+strings.ReplaceAll(section, ":", "-"), principal, section, "test grant", "operator", now.Add(time.Hour), nil)
-	if err := api.Confirm(&grant, "operator", now); err != nil {
-		t.Fatal(err)
-	}
-	if err := doc.PutToolGrant(grant, now); err != nil {
-		t.Fatal(err)
-	}
-	stamped, err := doc.RequestToolGrant(principal, grant.GrantID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := doc.AcknowledgeToolGrant(principal, grant.GrantID, stamped.RequestNonce, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := api.SaveGovernance(filepath.Join(space, "runtime", "toolhub", "governance.json"), doc); err != nil {
-		t.Fatal(err)
-	}
-}
 
 // The idle-retention default must survive a process started with no explicit
 // flag: 30 minutes keeps short conversation gaps warm.

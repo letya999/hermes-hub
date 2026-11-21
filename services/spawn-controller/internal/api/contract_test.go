@@ -172,13 +172,13 @@ func TestRuntimeClaimNeverCrossesTenants(t *testing.T) {
 					t.Fatalf("identical space+agent under different tenants must not share a runtime or lease: %s %s",
 						mine.Runtime.ID, mine.Lease)
 				}
-				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); !errors.Is(err, spawnv1.ErrNotFound) {
+				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest(foreign)); !errors.Is(err, spawnv1.ErrNotFound) {
 					t.Fatalf("foreign renew: want not_found, got %v", err)
 				}
-				if err := client.ReleaseLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: foreign.Org, Owner: foreign.Owner}); err != nil {
+				if err := client.ReleaseLease(ctx, mine.Lease, spawnv1.LeaseRequest(foreign)); err != nil {
 					t.Fatalf("foreign release must be a no-op: %v", err)
 				}
-				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest{Org: contractTenant.Org, Owner: contractTenant.Owner}); err != nil {
+				if _, err := client.RenewLease(ctx, mine.Lease, spawnv1.LeaseRequest(contractTenant)); err != nil {
 					t.Fatalf("owner renew after foreign release: %v", err)
 				}
 			})

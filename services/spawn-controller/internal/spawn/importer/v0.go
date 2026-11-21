@@ -29,9 +29,6 @@ type v0Manager struct {
 	Pins       int      `json:"-"`
 	Orphans    int      `json:"-"`
 	LeaseSeq   uint64   `json:"lease_seq"`
-	jobsRaw    map[string]json.RawMessage
-	holdsRaw   map[string]json.RawMessage
-	pinsRaw    map[string]json.RawMessage
 }
 
 // UnmarshalJSON counts the unsupported sections without decoding their

@@ -67,13 +67,13 @@ func migrateToolhubBindings(dir string, s stack.Settings) error {
 	// dir — resolving only the caller's own root would miss the live store
 	// (SPEC-0090 R5.1).
 	storePath := api.ResolveStorePath(filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub"))
-	if _, err := os.Stat(storePath); err != nil {
+	if _, err := os.Stat(storePath); err != nil { // #nosec G703 -- store path resolves inside the operator's space dir argument.
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json"))
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")) // #nosec G703 -- dir is the operator's space argument and Environment is the validated dev/prod enum.
 	var rendered stack.ToolManifest
 	if err != nil || json.Unmarshal(body, &rendered) != nil || rendered.Schema != manifest.Schema ||
 		rendered.Context != manifest.Context || rendered.PolicyVersion != manifest.PolicyVersion {

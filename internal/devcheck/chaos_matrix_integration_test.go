@@ -27,8 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -261,18 +263,31 @@ func runChaosCase(t *testing.T, repo, linuxBinary, imageName, target, phase stri
 	if err := stack.InitEnvironment(space, name, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"agent.yaml", "workspace.yaml"} {
-		if err := os.Remove(filepath.Join(space, file)); err != nil {
-			t.Fatal(err)
-		}
+	for name, body := range map[string]string{
+		"stack":  "identity: {user: " + name + ", infra: true}\nservices:\n  hermes-runtime: {mode: supervised}\n  model-relay: {mode: shared}\n  cliproxy: {mode: shared}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n  communication-hub: {mode: shared}\n  supervisor: {mode: shared}\n",
+		"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-chaos}}\n",
+		"models": "default: gpt-4o-mini\nroutes: {gpt-4o-mini: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: " + providerURL + ", allow_private: true, models: [{id: gpt-4o-mini}]}\n",
+		"tools":  "binding: {profile_id: " + name + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n",
+	} {
+		chaosWrite(t, filepath.Join(space, "passports", name+".yaml"), []byte(body))
 	}
-	chaosWrite(t, filepath.Join(space, "settings.yaml"), []byte("schema: 1\nuser: "+name+"\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, telegram]\nmodel: gpt-4o-mini\nmodel_url: "+providerURL+"\n"))
 	endpoint := "http://toolhub:8090/mcp"
 	chaosWrite(t, filepath.Join(space, "secrets.prod.env"), []byte("OPENAI_API_KEY=synthetic-chaos-key\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=21\nHUB_RUN_BUDGET="+budget+"\nHUB_TOOLHUB_ENDPOINT="+endpoint+"\n"))
-	if err := stack.RenderEnvironment(space, repo, "prod"); err != nil {
+	catalogDocs, err := catalog.Generate()
+	if err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.ReadEnvironment(space, "prod")
+	revision, err := passport.CompileAuthored(space, "prod", time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(space), map[string][]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishGenerated(space, revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.RenderEnvironment(context.Background(), generatedReader{space}, space, repo, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEnvironment(context.Background(), generatedReader{space}, space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

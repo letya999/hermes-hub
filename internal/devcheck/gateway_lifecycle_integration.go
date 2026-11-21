@@ -139,7 +139,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		if err != nil {
 			return err
 		}
-		if err := revision.Publish(dir); err != nil {
+		if err := publishGenerated(dir, revision); err != nil {
 			return err
 		}
 		initialSelection := stack.ExecutionSelection{Schema: 1, User: name, Environment: "prod", Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
@@ -163,7 +163,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		if err := api.SaveGovernance(filepath.Join(dir, "runtime", "toolhub", "governance.json"), api.MigrationSeed(name, []string{"native:terminal"}, time.Now())); err != nil {
 			return err
 		}
-		if err := stack.RenderEnvironment(dir, root, "prod"); err != nil {
+		if err := stack.RenderEnvironment(context.Background(), generatedReader{dir}, dir, root, "prod"); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, "managed-runtime.prod.env"), []byte("OPENAI_API_KEY=synthetic-gateway-key\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
@@ -191,7 +191,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 			return err
 		}
 
-		settingsValue, err := stack.ReadEffective(dir, "prod")
+		settingsValue, err := stack.ReadEffective(context.Background(), generatedReader{dir}, dir, "prod")
 		if err != nil {
 			return err
 		}
@@ -294,7 +294,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 		}
 		audit.NativeCron = &snapshot
 		selection := stack.ExecutionSelection{Schema: 1, User: binding.UserID, Environment: "prod", Mode: "supervisor", SupervisorURL: endpoint, NativeCron: "disabled", CompatibilityRelease: "0.2.0"}
-		if _, err := migration.SelectExecution(binding.ContextRoot, selection, audit, true); err != nil {
+		if _, err := migration.SelectExecution(context.Background(), generatedReader{binding.ContextRoot}, binding.ContextRoot, selection, audit, true); err != nil {
 			return err
 		}
 		// The host-side supervisor endpoint changes only execution routing;

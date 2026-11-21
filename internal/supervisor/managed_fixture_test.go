@@ -112,22 +112,3 @@ func writeManagedFixtures(t *testing.T, ctxRoot string) stack.Settings {
 	}
 	return settings
 }
-
-// writeManagedRevisionFixtures installs a managed space carried entirely by
-// the published six-document revision: settings.yaml, agent.yaml and
-// workspace.yaml are retired (SPEC-0092 R8.1, SPEC-0095).
-func writeManagedRevisionFixtures(t *testing.T, ctxRoot string) {
-	t.Helper()
-	publishAliceRevision(t, ctxRoot, nil)
-	if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
-	selectionBody, err := json.Marshal(selection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, stack.ExecutionPath("prod")), selectionBody, 0600); err != nil {
-		t.Fatal(err)
-	}
-}

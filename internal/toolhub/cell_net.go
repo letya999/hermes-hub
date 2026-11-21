@@ -12,8 +12,7 @@ import (
 )
 
 type cellSidecar struct {
-	name   string
-	volume string
+	name string
 }
 
 // cellCredProxy runs cellinit cred-proxy in a throwaway companion and writes

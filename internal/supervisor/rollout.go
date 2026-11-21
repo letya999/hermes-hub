@@ -19,7 +19,6 @@ var (
 	WriteRolloutPins    = stack.WriteRolloutPins
 	resolveRuntimeImage = stack.ResolveRuntimeImage
 	rolloutPinsPath     = stack.RolloutPinsPath
-	devImage            = stack.DevImage
 	devRuntimeImage     = stack.DevRuntimeImage
 	devScriptImage      = stack.DevScriptImage
 )

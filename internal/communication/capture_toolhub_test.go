@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 
 	contract "github.com/letya999/hermes-hub/contracts/identity/v1"
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
+	"github.com/letya999/hermes-hub/contracts/spawn/v1/fake"
 	task "github.com/letya999/hermes-hub/contracts/task/v1"
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -34,18 +36,18 @@ import (
 // the communication control-plane bearer — and a real communication Gateway
 // whose spool is the durable capture producer.
 type captureFixture struct {
-	t          *testing.T
-	server     *httptest.Server
-	records    map[string]api.RunContext
-	passports  string
-	vaults     string
-	spoolDir   string
-	config     Config
-	supervisor *httptest.Server
-	toolhubEnv map[string]string
-	store      *toolhub.Store
-	gov        *toolhub.GovernanceStore
-	doc        api.RightsDoc
+	t           *testing.T
+	server      *httptest.Server
+	records     map[string]api.RunContext
+	vaults      string
+	spoolDir    string
+	config      Config
+	supervisor  *httptest.Server
+	toolhubEnv  map[string]string
+	store       *toolhub.Store
+	gov         *toolhub.GovernanceStore
+	doc         api.RightsDoc
+	spawnClient spawnv1.Client
 }
 
 // captureNilBackend is a fail-closed agent backend: the capture path never
@@ -62,7 +64,7 @@ func (b captureNilBackend) Call(context.Context, api.EffectiveBinding, api.ToolS
 // lifecycle facts they need.
 func newCaptureFixture(t *testing.T) *captureFixture {
 	t.Helper()
-	f := &captureFixture{t: t, records: map[string]api.RunContext{}, passports: t.TempDir(), vaults: t.TempDir()}
+	f := &captureFixture{t: t, records: map[string]api.RunContext{}, vaults: t.TempDir()}
 
 	store := toolhub.NewStore()
 	doc := api.RightsDoc{Release: "fixture", DefinitionID: "hub-agent-rights", Capabilities: map[string]api.RightCapability{
@@ -73,12 +75,17 @@ func newCaptureFixture(t *testing.T) *captureFixture {
 	govPath := filepath.Join(t.TempDir(), "governance.json")
 	gov := toolhub.NewGovernanceStore(govPath)
 	store.RightsLedger = gov.Load
+	spawnSrv := httptest.NewServer(spawnv1.Handler(spawnv1.NewInProc(&fake.Server{}), "spawn-token"))
+	t.Cleanup(spawnSrv.Close)
+	f.spawnClient = spawnv1.NewHTTPClient(spawnSrv.URL, "spawn-token", spawnSrv.Client())
 	f.toolhubEnv = map[string]string{
 		"HUB_VAULTS_BY_PRINCIPAL":    f.vaults,
 		"HUB_COMMUNICATION_AUTH":     "comm-token",
 		"HUB_TOOL_GOVERNANCE":        govPath,
 		"HUB_AUDIT_LEDGER":           filepath.Join(t.TempDir(), "audit.jsonl"),
 		"HUB_RUNTIME_SUPERVISOR_URL": "",
+		"HUB_SPAWN_URL":              spawnSrv.URL,
+		"HUB_SPAWN_TOKEN":            "spawn-token",
 	}
 	f.supervisor = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer comm-token" {
@@ -132,7 +139,7 @@ func (f *captureFixture) enroll(user string, memoryEnabled, rememberRight bool) 
 	if err := f.store.PutCapabilityProfile(profile); err != nil {
 		f.t.Fatal(err)
 	}
-	writeCapturePassport(f.t, f.passports, user, "dev", memoryEnabled)
+	writeCapturePassport(f.t, f.spawnClient, user, "dev", memoryEnabled)
 	if rememberRight {
 		right := api.NewRightGrant(api.DeterministicID("rightgrant", user, "memory", "remember"), user, "memory", "remember", "", "fixture", "platform", time.Now().Add(time.Hour))
 		if err := api.Confirm(&right, right.GrantedBy, time.Now()); err != nil {
@@ -249,23 +256,37 @@ func leafBody(t *testing.T, vaultRoot string) string {
 	return b.String()
 }
 
-func writeCapturePassport(t *testing.T, root, user, environment string, enabled bool) {
+// writeCapturePassport publishes the space's six-document revision through
+// the spawn contract — the same submit→validate→activate path the enrolment
+// check reads back via the Effective endpoint.
+func writeCapturePassport(t *testing.T, client spawnv1.Client, user, environment string, enabled bool) {
 	t.Helper()
-	revision := "r-0123456789abcdef"
-	dir := filepath.Join(root, user, "passports", revision)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	ctx := context.Background()
+	revision := fmt.Sprintf("r-%d", time.Now().UnixNano())
+	tenant := spawnv1.Tenant{Org: "local", Owner: user}
+	if _, err := client.CreateSpace(ctx, spawnv1.CreateSpaceRequest{Org: tenant.Org, Owner: tenant.Owner, ID: user, Environment: environment, IdempotencyKey: "mk-" + user}); err != nil && !errors.Is(err, spawnv1.ErrConflict) {
 		t.Fatal(err)
 	}
+	docs := map[string]map[string]any{}
 	for _, name := range spawnv1.Names {
-		body := "apiVersion: six-passport/v2\nkind: " + name + "\nmetadata: {space: " + user + ", environment: " + environment + ", revision: " + revision + "}\n"
+		doc := map[string]any{
+			"apiVersion": "six-passport/v2",
+			"kind":       name,
+			"metadata":   map[string]any{"space": user, "environment": environment, "revision": revision},
+		}
 		if name == "config" {
-			body += "memory: {enabled: " + map[bool]string{true: "true", false: "false"}[enabled] + "}\n"
+			doc["memory"] = map[string]any{"enabled": enabled}
 		}
-		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		docs[name] = doc
 	}
-	if err := os.WriteFile(filepath.Join(root, user, "passports", "current"), []byte(revision+"\n"), 0o600); err != nil {
+	rev, err := client.SubmitRevision(ctx, user, "user", spawnv1.SubmitRevisionRequest{Org: tenant.Org, Owner: tenant.Owner, Documents: docs, IdempotencyKey: "sub-" + revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ValidateRevision(ctx, user, rev.ID, spawnv1.RevisionRequest{Org: tenant.Org, Owner: tenant.Owner, IdempotencyKey: "val-" + revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ActivateRevisions(ctx, user, spawnv1.ActivationRequest{Org: tenant.Org, Owner: tenant.Owner, Revisions: []string{rev.ID}, IdempotencyKey: "act-" + revision}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -529,7 +550,7 @@ func TestCaptureRejectsForeignForgedAndRevokedFacts(t *testing.T) {
 	if blocks, _ := leafEntries(t, aliceRoot); blocks != 0 {
 		t.Fatalf("revoked fact wrote vault: %d", blocks)
 	}
-	writeCapturePassport(t, f.passports, "bob", "dev", false)
+	writeCapturePassport(t, f.spawnClient, "bob", "dev", false)
 	bobJob := captureJob(g, "bob", "job-bob")
 	f.records[bobJob.ID] = api.RunContext{JobID: bobJob.ID, UserID: "bob", Environment: "dev", Status: "running",
 		ScopeID: bobJob.ScopeID, Trigger: bobJob.Trigger, Channel: bobJob.Channel,
@@ -540,7 +561,7 @@ func TestCaptureRejectsForeignForgedAndRevokedFacts(t *testing.T) {
 	if blocks, _ := leafEntries(t, bobRoot); blocks != 0 {
 		t.Fatalf("disabled fact wrote vault: %d", blocks)
 	}
-	writeCapturePassport(t, f.passports, "bob", "dev", true)
+	writeCapturePassport(t, f.spawnClient, "bob", "dev", true)
 	if code := post("comm-token", "bob", captureEventForTurn(bobJob)); code != http.StatusOK {
 		t.Fatalf("bob's own capture denied: %d", code)
 	}
@@ -813,7 +834,7 @@ func TestCaptureRechecksAuthorizationAtCommit(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				writeCapturePassport(t, f.passports, "alice", "dev", false)
+				writeCapturePassport(t, f.spawnClient, "alice", "dev", false)
 			}
 			close(release)
 			select {

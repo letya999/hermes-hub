@@ -400,13 +400,3 @@ func registryLayerFor(dir string, eff spawnv1.Effective) (modelRegistryYAML, err
 	}
 	return layer, nil
 }
-
-// passportRevision reports whether the space carries a published-revision
-// pointer — the boundary where legacy config files stop being the
-// authority. The gate is the marker's presence, not its decodability: a
-// malformed or dangling pointer still claims managed status, and the load
-// path then fails closed rather than downgrading to legacy reads.
-func passportRevision(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, "generated", "passports", "current"))
-	return err == nil && !info.IsDir()
-}

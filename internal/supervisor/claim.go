@@ -95,7 +95,7 @@ func (m *Manager) renewClaim(ctx context.Context, lease, contextID string) error
 		return nil
 	}
 	tenant := spawnv1.Tenant{Org: "local", Owner: contextID}
-	_, err := m.cfg.Spawn.RenewLease(ctx, lease, spawnv1.LeaseRequest{Org: tenant.Org, Owner: tenant.Owner})
+	_, err := m.cfg.Spawn.RenewLease(ctx, lease, spawnv1.LeaseRequest(tenant))
 	return err
 }
 

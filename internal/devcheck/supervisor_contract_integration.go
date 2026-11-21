@@ -136,10 +136,10 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err != nil {
 		return err
 	}
-	if err := revision.Publish(contextRoot); err != nil {
+	if err := publishGenerated(contextRoot, revision); err != nil {
 		return err
 	}
-	if err := stack.RenderEnvironment(contextRoot, root, "prod"); err != nil {
+	if err := stack.RenderEnvironment(context.Background(), generatedReader{contextRoot}, contextRoot, root, "prod"); err != nil {
 		return err
 	}
 	checkTerminal := func(path string) error {
@@ -167,7 +167,7 @@ HTTPServer(('0.0.0.0',8090),H).serve_forever()`
 	if err := checkTerminal(filepath.Join(contextRoot, "generated", "hermes.prod.yaml")); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEffective(contextRoot, "prod")
+	settings, err := stack.ReadEffective(context.Background(), generatedReader{contextRoot}, contextRoot, "prod")
 	if err != nil {
 		return err
 	}

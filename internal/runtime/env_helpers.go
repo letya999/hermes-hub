@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-var state = env("HUB_STATE", "/state")
-
 func env(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value

@@ -234,14 +234,6 @@ func firstEnv(value, name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
 
-// intEnv reads a positive integer from the environment with a fallback.
-func intEnv(name string, fallback int) int {
-	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && v > 0 {
-		return v
-	}
-	return fallback
-}
-
 func envFileAuth(path string) (string, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {

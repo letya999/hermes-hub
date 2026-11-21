@@ -126,10 +126,6 @@ func (c *genericController) claimWorker(ctx context.Context, req api.CliExecRequ
 	}, nil
 }
 
-// errWorkerGone marks a held worker the server drained under the lease:
-// the handle drops and the caller re-claims a fresh generation.
-var errWorkerGone = errors.New("worker lease lost")
-
 // heldWorkerFor returns the warm worker for key, reusing the held lease or
 // claiming a new generation — the v0 warmCell flow over the contract. A
 // held worker the server drained is forgotten and re-claimed. Claims are

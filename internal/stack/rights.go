@@ -163,11 +163,10 @@ type rightsView struct {
 }
 
 func rightsProjection(s Settings) rightsView {
-	tools := s.Tools
 	// Managed connector selection is fenced by the published profile
 	// revision. Keep the session policy version stable when only that
 	// selection changes, so a sibling connector remains callable.
-	tools = make(map[string]ToolEntry, len(s.Tools))
+	tools := make(map[string]ToolEntry, len(s.Tools))
 	for name, entry := range s.Tools {
 		if name != "browser" && mcpConnectors[name] || s.MCP[name].URL != "" || s.MCP[name].Command != "" {
 			continue

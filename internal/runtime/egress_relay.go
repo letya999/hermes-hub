@@ -43,7 +43,7 @@ func SignedEgressRelayHandler(allow map[string]bool, connectTarget, owner string
 			policy, err := authority.authorize(r, identity.EgressAudience, owner)
 			read := r.Method == http.MethodGet || r.Method == http.MethodHead
 			if err != nil || (!read && !policy.Identity.Restrictions.AllowsUnattendedWrite()) {
-				log.Printf("egress-relay owner=%s outcome=deny reason=run-authorization", owner)
+				log.Printf("egress-relay owner=%q outcome=deny reason=run-authorization", owner) // #nosec G706 -- %q escapes control characters; owner is the operator-rendered relay identity, not request input.
 				lang, _ := locale.Negotiate(r.Header.Get("Accept-Language"))
 				http.Error(w, locale.T(lang, "run.authorization-denied"), http.StatusForbidden)
 				return

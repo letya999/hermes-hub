@@ -79,7 +79,7 @@ func serviceToken(data string) (string, error) {
 		}
 		token = hex.EncodeToString(raw)
 	}
-	if err := os.WriteFile(filepath.Join(data, "service.token"), []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(data, "service.token"), []byte(token+"\n"), 0o600); err != nil { // #nosec G703 -- data is the operator's own launch directory argument.
 		return "", err
 	}
 	return token, nil

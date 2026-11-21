@@ -545,7 +545,7 @@ func TestManagedRuntimeDockerAnswersMessage(t *testing.T) {
 		t.Fatalf("first message reply missing contract answer: %s", final.Text)
 	}
 
-	if err := client.ReleaseLease(ctx, claimed.Lease, spawnv1.LeaseRequest{Org: tenant.Org, Owner: tenant.Owner}); err != nil {
+	if err := client.ReleaseLease(ctx, claimed.Lease, spawnv1.LeaseRequest(tenant)); err != nil {
 		t.Fatalf("release lease: %v", err)
 	}
 	rts2, err := client.ListRuntimes(ctx, tenant)

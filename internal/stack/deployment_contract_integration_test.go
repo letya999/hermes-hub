@@ -4,6 +4,8 @@ package stack_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,12 +14,79 @@ import (
 	"testing"
 	"time"
 
+	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 
 	"gopkg.in/yaml.v3"
 )
+
+// publishDocs lays down the generated/passports layout the fixture reader
+// serves — the on-disk stand-in for a submitted+activated revision.
+func publishDocs(t *testing.T, dir string, rev passport.Revision) {
+	t.Helper()
+	root := filepath.Join(dir, "generated", "passports")
+	revDir := filepath.Join(root, rev.ID)
+	if err := os.MkdirAll(revDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range rev.Docs {
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "current"), []byte(rev.ID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fixtureReader serves the contract read path from the fixture's generated
+// tree — the same shim effective_shim_test.go carries for internal tests.
+type fixtureReader struct{ dir string }
+
+func (r fixtureReader) spec(space string) (spawnv1.EffectiveSpec, error) {
+	if space == "" {
+		space = filepath.Base(r.dir)
+	}
+	dir := filepath.Join(filepath.Dir(r.dir), space)
+	cur, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current")) // #nosec G703 -- test fixture path
+	if err != nil {
+		return spawnv1.EffectiveSpec{}, spawnv1.ErrNotFound
+	}
+	rev := strings.TrimSpace(string(cur))
+	docs := map[string]json.RawMessage{}
+	h := sha256.New()
+	for _, name := range spawnv1.Names {
+		body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rev, name+".yaml")) // #nosec G703 -- test fixture path
+		if err != nil {
+			return spawnv1.EffectiveSpec{}, err
+		}
+		var v any
+		if err := yaml.Unmarshal(body, &v); err != nil {
+			return spawnv1.EffectiveSpec{}, err
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return spawnv1.EffectiveSpec{}, err
+		}
+		docs[name] = raw
+		h.Write(raw)
+	}
+	return spawnv1.EffectiveSpec{Space: space, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), Documents: docs}, nil
+}
+
+func (r fixtureReader) Effective(_ context.Context, _ spawnv1.Tenant, space string) (spawnv1.EffectiveSpec, error) {
+	return r.spec(space)
+}
+
+func (r fixtureReader) PolicySlice(_ context.Context, _ spawnv1.Tenant, space, service, digest string) (spawnv1.PolicySlice, error) {
+	spec, err := r.spec(space)
+	if err != nil {
+		return spawnv1.PolicySlice{}, err
+	}
+	return spawnv1.PolicySlice{Space: space, Service: service, Digest: digest, Documents: spec.Documents}, nil
+}
 
 // Uses the actual Compose loader, without starting containers or using accounts.
 func TestDeploymentConfigurationContract(t *testing.T) {
@@ -59,9 +128,7 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := revision.Publish(dir); err != nil {
-					t.Fatal(err)
-				}
+				publishDocs(t, dir, revision)
 				if err := os.WriteFile(filepath.Join(dir, "secrets."+environment+".env"), []byte("OPENAI_API_KEY=synthetic-contract-only\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -75,7 +142,7 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				renderErr := stack.RenderEnvironment(context.Background(), testReader(dir), dir, root, environment)
+				renderErr := stack.RenderEnvironment(context.Background(), fixtureReader{dir}, dir, root, environment)
 				if mode == "static" {
 					if renderErr == nil || !strings.Contains(renderErr.Error(), "managed runtime requires supervisor") {
 						t.Fatalf("unproven static managed runtime accepted: %v", renderErr)
@@ -85,7 +152,7 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 				if err := renderErr; err != nil {
 					t.Fatal(err)
 				}
-				s, err := stack.ReadEffective(context.Background(), testReader(dir), dir, environment)
+				s, err := stack.ReadEffective(context.Background(), fixtureReader{dir}, dir, environment)
 				if err != nil {
 					t.Fatal(err)
 				}

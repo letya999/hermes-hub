@@ -99,7 +99,7 @@ func TestFakeToolsExecChild(t *testing.T) {
 	_ = json.NewEncoder(os.Stdout).Encode(AgentExecResult{Result: map[string]any{"echo": request.Tool}})
 }
 
-// DockerAgentExec marshals the request into `docker exec hubctl tools-exec`
+// DockerAgentExec marshals the request into `docker exec harness-runtime tools-exec`
 // and decodes the bounded reply; container resolution and spawn failures fail
 // closed.
 func TestDockerAgentExecContract(t *testing.T) {

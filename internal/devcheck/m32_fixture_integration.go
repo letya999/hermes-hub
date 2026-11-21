@@ -3,6 +3,7 @@
 package devcheck
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -133,13 +134,13 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 		if err != nil {
 			return f, fmt.Errorf("compile M32 authored passports: %w", err)
 		}
-		if err := revision.Publish(dir); err != nil {
+		if err := publishGenerated(dir, revision); err != nil {
 			return f, err
 		}
-		if err := stack.RenderEnvironment(dir, root, environment); err != nil {
+		if err := stack.RenderEnvironment(context.Background(), generatedReader{dir}, dir, root, environment); err != nil {
 			return f, err
 		}
-		settings, err := stack.ReadEffective(dir, environment)
+		settings, err := stack.ReadEffective(context.Background(), generatedReader{dir}, dir, environment)
 		if err != nil {
 			return f, err
 		}
@@ -172,7 +173,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 		if err := store.PutCapabilityPolicy(policy); err != nil {
 			return f, err
 		}
-		current, err := passport.Current(filepath.Join(root, "spaces", user))
+		current, err := generatedRevisionID(filepath.Join(root, "spaces", user))
 		if err != nil {
 			return f, err
 		}
@@ -194,7 +195,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 	}
 	for _, user := range f.Users {
 		dir := filepath.Join(root, "spaces", user)
-		current, err := passport.Current(dir)
+		current, err := generatedRevisionID(dir)
 		if err != nil {
 			return f, err
 		}
@@ -209,7 +210,7 @@ func newM32Fixture(root, environment, providerURL, suffix string, groupSecond bo
 			return f, err
 		}
 	}
-	if err := stack.EnrollSiblingRuntimeTokens(f.Infra, environment); err != nil {
+	if err := stack.EnrollSiblingRuntimeTokens(context.Background(), generatedReader{f.Infra}, f.Infra, environment); err != nil {
 		return f, err
 	}
 	return f, nil

@@ -97,7 +97,7 @@ func validLeaseID(id string) bool {
 }
 
 func validRuntimeLease(id string, in LeaseRequest) bool {
-	return validLeaseID(id) && validTenant(Tenant{in.Org, in.Owner})
+	return validLeaseID(id) && validTenant(Tenant(in))
 }
 
 func validRuntimeDrain(space string, in DrainRuntimesRequest) bool {
@@ -180,7 +180,7 @@ func (c httpClient) ReleaseLease(ctx context.Context, id string, in LeaseRequest
 	}
 	// DELETE carries the tenant in the query — a body on DELETE is
 	// unreliable across transports; the lease id is already in the path.
-	t := Tenant{Org: in.Org, Owner: in.Owner}
+	t := Tenant(in)
 	var discard struct{}
 	return c.Do(ctx, http.MethodDelete, "/v1/leases/"+url.PathEscape(id)+"?"+tenantQuery(t), nil, &discard)
 }
@@ -225,7 +225,7 @@ func handleLease(client Client, r *http.Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, client.ReleaseLease(r.Context(), rest[0], LeaseRequest{Org: t.Org, Owner: t.Owner})
+		return nil, client.ReleaseLease(r.Context(), rest[0], LeaseRequest(t))
 	default:
 		return nil, ErrNotFound
 	}
