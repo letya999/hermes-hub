@@ -19,6 +19,7 @@ type claimStub struct {
 	err        error
 	spec       spawnv1.EffectiveSpec
 	specErr    error
+	reader     spawnv1.EffectiveReader
 	renewErr   error
 	drainErr   error
 	generation int64
@@ -67,14 +68,20 @@ func (s *claimStub) ReleaseLease(_ context.Context, id string, _ spawnv1.LeaseRe
 	return nil
 }
 
-func (s *claimStub) Effective(context.Context, spawnv1.Tenant, string) (spawnv1.EffectiveSpec, error) {
+func (s *claimStub) Effective(ctx context.Context, tn spawnv1.Tenant, space string) (spawnv1.EffectiveSpec, error) {
 	if s.specErr != nil {
 		return spawnv1.EffectiveSpec{}, s.specErr
+	}
+	if s.spec.Documents == nil && s.reader != nil {
+		return s.reader.Effective(ctx, tn, space)
 	}
 	return s.spec, nil
 }
 
-func (s *claimStub) PolicySlice(_ context.Context, _ spawnv1.Tenant, space, service, digest string) (spawnv1.PolicySlice, error) {
+func (s *claimStub) PolicySlice(ctx context.Context, tn spawnv1.Tenant, space, service, digest string) (spawnv1.PolicySlice, error) {
+	if s.spec.Documents == nil && s.specErr == nil && s.reader != nil {
+		return s.reader.PolicySlice(ctx, tn, space, service, digest)
+	}
 	return spawnv1.PolicySlice{Space: space, Service: service, Digest: digest, Documents: s.spec.Documents}, s.specErr
 }
 
@@ -121,6 +128,7 @@ func (s *claimStub) setRenewErr(err error) {
 func TestEnsureClaimsManagedRuntimeThroughSpawn(t *testing.T) {
 	stub := &claimStub{address: "http://claimed:8080"}
 	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub.reader = supTestReader{dir: ctxRoot}
 	m.cfg.Spawn = stub
 	writeManagedFixtures(t, ctxRoot)
 	rt, err := m.Ensure(t.Context(), binding(ctxRoot))
@@ -148,7 +156,7 @@ func TestEnsureClaimsManagedRuntimeThroughSpawn(t *testing.T) {
 // A claim failure surfaces as the Ensure error and frees the capacity slot.
 func TestEnsureSurfacesClaimFailure(t *testing.T) {
 	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable}
+	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable, reader: supTestReader{dir: ctxRoot}}
 	writeManagedFixtures(t, ctxRoot)
 	if _, err := m.Ensure(t.Context(), binding(ctxRoot)); err == nil {
 		t.Fatal("claim failure accepted")
@@ -161,6 +169,7 @@ func TestEnsureSurfacesClaimFailure(t *testing.T) {
 func TestEnsureReuseRenewsSpawnLease(t *testing.T) {
 	stub := &claimStub{address: "http://claimed:8080"}
 	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub.reader = supTestReader{dir: ctxRoot}
 	m.cfg.Spawn = stub
 	writeManagedFixtures(t, ctxRoot)
 	if _, err := m.Ensure(t.Context(), binding(ctxRoot)); err != nil {
@@ -183,6 +192,7 @@ func TestEnsureReuseRenewsSpawnLease(t *testing.T) {
 func TestEnsureReclaimsAfterSpawnDrain(t *testing.T) {
 	stub := &claimStub{address: "http://claimed:8080"}
 	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub.reader = supTestReader{dir: ctxRoot}
 	m.cfg.Spawn = stub
 	writeManagedFixtures(t, ctxRoot)
 	if _, err := m.Ensure(t.Context(), binding(ctxRoot)); err != nil {

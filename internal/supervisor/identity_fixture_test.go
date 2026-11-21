@@ -15,8 +15,10 @@ func newTestManager(t testing.TB, cfg Config) (*Manager, error) {
 	t.Helper()
 	// Managed claims move through contracts/spawn/v1; tests get the stub so
 	// they exercise supervisor bookkeeping, not a live spawn-controller.
+	// The stub answers effective reads from the space's published tree —
+	// what the deleted mirror served (S7d).
 	if cfg.Spawn == nil {
-		cfg.Spawn = &claimStub{}
+		cfg.Spawn = &claimStub{reader: supRootReader{root: cfg.SpacesRoot}}
 	}
 	m, err := New(cfg)
 	if err != nil || cfg.Identity != nil {

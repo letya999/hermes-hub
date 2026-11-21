@@ -194,6 +194,9 @@ func testManager(t *testing.T, command func(context.Context, ...string) ([]byte,
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The default claim stub answers effective reads from the fixture's
+	// published tree — what the deleted mirror served (S7d).
+	m.cfg.Spawn = &claimStub{reader: supTestReader{dir: ctxRoot}}
 	return m, ctxRoot
 }
 
@@ -384,7 +387,7 @@ func TestRestartForwardsToOwnedRuntime(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	// Restart drains and re-claims through spawn; the claim's endpoint is
 	// what the forwarded request must reach.
-	m.cfg.Spawn = &claimStub{address: runtimeAPI.URL}
+	m.cfg.Spawn = &claimStub{address: runtimeAPI.URL, reader: supTestReader{dir: root}}
 	normalized, err := m.normalize(context.Background(), binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -2009,7 +2012,7 @@ func TestSupervisorServeAndHTTPErrorBranches(t *testing.T) {
 	}, nil)
 	// The v0 docker-run refusal became a refused spawn claim — the execute
 	// branch under test only cares that the runtime ensure fails.
-	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable}
+	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable, reader: supTestReader{dir: root}}
 	if err := Serve(context.Background(), nil, "127.0.0.1:0"); err == nil {
 		t.Fatal("nil manager accepted")
 	}
@@ -2154,7 +2157,7 @@ func TestReapMarksDegradedOnDockerFailure(t *testing.T) {
 }
 
 func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
-	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
@@ -2162,7 +2165,7 @@ func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
 	}, nil)
 	// "Runtime never ran" is a refused spawn claim now (S7c): the pre-dispatch
 	// rejection marker and abandoned-job semantics are what this guards.
-	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable}
+	m.cfg.Spawn = &claimStub{err: spawnv1.ErrUnavailable, reader: supTestReader{dir: root}}
 	body := `{"identity_schema":1,"principal_id":"alice","external_identity_id":"telegram-1","conversation_id":"telegram-1","delivery_target_id":"telegram-1","context_id":"alice","runtime_id":"alice","policy_version":"policy-1","organization_id":"personal","user_id":"alice","actor_id":"alice","scope_id":"user:alice","channel":"telegram_bot","trigger":"message","idempotency_key":"one","job_id":"job-1","text":"hello"}`
 	post := func() int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/execute", strings.NewReader(body))

@@ -76,6 +76,17 @@ func publishSpaceRevision(t *testing.T, ctxRoot, user string, mutate func(map[st
 	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "passports", "current"), []byte(rev.ID+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The claim-time materializer fills the runtime /config view before a
+	// spawn mounts it; fixtures republish it the same way (S7c). Only the
+	// environment names the view directory, so the fixture skips the full
+	// settings resolution — org-scoped mutations are not resolvable yet.
+	eff, err := rev.Effective()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.MaterializeConfigView(ctxRoot, stack.Settings{Environment: "prod"}, eff); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // writeManagedFixtures installs the host-side files a managed supervised

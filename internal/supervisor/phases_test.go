@@ -268,7 +268,7 @@ func TestJobPhaseWakingWhileRuntimeStarts(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
 	cfg := Config{SpacesRoot: root, RuntimeAuth: "control", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }}
-	cfg.Spawn = &claimStub{claimHook: func() { once.Do(func() { close(started) }); <-gate }}
+	cfg.Spawn = &claimStub{reader: supRootReader{root: root}, claimHook: func() { once.Do(func() { close(started) }); <-gate }}
 	m, err := newTestManager(t, cfg)
 	if err != nil {
 		t.Fatal(err)

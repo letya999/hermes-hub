@@ -178,12 +178,17 @@ func setupSpace(t *testing.T, revs *spawn.Revisions) {
 
 func submitValidated(t *testing.T, revs *spawn.Revisions, layer string, docs map[string]map[string]any) spawn.Revision {
 	t.Helper()
+	return submitValidatedAs(t, revs, tenant, layer, docs)
+}
+
+func submitValidatedAs(t *testing.T, revs *spawn.Revisions, tn store.Tenant, layer string, docs map[string]map[string]any) spawn.Revision {
+	t.Helper()
 	ctx := context.Background()
-	rev, err := revs.Submit(ctx, tenant, "alice", layer, docs)
+	rev, err := revs.Submit(ctx, tn, "alice", layer, docs)
 	if err != nil {
 		t.Fatalf("submit %s: %v", layer, err)
 	}
-	rev, err = revs.Validate(ctx, tenant, "alice", rev.ID)
+	rev, err = revs.Validate(ctx, tn, "alice", rev.ID)
 	if err != nil {
 		t.Fatalf("validate %s %s: %v", layer, rev.ID, err)
 	}

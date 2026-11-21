@@ -26,6 +26,17 @@ func (r spacesRootReader) specFor(space string) (spawnv1.EffectiveSpec, error) {
 		return spawnv1.EffectiveSpec{}, spawnv1.ErrNotFound
 	}
 	rev := strings.TrimSpace(string(cur))
+	pointer := ""
+	if strings.HasPrefix(rev, "sha256:") {
+		// Digest pointers resolve through the .policy indirection — the
+		// trimmed hex is the only filesystem-safe segment.
+		pointer = rev
+		link, err := os.ReadFile(filepath.Join(base, ".policy", strings.TrimPrefix(rev, "sha256:")))
+		if err != nil {
+			return spawnv1.EffectiveSpec{}, err
+		}
+		rev = strings.TrimSpace(string(link))
+	}
 	docs := map[string]json.RawMessage{}
 	h := sha256.New()
 	for _, name := range spawnv1.Names {
@@ -48,7 +59,10 @@ func (r spacesRootReader) specFor(space string) (spawnv1.EffectiveSpec, error) {
 		docs[name] = raw
 		h.Write(raw)
 	}
-	return spawnv1.EffectiveSpec{Space: space, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil)), Documents: docs}, nil
+	if pointer == "" {
+		pointer = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	}
+	return spawnv1.EffectiveSpec{Space: space, Digest: pointer, Documents: docs}, nil
 }
 
 func (r spacesRootReader) Effective(_ context.Context, _ spawnv1.Tenant, space string) (spawnv1.EffectiveSpec, error) {

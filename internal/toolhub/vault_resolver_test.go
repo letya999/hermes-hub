@@ -228,6 +228,7 @@ func TestEndpointHandlerWiresVaultResolver(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	passports := t.TempDir()
 	writeMemoryPassportEnv(t, passports, auth.PrincipalID, "dev", true)
+	stubSpawnClient(t, passports)
 	root := t.TempDir()
 	vaultDirWithMarker(t, root, auth.PrincipalID, "prod-wiring-marker")
 	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", root)

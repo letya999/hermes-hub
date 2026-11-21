@@ -109,6 +109,7 @@ func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
 	stub := &claimStub{err: errors.New("start failed")}
 	runs := func() int { return stub.claimCount() }
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	stub.reader = supTestReader{dir: root}
 	m.cfg.Spawn = stub
 	now := time.Unix(100, 0)
 	m.cfg.Now = func() time.Time { return now }

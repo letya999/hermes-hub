@@ -643,6 +643,7 @@ func TestMemoryProposalStartupRecoveryWithoutCallbackReplay(t *testing.T) {
 		t.Fatalf("interrupted merge status=%d", code)
 	}
 	writeMemoryPassportEnv(t, passports, "alice", "dev", false)
+	stubSpawnClient(t, passports)
 	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", vaults)
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auths["alice"],
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {

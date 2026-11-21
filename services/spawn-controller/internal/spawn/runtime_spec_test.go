@@ -78,7 +78,7 @@ func newManagedFixture(t *testing.T, url string) *managedFixture {
 	stackDoc["identity"] = map[string]any{"user": "alice", "organization": ""}
 	user := userDocs("Europe/Berlin")
 	user["tools"] = map[string]any{"binding": map[string]any{"profile_id": "fixture-profile", "generation": 1}}
-	setupSpaceDocs(t, revs, tenant, layers, user)
+	setupSpaceDocs(t, revs, localTenant, layers, user)
 	// The render contract's outputs the spec builder consumes: the runtime
 	// env file with its reviewed auth, and the effective-hermes source —
 	// marshalled through the same stack.Config the real render uses.
@@ -145,7 +145,7 @@ func writeFixtureFile(t *testing.T, path, body string) {
 // backend was asked to apply.
 func (fx *managedFixture) claimSpec(t *testing.T) backend.Spec {
 	t.Helper()
-	rt, err := fx.rts.ClaimManaged(context.Background(), tenant, fx.space, spawn.ClaimRequest{
+	rt, err := fx.rts.ClaimManaged(context.Background(), localTenant, fx.space, spawn.ClaimRequest{
 		Agent: "main", RuntimeID: "rt-alice", UserID: "alice", OrganizationID: "acme",
 		PolicyVersion: "v1", IdentityRevision: "irev-1",
 	})
@@ -315,7 +315,7 @@ func TestRespawnDrainsOldGenerationOnDigestChange(t *testing.T) {
 		fx := newManagedFixture(t, url)
 		ctx := context.Background()
 		req := spawn.ClaimRequest{Agent: "main", RuntimeID: "rt-alice"}
-		old, err := fx.rts.ClaimManaged(ctx, tenant, fx.space, req)
+		old, err := fx.rts.ClaimManaged(ctx, localTenant, fx.space, req)
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
@@ -325,14 +325,14 @@ func TestRespawnDrainsOldGenerationOnDigestChange(t *testing.T) {
 		// a reviewed capability profile.
 		rotated := userDocs("UTC")
 		rotated["tools"] = map[string]any{"binding": map[string]any{"profile_id": "fixture-profile", "generation": 2}}
-		rev := submitValidated(t, fx.revs, "user", rotated)
-		if _, err := fx.revs.Activate(ctx, tenant, "alice", []string{rev.ID}, nil); err != nil {
+		rev := submitValidatedAs(t, fx.revs, localTenant, "user", rotated)
+		if _, err := fx.revs.Activate(ctx, localTenant, "alice", []string{rev.ID}, nil); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
-		if got := runtimeStateAs(t, fx.store, tenant, old.ID); got != "draining" {
+		if got := runtimeStateAs(t, fx.store, localTenant, old.ID); got != "draining" {
 			t.Fatalf("old generation is %s after digest change, want draining", got)
 		}
-		next, err := fx.rts.ClaimManaged(ctx, tenant, fx.space, req)
+		next, err := fx.rts.ClaimManaged(ctx, localTenant, fx.space, req)
 		if err != nil {
 			t.Fatalf("claim after digest change: %v", err)
 		}

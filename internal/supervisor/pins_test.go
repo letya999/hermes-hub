@@ -97,8 +97,8 @@ func TestSweepDoesNotRunEnsureWork(t *testing.T) {
 // server runs spawns the runtime without any test-side reconcile call.
 func TestSupervisorServeRunsReconcileLoop(t *testing.T) {
 	ran := make(chan string, 4)
-	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	m.cfg.Spawn = &claimStub{claimHook: func() { ran <- "claim" }}
+	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Spawn = &claimStub{reader: supTestReader{dir: ctxRoot}, claimHook: func() { ran <- "claim" }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, m, "127.0.0.1:0") }()
@@ -127,8 +127,8 @@ func TestServeWaitsForInflightReconcile(t *testing.T) {
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
 	var enterOnce sync.Once
-	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
-	m.cfg.Spawn = &claimStub{claimHook: func() { enterOnce.Do(func() { close(entered) }); <-release }}
+	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
+	m.cfg.Spawn = &claimStub{reader: supTestReader{dir: ctxRoot}, claimHook: func() { enterOnce.Do(func() { close(entered) }); <-release }}
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
 	if err := m.SetPin(request, true); err != nil {
 		t.Fatal(err)
