@@ -33,4 +33,6 @@ remaining:
   - "boundary() re-reads /config/workspace.yaml per filesystem op by design (SPEC-0092 R5.3 fail-closed on boundary mutation) - distinct from the removed tool-policy re-read; mounted-spec integrity requires it."
 limitations:
   - "Fixed en route (pre-existing on HEAD, blocked green CI): catalog release 43 emitted for the CHG-0335 18.7.2 def bump; TestDeriveSpaceRightsScopesToBoundProfile fixture updated for six-doc Effective() decode."
+  - "Fixed en route (first remote CI run 44894522923 surfaced branch debt): integration-tag build repaired (removed passport APIs -> generated readers), staticcheck/gosec cleared, capture fixture moved to fake spawn-controller, scratch argv asserts updated to harness-runtime. CI rerun: https://github.com/letya999/hermes-hub/actions/runs/44898279695 (commit 2a22fd0e)."
+  - "Local coverage proxy: 84.09% merged -coverpkg profile vs 85% gate - undercounted on Windows (linux-only packages like internal/firecracker compile 0% locally but are tested on ubuntu CI). Authoritative number comes from the CI coverage job."
   - "Trusted process-mode dev serve bypasses the managed env allowlist by design (inherits the operator shell)."
