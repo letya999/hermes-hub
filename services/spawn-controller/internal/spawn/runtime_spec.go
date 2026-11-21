@@ -298,11 +298,14 @@ func (r *Runtimes) managedSpec(ctx context.Context, t store.Tenant, spaceID, id,
 	// Relay host pins: the reviewed sandbox relays the runsc network stack
 	// cannot resolve through embedded DNS.
 	wanted := []string{"toolhub", "model-relay"}
-	if len(stack.RuntimeEgressEnvironment(settings, dir)) != 0 {
+	egressEnv := stack.RuntimeEgressEnvironment(settings, dir)
+	if len(egressEnv) != 0 {
 		wanted = append(wanted, "egress-relay")
 	}
 	out.RelayHosts = wanted
-	out.Relay = &backend.RelaySpec{Image: image, Control: controlNetworkName, Limits: out.Limits}
+	// EgressEnv feeds only the compile-only Kubernetes relay pod (S8); the
+	// docker control relay is a TCP forwarder and ignores it.
+	out.Relay = &backend.RelaySpec{Image: image, Control: controlNetworkName, Limits: out.Limits, EgressEnv: egressEnv}
 	// Revision re-check: an activation that landed mid-assembly means the
 	// spec describes a revoked policy — the plan's next pass re-reads.
 	current, err := r.currentDigest(ctx, t, spaceID)

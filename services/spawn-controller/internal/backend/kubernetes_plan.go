@@ -1,7 +1,14 @@
-package supervisor
+// Pod and Secret planning, moved from v0 internal/supervisor/
+// kubernetes_plan.go (CHG-0336 S8). The projection contract is verbatim —
+// whole-volume PVC, generated inputs through Secret volume groups,
+// memory-backed private staging, no subPath — with the v0
+// binding/settings reads replaced by the resolved Spec. Materialization
+// (identity template, Hermes config, skills/policy/model registry,
+// model-relay auth) runs spawn-side in runtime_spec.go; the plan only
+// consumes the finished tree.
+package backend
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -158,96 +165,103 @@ func spaceRelative(root, source string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-func (k *kubernetesBackend) secretMatches(current, wanted *core.Secret, rt Runtime) bool {
-	rt.ComputeID = ""
+// kubeExtensionRoots are the sealed extension dirs under /state/hermes the
+// spec declares as tmpfs overlays (v0 managedExtensionRootTmpfs): the pod
+// maps each to a PVC subdir + a read-only memory volume.
+func kubeExtensionRoots(spec Spec) []string {
+	const prefix = "/state/hermes/"
+	var names []string
+	for _, tmpfs := range spec.Tmpfs {
+		if strings.HasPrefix(tmpfs.Target, prefix) {
+			names = append(names, strings.TrimPrefix(tmpfs.Target, prefix))
+		}
+	}
+	return names
+}
+
+// specRuntimeAuth reads the control credential out of the spec's
+// runtime.auth env file (v0 binding.runtimeAuth) — the file basename is
+// fixed by runtime_spec.go's envFileFor.
+func specRuntimeAuth(spec Spec) string {
+	for _, file := range spec.EnvFiles {
+		if filepath.Base(file) != "runtime.auth" {
+			continue
+		}
+		values, err := stack.ReadSecrets(file)
+		if err == nil {
+			return values["HUB_RUNTIME_AUTH"]
+		}
+	}
+	return ""
+}
+
+func (k Kubernetes) secretMatches(current, wanted *core.Secret, rt kubeWorkload) bool {
+	rt.uid = ""
 	return current != nil && k.owned(current, rt, true) && current.Immutable != nil && *current.Immutable && reflect.DeepEqual(current.Data, wanted.Data)
 }
 
-func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret, error) {
-	binding, settings, rt := request.Binding, request.Settings, request.Runtime
-	var identityErr error
-	settings, identityErr = k.m.applyIdentityTemplate(binding, settings)
-	if identityErr != nil {
-		return nil, nil, identityErr
-	}
+// plan builds the runtime pod + Secret from the resolved Spec (v0
+// plan(request)): dir is the space's host root — the v0
+// binding.ContextRoot. Env files, model-relay auth and generated inputs
+// all resolve under it.
+func (k Kubernetes) plan(spec Spec, rt kubeWorkload, dir string) (*core.Pod, *core.Secret, error) {
 	// shortcut: one gateway per space keeps relay state single-writer; extend with shared relays before adding modes.
-	if binding.RuntimeMode != "gateway" {
+	if rt.mode != "gateway" {
 		return nil, nil, errors.New("kubernetes supports the gateway runtime mode")
 	}
-	if settings.PassportRevision == "" {
-		return nil, nil, errors.New("kubernetes runtime requires a published space revision")
-	}
-	if settings.Has("browser") || settings.Has("meet") {
-		return nil, nil, errors.New("kubernetes browser sidecar is not configured")
-	}
-	root, err := os.OpenRoot(binding.ContextRoot)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, nil, errors.New("space input root unavailable")
 	}
 	defer root.Close()
-	// Materializers write only to these control-owned directories. Refuse symlink
-	// parents before invoking the existing publication helpers.
-	for _, dir := range []string{"generated", "skills", "managed"} {
-		if info, e := root.Lstat(dir); e == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+	// Materializers write only to these control-owned directories. The v0
+	// plan ran the materializers itself; v1 spawn-side does — the plan
+	// keeps the symlink-parent guard and refuses a missing projection.
+	for _, name := range []string{"generated", "skills", "managed"} {
+		if info, e := root.Lstat(name); e == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return nil, nil, errors.New("space materialization root is not an owned directory")
 		}
 	}
-	settings.Environment = k.m.environment()
-	if settings.GlobalSkillsDir == "" {
-		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
-	}
-	if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil { // #nosec G301 -- shared public platform skill inputs, never credential material
-		return nil, nil, errors.New("platform skills projection unavailable")
-	}
-	if _, err := k.m.materializeHermesConfig(context.Background(), binding, settings.Environment); err != nil {
-		return nil, nil, errors.New("runtime Hermes configuration unavailable")
-	}
-	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
-		return nil, nil, errors.New("runtime skills projection unavailable")
-	}
-	if _, err := stack.MaterializeToolPolicySnapshot(binding.ContextRoot, settings); err != nil {
-		return nil, nil, errors.New("runtime policy projection unavailable")
-	}
-	if err := stack.MaterializeModelRegistry(binding.ContextRoot, settings, request.Effective); err != nil {
-		return nil, nil, errors.New("runtime model registry projection unavailable")
-	}
-	if err := stack.EnsureModelRelayAuth(binding.ContextRoot); err != nil {
+	if err := stack.EnsureModelRelayAuth(dir); err != nil {
 		return nil, nil, errors.New("model relay credentials unavailable")
 	}
-	service := stack.RuntimeService(settings, "", binding.ContextRoot)
 	in := &kubeInputs{root: root, data: map[string][]byte{}}
 	values := map[string]string{}
-	envName := "managed-runtime." + settings.Environment + ".env"
-	for _, name := range []string{envName, filepath.Base(binding.EnvFile)} {
+	for _, file := range spec.EnvFiles {
+		name := filepath.Base(file)
 		info, e := root.Lstat(name)
 		if e != nil || !info.Mode().IsRegular() || info.Size() > kubeInputBudget {
 			return nil, nil, errors.New("runtime environment source unavailable")
 		}
 		// The existing parser owns dotenv semantics. Never include its contents or
 		// dictionary keys in errors or diagnostics.
-		entries, e := stack.ReadSecrets(filepath.Join(binding.ContextRoot, name))
+		entries, e := stack.ReadSecrets(file)
 		if e != nil {
 			return nil, nil, errors.New("runtime environment unavailable")
 		}
 		for key, value := range entries {
-			if name == filepath.Base(binding.EnvFile) && key != "HUB_RUNTIME_AUTH" && key != "API_SERVER_KEY" && key != "HUB_TOOLHUB_AUTH" {
+			if name == "runtime.auth" && key != "HUB_RUNTIME_AUTH" && key != "API_SERVER_KEY" && key != "HUB_TOOLHUB_AUTH" {
 				continue // Legacy provider/control entries never belong in a managed runtime.
 			}
 			values[key] = value
 		}
 	}
-	for key, value := range service["environment"].(stack.M) {
-		values[key] = fmt.Sprint(value)
+	runtimeAuth := values["HUB_RUNTIME_AUTH"]
+	for _, entry := range spec.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
 	}
-	auth, err := stack.ReadSecrets(filepath.Join(binding.ContextRoot, "model-relay.auth"))
+	auth, err := stack.ReadSecrets(filepath.Join(dir, "model-relay.auth"))
 	if err != nil || auth["HUB_MODEL_RELAY_AUTH"] == "" {
 		return nil, nil, errors.New("model relay caller credential unavailable")
 	}
 	values["OPENAI_API_KEY"], values["OPENAI_BASE_URL"] = auth["HUB_MODEL_RELAY_AUTH"], "http://model-relay:8318/v1"
-	values["HUB_EXECUTION_SUBSTRATE"], values["HUB_RUNTIME_MODE"] = "kubernetes", binding.RuntimeMode
+	values["HUB_EXECUTION_SUBSTRATE"], values["HUB_RUNTIME_MODE"] = "kubernetes", rt.mode
 	delete(values, "HUB_KUBERNETES_POD_NAME")
 	delete(values, "HUB_KUBERNETES_POD_NAMESPACE")
-	for key, value := range map[string]string{"HUB_RUNTIME_LISTEN": "0.0.0.0:" + strconv.Itoa(k.m.cfg.RuntimePort), "HUB_RUNTIME_AUTH": binding.runtimeAuth, "API_SERVER_KEY": binding.runtimeAuth, "HUB_USER_ID": binding.UserID, "HUB_PRINCIPAL_ID": binding.PrincipalID, "HUB_CONTEXT_ID": binding.ContextID, "HUB_RUNTIME_ID": binding.RuntimeID, "HUB_ORGANIZATION_ID": binding.OrganizationID, "HUB_POLICY_VERSION": binding.PolicyVersion, "HUB_RUNTIME_GENERATION": rt.Generation, "API_SERVER_ENABLED": "true", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": "8642"} {
+	for key, value := range map[string]string{"HUB_RUNTIME_LISTEN": "0.0.0.0:" + strconv.Itoa(spec.Port), "HUB_RUNTIME_AUTH": runtimeAuth, "API_SERVER_KEY": runtimeAuth, "HUB_PRINCIPAL_ID": rt.owner, "HUB_CONTEXT_ID": rt.space, "API_SERVER_ENABLED": "true", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": "8642"} {
 		values[key] = value
 	}
 	// Resolve mounts before encoding environment: env-pointed paths are
@@ -259,24 +273,15 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	var redirects []struct{ from, to string }
 	hermesRel := ""
 	snapshots := map[string]string{}
-	for i, raw := range service["volumes"].([]any) {
-		mount, ok := raw.(stack.M)
-		if !ok || mount["type"] != "bind" {
-			return nil, nil, errors.New("kubernetes requires space-scoped bind inputs")
-		}
-		source, ok := mount["source"].(string)
-		if !ok {
-			return nil, nil, errors.New("invalid runtime mount source")
-		}
-		target, ok := mount["target"].(string)
-		if !ok || !strings.HasPrefix(target, "/") || strings.ContainsAny(target, "\r\n\x00") {
+	for i, mount := range spec.Mounts {
+		source, target, ro := mount.Source, mount.Target, mount.ReadOnly
+		if !strings.HasPrefix(target, "/") || strings.ContainsAny(target, "\r\n\x00") {
 			return nil, nil, errors.New("invalid runtime mount target")
 		}
-		rel, e := spaceRelative(binding.ContextRoot, source)
+		rel, e := spaceRelative(dir, source)
 		if e != nil {
 			return nil, nil, e
 		}
-		ro, _ := mount["read_only"].(bool)
 		if strings.HasPrefix(rel, "generated/") {
 			info, e := fs.Stat(root.FS(), rel)
 			if e != nil {
@@ -364,7 +369,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	if hermesRel == "" {
 		return nil, nil, errors.New("runtime hermes home mount unavailable")
 	}
-	for _, name := range managedExtensionRootTmpfs {
+	for _, name := range kubeExtensionRoots(spec) {
 		directories = append(directories, hermesRel+"/"+name)
 	}
 	// Apply env redirects longest-prefix first so e.g. /state/hermes wins over
@@ -448,15 +453,15 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	for i, rel := range roViews {
 		initialArgs = append(initialArgs, "c", fmt.Sprintf("roview-%d", i), rel)
 	}
-	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, settings.Environment, k.m.cfg.Image)
-	if err != nil {
+	image := spec.Image
+	if image == "" {
 		return nil, nil, errors.New("runtime image selection unavailable")
 	}
-	cpu, err := resource.ParseQuantity(k.m.cfg.CPU)
+	cpu, err := resource.ParseQuantity(k.cfg.CPULimit)
 	if err != nil || cpu.Sign() <= 0 {
 		return nil, nil, errors.New("invalid runtime CPU limit")
 	}
-	memoryText := k.m.cfg.Memory
+	memoryText := k.cfg.MemoryLimit
 	if last := strings.ToUpper(memoryText[len(memoryText)-1:]); last == "G" || last == "M" || last == "K" {
 		memoryText = memoryText[:len(memoryText)-1] + last + "i"
 	}
@@ -471,7 +476,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	if memory.Cmp(requestMemory) < 0 {
 		requestMemory = memory
 	}
-	probe := &core.Probe{ProbeHandler: core.ProbeHandler{TCPSocket: &core.TCPSocketAction{Port: intstr.FromInt(k.m.cfg.RuntimePort)}}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3}
+	probe := &core.Probe{ProbeHandler: core.ProbeHandler{TCPSocket: &core.TCPSocketAction{Port: intstr.FromInt(spec.Port)}}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3}
 	initMounts := []core.VolumeMount{{Name: "space", MountPath: kubePersistRoot}, {Name: "private", MountPath: kubePrivateRoot}}
 	if len(in.groups["inputs"]) != 0 {
 		initMounts = append(initMounts, core.VolumeMount{Name: "inputs", MountPath: kubeInputsRoot, ReadOnly: true})
@@ -482,7 +487,7 @@ func (k *kubernetesBackend) plan(request SpawnRequest) (*core.Pod, *core.Secret,
 	for i := range roViews {
 		initMounts = append(initMounts, core.VolumeMount{Name: fmt.Sprintf("roview-%d", i), MountPath: "/roview-" + strconv.Itoa(i)})
 	}
-	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: rt.Container, Finalizers: []string{kubeComputeFence}, Labels: k.labels(rt), Annotations: k.annotations(rt, true)}, Spec: core.PodSpec{AutomountServiceAccountToken: &no, EnableServiceLinks: &no, RestartPolicy: core.RestartPolicyNever, SecurityContext: &core.PodSecurityContext{RunAsUser: &uid, RunAsGroup: &gid, RunAsNonRoot: &yes, FSGroup: &gid, SeccompProfile: &core.SeccompProfile{Type: core.SeccompProfileTypeRuntimeDefault}}, Volumes: volumes, InitContainers: []core.Container{{Name: "private-inputs", Image: image, Command: []string{"/bin/sh", "-ec"}, Args: initialArgs, SecurityContext: security, VolumeMounts: initMounts, Resources: core.ResourceRequirements{Requests: core.ResourceList{core.ResourceCPU: resource.MustParse("50m"), core.ResourceMemory: resource.MustParse("32Mi")}, Limits: core.ResourceList{core.ResourceCPU: resource.MustParse("500m"), core.ResourceMemory: resource.MustParse("128Mi")}}}}, Containers: []core.Container{{Name: "runtime", Image: image, Args: []string{"serve"}, Env: environment, VolumeMounts: mounts, SecurityContext: security, ReadinessProbe: probe, Resources: core.ResourceRequirements{Requests: core.ResourceList{core.ResourceCPU: requestCPU, core.ResourceMemory: requestMemory}, Limits: core.ResourceList{core.ResourceCPU: cpu, core.ResourceMemory: memory}}}}}}
+	pod := &core.Pod{ObjectMeta: meta.ObjectMeta{Name: rt.name, Finalizers: []string{kubeComputeFence}, Labels: k.labels(rt), Annotations: k.annotations(rt, true)}, Spec: core.PodSpec{AutomountServiceAccountToken: &no, EnableServiceLinks: &no, RestartPolicy: core.RestartPolicyNever, SecurityContext: &core.PodSecurityContext{RunAsUser: &uid, RunAsGroup: &gid, RunAsNonRoot: &yes, FSGroup: &gid, SeccompProfile: &core.SeccompProfile{Type: core.SeccompProfileTypeRuntimeDefault}}, Volumes: volumes, InitContainers: []core.Container{{Name: "private-inputs", Image: image, Command: []string{"/bin/sh", "-ec"}, Args: initialArgs, SecurityContext: security, VolumeMounts: initMounts, Resources: core.ResourceRequirements{Requests: core.ResourceList{core.ResourceCPU: resource.MustParse("50m"), core.ResourceMemory: resource.MustParse("32Mi")}, Limits: core.ResourceList{core.ResourceCPU: resource.MustParse("500m"), core.ResourceMemory: resource.MustParse("128Mi")}}}}, Containers: []core.Container{{Name: "runtime", Image: image, Args: []string{"serve"}, Env: environment, VolumeMounts: mounts, SecurityContext: security, ReadinessProbe: probe, Resources: core.ResourceRequirements{Requests: core.ResourceList{core.ResourceCPU: requestCPU, core.ResourceMemory: requestMemory}, Limits: core.ResourceList{core.ResourceCPU: cpu, core.ResourceMemory: memory}}}}}}
 	if k.cfg.RuntimeClassName != "" {
 		pod.Spec.RuntimeClassName = &k.cfg.RuntimeClassName
 	}

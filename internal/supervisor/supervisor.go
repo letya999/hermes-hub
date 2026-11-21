@@ -99,16 +99,7 @@ type Config struct {
 	CommunicationServiceAuth string
 	DreamingServiceAuth      string
 
-	ExecutionBackend string
 	ContainerRuntime string
-	Kubernetes       KubernetesConfig
-	UnoURL           string
-	UnoToken         string
-	UnoImage         string
-	UnoBoxRAMMB      int
-	UnoBoxVCPU       int
-	UnoProxyHost     string
-	Backend          ComputeBackend
 	// Spawn claims managed runtimes through spawn-controller
 	// (contracts/spawn/v1); the supervisor no longer starts workloads.
 	Spawn          spawnClaimer
@@ -272,7 +263,6 @@ type runtimeEntry struct {
 
 type Manager struct {
 	ownedIdentity identitycontract.Client
-	backend       ComputeBackend
 	holds         map[string]AdministrativeHold
 	pins          map[string]hubruntime.ExecuteRequest
 	orphans       []OrphanRuntime
@@ -483,32 +473,16 @@ func New(cfg Config) (*Manager, error) {
 	default:
 		return nil, errors.New("unsupported container runtime; expected runc, runsc or kata")
 	}
-	if cfg.ExecutionBackend == "" {
-		cfg.ExecutionBackend = os.Getenv("HUB_EXECUTION_BACKEND")
-	}
-	if cfg.ExecutionBackend == "" {
-		cfg.ExecutionBackend = "docker"
-	}
-	if cfg.ExecutionBackend != "docker" && cfg.ExecutionBackend != "kubernetes" && cfg.ExecutionBackend != "firecracker" {
-		return nil, errors.New("unsupported execution backend")
+	// Spawn-controller owns workload launch (CHG-0336 S8): the moved
+	// kubernetes/firecracker backends are compile-only until M40.15, so a
+	// non-docker HUB_EXECUTION_BACKEND fails closed instead of selecting a
+	// dead path.
+	if backend := strings.TrimSpace(os.Getenv("HUB_EXECUTION_BACKEND")); backend != "" && backend != "docker" {
+		return nil, fmt.Errorf("unsupported execution backend %q: only docker is selectable until M40.15", backend)
 	}
 	if cfg.Spawn == nil {
 		if base := strings.TrimSpace(os.Getenv("HUB_SPAWN_URL")); base != "" {
 			cfg.Spawn = spawnv1.NewHTTPClient(base, firstEnv(os.Getenv("HUB_SPAWN_TOKEN"), "HUB_SERVICE_TOKEN"), nil)
-		}
-	}
-	if cfg.ExecutionBackend == "firecracker" {
-		cfg.UnoURL = firstEnv(cfg.UnoURL, "HUB_UNO_URL")
-		cfg.UnoToken = firstEnv(cfg.UnoToken, "HUB_UNO_TOKEN")
-		cfg.UnoImage = firstEnv(cfg.UnoImage, "HUB_UNO_IMAGE")
-		if cfg.UnoBoxRAMMB <= 0 {
-			cfg.UnoBoxRAMMB = intEnv("HUB_UNO_BOX_RAM_MB", 1024)
-		}
-		if cfg.UnoBoxVCPU <= 0 {
-			cfg.UnoBoxVCPU = intEnv("HUB_UNO_BOX_VCPU", 2)
-		}
-		if cfg.UnoProxyHost == "" {
-			cfg.UnoProxyHost = envOr("HUB_UNO_PROXY_HOST", "127.0.0.1")
 		}
 	}
 	if cfg.SpacesRoot == "" || cfg.RuntimeAuth == "" || cfg.Image == "" {
@@ -519,15 +493,13 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("spaces root: %w", err)
 	}
 	cfg.SpacesRoot = root
-	if cfg.ExecutionBackend == "kubernetes" {
-		cfg.HostSpacesRoot = ""
-	} else if cfg.HostSpacesRoot == "" {
+	if cfg.HostSpacesRoot == "" {
 		cfg.HostSpacesRoot = os.Getenv("HUB_SUPERVISOR_HOST_SPACES")
 	}
 	if strings.ContainsAny(cfg.HostSpacesRoot, ",\r\n") {
 		return nil, errors.New("invalid host spaces root")
 	}
-	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); cfg.ExecutionBackend == "docker" && err != nil {
+	if _, err := (&Manager{cfg: cfg}).hostBindSource(root); err != nil {
 		return nil, err
 	}
 	if cfg.StateDir == "" {
@@ -591,7 +563,7 @@ func New(cfg Config) (*Manager, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput() // #nosec G702 -- docker binary is operator-configured; argv is built internally
 		}
 	}
-	if cfg.Stats == nil && cfg.ExecutionBackend == "docker" {
+	if cfg.Stats == nil {
 		cfg.Stats = dockerStatsCommand(cfg.Command)
 	}
 	if cfg.AdminAuth == "" {
@@ -630,22 +602,6 @@ func New(cfg Config) (*Manager, error) {
 	if m.cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
 		m.cfg.Decide = m.relayDecide
 	}
-	m.backend = cfg.Backend
-	if m.backend == nil {
-		if m.usingKubernetes() {
-			m.backend, err = newKubernetesBackend(m)
-			if err != nil {
-				return nil, err
-			}
-		} else if cfg.ExecutionBackend == "firecracker" {
-			m.backend, err = newFirecrackerBackend(m)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			m.backend = dockerBackend{m}
-		}
-	}
 	m.loadBackups()
 	if err := m.load(); err != nil {
 		return nil, err
@@ -679,7 +635,7 @@ func (m *Manager) load() error {
 	if runtime != "runc" && runtime != "runsc" && runtime != "kata" {
 		return errors.New("invalid persisted container runtime")
 	}
-	if backend != m.cfg.ExecutionBackend || runtime != m.cfg.ContainerRuntime || state.RuntimeClassName != m.cfg.Kubernetes.RuntimeClassName {
+	if backend != "docker" || runtime != m.cfg.ContainerRuntime || state.RuntimeClassName != "" {
 		if len(state.Orphans) != 0 {
 			return errors.New("execution backend or isolation change requires cleared orphans")
 		}
@@ -754,7 +710,7 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Backend: m.cfg.ExecutionBackend, ContainerRuntime: m.cfg.ContainerRuntime, RuntimeClassName: m.cfg.Kubernetes.RuntimeClassName, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
+	state := persistedManager{Backend: "docker", ContainerRuntime: m.cfg.ContainerRuntime, Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
 		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents, SpawnLease: item.spawnLease})
 	}

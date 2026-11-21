@@ -1,7 +1,14 @@
-package supervisor
+// Private-relay pod planning and the isolation receipt, moved from v0
+// internal/supervisor/kubernetes_relays.go (CHG-0336 S8). The relay pod
+// reuses the runtime plan's volume contract; model/toolhub/egress relay
+// env resolves from the same space files; the egress relay now reads its
+// env from RelaySpec.EgressEnv — the spawn-side
+// stack.RuntimeEgressEnvironment answer — instead of re-deriving settings.
+package backend
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,12 +29,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func (k *kubernetesBackend) relayRuntime(rt Runtime) Runtime {
-	rt.Container += "-relay"
-	rt.ComputeID = ""
+// relayWorkload is the companion relay's workload identity (v0
+// relayRuntime): same scope, pod name + "-relay", no UID fence of its own.
+func (k Kubernetes) relayWorkload(rt kubeWorkload) kubeWorkload {
+	rt.name += "-relay"
+	rt.uid = ""
 	return rt
 }
-func (k *kubernetesBackend) relaySecretName(rt Runtime) string { return k.secretName(rt) + "-relay" }
 
 func relayFile(root, name string, required bool) (map[string]string, error) {
 	if name != filepath.Base(name) {
@@ -75,18 +83,18 @@ func relayEnvironment(secret *core.Secret, values map[string]string, prefix stri
 	return result, nil
 }
 
-func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inputs *core.Secret) (*core.Pod, *core.Secret, error) {
-	if !request.Runtime.Managed {
+func (k Kubernetes) relayPlan(spec Spec, rt kubeWorkload, main *core.Pod, inputs *core.Secret, dir string) (*core.Pod, *core.Secret, error) {
+	if !spec.Managed() {
 		return nil, nil, errors.New("kubernetes requires the managed runtime contract")
 	}
 	relay := main.DeepCopy()
-	relay.Name = k.relayRuntime(request.Runtime).Container
+	relay.Name = k.relayWorkload(rt).name
 	relay.Annotations[kubeRole] = "relay"
 	relay.Labels["app.kubernetes.io/component"] = "runtime-relay"
 	relay.Spec.RuntimeClassName = nil
 	relay.Spec.HostAliases = nil
 	secret := inputs.DeepCopy()
-	secret.Name = k.relaySecretName(request.Runtime)
+	secret.Name = k.relaySecretName(rt)
 	secret.Annotations[kubeRole] = "relay"
 	for i := range relay.Spec.Volumes {
 		if relay.Spec.Volumes[i].Secret != nil {
@@ -97,8 +105,8 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	// either a whole-volume PVC alias or a direct Secret projection.
 	relay.Spec.InitContainers = nil
 	values := map[string]string{}
-	for _, name := range []string{"runtime." + k.m.environment() + ".env", "model-relay." + k.m.environment() + ".env", "model-relay.auth"} {
-		entries, err := relayFile(request.Binding.ContextRoot, name, name == "model-relay.auth")
+	for _, name := range []string{"runtime." + k.cfg.Environment + ".env", "model-relay." + k.cfg.Environment + ".env", "model-relay.auth"} {
+		entries, err := relayFile(dir, name, name == "model-relay.auth")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -106,16 +114,16 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 			values[key] = value
 		}
 	}
-	modelState := persistPath(false, "managed/"+k.m.environment()+"/model-relay") + "/model-select.json"
+	modelState := persistPath(false, "managed/"+k.cfg.Environment+"/model-relay") + "/model-select.json"
 	// The private relay keeps its existing PDP and registry contracts. No
 	// control bearer or provider credential is projected into the runtime.
 	release := k.cfg.ControlRelease + "-hermes-hub"
 	verificationURL := "http://" + strings.TrimSuffix(release[:min(len(release), 45)], "-") + "-supervisor." + k.cfg.ControlNamespace + ".svc:8876"
 	for key, value := range map[string]string{
 		"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml", "HUB_MODEL_RELAY_STATE": modelState,
-		"HUB_MODEL_RELAY_OWNER": request.Binding.UserID, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL,
-		"HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": request.Binding.runtimeAuth, "HUB_ENVIRONMENT": k.m.environment(),
-		"HUB_RUN_VERIFY_URL": verificationURL, "HUB_RUN_VERIFY_AUTH": taskcontract.VerificationCredential(k.m.cfg.RuntimeAuth),
+		"HUB_MODEL_RELAY_OWNER": spec.Owner, "HUB_MODEL_RELAY_CLIPROXY": k.cfg.CliproxyURL,
+		"HUB_TOOLHUB_URL": k.cfg.ToolHubURL, "HUB_TOOLHUB_CONTROL": specRuntimeAuth(spec), "HUB_ENVIRONMENT": k.cfg.Environment,
+		"HUB_RUN_VERIFY_URL": verificationURL, "HUB_RUN_VERIFY_AUTH": taskcontract.VerificationCredential(k.cfg.RuntimeAuth),
 	} {
 		values[key] = value
 	}
@@ -139,7 +147,7 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	modelMounts = append(modelMounts, core.VolumeMount{Name: "space", MountPath: kubePersistRoot}, core.VolumeMount{Name: "tmp", MountPath: "/tmp"})
 	if values["HUB_CREDENTIAL_BROKER_MODEL_PROFILE"] != "" || values["HUB_CREDENTIAL_BROKER_MODEL_KEY_FILE"] != "" {
 		mode := int32(0440)
-		relay.Spec.Volumes = append(relay.Spec.Volumes, core.Volume{Name: "broker-profile", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: k.claimName(request.Runtime) + "-broker", DefaultMode: &mode}}})
+		relay.Spec.Volumes = append(relay.Spec.Volumes, core.Volume{Name: "broker-profile", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: k.claimName(rt) + "-broker", DefaultMode: &mode}}})
 		modelMounts = append(modelMounts, core.VolumeMount{Name: "broker-profile", MountPath: "/run/broker-secrets", ReadOnly: true})
 	}
 	base := main.Spec.Containers[0].DeepCopy()
@@ -163,13 +171,12 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	tool.VolumeMounts = []core.VolumeMount{{Name: "tmp", MountPath: "/tmp"}}
 	tool.ReadinessProbe = probe(8090)
 	relay.Spec.Containers = []core.Container{*model, *tool}
-	settings := request.Settings
-	settings.Environment = k.m.environment()
-	if environment := stack.RuntimeEgressEnvironment(settings, request.Binding.ContextRoot); environment != nil {
-		environment["HUB_EGRESS_RELAY_OWNER"] = request.Binding.UserID
-		environment["HUB_ENVIRONMENT"] = k.m.environment()
+	if environment := spec.Relay.EgressEnv; len(environment) != 0 {
+		environment = maps2(environment)
+		environment["HUB_EGRESS_RELAY_OWNER"] = spec.Owner
+		environment["HUB_ENVIRONMENT"] = k.cfg.Environment
 		environment["HUB_RUN_VERIFY_URL"] = verificationURL
-		environment["HUB_RUN_VERIFY_AUTH"] = taskcontract.VerificationCredential(k.m.cfg.RuntimeAuth)
+		environment["HUB_RUN_VERIFY_AUTH"] = taskcontract.VerificationCredential(k.cfg.RuntimeAuth)
 		environment["HUB_TOOLHUB_URL"] = k.cfg.ToolHubURL
 		env, err := relayEnvironment(secret, environment, "x")
 		if err != nil {
@@ -205,14 +212,24 @@ func (k *kubernetesBackend) relayPlan(request SpawnRequest, main *core.Pod, inpu
 	}
 	// RWO claims may be shared only on one node. The first relay can schedule
 	// freely; the runtime follows that exact relay generation.
-	selector := k.labels(request.Runtime)
+	selector := k.labels(rt)
 	selector["app.kubernetes.io/component"] = "runtime-relay"
 	main.Spec.Affinity = &core.Affinity{PodAffinity: &core.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []core.PodAffinityTerm{{TopologyKey: "kubernetes.io/hostname", LabelSelector: &meta.LabelSelector{MatchLabels: selector}}}}}
-	relay.Spec.Affinity = &core.Affinity{PodAffinity: &core.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []core.PodAffinityTerm{{TopologyKey: "kubernetes.io/hostname", LabelSelector: &meta.LabelSelector{MatchLabels: map[string]string{kubeOwner: k.m.ownerID()[:32], kubeScope: k.scope(request.Runtime)[:32], "app.kubernetes.io/component": "runtime-relay"}}}}}}
+	relay.Spec.Affinity = &core.Affinity{PodAffinity: &core.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []core.PodAffinityTerm{{TopologyKey: "kubernetes.io/hostname", LabelSelector: &meta.LabelSelector{MatchLabels: map[string]string{kubeOwner: k.cfg.OwnerID[:32], kubeScope: k.scope(rt)[:32], "app.kubernetes.io/component": "runtime-relay"}}}}}}
 	return relay, secret, nil
 }
 
-func (k *kubernetesBackend) createSecret(ctx context.Context, secret *core.Secret, rt Runtime) error {
+// maps2 copies the spec-carried map so plan-time annotations never mutate
+// the caller's Spec.
+func maps2(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (k Kubernetes) createSecret(ctx context.Context, secret *core.Secret, rt kubeWorkload) error {
 	client := k.client.CoreV1().Secrets(k.cfg.Namespace)
 	if _, err := client.Create(ctx, secret, meta.CreateOptions{}); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -226,18 +243,18 @@ func (k *kubernetesBackend) createSecret(ctx context.Context, secret *core.Secre
 	return nil
 }
 
-func (k *kubernetesBackend) startRelay(ctx context.Context, pod *core.Pod, rt Runtime) (*core.Pod, error) {
+func (k Kubernetes) startRelay(ctx context.Context, pod *core.Pod, rt kubeWorkload) (*core.Pod, error) {
 	if _, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, meta.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return nil, errors.New("private relay Pod creation failed")
 	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		current, err := k.pod(ctx, k.relayRuntime(rt))
+		current, err := k.pod(ctx, k.relayWorkload(rt).name)
 		if err != nil {
 			return nil, err
 		}
-		if !k.owned(current, k.relayRuntime(rt), true) || current.Annotations[kubeRole] != "relay" {
+		if !k.owned(current, k.relayWorkload(rt), true) || current.Annotations[kubeRole] != "relay" {
 			return nil, errors.New("private relay Pod ownership mismatch")
 		}
 		if current.Status.Phase == core.PodFailed {
@@ -258,8 +275,8 @@ func (k *kubernetesBackend) startRelay(ctx context.Context, pod *core.Pod, rt Ru
 	}
 }
 
-func (k *kubernetesBackend) bindPolicyReceipt(ctx context.Context, pod *core.Pod, secret *core.Secret, rt Runtime, relayIP string) error {
-	policy, err := k.client.NetworkingV1().NetworkPolicies(k.cfg.Namespace).Get(ctx, rt.Container, meta.GetOptions{})
+func (k Kubernetes) bindPolicyReceipt(ctx context.Context, spec Spec, rt kubeWorkload, pod *core.Pod, secret *core.Secret, relayIP string) error {
+	policy, err := k.client.NetworkingV1().NetworkPolicies(k.cfg.Namespace).Get(ctx, rt.name, meta.GetOptions{})
 	if err != nil || policy.UID == "" {
 		return errors.New("runtime NetworkPolicy receipt unavailable")
 	}
@@ -267,7 +284,8 @@ func (k *kubernetesBackend) bindPolicyReceipt(ctx context.Context, pod *core.Pod
 	if err != nil {
 		return errors.New("runtime policy encoding failed")
 	}
-	receipt := hubruntime.KubernetesIsolationReceipt{Namespace: k.cfg.Namespace, Pod: pod.Name, Generation: rt.Generation, ContextHash: k.annotations(rt, true)[kubeContext], PolicyUID: string(policy.UID), PolicySHA256: hex.EncodeToString(hashBytes(string(encoded))), RelayIP: relayIP}
+	sum := sha256.Sum256(encoded)
+	receipt := hubruntime.KubernetesIsolationReceipt{Namespace: k.cfg.Namespace, Pod: pod.Name, Generation: rt.generation, ContextHash: k.annotations(rt, true)[kubeContext], PolicyUID: string(policy.UID), PolicySHA256: hex.EncodeToString(sum[:]), RelayIP: relayIP}
 	body, err := json.Marshal(receipt)
 	if err != nil {
 		return errors.New("runtime policy receipt encoding failed")
@@ -277,8 +295,8 @@ func (k *kubernetesBackend) bindPolicyReceipt(ctx context.Context, pod *core.Pod
 	pod.Spec.Volumes = append(pod.Spec.Volumes, core.Volume{Name: "isolation", VolumeSource: core.VolumeSource{Secret: &core.SecretVolumeSource{SecretName: secret.Name, DefaultMode: &mode, Items: []core.KeyToPath{{Key: "network-policy", Path: "policy.json"}}}}})
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: "isolation", MountPath: "/run/hub-isolation", ReadOnly: true})
 	pod.Spec.HostAliases = []core.HostAlias{{IP: relayIP, Hostnames: []string{"toolhub", "model-relay", "egress-relay"}}}
-	hermesHome := kubePersistRoot + "/managed/" + k.m.environment() + "/hermes"
-	for _, name := range managedExtensionRootTmpfs {
+	hermesHome := kubePersistRoot + "/managed/" + k.cfg.Environment + "/hermes"
+	for _, name := range kubeExtensionRoots(spec) {
 		volume := "extension-" + name
 		pod.Spec.Volumes = append(pod.Spec.Volumes, core.Volume{Name: volume, VolumeSource: core.VolumeSource{EmptyDir: &core.EmptyDirVolumeSource{Medium: core.StorageMediumMemory}}})
 		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, core.VolumeMount{Name: volume, MountPath: hermesHome + "/" + name, ReadOnly: true})
@@ -286,9 +304,9 @@ func (k *kubernetesBackend) bindPolicyReceipt(ctx context.Context, pod *core.Pod
 	return nil
 }
 
-func (k *kubernetesBackend) relayPolicy(rt Runtime) *networking.NetworkPolicy {
+func (k Kubernetes) relayPolicy(rt kubeWorkload) *networking.NetworkPolicy {
 	policy := k.policy(rt)
-	policy.Name = rt.Container + "-relay"
+	policy.Name = rt.name + "-relay"
 	policy.Spec.PodSelector.MatchLabels["app.kubernetes.io/component"] = "runtime-relay"
 	peer := networking.NetworkPolicyPeer{NamespaceSelector: &meta.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": k.cfg.Namespace}}, PodSelector: &meta.LabelSelector{MatchLabels: k.labels(rt)}}
 	policy.Spec.Ingress = []networking.NetworkPolicyIngressRule{{From: []networking.NetworkPolicyPeer{peer}, Ports: []networking.NetworkPolicyPort{kubePort(8090, core.ProtocolTCP), kubePort(8318, core.ProtocolTCP), kubePort(8319, core.ProtocolTCP)}}}

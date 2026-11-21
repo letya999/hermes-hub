@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	spawnv1 "github.com/letya999/hermes-hub/contracts/spawn/v1"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -94,7 +92,7 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
-	managedSettings, managedEff, managedErr := stack.ReadEffectiveSpaceBundle(ctx, m.cfg.Spawn, binding.ContextRoot)
+	managedSettings, _, managedErr := stack.ReadEffectiveSpaceBundle(ctx, m.cfg.Spawn, binding.ContextRoot)
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
@@ -228,9 +226,6 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 				return snapshot, errors.New("restored runtime health unavailable")
 			}
 			if inspectErr == nil && observation.State == "running" {
-				if m.usingKubernetes() && observation.Address != "" {
-					address = observation.Address
-				}
 				if readinessErr := m.ready(ctx, address, auth); readinessErr != nil {
 					return snapshot, readinessErr
 				}
@@ -320,20 +315,6 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	}
 	m.mu.Lock()
 	if current := m.items[key]; serveLive && current != nil && (current.State == Ready || current.State == Idle || current.State == Busy) {
-		if m.usingKubernetes() {
-			snapshot := current.Runtime
-			m.mu.Unlock()
-			observed, err := m.observeCompute(ctx, snapshot)
-			if err != nil {
-				return snapshot, err
-			}
-			if observed.State != "running" {
-				return snapshot, errors.New("runtime Pod is not running")
-			}
-			m.mu.Lock()
-			current = m.items[key]
-			current.Address, current.ComputeConditions = observed.Address, observed.Conditions
-		}
 		previous := current.Runtime
 		current.State, current.LastUsed, current.IdleDeadline = Busy, m.cfg.Now(), time.Time{}
 		m.addHoldLocked(current, binding, hold)
@@ -348,12 +329,6 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 		return result, nil
 	}
 	m.mu.Unlock()
-	if m.usingKubernetes() {
-		// Fence the old process before changing the durable generation used by jobs.
-		if err := m.prepareKubernetesReplacement(ctx, key, containerName(key)); err != nil {
-			return Runtime{}, err
-		}
-	}
 	m.mu.Lock()
 	_, slotHeld := m.slots[key]
 	if !slotHeld && len(m.orphans) != 0 {
@@ -386,9 +361,6 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 	container := containerName(key)
 	m.mu.Lock()
 	port, portErr := m.allocatePortLocked(key)
-	if m.usingKubernetes() {
-		port, portErr = m.cfg.RuntimePort, nil
-	}
 	if portErr != nil {
 		m.mu.Unlock()
 		if !slotHeld {
@@ -428,28 +400,12 @@ func (m *Manager) ensureHold(ctx context.Context, binding Binding, hold *Lease) 
 		return Runtime{}, errors.New("runtime start state unavailable")
 	}
 	m.mu.Unlock()
-	// Workload start diverges by backend: the compile-only kubernetes path
-	// spawns through the supervisor's own backend (decision 13 / M40.15);
-	// the docker/process managed path claims through spawn-controller
-	// (S7c), which binds routing and identity to a generation row, starts
-	// or reuses its workload, and answers the endpoint to forward to.
+	// Workload start claims through spawn-controller (S7c/S8): it binds
+	// routing and identity to a generation row, starts or reuses its
+	// workload, and answers the endpoint to forward to.
 	var computeID, computeGeneration, claimLease string
 	var computeConditions []Condition
-	if m.usingKubernetes() {
-		observed, spawnErr := m.backend.Spawn(ctx, SpawnRequest{Binding: binding, Runtime: logical.Runtime, Settings: managedSettings, Effective: managedEff, Port: port})
-		if spawnErr != nil {
-			m.markDegraded(key)
-			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
-			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
-				m.releaseSlot(key)
-			}
-			return Runtime{}, spawnErr
-		}
-		if observed.Address != "" {
-			address = observed.Address
-		}
-		computeID, computeConditions = observed.ID, observed.Conditions
-	} else {
+	{
 		claimed, spawnErr := m.claimManaged(ctx, binding)
 		if spawnErr != nil {
 			m.markDegraded(key)
@@ -602,59 +558,9 @@ func (m *Manager) normalize(ctx context.Context, binding Binding) (Binding, erro
 	return binding, nil
 }
 
-// managedAgentNetworkName mirrors the Compose topology: one internal network
-// per user/environment where only the reviewed relays and runtime resolve.
-func managedAgentNetworkName(user, env string) string {
-	return "hermes-hub-agent-" + user + "-" + env
-}
-
-// controlNetworkName is the supervisor-owned bridge carrying the per-runtime
-// control relay's loopback-published port. It is not Compose-owned so a
-// project teardown never strands a live supervised runtime.
-const controlNetworkName = "hermes-hub-control"
-
-// managedExtensionRootTmpfs are the empty read-only overlays covering every
-// executable import path under HERMES_HOME; the compile-only firecracker and
-// kubernetes plans reuse the same contract.
-var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"}
-
 func fileExists(path string) bool {
 	info, err := os.Lstat(path) // #nosec G703 -- callers pass paths under the validated binding context root
 	return err == nil && info.Mode().IsRegular()
-}
-
-// ensureManagedInfra verifies the Compose-owned private agent network and
-// creates the supervisor's control network plus this runtime's control relay:
-// the dual-homed sidecar is the only inbound route to an internal-network
-// runtime, publishing only on the host loopback.
-
-func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet, target, mountDir string, publish bool) error {
-	relay := container + "-ctl"
-	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, m.cfg.Environment, m.cfg.Image)
-	if err != nil {
-		return err
-	}
-	args := []string{"run", "-d", "--name", relay, "--network", agentNet, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "-e", "HUB_CONTROL_RELAY_TARGET=" + target, "--label", "hermes-hub.owner=" + m.ownerID(), "--label", "hermes-hub.context=" + hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation=" + generation, "--label", "hermes-hub.role=control-relay", "--entrypoint", "hub-runtime"}
-	if publish {
-		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, controlRelayContainerPort))
-	}
-	if mountDir != "" {
-		args = append(args, "-v", mountDir+":"+mountDir)
-	}
-	args = append(args, image, "control-relay")
-	if out, err := m.command(ctx, args...); err != nil {
-		// A stale same-name relay from an older generation blocks the spawn;
-		// reclaim it only when its labels still prove our ownership.
-		m.reclaimSidecarName(ctx, binding, container)
-		if retryOut, retryErr := m.command(ctx, args...); retryErr != nil {
-			return fmt.Errorf("start control relay: %w: %s; retry: %s", retryErr, firstLine(string(retryOut)), firstLine(string(out)))
-		}
-	}
-	if out, err := m.command(ctx, "network", "connect", controlNetworkName, relay); err != nil {
-		_, _ = m.command(ctx, "rm", "-f", relay)
-		return fmt.Errorf("attach control relay: %w: %s", err, firstLine(string(out)))
-	}
-	return nil
 }
 
 func (m *Manager) ready(ctx context.Context, address, auth string) error {
@@ -690,9 +596,6 @@ func (m *Manager) ready(ctx context.Context, address, auth string) error {
 }
 
 func (m *Manager) command(ctx context.Context, args ...string) ([]byte, error) {
-	if m.usingKubernetes() {
-		return nil, errors.New("docker operation is unavailable on the kubernetes backend")
-	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if m.cfg.HostSpacesRoot != "" && len(args) > 0 && args[0] == "run" {

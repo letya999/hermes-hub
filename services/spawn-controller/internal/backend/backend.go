@@ -158,6 +158,11 @@ type RelaySpec struct {
 	Control  string // control network name (created as a plain bridge)
 	MountDir string // optional identity bind for the relay's own host files
 	Limits   Limits
+	// EgressEnv is the resolved egress relay env (v0
+	// stack.RuntimeEgressEnvironment) — only the compile-only Kubernetes
+	// backend consumes it, projecting the values into the relay Secret;
+	// the docker control relay is a TCP forwarder and ignores it.
+	EgressEnv map[string]string
 }
 
 // ExecSpec is one bounded command inside a running workload: argv never

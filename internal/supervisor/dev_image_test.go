@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,29 +58,5 @@ func TestDevScriptImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	}
 	if _, err := devScriptImage(root, "alice", "dev", fallback); err == nil {
 		t.Fatal("runtime image accepted for script containers")
-	}
-}
-
-func TestControlRelaySelectsDevRuntimeImage(t *testing.T) {
-	var run []string
-	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "run" {
-			run = append([]string(nil), args...)
-		}
-		return nil, nil
-	}, nil)
-	m.cfg.Environment = "dev"
-	if err := os.MkdirAll(filepath.Join(root, "generated"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	image := "hermes-hub-dev-alice-hermes-runtime:local"
-	if err := os.WriteFile(filepath.Join(root, "generated", "dev-runtime-image"), []byte(image+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.spawnControlRelay(context.Background(), binding(root), "runtime", 8091, "generation", "agent-net", "http://runtime:8080", "", true); err != nil {
-		t.Fatal(err)
-	}
-	if len(run) < 2 || run[len(run)-2] != image {
-		t.Fatalf("relay image: %v", run)
 	}
 }

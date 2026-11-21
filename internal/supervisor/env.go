@@ -258,25 +258,6 @@ func envFileAuth(path string) (string, error) {
 	return "", errors.New("HUB_RUNTIME_AUTH missing from runtime env file")
 }
 
-// prepareSpawnFiles heals an Init SOUL stub from the repo template and, for
-// the infra owner, enrolls sibling runtime tokens before the container mount
-// is built. A missing template or a skipped enrollment does not block spawn.
-func (m *Manager) prepareSpawnFiles(ctx context.Context, binding Binding, env string) {
-	template := filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "SOUL.md")
-	if info, err := os.Stat(template); err == nil && info.Mode().IsRegular() {
-		if err := stack.HealUserSoul(binding.ContextRoot, template); err != nil {
-			log.Printf("supervisor soul heal skipped")
-		}
-	}
-	settings, err := stack.ReadEffective(ctx, m.cfg.Spawn, binding.ContextRoot, env)
-	if err != nil || !settings.RendersInfra() {
-		return
-	}
-	if err := stack.EnrollSiblingRuntimeTokens(ctx, m.cfg.Spawn, binding.ContextRoot, env); err != nil {
-		log.Printf("supervisor token enrollment skipped")
-	}
-}
-
 // materializeHermesConfig renders the effective Hermes config on the host so
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
 // runtime contract: secrets.<env>.env endpoint override.

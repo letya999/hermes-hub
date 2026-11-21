@@ -203,28 +203,6 @@ func TestRuntimeImageMalformedPinsFallback(t *testing.T) {
 	}
 }
 
-func TestControlRelayUsesRolloutPin(t *testing.T) {
-	var run []string
-	m, ctxRoot := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "run" {
-			run = append([]string(nil), args...)
-		}
-		return nil, nil
-	}, nil)
-	m.cfg.Environment = "prod"
-	if err := WriteRolloutPins(ctxRoot, RolloutPins{Envs: map[string]RolloutEnv{
-		"prod": {Current: RolloutPin{Image: "img/stable:1", SmokedAt: time.Now().UTC()}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.spawnControlRelay(context.Background(), binding(ctxRoot), "runtime", 8091, "generation", "agent-net", "http://runtime:8080", "", true); err != nil {
-		t.Fatal(err)
-	}
-	if len(run) < 2 || run[len(run)-2] != "img/stable:1" {
-		t.Fatalf("relay image: %v", run)
-	}
-}
-
 func TestEnsureRecordsImageSource(t *testing.T) {
 	m, ctxRoot := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil },
 		func(context.Context, string, string) error { return nil })

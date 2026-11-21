@@ -338,8 +338,6 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	case claimed:
 		// The workload belongs to spawn-controller: replacement happens
 		// through drain + claim, never a local docker restart.
-	case m.usingKubernetes():
-		return m.restartKubernetesLocked(ctx, runtime)
 	default:
 		container, err = m.ownedContainerID(ctx, runtime)
 		if err != nil {

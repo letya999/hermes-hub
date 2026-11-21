@@ -149,11 +149,6 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 						}
 					}
 				}
-				if m.usingKubernetes() && health == "missing" && !desired {
-					if err := m.removeOwnedRuntime(probeCtx, snapshot); err != nil {
-						health = "unknown"
-					}
-				}
 			}
 			cancel()
 		}
@@ -217,20 +212,7 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			}
 		}
 		m.mu.Unlock()
-		if remediate && snapshot.Container != "" && m.usingKubernetes() && m.tryRecoveryWorker() {
-			m.mu.Lock()
-			if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
-				current.lastRemediatedAt = now
-			}
-			m.mu.Unlock()
-			go func() { // #nosec G118 -- bounded recovery worker owns the acquisition lock
-				defer lock.Unlock()
-				defer func() { <-m.recoverySem }()
-				_, _ = m.restartKubernetesLocked(context.Background(), snapshot)
-			}()
-			continue
-		}
-		if remediate && snapshot.Container != "" && !m.usingKubernetes() {
+		if remediate && snapshot.Container != "" {
 			if spawnLease != "" {
 				// A claimed workload restarts through its row: drain stops
 				// the container under spawn's budget; a stopped local entry

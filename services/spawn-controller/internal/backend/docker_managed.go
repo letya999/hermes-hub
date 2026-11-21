@@ -199,17 +199,26 @@ func (d *dockerBackend) reclaimSidecarName(ctx context.Context, key, name string
 // to exactly one private IPv4 or the spawn refuses — an ambiguous or
 // forged alias never steers the workload's egress.
 func (d *dockerBackend) sandboxRelayHosts(ctx context.Context, network string, wanted []string) ([]string, error) {
+	return sandboxRelayHosts(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return d.command(ctx, nil, args...)
+	}, network, wanted)
+}
+
+// sandboxRelayHosts is the shared alias resolver (v0): the docker managed
+// path and the compile-only firecracker backend both pin the same reviewed
+// relay endpoints.
+func sandboxRelayHosts(ctx context.Context, command func(context.Context, ...string) ([]byte, error), network string, wanted []string) ([]string, error) {
 	if len(wanted) == 0 {
 		return nil, nil
 	}
-	body, err := d.command(ctx, nil, "ps", "--filter", "network="+network, "--format", "{{.ID}}")
+	body, err := command(ctx, "ps", "--filter", "network="+network, "--format", "{{.ID}}")
 	ids := strings.Fields(string(body))
 	if err != nil || len(body) > 4096 || len(ids) > 16 {
 		return nil, errors.New("sandbox relay discovery unavailable")
 	}
 	hosts := map[string]string{}
 	for _, id := range ids {
-		body, err := d.command(ctx, nil, "inspect", "--format", `{{json (index .NetworkSettings.Networks "`+network+`")}}`, id)
+		body, err := command(ctx, "inspect", "--format", `{{json (index .NetworkSettings.Networks "`+network+`")}}`, id)
 		var endpoint struct {
 			IPAddress string
 			Aliases   []string

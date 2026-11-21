@@ -62,8 +62,8 @@ and before service effects complete.
   names the stack-rendered bindings root — one mount per enrolled,
   memory-enabled, environment-matching principal. Startup scans it into a
   binding table; `Resolve(principal, environment)` then requires an
-  identity-valid principal present in the table plus the live published
-  passport record (`HUB_PASSPORTS_BY_PRINCIPAL`) declaring the same
+  identity-valid principal present in the table plus the live
+  spawn-controller effective contract declaring the same
   space/environment with memory enabled — only then is the vault opened,
   under a per-user lock so one user's blocked operation never serializes
   another's. A caller-supplied path is never consulted.
@@ -372,8 +372,8 @@ agent network), `HUB_CAPABILITY_PROFILE_ID`/`HUB_CAPABILITY_GENERATION`/
 `HUB_CAPABILITY_ENVIRONMENT` (scoped admission),
 `HUB_CREDENTIAL_BROKER_*` client env, `HUB_BUILD_SECCOMP`
 (rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`,
-`HUB_PASSPORTS_BY_PRINCIPAL` + `HUB_VAULTS_BY_PRINCIPAL` (per-principal
-passport/vault mount roots).
+`HUB_VAULTS_BY_PRINCIPAL` (per-principal vault mount root; the effective
+contract supplies the passport record).
 
 ## Boundaries
 

@@ -92,6 +92,13 @@ real channel acceptance requires provisioned accounts and explicit sends.
 
 ### Optional Kubernetes space execution
 
+**Status: suspended until M40.15.** The Kubernetes and Firecracker drivers moved
+into spawn-controller (CHG-0336 S8) and are compile-only there; the supervisor
+fails closed on any `HUB_EXECUTION_BACKEND` value other than `docker`, so a
+deployment that sets `execution.backend: kubernetes` refuses to start instead
+of silently spawning through the wrong driver. The wiring below is retained
+for re-enablement at M40.15.
+
 Docker remains the local default (`HUB_EXECUTION_BACKEND=docker`). To run managed
 gateway spaces as Pods, set `execution.backend: kubernetes`. The mandatory
 [ToolHive Operator evaluation](../.work/done/CHG-0319-kubernetes-runtime/operator-eval.md)
