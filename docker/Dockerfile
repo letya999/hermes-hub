@@ -44,7 +44,7 @@ RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz 
 
 FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS node
 FROM docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS dockercli
-FROM ghcr.io/stacklok/toolhive:v0.66.0@sha256:310be12fdcdfc526bbf21202056791ab32fa6b5df75220e9a058a70d1b50b935 AS toolhive
+FROM ghcr.io/stacklok/toolhive:v0.70.0@sha256:6c81fa0872865baa8d82e4fddfaa1818d1c2022b58c4f6bdcdef9a6d8b3a0422 AS toolhive
 FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 # Pinned upstream checkout + byte-compiled venv, built once and copied into the
