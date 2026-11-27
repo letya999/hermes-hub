@@ -51,7 +51,7 @@ FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678
 # runtime image. UV_COMPILE_BYTECODE trades a slower build for an image that
 # does not pay the compile cost (or attempt writes on the read-only rootfs) at
 # every container start.
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS python_build
+FROM python:3.13-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50 AS python_build
 ENV PYTHONUNBUFFERED=1 UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY --from=uv /uv /usr/local/bin/uv
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -117,7 +117,7 @@ USER 10001:10001
 # hub-runtime: the agent's Python world — pruned upstream checkout, compiled
 # venv and Node for stdio MCP. Voice lives in dedicated services (SPEC-0082
 # R2); the browser display stack moves to the per-space sidecar (R4).
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS runtime
+FROM python:3.13-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50 AS runtime
 # PYTHONDONTWRITEBYTECODE stays set: python_build already compiled the venv,
 # and nothing may write .pyc into the writable mounts at runtime.
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
@@ -144,7 +144,7 @@ USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["idle"]
 
-FROM python:3.13-slim-trixie@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0 AS browser
+FROM python:3.13-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50 AS browser
 # hub-browser (SPEC-0082 R4, ADR-0083 D3): the per-space sidecar owning the
 # headed-Chromium display stack. CDP binds the container interfaces and is
 # reachable only on the space-internal network; the sole host-published
