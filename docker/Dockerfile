@@ -38,7 +38,7 @@ RUN --mount=type=cache,id=hermes-broker-go-build,target=/root/.cache/go-build \
 FROM golang:1.27.4-bookworm AS cliproxy_build
 RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin c5251b57b3fa5dcbc689f514f4aa166daacb4481; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
-FROM debian:13.6 AS sqlite_build
+FROM debian:13.8 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL --retry 3 https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz -o /tmp/sqlite.tgz && echo '0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c  /tmp/sqlite.tgz' | sha256sum -c - && tar xzf /tmp/sqlite.tgz -C /tmp && cd /tmp/sqlite-autoconf-3530400 && CFLAGS='-O2 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_THREADSAFE=1' ./configure --prefix=/opt/sqlite-fixed --disable-static && make -j2 && make install
 
@@ -80,7 +80,7 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # hub-core (SPEC-0082 D1): every non-agent daemon shares this lean base — the
 # static Go binaries plus TLS roots. No interpreters, browsers or uv: the
 # image-budget probe fails the image if any appear.
-FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS core
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
 # ride https sources, and apt signature checks do not need TLS anyway. git is
 # the vault writer's commit backend (SPEC-0085 R1): the communication gateway
@@ -194,7 +194,7 @@ CMD ["ok", "start"]
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
-FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cli-tools
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS cli-tools
 # libatomic1 lets mounted member images run their embedded node runtime
 # (eslint/tsc/prettier artifacts) inside a toolbox or tool-bearing shell cell.
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates libatomic1 && rm -rf /var/lib/apt/lists/*
@@ -210,7 +210,7 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Egress companion for cells that declare reviewed outbound hosts: a plain
 # Squid forward proxy the controller scopes to the cell's internal network.
-FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS cell-proxy
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS cell-proxy
 RUN apt-get update && apt-get install -y --no-install-recommends squid ca-certificates && rm -rf /var/lib/apt/lists/*
 EXPOSE 3128
 USER 10001:10001
@@ -237,7 +237,7 @@ LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 # Retain a shell for the chart's private Secret materializer; the broker binary
 # remains the same statically linked SQLCipher build used by core.
-FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS credential-broker
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS credential-broker
 COPY --from=broker_build /credential-broker /usr/local/bin/credential-broker
 COPY --from=broker_build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
